@@ -1,0 +1,83 @@
+{
+  "name": "Portal Access Orchestrator (Workflow 132)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-portal-access",
+        "options": {}
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst token = crypto.randomBytes(24).toString('hex');\nreturn { magicLink: `https://nexus-os.com/login?token=${token}`, token };"
+      },
+      "name": "Generate Magic Link",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-1.5-flash",
+          "mode": "list"
+        },
+        "prompt": "=Write a 2-sentence welcome email for a {{$node[\"Webhook Trigger\"].json.body.role}} named {{$node[\"Webhook Trigger\"].json.body.name}} regarding property {{$node[\"Webhook Trigger\"].json.body.address || 'their upcoming transaction'}}. Tone: Professional and warm. Mention they can see their transaction timeline and active playbook steps inside.",
+        "options": {}
+      },
+      "name": "Gemini: Personal Onboarding",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "fromEmail": "onboarding@nexus-os.com",
+        "toEmail": "={{$node[\"Webhook Trigger\"].json.body.email}}",
+        "subject": "Welcome to your Transaction Portal",
+        "text": "=Welcome to your Transaction Portal.\n\n{{$json.output}}\n\nClick here to enter securely: {{$node[\"Generate Magic Link\"].json.magicLink}}"
+      },
+      "name": "SendGrid: Dispatch Invite",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [850, 300],
+      "credentials": { "smtp": { "id": "YOUR_SENDGRID_ID", "name": "SendGrid" } }
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "baseId": "appYOURBASEID",
+        "table": "Portal_Users",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Email": "={{$node[\"Webhook Trigger\"].json.body.email}}",
+            "Role": "={{$node[\"Webhook Trigger\"].json.body.role}}",
+            "Onboarding_Status": "Invited",
+            "Magic_Link_Token": "={{$node[\"Generate Magic Link\"].json.token}}",
+            "Linked_Deal_ID": "={{$node[\"Webhook Trigger\"].json.body.dealId}}"
+          }
+        },
+        "options": { "externalIdColumn": "Email" }
+      },
+      "name": "Airtable: Identity Store",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": { "main": [[{ "node": "Generate Magic Link", "type": "main", "index": 0 }]] },
+    "Generate Magic Link": { "main": [[{ "node": "Gemini: Personal Onboarding", "type": "main", "index": 0 }]] },
+    "Gemini: Personal Onboarding": { "main": [[{ "node": "SendGrid: Dispatch Invite", "type": "main", "index": 0 }]] },
+    "SendGrid: Dispatch Invite": { "main": [[{ "node": "Airtable: Identity Store", "type": "main", "index": 0 }]] }
+  }
+}

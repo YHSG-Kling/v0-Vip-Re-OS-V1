@@ -1,0 +1,64 @@
+{
+  "name": "Dynamic Transaction Checklist",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-dynamic-checklist",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gemini-1.5-flash", "mode": "list" },
+        "prompt": "=Analyze these contract attributes to generate a specific checklist.\nAttributes: {{$json.body.attributes}}\n\nRules:\n- If Year < 1978, add 'Lead Based Paint'.\n- If HOA, add 'Order Estoppel' and 'Review Bylaws'.\n- If Cash, remove 'Appraisal'.\n- If Septic, add 'Septic Inspection'.\n\nReturn JSON array of task objects: [{ \"task\": \"...\", \"due_days_after_contract\": 5 }]",
+        "options": {}
+      },
+      "name": "Logic Engine",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "output",
+        "options": {}
+      },
+      "name": "Split Items",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "appYOURBASEID",
+        "table": "Transaction_Tasks",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Task_Name": "={{$json.task}}",
+            "Deal_ID": "={{$node[\"Webhook\"].json.body.dealId}}",
+            "Due_Date": "={{new Date(Date.now() + $json.due_days_after_contract * 24 * 60 * 60 * 1000).toISOString()}}",
+            "Status": "Pending"
+          }
+        }
+      },
+      "name": "Create Tasks",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Logic Engine", "type": "main", "index": 0 }]] },
+    "Logic Engine": { "main": [[{ "node": "Split Items", "type": "main", "index": 0 }]] },
+    "Split Items": { "main": [[{ "node": "Create Tasks", "type": "main", "index": 0 }]] }
+  }
+}

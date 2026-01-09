@@ -1,0 +1,102 @@
+{
+  "name": "Social Scraper Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "name": "Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.apify.com/v2/acts/apify~facebook-group-scraper/runs",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{\n  \"startUrls\": [{ \"url\": \"https://www.facebook.com/groups/localrealestate\" }],\n  \"search\": \"moving, sell house, realtor needed\"\n}"
+      },
+      "name": "Run Apify Scraper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "items",
+        "options": {}
+      },
+      "name": "Split Posts",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gemini-1.5-pro", "mode": "list" },
+        "prompt": "=Analyze this post text: {{$json.text}}\n\n1. Score Intent (1-5)\n2. Classify: Buyer/Seller/Investor/Spam\n3. Extract Location\n\nReturn JSON.",
+        "options": {}
+      },
+      "name": "AI Score & Classify",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.output.score}}",
+              "operation": "larger",
+              "value2": 3
+            }
+          ]
+        }
+      },
+      "name": "Filter Low Quality",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "baseId": "appYOURBASEID",
+        "table": "Scraped_Leads",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Raw_Text": "={{$node[\"Split Posts\"].json.text}}",
+            "Intent_Score": "={{$json.output.score}}",
+            "Intent_Label": "={{$json.output.classification}}",
+            "Status": "New"
+          }
+        },
+        "options": { "externalIdColumn": "Post_ID" }
+      },
+      "name": "Upsert to Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1250, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    }
+  ],
+  "connections": {
+    "Schedule": { "main": [[{ "node": "Run Apify Scraper", "type": "main", "index": 0 }]] },
+    "Run Apify Scraper": { "main": [[{ "node": "Split Posts", "type": "main", "index": 0 }]] },
+    "Split Posts": { "main": [[{ "node": "AI Score & Classify", "type": "main", "index": 0 }]] },
+    "AI Score & Classify": { "main": [[{ "node": "Filter Low Quality", "type": "main", "index": 0 }]] },
+    "Filter Low Quality": { "main": [[{ "node": "Upsert to Airtable", "type": "main", "index": 0 }]] }
+  }
+}

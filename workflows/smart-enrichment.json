@@ -1,0 +1,110 @@
+{
+  "name": "Smart Lead Enrichment (Workflow 32/33)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "enrich-lead-v2",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.body.intentScore}}",
+              "operation": "larger",
+              "value2": 4
+            }
+          ]
+        }
+      },
+      "name": "Cost Benefit Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.batchdata.com/api/v1/property/skip-trace",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{\n  \"requests\": [\n    {\n      \"email\": \"{{$node[\"Webhook\"].json.body.email}}\"\n    }\n  ]\n}"
+      },
+      "name": "Paid Skip Trace (BatchData)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [700, 150]
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/customsearch/v1",
+        "method": "GET",
+        "options": {},
+        "queryParametersJson": "{ \"q\": \"{{$node[\"Webhook\"].json.body.email}}\" }"
+      },
+      "name": "Public OSINT Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [700, 450]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "baseId": "appYOURBASEID",
+        "table": "Leads",
+        "id": "={{$node[\"Webhook\"].json.body.leadId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Enrichment_Source": "Paid API",
+            "Phone_Status": "Valid",
+            "Tags": "Enriched, High Intent"
+          }
+        }
+      },
+      "name": "Update CRM (Paid)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [950, 150],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "baseId": "appYOURBASEID",
+        "table": "Leads",
+        "id": "={{$node[\"Webhook\"].json.body.leadId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Enrichment_Source": "Public Web",
+            "Enrichment_Status": "Public_Found"
+          }
+        }
+      },
+      "name": "Update CRM (Public)",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [950, 450],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Cost Benefit Router", "type": "main", "index": 0 }]] },
+    "Cost Benefit Router": {
+      "main": [
+        [{ "node": "Paid Skip Trace (BatchData)", "type": "main", "index": 0 }],
+        [{ "node": "Public OSINT Search", "type": "main", "index": 0 }]
+      ]
+    },
+    "Paid Skip Trace (BatchData)": { "main": [[{ "node": "Update CRM (Paid)", "type": "main", "index": 0 }]] },
+    "Public OSINT Search": { "main": [[{ "node": "Update CRM (Public)", "type": "main", "index": 0 }]] }
+  }
+}

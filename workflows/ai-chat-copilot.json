@@ -1,0 +1,89 @@
+{
+  "name": "AI Chat Copilot (Workflow 1)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ai-chat-copilot",
+        "options": {}
+      },
+      "name": "Incoming Message",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gemini-1.5-pro", "mode": "list" },
+        "prompt": "=Analyze the following message for real estate context. \n\nInput: {{$json.body.message}}\n\nReturn JSON: \n{ \n  \"sentiment\": \"Positive/Neutral/Negative/Frustrated\", \n  \"urgency\": 1-5, \n  \"intent\": \"Buying/Selling/Support\", \n  \"topic\": \"Scheduling/Pricing/Objection\" \n}",
+        "options": {}
+      },
+      "name": "Analyze Intent",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.output.urgency >= 4 || $json.output.sentiment === 'Frustrated'}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Routing Logic",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "message": "=🔥 HOT LEAD ALERT: Lead {{$node[\"Incoming Message\"].json.body.contactId}} is requesting immediate action.\nMsg: '{{$node[\"Incoming Message\"].json.body.message}}'.\nSentiment: {{$node[\"Analyze Intent\"].json.output.sentiment}}.\nCLICK TO CALL.",
+        "channel": "broker-alerts"
+      },
+      "name": "Agent Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [900, 150],
+      "credentials": { "slackApi": { "id": "YOUR_SLACK_ID", "name": "Slack" } }
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gemini-1.5-flash", "mode": "list" },
+        "prompt": "=You are the Broker's AI Copilot.\nCurrent Context: User is {{$node[\"Analyze Intent\"].json.output.intent}}.\nTone: Friendly, concise (under 160 chars for SMS).\nGoal: Move to appointment.\nIf objection: Validate, then pivot to value.\n\nUser Message: {{$node[\"Incoming Message\"].json.body.message}}",
+        "options": {}
+      },
+      "name": "AI Response Generation",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [900, 450],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{$json.output}}",
+        "options": {}
+      },
+      "name": "Send Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1100, 450]
+    }
+  ],
+  "connections": {
+    "Incoming Message": { "main": [[{ "node": "Analyze Intent", "type": "main", "index": 0 }]] },
+    "Analyze Intent": { "main": [[{ "node": "Routing Logic", "type": "main", "index": 0 }]] },
+    "Routing Logic": {
+      "main": [
+        [{ "node": "Agent Alert", "type": "main", "index": 0 }],
+        [{ "node": "AI Response Generation", "type": "main", "index": 0 }]
+      ]
+    },
+    "AI Response Generation": { "main": [[{ "node": "Send Response", "type": "main", "index": 0 }]] }
+  }
+}

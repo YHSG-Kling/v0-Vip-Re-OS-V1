@@ -1,0 +1,114 @@
+{
+  "name": "Negative Feedback Escalation (Workflow 143)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "universal-listener-risk",
+        "options": {}
+      },
+      "name": "Incoming Comms",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-3-pro-preview",
+          "mode": "list"
+        },
+        "prompt": "=Analyze this client communication: '{{$json.body.text}}'\n\n1. Determine Sentiment Score (0.0 to 1.0).\n2. Flag 'Legal Threats' (lawyer, sue, breach) or 'Ethical Complaints' (ignored, lied).\n\nReturn JSON: { \"risk\": boolean, \"sentiment\": number, \"reason\": \"string\", \"severity\": \"Low\" | \"Medium\" | \"License Risk\" }",
+        "options": {}
+      },
+      "name": "AI Sentinel (Gemini Pro)",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.output.risk || $json.output.sentiment < 0.3}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "DEFCON 1 Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "message": "=🚨 NEGATIVE FEEDBACK DETECTED. \nClient: {{$node[\"Incoming Comms\"].json.body.clientName}}. \nAgent: {{$node[\"Incoming Comms\"].json.body.agentName}}. \nSeverity: {{$node[\"AI Sentinel (Gemini Pro)\"].json.output.severity}}. \nReason: {{$node[\"AI Sentinel (Gemini Pro)\"].json.output.reason}}.\n\nLink: https://nexus-os.com/admin/risk-management",
+        "channel": "broker-alerts"
+      },
+      "name": "Slack: Critical Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [850, 200],
+      "credentials": { "slackApi": { "id": "YOUR_SLACK_ID", "name": "Slack" } }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "appYOURBASEID",
+        "table": "Risk_Incidents",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Severity_Level": "={{$node[\"AI Sentinel (Gemini Pro)\"].json.output.severity}}",
+            "Trigger_Phrase": "={{$node[\"AI Sentinel (Gemini Pro)\"].json.output.reason}}",
+            "Resolution_Status": "Open",
+            "Log_Transcript": "={{$node[\"Incoming Comms\"].json.body.text}}",
+            "Client_Name": "={{$node[\"Incoming Comms\"].json.body.clientName}}",
+            "Agent_Name": "={{$node[\"Incoming Comms\"].json.body.agentName}}",
+            "Sentiment_Score": "={{$node[\"AI Sentinel (Gemini Pro)\"].json.output.sentiment}}"
+          }
+        }
+      },
+      "name": "Airtable: Create Incident",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [850, 400],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "baseId": "appYOURBASEID",
+        "table": "Leads",
+        "id": "={{$node[\"Incoming Comms\"].json.body.leadId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "Flagged",
+            "Tags": "Manager Review"
+          }
+        }
+      },
+      "name": "CRM: Tag & Halt",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    }
+  ],
+  "connections": {
+    "Incoming Comms": { "main": [[{ "node": "AI Sentinel (Gemini Pro)", "type": "main", "index": 0 }]] },
+    "AI Sentinel (Gemini Pro)": { "main": [[{ "node": "DEFCON 1 Router", "type": "main", "index": 0 }]] },
+    "DEFCON 1 Router": {
+      "main": [
+        [{ "node": "Slack: Critical Alert", "type": "main", "index": 0 }, { "node": "Airtable: Create Incident", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Airtable: Create Incident": { "main": [[{ "node": "CRM: Tag & Halt", "type": "main", "index": 0 }]] }
+  }
+}

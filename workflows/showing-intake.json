@@ -1,0 +1,100 @@
+{
+  "name": "Showing Request Intake (Workflow 122)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "showing-request-intake",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.mls-data.com/listings/status",
+        "method": "GET",
+        "options": {},
+        "queryParametersJson": "{ \"address\": \"{{$json.body.propertyAddress}}\" }"
+      },
+      "name": "Check MLS Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "operation": "equal",
+              "value2": "Active"
+            }
+          ]
+        }
+      },
+      "name": "Status Gatekeeper",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "appYOURBASEID",
+        "table": "Showings",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "Requested",
+            "Lead_Name": "={{$node[\"Webhook\"].json.body.leadName}}",
+            "Property_Address": "={{$node[\"Webhook\"].json.body.propertyAddress}}",
+            "Requested_Time": "={{$node[\"Webhook\"].json.body.requestedTime}}"
+          }
+        }
+      },
+      "name": "Create Showing Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [850, 200],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "message": "=New Showing Request: {{$node[\"Webhook\"].json.body.propertyAddress}}.\nLead: {{$node[\"Webhook\"].json.body.leadName}} [Pre-approved].\nTime: {{$node[\"Webhook\"].json.body.requestedTime}}",
+        "channel": "agent-notifications"
+      },
+      "name": "Notify Agent",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 1,
+      "position": [1050, 200],
+      "credentials": { "slackApi": { "id": "YOUR_SLACK_ID", "name": "Slack" } }
+    },
+    {
+      "parameters": {
+        "modelId": { "__rl": true, "value": "gemini-1.5-flash", "mode": "list" },
+        "prompt": "=The property {{$node[\"Webhook\"].json.body.propertyAddress}} is currently {{$json.status}}. \nSuggest 3 backup properties in the same zip code for the client.",
+        "options": {}
+      },
+      "name": "AI Backup Suggestions",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [850, 400],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Check MLS Status", "type": "main", "index": 0 }]] },
+    "Check MLS Status": { "main": [[{ "node": "Status Gatekeeper", "type": "main", "index": 0 }]] },
+    "Status Gatekeeper": {
+      "main": [
+        [{ "node": "Create Showing Record", "type": "main", "index": 0 }],
+        [{ "node": "AI Backup Suggestions", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create Showing Record": { "main": [[{ "node": "Notify Agent", "type": "main", "index": 0 }]] }
+  }
+}

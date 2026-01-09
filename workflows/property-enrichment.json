@@ -1,0 +1,118 @@
+{
+  "name": "Enrich Property Data (BatchData - Workflow 98)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "enrich-property-batchdata",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.batchdata.com/api/v1/property/address",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{\n  \"address\": \"{{$json.body.address}}\"\n}"
+      },
+      "name": "BatchData API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [450, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_BATCHDATA_CREDENTIAL_ID",
+          "name": "BatchData"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-1.5-flash",
+          "mode": "list"
+        },
+        "prompt": "=Analyze this property data:\nValue: {{$json.data.estimated_value}}\nMortgage: {{$json.data.mortgage_balance}}\nLast Sale: {{$json.data.last_sale_date}}\n\nTask: Calculate estimated equity. Determine if \"High Likely to Sell\" (owned > 7 years OR equity > 40%).\n\nOutput JSON: { \"equityPercent\": 50, \"prediction\": \"High\", \"reason\": \"Owned 10 years with 50% equity.\" }",
+        "options": {}
+      },
+      "name": "Gemini Analysis",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Google Gemini"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "baseId": "appYOURBASEID",
+        "table": "Leads",
+        "id": "={{$node[\"Webhook\"].json.body.leadId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Equity_Percent": "={{$json.output.equityPercent}}",
+            "AI_Sell_Prediction": "={{$json.output.prediction}}",
+            "AI_Sell_Reason": "={{$json.output.reason}}",
+            "Property_Data_JSON": "={{JSON.stringify($node[\"BatchData API\"].json.data)}}"
+          }
+        }
+      },
+      "name": "Update CRM",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": {
+        "airtableApi": {
+          "id": "YOUR_AIRTABLE_ID",
+          "name": "Airtable Account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "BatchData API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BatchData API": {
+      "main": [
+        [
+          {
+            "node": "Gemini Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Analysis": {
+      "main": [
+        [
+          {
+            "node": "Update CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

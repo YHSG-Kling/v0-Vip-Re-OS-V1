@@ -1,0 +1,126 @@
+{
+  "name": "Review to Social Asset Pipeline (Workflow 144)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "name": "Schedule: Daily Review Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.apify.com/v2/acts/apify~google-maps-reviews-scraper/runs",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{ \"searchQueries\": [\"Nexus Real Estate Austin\"], \"maxReviews\": 5 }"
+      },
+      "name": "Apify: Scrape Reviews",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.stars}}",
+              "operation": "largerEqual",
+              "value2": 5
+            }
+          ]
+        }
+      },
+      "name": "Filter: 5-Star Only",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "baseId": "appYOURBASEID",
+        "table": "Transactions",
+        "options": {
+          "filterByFormula": "={Client_Name}='{{$json.authorName}}'"
+        }
+      },
+      "name": "Airtable: Find Listing Photo",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [850, 200],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable" } }
+    },
+    {
+      "parameters": {
+        "url": "https://api.bannerbear.com/v1/images",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{\n  \"template\": \"YOUR_TEMPLATE_ID\",\n  \"modifications\": [\n    { \"name\": \"review_text\", \"text\": \"{{$node[\"Filter: 5-Star Only\"].json.text}}\" },\n    { \"name\": \"client_name\", \"text\": \"- {{$node[\"Filter: 5-Star Only\"].json.authorName}}\" },\n    { \"name\": \"background_image\", \"image_url\": \"{{$json.fields.Listing_Photo_URL}}\" }\n  ]\n}"
+      },
+      "name": "Bannerbear: Gen Graphic",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1050, 200],
+      "credentials": { "httpHeaderAuth": { "id": "BANNERBEAR_KEY", "name": "Bannerbear" } }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-1.5-flash",
+          "mode": "list"
+        },
+        "prompt": "=Write a humble-brag Instagram caption for this review: '{{$node[\"Filter: 5-Star Only\"].json.text}}'. Include hashtags #RealEstate #JustSold #NexusOS. Keep it short and high-energy.",
+        "options": {}
+      },
+      "name": "Gemini: Caption Writer",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [1250, 200],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "appYOURBASEID",
+        "table": "Marketing_Assets",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Review_Text": "={{$node[\"Filter: 5-Star Only\"].json.text}}",
+            "Reviewer_Name": "={{$node[\"Filter: 5-Star Only\"].json.authorName}}",
+            "Generated_Image_URL": "={{$node[\"Bannerbear: Gen Graphic\"].json.image_url}}",
+            "Draft_Caption": "={{$json.output}}",
+            "Social_Post_Status": "Draft"
+          }
+        }
+      },
+      "name": "Airtable: Store Asset",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1450, 200],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable" } }
+    }
+  ],
+  "connections": {
+    "Schedule: Daily Review Check": { "main": [[{ "node": "Apify: Scrape Reviews", "type": "main", "index": 0 }]] },
+    "Apify: Scrape Reviews": { "main": [[{ "node": "Filter: 5-Star Only", "type": "main", "index": 0 }]] },
+    "Filter: 5-Star Only": { "main": [[{ "node": "Airtable: Find Listing Photo", "type": "main", "index": 0 }]] },
+    "Airtable: Find Listing Photo": { "main": [[{ "node": "Bannerbear: Gen Graphic", "type": "main", "index": 0 }]] },
+    "Bannerbear: Gen Graphic": { "main": [[{ "node": "Gemini: Caption Writer", "type": "main", "index": 0 }]] },
+    "Gemini: Caption Writer": { "main": [[{ "node": "Airtable: Store Asset", "type": "main", "index": 0 }]] }
+  }
+}

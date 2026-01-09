@@ -1,0 +1,108 @@
+{
+  "name": "Playbook Engine (Workflow 3)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "update-playbook-progress",
+        "options": {}
+      },
+      "name": "Step Complete Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "baseId": "appYOURBASEID",
+        "table": "Client_Progress",
+        "id": "={{$json.body.clientId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Current_Step": "={{$json.body.stepId}}",
+            "Status": "={{$json.body.status}}",
+            "Last_Activity_Date": "={{$json.body.timestamp}}"
+          }
+        }
+      },
+      "name": "Update Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "secondsInterval": 1
+            }
+          ]
+        }
+      },
+      "name": "Daily Stalled Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 500]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "baseId": "appYOURBASEID",
+        "table": "Client_Progress",
+        "options": {
+          "filterByFormula": "AND(DATETIME_DIFF(NOW(), {Last_Activity_Date}, 'days') > 3, {Status} != 'Complete')"
+        }
+      },
+      "name": "Find Stalled Clients",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [450, 500],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "url": "https://api.heygen.com/v1/video.generate",
+        "method": "POST",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "{\n  \"background\": \"#ffffff\",\n  \"avatar_id\": \"Anna_Costume_1\",\n  \"script\": { \n    \"text\": \"Hi {{$json.fields.Client_Name}}, I noticed you're stuck on the {{$json.fields.Current_Step}} step. Do you need a lender recommendation? Reply back!\", \n    \"voice_id\": \"en-US-JennyNeural\" \n  }\n}"
+      },
+      "name": "Generate HeyGen Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [650, 500]
+    },
+    {
+      "parameters": {
+        "fromEmail": "support@nexus-os.com",
+        "toEmail": "={{$node[\"Find Stalled Clients\"].json.fields.Email}}",
+        "subject": "Checking in...",
+        "text": "Sent via GHL."
+      },
+      "name": "Send Video Email (GHL)",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [850, 500],
+      "credentials": { "smtp": { "id": "YOUR_SMTP_ID", "name": "SMTP Account" } }
+    }
+  ],
+  "connections": {
+    "Step Complete Webhook": {
+      "main": [[{ "node": "Update Airtable", "type": "main", "index": 0 }]]
+    },
+    "Daily Stalled Check": {
+      "main": [[{ "node": "Find Stalled Clients", "type": "main", "index": 0 }]]
+    },
+    "Find Stalled Clients": {
+      "main": [[{ "node": "Generate HeyGen Video", "type": "main", "index": 0 }]]
+    },
+    "Generate HeyGen Video": {
+      "main": [[{ "node": "Send Video Email (GHL)", "type": "main", "index": 0 }]]
+    }
+  }
+}

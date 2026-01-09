@@ -1,0 +1,59 @@
+{
+  "name": "Export Broker Financials",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "export-broker-financials",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "baseId": "appYOURBASEID",
+        "table": "Transactions",
+        "options": {
+          "filterByFormula": "IS_AFTER({Closing_Date}, DATEADD(TODAY(), -1, 'month'))"
+        }
+      },
+      "name": "Fetch Transactions",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "operation": "toFile",
+        "fileFormat": "csv",
+        "options": {
+          "fileName": "financials_export.csv"
+        }
+      },
+      "name": "Convert to CSV",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "options": {}
+      },
+      "name": "Download File",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [850, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Fetch Transactions", "type": "main", "index": 0 }]] },
+    "Fetch Transactions": { "main": [[{ "node": "Convert to CSV", "type": "main", "index": 0 }]] },
+    "Convert to CSV": { "main": [[{ "node": "Download File", "type": "main", "index": 0 }]] }
+  }
+}

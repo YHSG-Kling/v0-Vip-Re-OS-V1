@@ -1,0 +1,108 @@
+{
+  "name": "Regulatory Audit Archival (Workflow 140)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-audit-archival",
+        "options": {}
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "baseId": "appYOURBASEID",
+        "table": "Transactions",
+        "id": "={{$json.body.dealId}}"
+      },
+      "name": "Fetch Deal Identity",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "filters": {
+          "q": "=from:{{$node[\"Fetch Deal Identity\"].json.fields.Client_Email}} OR to:{{$node[\"Fetch Deal Identity\"].json.fields.Client_Email}}"
+        }
+      },
+      "name": "Gmail: Fetch Comms",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [650, 200],
+      "credentials": { "gmailOAuth2Api": { "id": "YOUR_GMAIL_ID", "name": "Gmail Account" } }
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "baseId": "appYOURBASEID",
+        "table": "Communications",
+        "options": {
+          "filterByFormula": "={Deal_ID}='{{$node[\"Webhook Trigger\"].json.body.dealId}}'"
+        }
+      },
+      "name": "Airtable: Fetch SMS Logs",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [650, 400],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "templateId": "YOUR_TEMPLATE_ID",
+        "data": "={ \"address\": \"{{$node[\"Fetch Deal Identity\"].json.fields.Address}}\", \"emails\": \"{{$node[\"Gmail: Fetch Comms\"].json.items}}\", \"sms\": \"{{$node[\"Airtable: Fetch SMS Logs\"].json.items}}\" }",
+        "options": {}
+      },
+      "name": "PDF Gen: Shadow Ledger",
+      "type": "n8n-nodes-base.apiTemplateIo",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": { "apiTemplateIoApi": { "id": "YOUR_APITEMPLATE_ID", "name": "APITemplate" } }
+    },
+    {
+      "parameters": {
+        "fileContent": "={{$json.binary}}",
+        "fileName": "=Audit_Pkg_{{$node[\"Fetch Deal Identity\"].json.fields.Address}}.pdf",
+        "parentId": "YOUR_DRIVE_FOLDER_ID"
+      },
+      "name": "Drive: Immutable Store",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1100, 300],
+      "credentials": { "googleDriveOAuth2Api": { "id": "YOUR_DRIVE_ID", "name": "Google Drive" } }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "baseId": "appYOURBASEID",
+        "table": "Transactions",
+        "id": "={{$node[\"Webhook Trigger\"].json.body.dealId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Audit_Status": "Archived",
+            "Audit_Packet_URL": "={{$json.webViewLink}}"
+          }
+        }
+      },
+      "name": "Airtable: Final Stamp",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1300, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": { "main": [[{ "node": "Fetch Deal Identity", "type": "main", "index": 0 }]] },
+    "Fetch Deal Identity": { "main": [[{ "node": "Gmail: Fetch Comms", "type": "main", "index": 0 }], [{ "node": "Airtable: Fetch SMS Logs", "type": "main", "index": 0 }]] },
+    "Gmail: Fetch Comms": { "main": [[{ "node": "PDF Gen: Shadow Ledger", "type": "main", "index": 0 }]] },
+    "Airtable: Fetch SMS Logs": { "main": [[{ "node": "PDF Gen: Shadow Ledger", "type": "main", "index": 0 }]] },
+    "PDF Gen: Shadow Ledger": { "main": [[{ "node": "Drive: Immutable Store", "type": "main", "index": 0 }]] },
+    "Drive: Immutable Store": { "main": [[{ "node": "Airtable: Final Stamp", "type": "main", "index": 0 }]] }
+  }
+}

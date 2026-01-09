@@ -1,0 +1,89 @@
+{
+  "name": "Send Omnichannel Message",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "send-omnichannel-message",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "dataType": "string",
+        "value1": "={{$json.body.channel}}",
+        "rules": {
+          "rules": [
+            { "value2": "sms", "output": 0 },
+            { "value2": "email", "output": 1 }
+          ]
+        }
+      },
+      "name": "Channel Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "from": "+15550001234",
+        "to": "={{$node[\"Webhook\"].json.body.to}}",
+        "message": "={{$node[\"Webhook\"].json.body.content}}"
+      },
+      "name": "Twilio SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [650, 200],
+      "credentials": { "twilioApi": { "id": "YOUR_TWILIO_ID", "name": "Twilio Account" } }
+    },
+    {
+      "parameters": {
+        "fromEmail": "agent@nexus-os.com",
+        "toEmail": "={{$node[\"Webhook\"].json.body.to}}",
+        "subject": "Update regarding your property",
+        "text": "={{$node[\"Webhook\"].json.body.content}}"
+      },
+      "name": "Send Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [650, 400],
+      "credentials": { "smtp": { "id": "YOUR_SMTP_ID", "name": "SMTP Account" } }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "appYOURBASEID",
+        "table": "Communications",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Type": "={{$node[\"Webhook\"].json.body.channel}}",
+            "Direction": "Outbound",
+            "Content": "={{$node[\"Webhook\"].json.body.content}}",
+            "Timestamp": "={{new Date().toISOString()}}"
+          }
+        }
+      },
+      "name": "Log to CRM",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [900, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Channel Router", "type": "main", "index": 0 }]] },
+    "Channel Router": {
+      "main": [
+        [{ "node": "Twilio SMS", "type": "main", "index": 0 }],
+        [{ "node": "Send Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Twilio SMS": { "main": [[{ "node": "Log to CRM", "type": "main", "index": 0 }]] },
+    "Send Email": { "main": [[{ "node": "Log to CRM", "type": "main", "index": 0 }]] }
+  }
+}

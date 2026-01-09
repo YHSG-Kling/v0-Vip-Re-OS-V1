@@ -1,0 +1,90 @@
+{
+  "name": "Transaction Task Bundle Automation (Workflow 148)",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "update",
+        "baseId": "appYOURBASEID",
+        "table": "Transactions",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Status": "Under Contract"
+          }
+        },
+        "options": {}
+      },
+      "name": "Airtable: Status Change Trigger",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-3-flash-preview",
+          "mode": "list"
+        },
+        "prompt": "=Review this Purchase Agreement text: {{$node[\"Airtable: Status Change Trigger\"].json.fields.Contract_Text}}.\n\nTask: Return a JSON list of boolean flags and numeric offsets for task generation.\nExpected Format:\n{ \n  \"has_hoa\": boolean, \n  \"has_septic\": boolean, \n  \"has_well\": boolean, \n  \"financing_type\": \"FHA\" | \"Conv\" | \"Cash\", \n  \"inspection_period_days\": number, \n  \"closing_date\": \"YYYY-MM-DD\"\n}",
+        "options": {}
+      },
+      "name": "Gemini Flash: Contract Analysis",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "baseId": "appYOURBASEID",
+        "table": "Task_Master_Library",
+        "options": {}
+      },
+      "name": "Airtable: Fetch Master Tasks",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "const contract = $node[\"Gemini Flash: Contract Analysis\"].json.output;\nconst masterTasks = $node[\"Airtable: Fetch Master Tasks\"].json.items;\nconst effectiveDate = new Date();\n\nconst finalTasks = masterTasks.filter(task => {\n  if (!task.fields.Trigger_Keyword) return true; // Static task\n  const keyword = task.fields.Trigger_Keyword.toLowerCase();\n  if (keyword === '1978' && contract.year_built < 1978) return true;\n  if (keyword === 'hoa' && contract.has_hoa) return true;\n  if (keyword === 'septic' && contract.has_septic) return true;\n  if (keyword === 'well' && contract.has_well) return true;\n  if (keyword === 'fha' && contract.financing_type === 'FHA') return true;\n  return false;\n}).map(task => {\n  const dueDate = new Date(effectiveDate);\n  dueDate.setDate(dueDate.getDate() + (task.fields.Days_After_Accepted || 0));\n  return {\n    json: {\n      dealId: $node[\"Airtable: Status Change Trigger\"].json.id,\n      taskName: task.fields.Task_Name,\n      assignedTo: task.fields.Role,\n      phase: task.fields.Phase,\n      dueDate: dueDate.toISOString(),\n      status: 'To Do'\n    }\n  };\n});\n\nreturn finalTasks;"
+      },
+      "name": "Logic: Filter & Map Tasks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "appYOURBASEID",
+        "table": "Transaction_Tasks",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Task_Name": "={{$json.taskName}}",
+            "Assigned_To": "={{$json.assignedTo}}",
+            "Due_Date": "={{$json.dueDate}}",
+            "Phase": "={{$json.phase}}",
+            "Status": "={{$json.status}}",
+            "Deal_ID": "={{$json.dealId}}"
+          }
+        }
+      },
+      "name": "Airtable: Bulk Create Tasks",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable" } }
+    }
+  ],
+  "connections": {
+    "Airtable: Status Change Trigger": { "main": [[{ "node": "Gemini Flash: Contract Analysis", "type": "main", "index": 0 }]] },
+    "Gemini Flash: Contract Analysis": { "main": [[{ "node": "Airtable: Fetch Master Tasks", "type": "main", "index": 0 }]] },
+    "Airtable: Fetch Master Tasks": { "main": [[{ "node": "Logic: Filter & Map Tasks", "type": "main", "index": 0 }]] },
+    "Logic: Filter & Map Tasks": { "main": [[{ "node": "Airtable: Bulk Create Tasks", "type": "main", "index": 0 }]] }
+  }
+}

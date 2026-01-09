@@ -1,0 +1,9 @@
+{
+  "name": "VIP Smart Real Estate OS",
+  "description": "A centralized, role-based command center for modern real estate brokerages. Integrates CRM, Transaction Management, AI Marketing, and Client Portals into a single unified interface, replacing fragmented tools like Softr and generic dashboards.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}

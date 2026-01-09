@@ -1,0 +1,123 @@
+{
+  "name": "AI Pre-Audit & Approval Escalation (Workflow 139)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-broker-audit",
+        "options": {}
+      },
+      "name": "Submit to Review Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$json.body.url}}",
+        "responseFormat": "file",
+        "options": {}
+      },
+      "name": "Fetch Document",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-1.5-pro",
+          "mode": "list"
+        },
+        "prompt": "=Act as a Real Estate Compliance Auditor. Analyze the provided image/pdf for signatures and dates.\nRequired Zones:\n- Seller Signature block\n- Date executed field\n- Initials on every page\n\nReturn JSON: { \"score\": 0-100, \"isCompliant\": boolean, \"missing\": \"List what is missing if any\" }",
+        "options": {}
+      },
+      "name": "Computer Vision Scan (Gemini Pro)",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.output.isCompliant}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "name": "Compliance Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "baseId": "appYOURBASEID",
+        "table": "Transaction_Documents",
+        "id": "={{$node[\"Submit to Review Webhook\"].json.body.docId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Broker_Approval_Status": "AI Rejected",
+            "AI_Validation_Score": "={{$node[\"Computer Vision Scan (Gemini Pro)\"].json.output.score}}",
+            "Missing_Elements": "={{$node[\"Computer Vision Scan (Gemini Pro)\"].json.output.missing}}"
+          }
+        }
+      },
+      "name": "Airtable: Log Rejection",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1050, 400],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "baseId": "appYOURBASEID",
+        "table": "Transaction_Documents",
+        "id": "={{$node[\"Submit to Review Webhook\"].json.body.docId}}",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Broker_Approval_Status": "Pending Broker",
+            "AI_Validation_Score": "={{$node[\"Computer Vision Scan (Gemini Pro)\"].json.output.score}}"
+          }
+        }
+      },
+      "name": "Airtable: Log Escalation",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [1050, 200],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "message": "=🔔 CLEAN FILE: New document ready for Broker review: {{$node[\"Submit to Review Webhook\"].json.body.fileName}}. AI Confidence: {{$node[\"Computer Vision Scan (Gemini Pro)\"].json.output.score}}%.",
+        "channel": "broker-approvals"
+      },
+      "name": "Slack: Notify Broker",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [1250, 200],
+      "credentials": { "slackApi": { "id": "YOUR_SLACK_ID", "name": "Slack Account" } }
+    }
+  ],
+  "connections": {
+    "Submit to Review Webhook": { "main": [[{ "node": "Fetch Document", "type": "main", "index": 0 }]] },
+    "Fetch Document": { "main": [[{ "node": "Computer Vision Scan (Gemini Pro)", "type": "main", "index": 0 }]] },
+    "Computer Vision Scan (Gemini Pro)": { "main": [[{ "node": "Compliance Gate", "type": "main", "index": 0 }]] },
+    "Compliance Gate": {
+      "main": [
+        [{ "node": "Airtable: Log Escalation", "type": "main", "index": 0 }],
+        [{ "node": "Airtable: Log Rejection", "type": "main", "index": 0 }]
+      ]
+    },
+    "Airtable: Log Escalation": { "main": [[{ "node": "Slack: Notify Broker", "type": "main", "index": 0 }]] }
+  }
+}

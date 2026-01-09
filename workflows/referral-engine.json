@@ -1,0 +1,106 @@
+{
+  "name": "Referral Engine Automation (Workflow 142)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "submit-client-referral",
+        "options": {}
+      },
+      "name": "Referral Form Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "appYOURBASEID",
+        "table": "Leads",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{$json.body.friendName}}",
+            "Phone": "={{$json.body.friendPhone}}",
+            "Source": "Client Referral",
+            "Status": "New",
+            "Tags": "Referral"
+          }
+        }
+      },
+      "name": "Airtable: Create Lead",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [450, 200],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "appYOURBASEID",
+        "table": "Referrals",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Referrer_Email": "={{$node[\"Referral Form Webhook\"].json.body.referrerEmail}}",
+            "Referred_Lead_ID": "={{$node[\"Airtable: Create Lead\"].json.id}}",
+            "Status": "New",
+            "Reward_Status": "Pending",
+            "Notes": "={{$node[\"Referral Form Webhook\"].json.body.notes}}"
+          }
+        }
+      },
+      "name": "Airtable: Link Referral",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [650, 200],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-1.5-flash",
+          "mode": "list"
+        },
+        "prompt": "=Write a short, friendly SMS intro to a new lead. \nContext: {{$node[\"Referral Form Webhook\"].json.body.referrerName}} suggested I call regarding property needs. \nNotes: {{$node[\"Referral Form Webhook\"].json.body.notes || 'None provided'}}. \nTone: Friendly, low pressure, professional. \nKeep it under 160 characters.",
+        "options": {}
+      },
+      "name": "Gemini: Warm Intro",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "from": "+15550001234",
+        "to": "={{$node[\"Referral Form Webhook\"].json.body.friendPhone}}",
+        "message": "={{$json.output}}"
+      },
+      "name": "Twilio: Dispatch SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1050, 300],
+      "credentials": { "twilioApi": { "id": "YOUR_TWILIO_ID", "name": "Twilio Account" } }
+    },
+    {
+      "parameters": {
+        "message": "=🔥 GOLDEN LEAD: New referral from {{$node[\"Referral Form Webhook\"].json.body.referrerName}}. \nLead: {{$node[\"Referral Form Webhook\"].json.body.friendName}}. \nAI has already dispatched the warm intro text.",
+        "channel": "agent-alerts"
+      },
+      "name": "Slack: Notify Agent",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [1250, 300],
+      "credentials": { "slackApi": { "id": "YOUR_SLACK_ID", "name": "Slack Account" } }
+    }
+  ],
+  "connections": {
+    "Referral Form Webhook": { "main": [[{ "node": "Airtable: Create Lead", "type": "main", "index": 0 }]] },
+    "Airtable: Create Lead": { "main": [[{ "node": "Airtable: Link Referral", "type": "main", "index": 0 }]] },
+    "Airtable: Link Referral": { "main": [[{ "node": "Gemini: Warm Intro", "type": "main", "index": 0 }]] },
+    "Gemini: Warm Intro": { "main": [[{ "node": "Twilio: Dispatch SMS", "type": "main", "index": 0 }]] },
+    "Twilio: Dispatch SMS": { "main": [[{ "node": "Slack: Notify Agent", "type": "main", "index": 0 }]] }
+  }
+}

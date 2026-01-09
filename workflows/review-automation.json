@@ -1,0 +1,121 @@
+{
+  "name": "Automated Review Request (Workflow 141)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-review-campaign",
+        "options": {}
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "amount": 24,
+        "unit": "hours"
+      },
+      "name": "Wait 24 Hours",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "baseId": "appYOURBASEID",
+        "table": "Transactions",
+        "id": "={{$node[\"Webhook Trigger\"].json.body.dealId}}"
+      },
+      "name": "Fetch Deal Context",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    },
+    {
+      "parameters": {
+        "from": "+15550001234",
+        "to": "={{$json.fields.Client_Phone}}",
+        "message": "=Hi {{$json.fields.Client_First_Name}}, congrats again! Quick question: On a scale of 1-5, how was your experience with {{$json.fields.Agent_Name}}?"
+      },
+      "name": "Twilio: Pulse Check SMS",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": { "twilioApi": { "id": "YOUR_TWILIO_ID", "name": "Twilio Account" } }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-1.5-flash",
+          "mode": "list"
+        },
+        "prompt": "=Analyze this user reply to a 1-5 star rating question. \nReply: {{$node[\"Wait for Reply\"].json.text}}\n\nReturn JSON: { \"score\": number, \"sentiment\": \"Euphoric\" | \"Neutral\" | \"Rocky\" }",
+        "options": {}
+      },
+      "name": "Gemini: Sentiment Fork",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [1100, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.output.score}}",
+              "operation": "equal",
+              "value2": 5
+            }
+          ]
+        }
+      },
+      "name": "The Fork",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1300, 300]
+    },
+    {
+      "parameters": {
+        "from": "+15550001234",
+        "to": "={{$node[\"Fetch Deal Context\"].json.fields.Client_Phone}}",
+        "message": "That makes my day! Could you do me a huge favor and tap this link to say that on Google? [https://g.page/nexus-real-estate/review]"
+      },
+      "name": "Twilio: Review Blitz",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1500, 200],
+      "credentials": { "twilioApi": { "id": "YOUR_TWILIO_ID", "name": "Twilio Account" } }
+    },
+    {
+      "parameters": {
+        "from": "+15550001234",
+        "to": "={{$node[\"Fetch Deal Context\"].json.fields.Client_Phone}}",
+        "message": "Thank you for the honesty. What could we have done better? (Your feedback stays internal with the brokerage quality team)."
+      },
+      "name": "Twilio: Salvage Mode",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1500, 400],
+      "credentials": { "twilioApi": { "id": "YOUR_TWILIO_ID", "name": "Twilio Account" } }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": { "main": [[{ "node": "Wait 24 Hours", "type": "main", "index": 0 }]] },
+    "Wait 24 Hours": { "main": [[{ "node": "Fetch Deal Context", "type": "main", "index": 0 }]] },
+    "Fetch Deal Context": { "main": [[{ "node": "Twilio: Pulse Check SMS", "type": "main", "index": 0 }]] },
+    "Twilio: Pulse Check SMS": { "main": [[{ "node": "Gemini: Sentiment Fork", "type": "main", "index": 0 }]] },
+    "Gemini: Sentiment Fork": { "main": [[{ "node": "The Fork", "type": "main", "index": 0 }]] },
+    "The Fork": {
+      "main": [
+        [{ "node": "Twilio: Review Blitz", "type": "main", "index": 0 }],
+        [{ "node": "Twilio: Salvage Mode", "type": "main", "index": 0 }]
+      ]
+    }
+  }
+}

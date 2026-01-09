@@ -1,0 +1,68 @@
+{
+  "name": "Dynamic Compliance Checklist (Workflow 137)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trigger-compliance-checklist",
+        "options": {}
+      },
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gemini-1.5-flash",
+          "mode": "list"
+        },
+        "prompt": "=Analyze these property details:\nYear Built: {{$node[\"Webhook Trigger\"].json.body.yearBuilt}}\nDescription: {{$node[\"Webhook Trigger\"].json.body.description}}\nType: {{$node[\"Webhook Trigger\"].json.body.type}}\n\nTask: Return a JSON array of objects representing required disclosure documents based on these rules:\n- If Year Built < 1978: Add { \"doc\": \"Lead-Based Paint Disclosure\", \"rule\": \"Added by AI (Year Built < 1978)\" }\n- If HOA or Condo mentioned: Add { \"doc\": \"HOA/Condo Documents\", \"rule\": \"Added by AI (HOA/Condo Mentioned)\" }\n- If Septic or Well mentioned: Add { \"doc\": \"Septic/Well Disclosure\", \"rule\": \"Added by AI (Septic/Well Mentioned)\" }\n- If Tenant or Lease mentioned: Add { \"doc\": \"Lease Agreement Audit\", \"rule\": \"Added by AI (Lease Mentioned)\" }\n\nFormat: [{\"doc\": \"Name\", \"rule\": \"Reason\"}]",
+        "options": {}
+      },
+      "name": "Gemini Flash: Analysis",
+      "type": "n8n-nodes-base.googleGeminiChat",
+      "typeVersion": 1,
+      "position": [450, 300],
+      "credentials": { "googlePalmApi": { "id": "YOUR_CREDENTIAL_ID", "name": "Google Gemini" } }
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "output",
+        "options": {}
+      },
+      "name": "Split into Batches",
+      "type": "n8n-nodes-base.itemLists",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "appYOURBASEID",
+        "table": "Compliance_Checklist_Items",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Transaction_ID": "={{$node[\"Webhook Trigger\"].json.body.dealId}}",
+            "Document_Name": "={{$json.doc}}",
+            "Status": "Missing",
+            "Source_Rule": "={{$json.rule}}"
+          }
+        }
+      },
+      "name": "Airtable: Create Checklist",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": { "airtableApi": { "id": "YOUR_AIRTABLE_ID", "name": "Airtable Account" } }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": { "main": [[{ "node": "Gemini Flash: Analysis", "type": "main", "index": 0 }]] },
+    "Gemini Flash: Analysis": { "main": [[{ "node": "Split into Batches", "type": "main", "index": 0 }]] },
+    "Split into Batches": { "main": [[{ "node": "Airtable: Create Checklist", "type": "main", "index": 0 }]] }
+  }
+}
