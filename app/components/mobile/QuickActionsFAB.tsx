@@ -1,3 +1,5 @@
+"use client"
+
 import React, { useState } from 'react';
 import { Plus, Phone, PenTool, Camera, X } from 'lucide-react';
 
