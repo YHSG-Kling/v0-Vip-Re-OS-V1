@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState } from "react"
+import Link from "next/link"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card"
 import { Button } from "./ui/button"
 import { Progress } from "./ui/progress"
@@ -186,9 +187,11 @@ const OnboardingDashboard: React.FC = () => {
             <p className="text-slate-600 mb-4">
               You've completed your onboarding. You're now ready to take full advantage of Smart Engine.
             </p>
-            <Button size="lg" className="bg-indigo-600 hover:bg-indigo-700">
-              Go to Dashboard
-              <ArrowRight className="w-4 h-4 ml-2" />
+            <Button size="lg" className="bg-indigo-600 hover:bg-indigo-700" asChild>
+              <Link href="/agent/dashboard">
+                Go to Dashboard
+                <ArrowRight className="w-4 h-4 ml-2" />
+              </Link>
             </Button>
           </CardContent>
         </Card>
