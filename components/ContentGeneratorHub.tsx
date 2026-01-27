@@ -11,6 +11,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, AlertTriangle, CheckCircle, Mail, MessageSquare, Share2, Newspaper } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
 
 interface QualityResult {
   score: number
@@ -296,6 +297,11 @@ export function ContentGeneratorHub() {
                 </AlertDescription>
               </Alert>
             )}
+
+            <div className="mt-6 p-4 bg-muted/30 rounded-lg border">
+              <h4 className="text-sm font-semibold mb-3 text-muted-foreground">Convert to Video</h4>
+              <VideoGenerationButtons script={generatedContent} title="Generated Content Video" size="sm" />
+            </div>
           </CardContent>
         </Card>
       )}

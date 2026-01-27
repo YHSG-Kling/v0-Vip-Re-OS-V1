@@ -1,0 +1,439 @@
+"use client"
+
+import { useEffect, useState } from "react"
+import { useParams, useRouter } from "next/navigation"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Progress } from "@/components/ui/progress"
+import { Separator } from "@/components/ui/separator"
+import { cn } from "@/lib/utils"
+import {
+  Send,
+  MoreVertical,
+  Clock,
+  CheckCircle,
+  AlertTriangle,
+  FileText,
+  MessageSquare,
+  Calendar,
+  DollarSign,
+  Home,
+  Users,
+  Activity,
+  TrendingUp,
+  Phone,
+  Mail,
+} from "lucide-react"
+import { loadClientDashboard } from "@/app/actions/transactions"
+
+export default function AgentTransactionDetailPage() {
+  const params = useParams()
+  const router = useRouter()
+  const transactionId = params.transactionId as string
+  const [data, setData] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [activeTab, setActiveTab] = useState("overview")
+
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const dashboardData = await loadClientDashboard(transactionId)
+        setData(dashboardData)
+      } catch (error) {
+        console.error("[v0] Failed to load transaction:", error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadData()
+  }, [transactionId])
+
+  if (loading) {
+    return (
+      <div className="container mx-auto py-8">
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="container mx-auto py-8">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold">Transaction not found</h2>
+          <Button className="mt-4" onClick={() => router.push("/dashboard")}>
+            Back to Dashboard
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  const getStageColor = (stage: string) => {
+    const colors: Record<string, string> = {
+      offer: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
+      inspection: "bg-yellow-100 text-yellow-800 dark:bg-yellow-950 dark:text-yellow-300",
+      appraisal: "bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300",
+      financing: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
+      clear_to_close: "bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300",
+      closed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300",
+    }
+    return colors[stage] || "bg-gray-100 text-gray-800 dark:bg-gray-950 dark:text-gray-300"
+  }
+
+  const getHealthColor = (indicator: string) => {
+    if (indicator === "on_track") return "bg-green-500"
+    if (indicator === "needs_attention") return "bg-yellow-500 animate-pulse"
+    return "bg-red-500 animate-pulse"
+  }
+
+  const healthScore = data.team?.[0]?.transactions?.health_score || 75
+
+  return (
+    <div className="container mx-auto py-6 space-y-6">
+      {/* Header */}
+      <Card>
+        <CardContent className="pt-6">
+          <div className="flex items-start justify-between">
+            <div className="flex items-start gap-4">
+              <div className="p-3 bg-primary/10 rounded-lg">
+                <Home className="h-6 w-6 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-foreground">{data.hero.property_address}</h1>
+                <div className="flex items-center gap-3 mt-2">
+                  <Badge className={cn("font-semibold", getStageColor(data.hero.current_stage_display))}>
+                    {data.hero.current_stage_display}
+                  </Badge>
+                  <span className="text-sm text-muted-foreground">
+                    Closing: {data.hero.days_until_closing > 0 ? `in ${data.hero.days_until_closing} days` : "TBD"}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <div className={cn("w-2 h-2 rounded-full", getHealthColor(data.hero.health_indicator))} />
+                    <span className="text-sm text-muted-foreground">Health: {healthScore}/100</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Actions */}
+            <div className="flex gap-2">
+              <Button variant="default" size="sm">
+                <Send className="w-4 h-4 mr-2" />
+                Update Client
+              </Button>
+              <Button variant="outline" size="sm">
+                <MoreVertical className="w-5 h-5" />
+              </Button>
+            </div>
+          </div>
+
+          {/* Progress Bar */}
+          <div className="mt-6">
+            <div className="flex justify-between text-sm mb-2">
+              <span className="text-muted-foreground">Transaction Progress</span>
+              <span className="font-medium">{data.hero.progress_percent}%</span>
+            </div>
+            <Progress value={data.hero.progress_percent} className="h-2" />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+        <TabsList className="grid w-full grid-cols-6">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="timeline">Timeline</TabsTrigger>
+          <TabsTrigger value="tasks">Tasks</TabsTrigger>
+          <TabsTrigger value="documents">Documents</TabsTrigger>
+          <TabsTrigger value="communications">Comms</TabsTrigger>
+          <TabsTrigger value="financials">Financials</TabsTrigger>
+        </TabsList>
+
+        {/* Overview Tab */}
+        <TabsContent value="overview" className="space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Client Info */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Users className="h-5 w-5" />
+                  Client Information
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {data.team.map((member: any, idx: number) => (
+                  <div key={idx} className="space-y-2">
+                    <p className="font-medium">{member.agents?.name || "Client Name"}</p>
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Phone className="h-4 w-4" />
+                      <span>{member.agents?.phone || "No phone"}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Mail className="h-4 w-4" />
+                      <span>{member.agents?.email || "No email"}</span>
+                    </div>
+                  </div>
+                ))}
+                <Separator />
+                <div className="space-y-2">
+                  <Button variant="outline" size="sm" className="w-full justify-start bg-transparent">
+                    <Phone className="h-4 w-4 mr-2" />
+                    Call Client
+                  </Button>
+                  <Button variant="outline" size="sm" className="w-full justify-start bg-transparent">
+                    <Mail className="h-4 w-4 mr-2" />
+                    Send Email
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Key Dates */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Calendar className="h-5 w-5" />
+                  Key Dates
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {data.timeline.slice(0, 5).map((milestone: any, idx: number) => (
+                  <div key={idx} className="flex justify-between items-center">
+                    <span className="text-sm text-muted-foreground">{milestone.name}</span>
+                    <Badge variant={milestone.status === "completed" ? "default" : "outline"} className="text-xs">
+                      {new Date(milestone.date).toLocaleDateString()}
+                    </Badge>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            {/* Transaction Health */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Activity className="h-5 w-5" />
+                  Transaction Health
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="text-center">
+                  <div className="text-4xl font-bold mb-2">{healthScore}</div>
+                  <p className="text-sm text-muted-foreground">Overall Health Score</p>
+                </div>
+                <Separator />
+                <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span>Timeline Adherence</span>
+                    <span className="font-medium">92%</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span>Document Completion</span>
+                    <span className="font-medium">85%</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span>Client Engagement</span>
+                    <span className="font-medium">78%</span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Recent Activity */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <TrendingUp className="h-5 w-5" />
+                Recent Activity
+              </CardTitle>
+              <CardDescription>Latest updates and milestones</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {data.updates.slice(0, 5).map((update: any, idx: number) => (
+                  <div key={idx} className="flex items-start gap-3 pb-4 border-b last:border-0">
+                    <div
+                      className={cn(
+                        "p-2 rounded-full",
+                        update.type === "celebration"
+                          ? "bg-green-100 dark:bg-green-950"
+                          : "bg-blue-100 dark:bg-blue-950",
+                      )}
+                    >
+                      {update.type === "celebration" ? (
+                        <CheckCircle className="h-4 w-4 text-green-600" />
+                      ) : (
+                        <Activity className="h-4 w-4 text-blue-600" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm">{update.text}</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {new Date(update.timestamp).toLocaleDateString()}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Timeline Tab */}
+        <TabsContent value="timeline" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Transaction Timeline</CardTitle>
+              <CardDescription>All milestones and their status</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-6">
+                {data.timeline.map((milestone: any, idx: number) => (
+                  <div key={idx} className="flex gap-4">
+                    <div className="flex flex-col items-center">
+                      <div
+                        className={cn(
+                          "w-10 h-10 rounded-full flex items-center justify-center",
+                          milestone.status === "completed"
+                            ? "bg-green-100 dark:bg-green-950"
+                            : "bg-gray-100 dark:bg-gray-950",
+                        )}
+                      >
+                        {milestone.status === "completed" ? (
+                          <CheckCircle className="h-5 w-5 text-green-600" />
+                        ) : (
+                          <Clock className="h-5 w-5 text-gray-600" />
+                        )}
+                      </div>
+                      {idx < data.timeline.length - 1 && <div className="w-px h-12 bg-border mt-2" />}
+                    </div>
+                    <div className="flex-1 pb-6">
+                      <div className="flex justify-between items-start mb-2">
+                        <div>
+                          <h4 className="font-semibold">{milestone.name}</h4>
+                          <p className="text-sm text-muted-foreground mt-1">{milestone.description}</p>
+                        </div>
+                        <Badge variant={milestone.status === "completed" ? "default" : "outline"}>
+                          {new Date(milestone.date).toLocaleDateString()}
+                        </Badge>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Tasks Tab */}
+        <TabsContent value="tasks" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Action Items</CardTitle>
+              <CardDescription>Tasks and pending items</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {data.next_actions.map((task: any) => (
+                  <div key={task.id} className="flex items-center justify-between p-3 border rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={cn(
+                          "w-5 h-5 rounded border-2",
+                          task.priority === "high" ? "border-red-500" : "border-gray-300",
+                        )}
+                      />
+                      <div>
+                        <p className="font-medium text-sm">{task.task}</p>
+                        <p className="text-xs text-muted-foreground">Due: {new Date(task.due_date).toLocaleDateString()}</p>
+                      </div>
+                    </div>
+                    <Badge variant={task.priority === "high" ? "destructive" : "secondary"}>{task.priority}</Badge>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Documents Tab */}
+        <TabsContent value="documents" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                Transaction Documents
+              </CardTitle>
+              <CardDescription>All contracts, disclosures, and forms</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="text-center py-8">
+                <FileText className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+                <p className="text-muted-foreground">Document management coming soon</p>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Communications Tab */}
+        <TabsContent value="communications" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <MessageSquare className="h-5 w-5" />
+                Communications Log
+              </CardTitle>
+              <CardDescription>All emails, calls, and messages</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="text-center py-8">
+                <MessageSquare className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+                <p className="text-muted-foreground">Communication history coming soon</p>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Financials Tab */}
+        <TabsContent value="financials" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <DollarSign className="h-5 w-5" />
+                Financial Details
+              </CardTitle>
+              <CardDescription>Purchase price, costs, and commission</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {data.costs ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-muted-foreground">Purchase Price</p>
+                      <p className="text-2xl font-bold">${data.costs.purchase_price?.toLocaleString() || "TBD"}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-muted-foreground">Est. Commission</p>
+                      <p className="text-2xl font-bold">${data.costs.estimated_commission?.toLocaleString() || "TBD"}</p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <DollarSign className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
+                  <p className="text-muted-foreground">Financial details not available</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
+  )
+}

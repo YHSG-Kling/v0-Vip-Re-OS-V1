@@ -1,6 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { supabaseService } from "@/services/supabaseService"
-import { supabase } from "@/services/supabase"
+import { updateContact } from "@/lib/services/contact-management.service"
+import { createClient } from "@/lib/supabase/server"
+import { supabase } from "@/lib/supabase/client" // Import supabase
+import { supabaseService } from "@/lib/services/supabase.service" // Import supabaseService
 
 export async function PUT(request: NextRequest) {
   try {
@@ -11,6 +13,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Contact ID is required" }, { status: 400 })
     }
 
+    const supabase = await createClient()
     const {
       data: { user },
     } = await supabase.auth.getUser()
@@ -18,11 +21,18 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
     }
 
-    const contact = await supabaseService.updateContact(contactId, updates)
+    // Use consolidated contact management service
+    const result = await updateContact({
+      contactId,
+      agentId: user.id,
+      updates,
+    })
 
-    if (!contact) {
-      return NextResponse.json({ success: false, error: "Failed to update contact" }, { status: 500 })
+    if (!result.success || !result.contact) {
+      return NextResponse.json({ success: false, error: result.error || "Failed to update contact" }, { status: 500 })
     }
+
+    const contact = result.contact
 
     // Check if being qualified
     const wasQualified = updates.status === "qualified"
@@ -52,6 +62,7 @@ export async function PUT(request: NextRequest) {
 
 async function createContactUser(contact: any, agentId: string) {
   const tempPassword = generateSecurePassword()
+  const supabase = await createClient()
 
   const { data: authData, error: authError } = await supabase.auth.admin.createUser({
     email: contact.email,
@@ -70,10 +81,15 @@ async function createContactUser(contact: any, agentId: string) {
 
   if (authError) throw authError
 
-  await supabaseService.updateContact(contact.id, {
-    contact_user_id: authData.user.id,
-    has_login: true,
-    login_created_at: new Date().toISOString(),
+  // Use consolidated update service
+  await updateContact({
+    contactId: contact.id,
+    agentId,
+    updates: {
+      contact_user_id: authData.user.id,
+      has_login: true,
+      login_created_at: new Date().toISOString(),
+    },
   })
 
   return true

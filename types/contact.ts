@@ -65,6 +65,20 @@ export interface Contact {
   has_login: boolean
   login_created_at?: string
   deleted_at?: string
+  assigned_agent_id?: string
+  assigned_agent_name?: string
+  is_referral_source?: boolean
+  referred_by_contact_id?: string
+  referred_by_name?: string
+  referral_count?: number
+  referral_notes?: string
+  vendor_type?: string
+  lender_company?: string
+  lender_nmls?: string
+  service_area?: string
+  rating?: number
+  total_transactions?: number
+  last_transaction_date?: string
 }
 
 export interface PropertyInterest {

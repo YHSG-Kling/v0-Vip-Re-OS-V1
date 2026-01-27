@@ -1,0 +1,327 @@
+"use server"
+
+import { createClient } from "@/lib/supabase/server"
+
+// ============================================
+// VALUE METRICS AGGREGATION
+// ============================================
+
+export async function aggregateValueDelivered(agentId: string, date: Date) {
+  const supabase = await createClient()
+  const dateStr = date.toISOString().split("T")[0]
+
+  // Pull from multiple sources (would need actual tracking tables)
+  const [toolUsage, educationalContent, helpfulResponses] = await Promise.all([
+    // Tool usage (from public tools if exists)
+    supabase
+      .from("tool_usage_sessions")
+      .select("*")
+      .eq("date", dateStr)
+      .is("email_captured", null), // Anonymous = pure value
+
+    // Educational content downloads
+    supabase.from("educational_content_downloads").select("*").eq("downloaded_date", dateStr),
+
+    // Helpful AI responses (from messages)
+    supabase
+      .from("messages")
+      .select("*")
+      .eq("sender_type", "ai")
+      .gte("created_at", dateStr)
+      .lt("created_at", new Date(date.getTime() + 86400000).toISOString()),
+  ])
+
+  // Calculate value in dollars
+  const valueCalculation = {
+    free_tools_used_count: toolUsage.data?.length || 0,
+    guides_downloaded_count: educationalContent.data?.length || 0,
+    questions_answered_count: helpfulResponses.data?.length || 0,
+    personalized_reports_sent: 0, // Would track CMAs sent
+
+    // Value calculations
+    free_tools_value: (toolUsage.data?.length || 0) * 50, // $50 per tool use
+    guides_value: (educationalContent.data?.length || 0) * 100, // $100 per guide
+    help_value: (helpfulResponses.data?.length || 0) * 25, // $25 per answer
+    reports_value: 0, // $500 per CMA
+  }
+
+  const total_value_delivered =
+    valueCalculation.free_tools_value +
+    valueCalculation.guides_value +
+    valueCalculation.help_value +
+    valueCalculation.reports_value
+
+  // Get unique recipients
+  const uniqueRecipients = new Set([
+    ...(toolUsage.data?.map((t: any) => t.visitor_id || t.session_id) || []),
+    ...(helpfulResponses.data?.map((m: any) => m.conversation_id) || []),
+  ])
+
+  // Store aggregated value
+  const { data, error } = await supabase
+    .from("value_delivered_daily")
+    .upsert(
+      {
+        date: dateStr,
+        agent_id: agentId,
+        ...valueCalculation,
+        total_value_delivered_dollars: total_value_delivered,
+        recipients_count: uniqueRecipients.size,
+        cost_to_deliver: 0, // Calculate actual costs
+      },
+      { onConflict: "date,agent_id" },
+    )
+    .select()
+    .single()
+
+  return {
+    success: !error,
+    data,
+    totalValue: total_value_delivered,
+  }
+}
+
+// ============================================
+// TRUST CAPITAL CALCULATION
+// ============================================
+
+export async function calculateTrustCapital(agentId: string, periodDays: number = 30) {
+  const supabase = await createClient()
+  const endDate = new Date()
+  const startDate = new Date(endDate.getTime() - periodDays * 86400000)
+
+  // Get value metrics
+  const { data: valueMetrics } = await supabase
+    .from("value_delivered_daily")
+    .select("*")
+    .eq("agent_id", agentId)
+    .gte("date", startDate.toISOString().split("T")[0])
+    .lte("date", endDate.toISOString().split("T")[0])
+
+  const totalValueGiven =
+    valueMetrics?.reduce((sum, m) => sum + (parseFloat(m.total_value_delivered_dollars as any) || 0), 0) || 0
+
+  // Get relationship metrics
+  const { data: transactions } = await supabase
+    .from("transactions")
+    .select("*, contacts(*)")
+    .eq("agent_id", agentId)
+    .eq("status", "closed")
+
+  const { data: referrals } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("agent_id", agentId)
+    .eq("referral_source", "client_referral")
+    .gte("created_at", startDate.toISOString())
+
+  // Calculate metrics
+  const metrics = {
+    value_given: totalValueGiven,
+    closed_deals: transactions?.length || 0,
+    referral_count: referrals?.length || 0,
+    referral_rate: transactions?.length ? ((referrals?.length || 0) / transactions.length) * 100 : 0,
+    recipients_helped: valueMetrics?.reduce((sum, m) => sum + (m.recipients_count || 0), 0) || 0,
+  }
+
+  // Trust capital algorithm
+  let trustScore = 50 // Base score
+
+  // Value given component (30 points max)
+  if (totalValueGiven > 10000) trustScore += 30
+  else if (totalValueGiven > 5000) trustScore += 20
+  else if (totalValueGiven > 1000) trustScore += 10
+
+  // Referral rate component (25 points max)
+  if (metrics.referral_rate > 30) trustScore += 25
+  else if (metrics.referral_rate > 20) trustScore += 15
+  else if (metrics.referral_rate > 10) trustScore += 10
+
+  // Recipients helped component (20 points max)
+  if (metrics.recipients_helped > 100) trustScore += 20
+  else if (metrics.recipients_helped > 50) trustScore += 15
+  else if (metrics.recipients_helped > 20) trustScore += 10
+
+  // Consistency component (25 points max)
+  const daysWithActivity = new Set(valueMetrics?.map((m) => m.date)).size
+  const consistencyRate = daysWithActivity / periodDays
+  if (consistencyRate > 0.8) trustScore += 25
+  else if (consistencyRate > 0.6) trustScore += 15
+  else if (consistencyRate > 0.4) trustScore += 10
+
+  return {
+    trust_capital_score: Math.min(Math.max(trustScore, 0), 100),
+    metrics,
+    insights: {
+      strength: trustScore > 75 ? "High trust capital" : trustScore > 50 ? "Building trust" : "Focus on giving value",
+      value_given_assessment:
+        totalValueGiven > 5000 ? "Excellent generosity" : "Increase free value to build trust faster",
+      referral_assessment:
+        metrics.referral_rate > 20
+          ? "Strong referral engine"
+          : "More value delivery will increase referrals",
+    },
+  }
+}
+
+// ============================================
+// LEAD VALUE JOURNEY TRACKING
+// ============================================
+
+export async function trackLeadValueJourney(contactId: string) {
+  const supabase = await createClient()
+
+  const { data: contact } = await supabase.from("contacts").select("*, transactions(*)").eq("id", contactId).single()
+
+  if (!contact) return null
+
+  // Calculate value received (simplified - would need actual tracking)
+  const toolsUsed: string[] = [] // Track from tool_usage_sessions
+  const guidesDownloaded: string[] = [] // Track from downloads
+  const valueReceived = toolsUsed.length * 50 + guidesDownloaded.length * 100
+
+  // Check if converted
+  const becameClient = contact.transactions?.some((t: any) => t.status === "closed")
+  const conversionValue = contact.transactions?.reduce((sum: number, t: any) => sum + (t.purchase_price || 0), 0)
+
+  const firstInteraction = new Date(contact.created_at)
+  const conversionDate = contact.transactions?.[0]?.closing_date
+    ? new Date(contact.transactions[0].closing_date)
+    : null
+  const timeToConversion = conversionDate
+    ? Math.ceil((conversionDate.getTime() - firstInteraction.getTime()) / (1000 * 60 * 60 * 24))
+    : null
+
+  const roiMultiple = valueReceived > 0 && conversionValue ? conversionValue / valueReceived : 0
+
+  // Upsert journey data
+  const { data: journey } = await supabase
+    .from("lead_value_journey")
+    .upsert(
+      {
+        contact_id: contactId,
+        first_interaction_date: firstInteraction.toISOString().split("T")[0],
+        total_value_received: valueReceived,
+        touchpoints_count: 0, // Track from interactions
+        tools_used: toolsUsed,
+        guides_downloaded: guidesDownloaded,
+        time_to_conversion_days: timeToConversion,
+        conversion_value: conversionValue,
+        roi_multiple: roiMultiple,
+        became_client: becameClient || false,
+      },
+      { onConflict: "contact_id" },
+    )
+    .select()
+    .single()
+
+  return journey
+}
+
+// ============================================
+// PERFORMANCE DASHBOARD DATA
+// ============================================
+
+export async function loadValueDrivenDashboard(agentId: string, period: string = "month") {
+  const supabase = await createClient()
+
+  // Calculate date range
+  const endDate = new Date()
+  let startDate = new Date()
+  switch (period) {
+    case "today":
+      startDate = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate())
+      break
+    case "week":
+      startDate = new Date(endDate.getTime() - 7 * 86400000)
+      break
+    case "month":
+      startDate = new Date(endDate.getFullYear(), endDate.getMonth(), 1)
+      break
+    case "quarter":
+      startDate = new Date(endDate.getFullYear(), Math.floor(endDate.getMonth() / 3) * 3, 1)
+      break
+    case "ytd":
+      startDate = new Date(endDate.getFullYear(), 0, 1)
+      break
+  }
+
+  // Get value metrics
+  const { data: valueMetrics } = await supabase
+    .from("value_delivered_daily")
+    .select("*")
+    .eq("agent_id", agentId)
+    .gte("date", startDate.toISOString().split("T")[0])
+    .order("date", { ascending: true })
+
+  // Get traditional metrics (transactions)
+  const { data: transactions } = await supabase
+    .from("transactions")
+    .select("*, contacts(*)")
+    .eq("agent_id", agentId)
+    .gte("created_at", startDate.toISOString())
+
+  // Calculate aggregated metrics
+  const totalValueDelivered =
+    valueMetrics?.reduce((sum, m) => sum + (parseFloat(m.total_value_delivered_dollars as any) || 0), 0) || 0
+  const peopleHelped = valueMetrics?.reduce((sum, m) => sum + (m.recipients_count || 0), 0) || 0
+  const toolsUsed = valueMetrics?.reduce((sum, m) => sum + (m.free_tools_used_count || 0), 0) || 0
+  const guidesShared = valueMetrics?.reduce((sum, m) => sum + (m.guides_downloaded_count || 0), 0) || 0
+
+  const closedDeals = transactions?.filter((t) => t.status === "closed") || []
+  const monthlyGCI = closedDeals.reduce((sum, t) => sum + ((t.purchase_price || 0) * 0.03), 0)
+  const activeLeads = transactions?.filter((t) => t.status !== "closed" && t.status !== "cancelled").length || 0
+
+  // Get trust capital
+  const trustCapital = await calculateTrustCapital(agentId, period === "month" ? 30 : 90)
+
+  return {
+    period,
+    startDate: startDate.toISOString().split("T")[0],
+    endDate: endDate.toISOString().split("T")[0],
+
+    // Value metrics
+    valueMetrics: {
+      total_value_delivered: totalValueDelivered,
+      people_helped: peopleHelped,
+      free_tools_used: toolsUsed,
+      guides_shared: guidesShared,
+      reciprocity_rate: closedDeals.length > 0 ? ((peopleHelped / closedDeals.length) * 100).toFixed(1) : "0",
+    },
+
+    // Traditional metrics
+    traditionalMetrics: {
+      monthly_gci: monthlyGCI,
+      units_closed: closedDeals.length,
+      active_leads: activeLeads,
+      conversion_rate: transactions && transactions.length > 0 ? ((closedDeals.length / transactions.length) * 100).toFixed(1) : "0",
+    },
+
+    // Trust & performance
+    trust_capital_score: trustCapital.trust_capital_score,
+    generosity_score: Math.min(Math.round((totalValueDelivered / 10000) * 100), 100),
+
+    // Charts data
+    valueOverTime:
+      valueMetrics?.map((m) => ({
+        date: m.date,
+        value: parseFloat(m.total_value_delivered_dollars as any) || 0,
+      })) || [],
+
+    // Lead journeys (top 10)
+    leadJourneys: [], // Would query lead_value_journey table
+  }
+}
+
+export async function getLeadValueJourneys(agentId: string, limit: number = 20) {
+  const supabase = await createClient()
+
+  const { data: journeys } = await supabase
+    .from("lead_value_journey")
+    .select("*, contacts!inner(id, name, email, agent_id)")
+    .eq("contacts.agent_id", agentId)
+    .order("total_value_received", { ascending: false })
+    .limit(limit)
+
+  return journeys || []
+}

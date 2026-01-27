@@ -15,6 +15,7 @@ import {
   AlertCircle,
   CheckCircle2,
   FileText,
+  Video,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -23,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
 import type { InsiderEditInput, InsiderEditNewsletter, InsiderEditVibe, InsiderEditSection } from "@/types"
 import { useAuth } from "@/contexts/AuthContext"
 
@@ -442,6 +444,17 @@ export const InsiderEditGenerator: React.FC = () => {
                   ))}
                 </div>
               </CardContent>
+              <div className="mt-6 p-4 bg-muted/30 rounded-lg border">
+                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <Video className="h-5 w-5 text-primary" />
+                  Convert Newsletter to Video
+                </h3>
+                <VideoGenerationButtons
+                  script={newsletter.sections.map((s) => s.content).join("\n\n")}
+                  title={`Insider Edit - ${formData.city}`}
+                  userId={user?.id}
+                />
+              </div>
             </Card>
           )}
         </div>

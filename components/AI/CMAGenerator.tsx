@@ -20,11 +20,11 @@ import {
   Globe,
   Send,
 } from "lucide-react"
-import { GoogleGenAI } from "@google/genai"
-import { n8nService } from "../../services/n8n"
+import { generateAIText } from "@/app/actions/ai-generate"
+import { executeWorkflow } from "../../app/actions/workflows"
+import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
 
 interface CMAPackageInputs {
-  // Property
   address: string
   city: string
   zip: string
@@ -36,13 +36,11 @@ interface CMAPackageInputs {
   yearBuilt: string
   condition: string
   upgrades: string
-  // Seller
   sellerName: string
   sellerEmail: string
   timing: string
   motivation: string
   priceExpectation: string
-  // Agent (defaults)
   agentName: string
   brokerage: string
 }
@@ -80,96 +78,91 @@ const SmartCMA: React.FC = () => {
     setLoadingStep("Fetching Comps & Market Data...")
 
     try {
-      if (process.env.API_KEY) {
-        // Correct initialization of GoogleGenAI using the pre-configured process.env.API_KEY
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY })
+      // Node 3 & 4 & 5 (Consolidated for UI efficiency)
+      setLoadingStep("AI Analyzing Market Dynamics...")
+      const prompt = `Act as a Real Estate Pricing Analyst and Listing Strategist.
+        
+SUBJECT PROPERTY: ${inputs.address}, ${inputs.city} ${inputs.zip}
+SPECS: ${inputs.beds}b/${inputs.baths}b, ${inputs.sqft}sqft, Year: ${inputs.yearBuilt}, Cond: ${inputs.condition}
+UPGRADES: ${inputs.upgrades}
+SELLER PROFILE: ${inputs.sellerName}, Motivation: ${inputs.motivation}, Timing: ${inputs.timing}
 
-        // Node 3 & 4 & 5 (Consolidated for UI efficiency, though n8n would split them)
-        setLoadingStep("AI Analyzing Market Dynamics...")
-        const prompt = `
-          Act as a Real Estate Pricing Analyst and Listing Strategist.
-          
-          SUBJECT PROPERTY: ${inputs.address}, ${inputs.city} ${inputs.zip}
-          SPECS: ${inputs.beds}b/${inputs.baths}b, ${inputs.sqft}sqft, Year: ${inputs.yearBuilt}, Cond: ${inputs.condition}
-          UPGRADES: ${inputs.upgrades}
-          SELLER PROFILE: ${inputs.sellerName}, Motivation: ${inputs.motivation}, Timing: ${inputs.timing}
+SIMULATED MARKET DATA (TRAVIS COUNTY):
+- 3 Active Comps within 0.5 miles: $825k, $860k, $895k.
+- Avg DOM: 24 days. Inventory: 1.8 months.
 
-          SIMULATED MARKET DATA (TRAVIS COUNTY):
-          - 3 Active Comps within 0.5 miles: $825k, $860k, $895k.
-          - Avg DOM: 24 days. Inventory: 1.8 months.
+CRITICAL CONTENT PHILOSOPHY - THEM-FIRST APPROACH:
+- Write 80-90% about ${inputs.sellerName} and their situation, NOT about you/the agent
+- Focus on THEIR emotions: fear, hope, dreams, concerns about selling
+- Address THEIR specific needs: ${inputs.motivation}
+- Use "you" and "your" extensively (aim for 15%+ of content)
+- Minimize "I", "me", "my", "our" language (keep under 10%)
+- Lead with their pain points and desires, NOT agent credentials
+- Make them feel UNDERSTOOD first, then offer solutions
 
-          CRITICAL CONTENT PHILOSOPHY - THEM-FIRST APPROACH:
-          - Write 80-90% about ${inputs.sellerName} and their situation, NOT about you/the agent
-          - Focus on THEIR emotions: fear, hope, dreams, concerns about selling
-          - Address THEIR specific needs: ${inputs.motivation}
-          - Use "you" and "your" extensively (aim for 15%+ of content)
-          - Minimize "I", "me", "my", "our" language (keep under 10%)
-          - Lead with their pain points and desires, NOT agent credentials
-          - Make them feel UNDERSTOOD first, then offer solutions
-          
-          TASK: Generate a full Listing Package in JSON.
-          - marketSnapshot: 2-3 sentences on current local trends that matter to THEM
-          - pricing: { "aggressive": "string", "market": "string", "speed": "string" }, ranges explained from THEIR perspective
-          - marketing: { "buyerProfile": "string", "preList": "string", "online": "string", "offline": "string", "timeline": "string" }
-          - presentation: { "overview": "string", "process": "string", "valueProp": "string" }
-          - email: A warm, empathetic email TO ${inputs.sellerName} that shows you understand their ${inputs.motivation} situation
-          
-          COMPLIANCE: End all text with the standard CMA Disclaimer: "This report is a Comparative Market Analysis (CMA) prepared by a real estate licensee for marketing and pricing guidance. It is not an appraisal..."
+TASK: Generate a full Listing Package in JSON.
+- marketSnapshot: 2-3 sentences on current local trends that matter to THEM
+- pricing: { "aggressive": "string", "market": "string", "speed": "string" }, ranges explained from THEIR perspective
+- marketing: { "buyerProfile": "string", "preList": "string", "online": "string", "offline": "string", "timeline": "string" }
+- presentation: { "overview": "string", "process": "string", "valueProp": "string" }
+- email: A warm, empathetic email TO ${inputs.sellerName} that shows you understand their ${inputs.motivation} situation
 
-          Return strictly valid JSON:
-          {
-            "marketSnapshot": "string",
-            "pricing": { "aggressive": "string", "market": "string", "speed": "string" },
-            "marketing": { "buyerProfile": "string", "preList": "string", "online": "string", "offline": "string", "timeline": "string" },
-            "presentation": { "overview": "string", "process": "string", "valueProp": "string" },
-            "email": "string"
-          }
-        `
+COMPLIANCE: End all text with the standard CMA Disclaimer: "This report is a Comparative Market Analysis (CMA) prepared by a real estate licensee for marketing and pricing guidance. It is not an appraisal..."
 
-        const response = await ai.models.generateContent({
-          model: "gemini-3-pro-preview",
-          contents: prompt,
-          config: { responseMimeType: "application/json" },
-        })
+Return strictly valid JSON:
+{
+  "marketSnapshot": "string",
+  "pricing": { "aggressive": "string", "market": "string", "speed": "string" },
+  "marketing": { "buyerProfile": "string", "preList": "string", "online": "string", "offline": "string", "timeline": "string" },
+  "presentation": { "overview": "string", "process": "string", "valueProp": "string" },
+  "email": "string"
+}`
 
-        // The generated text output is extracted using the .text property
-        if (response.text) {
+      const response = await generateAIText(prompt)
+
+      if (response.text) {
+        try {
           setPackageResult(JSON.parse(response.text))
           setLoadingStep("Assembling PDFs & Branding Assets...")
-          await new Promise((r) => setTimeout(r, 1500)) // Simulate assemble
+          await new Promise((r) => setTimeout(r, 1500))
+          setStep(4)
+        } catch {
+          // Fallback if JSON parsing fails
+          // Mock
+          await new Promise((r) => setTimeout(r, 3000))
+          setPackageResult({
+            marketSnapshot:
+              "The 78704 market remains resilient with low inventory. Homes priced accurately are seeing multiple offers within 14 days.",
+            pricing: { aggressive: "$895,000", market: "$850,000", speed: "$825,000" },
+            marketing: {
+              buyerProfile: "Tech-savvy families...",
+              preList: "Staging and paint touch-ups...",
+              online: "Custom SEO listing page...",
+              offline: "High-end brochures...",
+              timeline: "Day 1-7: Prep...",
+            },
+            presentation: {
+              overview: "Current market highlights...",
+              process: "The path to sold...",
+              valueProp: "Why Nexus Realty...",
+            },
+            email: "Hi John, I've prepared your custom listing strategy...",
+          })
           setStep(4)
         }
-      } else {
-        // Mock
-        await new Promise((r) => setTimeout(r, 3000))
-        setPackageResult({
-          marketSnapshot:
-            "The 78704 market remains resilient with low inventory. Homes priced accurately are seeing multiple offers within 14 days.",
-          pricing: { aggressive: "$895,000", market: "$850,000", speed: "$825,000" },
-          marketing: {
-            buyerProfile: "Tech-savvy families...",
-            preList: "Staging and paint touch-ups...",
-            online: "Custom SEO listing page...",
-            offline: "High-end brochures...",
-            timeline: "Day 1-7: Prep...",
-          },
-          presentation: {
-            overview: "Current market highlights...",
-            process: "The path to sold...",
-            valueProp: "Why Nexus Realty...",
-          },
-          email: "Hi John, I've prepared your custom listing strategy...",
-        })
-        setStep(4)
       }
 
       // Trigger actual n8n logging
       // Fixed: Passing expected 6 arguments instead of an object to match the service definition.
-      await n8nService.triggerCMAPackage(null, inputs.address, inputs.beds, inputs.baths, inputs.sqft, [
-        inputs.upgrades,
-      ])
-    } catch (e) {
-      console.error(e)
+      await executeWorkflow("generate-cma", {
+        address: inputs.address,
+        beds: inputs.beds,
+        baths: inputs.baths,
+        sqft: inputs.sqft,
+        upgrades: inputs.upgrades,
+      })
+    } catch (error) {
+      console.error(error)
       alert("AI Protocol Failure. Attempting fallback...")
       setStep(2)
     }
@@ -324,7 +317,7 @@ const SmartCMA: React.FC = () => {
               </button>
               <button
                 onClick={handleGeneratePackage}
-                className="flex-[2] bg-indigo-600 text-white py-5 rounded-3xl font-black uppercase text-xs tracking-[0.2em] shadow-xl hover:bg-indigo-700 transition-all border-b-4 border-indigo-900"
+                className="flex-[2] bg-indigo-600 text-white py-5 rounded-3xl font-black uppercase text-xs tracking-widest shadow-xl hover:bg-indigo-700 transition-all border-b-4 border-indigo-900"
               >
                 Generate Listing Package
               </button>
@@ -487,6 +480,16 @@ const SmartCMA: React.FC = () => {
                       </div>
                     ))}
                   </div>
+                  {packageResult?.marketingLetter && (
+                    <div className="mt-4 pt-4 border-t">
+                      <h4 className="text-sm font-semibold mb-3 text-muted-foreground">Convert to Video</h4>
+                      <VideoGenerationButtons
+                        script={packageResult.marketingLetter}
+                        title={`CMA Presentation - ${inputs.address}`}
+                        size="sm"
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 

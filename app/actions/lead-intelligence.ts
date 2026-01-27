@@ -1,0 +1,1485 @@
+"use server"
+
+import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { requirePermission } from "@/lib/rbac-utils"
+import { revalidatePath } from "next/cache"
+import { ZenrowsClient } from "@/lib/zenrows-client"
+import { BatchDataClient } from "@/lib/batchdata-client"
+import { PeopleDataClient } from "@/lib/peopledata-client"
+import { IDXBrokerClient } from "@/lib/idxbroker-client"
+import { OSINTClient } from "@/lib/osint-client"
+import { calculateLeadScore } from "@/lib/services/lead-management.service"
+
+export async function trackBehavior(sessionData: {
+  visitor_id: string
+  page_visited: string
+  time_spent: number
+  action_taken?: string
+  search_terms?: string[]
+  calculator_inputs?: any
+  ip_address?: string
+  user_agent?: string
+}) {
+  try {
+    const supabase = createServiceClient()
+    const { generateAIJSON } = await import("./ai-generate")
+
+    // Detect location from IP (simplified - would use IP geolocation service)
+    const location = { city: "Unknown", state: "Unknown", zip: "" }
+
+    // Get or create behavioral signal
+    const { data: signal, error: signalError } = await supabase
+      .from("behavioral_signals")
+      .select("*")
+      .eq("visitor_id", sessionData.visitor_id)
+      .maybeSingle()
+
+    if (signalError && signalError.code !== "PGRST116") {
+      throw signalError
+    }
+
+    let signalId: string
+    let totalSessions = 1
+
+    if (signal) {
+      totalSessions = (signal.total_sessions || 0) + 1
+      // Update existing signal
+      await supabase
+        .from("behavioral_signals")
+        .update({
+          last_seen_date: new Date().toISOString(),
+          total_sessions: totalSessions,
+          ip_address: sessionData.ip_address,
+          user_agent: sessionData.user_agent,
+        })
+        .eq("id", signal.id)
+
+      signalId = signal.id
+    } else {
+      // Create new signal
+      const { data: newSignal } = await supabase
+        .from("behavioral_signals")
+        .insert({
+          visitor_id: sessionData.visitor_id,
+          ip_address: sessionData.ip_address,
+          user_agent: sessionData.user_agent,
+          city: location.city,
+          state: location.state,
+          zip: location.zip,
+        })
+        .select()
+        .single()
+
+      signalId = newSignal!.id
+    }
+
+    // Log site activity
+    await supabase.from("site_activity").insert({
+      behavioral_signal_id: signalId,
+      page_visited: sessionData.page_visited,
+      time_on_page_seconds: sessionData.time_spent,
+      action_taken: sessionData.action_taken,
+      search_terms: sessionData.search_terms || [],
+    })
+
+    // Get page history for AI analysis if multiple sessions
+    if (totalSessions >= 2) {
+      const { data: pageHistory } = await supabase
+        .from("site_activity")
+        .select("*")
+        .eq("behavioral_signal_id", signalId)
+        .order("timestamp", { ascending: false })
+        .limit(20)
+
+      const prompt = `Analyze user behavior to determine real estate intent:
+
+Behavior Data:
+- Pages viewed: ${pageHistory?.map((p) => p.page_visited).join(", ")}
+- Calculators used: ${pageHistory?.filter((p) => p.action_taken?.includes("calculator")).map((p) => p.action_taken).join(", ")}
+- Search terms: ${sessionData.search_terms?.join(", ") || "None"}
+- Time spent: ${sessionData.time_spent} seconds
+- Total sessions: ${totalSessions}
+- Location: ${location.city}, ${location.state}
+
+Determine:
+{
+  "intent_type": "buyer|seller|investor|researcher|unknown",
+  "confidence": 0-100,
+  "urgency": "low|medium|high",
+  "price_range": "estimate or null",
+  "timeline_indicator": "immediate|3-6months|exploring|unknown",
+  "ready_for_contact": boolean,
+  "key_indicators": ["list of signals that led to this conclusion"]
+}
+
+Buyer signals: affordability calculator, mortgage calculator, neighborhood research, multiple listing views
+Seller signals: home value tool, seller net calculator, CMA requests, listing timeline research
+Investor signals: ROI calculators, rental income tools, market analysis pages`
+
+      try {
+        const intentData = await generateAIJSON(prompt)
+        const intent = intentData.data
+
+        // Update behavioral signal with AI insights
+        await supabase
+          .from("behavioral_signals")
+          .update({
+            intent_type: intent.intent_type,
+            intent_confidence_score: intent.confidence,
+          })
+          .eq("id", signalId)
+
+        // Flag for enrichment if high intent and multiple sessions
+        if (intent.confidence >= 70 && totalSessions >= 3) {
+          await supabase.from("intelligence_signals_log").insert({
+            lead_profile_id: signalId,
+            signal_type: "high_intent_behavioral",
+            signal_data_json: intent,
+            signal_strength: 10,
+            detected_at: new Date().toISOString(),
+          })
+        }
+
+        return { success: true, signalId, intent }
+      } catch (aiError) {
+        console.error("[v0] AI intent analysis error:", aiError)
+        return { success: true, signalId }
+      }
+    }
+
+    return { success: true, signalId }
+  } catch (error) {
+    console.error("[v0] Error tracking behavior:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+export async function getUnifiedLeadProfiles(filters?: {
+  temperature?: string
+  intent_type?: string
+  min_confidence?: number
+  ready_for_outreach?: boolean
+}) {
+  try {
+    const supabase = createServiceClient()
+
+    let query = supabase
+      .from("unified_lead_profile")
+      .select(`
+        *,
+        contact:contacts(id, first_name, last_name, email, phone)
+      `)
+      .order("confidence_score", { ascending: false })
+
+    if (filters?.temperature) {
+      query = query.eq("temperature", filters.temperature)
+    }
+    if (filters?.intent_type) {
+      query = query.eq("intent_type", filters.intent_type)
+    }
+    if (filters?.min_confidence) {
+      query = query.gte("confidence_score", filters.min_confidence)
+    }
+    if (filters?.ready_for_outreach !== undefined) {
+      query = query.eq("ready_for_outreach", filters.ready_for_outreach)
+    }
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    return { success: true, profiles: data || [] }
+  } catch (error) {
+    console.error("[v0] Error getting lead profiles:", error)
+    return { success: false, error: String(error), profiles: [] }
+  }
+}
+
+export async function getMotivatedSellers(filters?: {
+  min_score?: number
+  timeframe?: string
+  location?: string
+}) {
+  try {
+    const supabase = createServiceClient()
+
+    let query = supabase
+      .from("motivated_seller_scores")
+      .select(`
+        *,
+        property:property_intelligence(*)
+      `)
+      .order("readiness_to_sell_score", { ascending: false })
+
+    if (filters?.min_score) {
+      query = query.gte("readiness_to_sell_score", filters.min_score)
+    }
+    if (filters?.timeframe) {
+      query = query.eq("predicted_timeframe", filters.timeframe)
+    }
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    return { success: true, sellers: data || [] }
+  } catch (error) {
+    console.error("[v0] Error getting motivated sellers:", error)
+    return { success: false, error: String(error), sellers: [] }
+  }
+}
+
+export async function getSocialIntelligence(filters?: {
+  source?: string
+  min_score?: number
+  urgency?: string
+}) {
+  try {
+    const supabase = createServiceClient()
+
+    let query = supabase
+      .from("social_intelligence")
+      .select("*")
+      .order("ai_intent_score", { ascending: false })
+      .limit(100)
+
+    if (filters?.source) {
+      query = query.eq("source", filters.source)
+    }
+    if (filters?.min_score) {
+      query = query.gte("ai_intent_score", filters.min_score)
+    }
+    if (filters?.urgency) {
+      query = query.eq("urgency_level", filters.urgency)
+    }
+
+    const { data, error } = await query
+
+    if (error) throw error
+
+    return { success: true, signals: data || [] }
+  } catch (error) {
+    console.error("[v0] Error getting social intelligence:", error)
+    return { success: false, error: String(error), signals: [] }
+  }
+}
+
+export async function getIntelligenceDashboardStats() {
+  try {
+    const supabase = createServiceClient()
+
+    // Get counts for dashboard
+    const [{ count: totalLeads }, { count: hotLeads }, { count: readyForOutreach }, { count: motivatedSellers }] =
+      await Promise.all([
+        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }),
+        supabase.from("unified_lead_profile").select("*", { count: "exact", head: true }).eq("temperature", "hot"),
+        supabase
+          .from("unified_lead_profile")
+          .select("*", { count: "exact", head: true })
+          .eq("ready_for_outreach", true),
+        supabase
+          .from("motivated_seller_scores")
+          .select("*", { count: "exact", head: true })
+          .gte("readiness_to_sell_score", 70),
+      ])
+
+    return {
+      success: true,
+      stats: {
+        totalLeads: totalLeads || 0,
+        hotLeads: hotLeads || 0,
+        readyForOutreach: readyForOutreach || 0,
+        motivatedSellers: motivatedSellers || 0,
+      },
+    }
+  } catch (error) {
+    console.error("[v0] Error getting dashboard stats:", error)
+    return {
+      success: false,
+      error: String(error),
+      stats: { totalLeads: 0, hotLeads: 0, readyForOutreach: 0, motivatedSellers: 0 },
+    }
+  }
+}
+
+export async function scrapeSocialSignalsWithZenRows(location: {
+  city: string
+  state: string
+  zip?: string
+}) {
+  try {
+    const supabase = createServiceClient()
+
+    // ZenRows API configuration
+    const zenrowsApiKey = process.env.ZENROWS_API_KEY
+
+    if (!zenrowsApiKey) {
+      console.log("[v0] ZenRows API key not configured")
+      return { success: false, error: "ZenRows API key not configured" }
+    }
+
+    // Construct Nextdoor URL for the location
+    const nextdoorUrl = `https://nextdoor.com/city/${location.state.toLowerCase()}/${location.city.toLowerCase().replace(/\s+/g, "-")}/`
+
+    // ZenRows API endpoint
+    const zenrowsUrl = `https://api.zenrows.com/v1/?url=${encodeURIComponent(nextdoorUrl)}&apikey=${zenrowsApiKey}&js_render=true&premium_proxy=true`
+
+    console.log("[v0] Scraping Nextdoor via ZenRows for:", location)
+
+    const response = await fetch(zenrowsUrl, {
+      method: "GET",
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(`ZenRows API error: ${response.status} ${response.statusText}`)
+    }
+
+    const html = await response.text()
+
+    // Parse HTML to extract Nextdoor posts (simplified - would use cheerio or similar)
+    const posts = parseNextdoorPosts(html, location)
+
+    // Save social intelligence signals to database
+    const signals = []
+
+    for (const post of posts) {
+      const { data: signal } = await supabase
+        .from("social_intelligence")
+        .insert({
+          source: "nextdoor",
+          post_url: post.url,
+          post_content: post.content,
+          author: post.author,
+          post_date: post.date,
+          location_city: location.city,
+          location_state: location.state,
+          location_zip: location.zip,
+          ai_intent_score: post.intentScore,
+          intent_summary: post.intentSummary,
+          urgency_level: post.urgencyLevel,
+          keywords: post.keywords,
+        })
+        .select()
+        .single()
+
+      if (signal) {
+        signals.push(signal)
+      }
+    }
+
+    console.log("[v0] Successfully scraped", signals.length, "signals from Nextdoor")
+
+    return { success: true, signals, count: signals.length }
+  } catch (error) {
+    console.error("[v0] Error scraping Nextdoor with ZenRows:", error)
+    return { success: false, error: String(error), signals: [], count: 0 }
+  }
+}
+
+function parseNextdoorPosts(html: string, location: { city: string; state: string }) {
+  // Simplified parser - in production would use cheerio or similar
+  const posts = []
+
+  // Extract real estate related keywords
+  const realEstateKeywords = [
+    "moving",
+    "selling home",
+    "buy house",
+    "realtor",
+    "agent",
+    "property",
+    "listing",
+    "foreclosure",
+    "rent",
+    "lease",
+    "downsizing",
+    "relocating",
+    "just sold",
+    "need to sell",
+  ]
+
+  // Production: Use HTML parsing to extract and score posts
+  // This function requires implementation of actual scraping/parsing logic
+  // Returns empty array until Nextdoor API integration is configured
+  console.warn("[lead-intelligence] Nextdoor scraping not configured - requires API integration")
+  return []
+}
+
+export async function enrichPropertyIntelligence(propertyData: {
+  address: string
+  city: string
+  state: string
+  zip: string
+}) {
+  try {
+    const supabase = createServiceClient()
+
+    // Use BatchData API or similar to get property intelligence
+    // For now, creating a placeholder
+    console.log("[v0] Enriching property intelligence for:", propertyData.address)
+
+    const { data: property } = await supabase
+      .from("property_intelligence")
+      .insert({
+        address: propertyData.address,
+        city: propertyData.city,
+        state: propertyData.state,
+        zip: propertyData.zip,
+        last_sale_date: null,
+        last_sale_price: null,
+        estimated_value: null,
+        ownership_duration_years: null,
+        property_type: null,
+        bedrooms: null,
+        bathrooms: null,
+        square_feet: null,
+        lot_size: null,
+        year_built: null,
+        data_sources: ["manual_entry"],
+      })
+      .select()
+      .single()
+
+    return { success: true, property }
+  } catch (error) {
+    console.error("[v0] Error enriching property intelligence:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+export async function enrichLeadData(leadId: string) {
+  const supabase = await createClient()
+
+  // Check permission using RBAC
+  await requirePermission("edit", "contact", leadId)
+
+  // Get lead basic info
+  const { data: lead } = await supabase.from("contacts").select("*").eq("id", leadId).single()
+
+  if (!lead) throw new Error("Lead not found")
+
+  const dataSources: string[] = []
+
+  try {
+    // 1. Enrich with people data
+    if (lead.email || lead.phone) {
+      await enrichWithPeopleData(leadId, lead)
+      dataSources.push("peopledata")
+    }
+
+    // 2. Get property ownership data
+    if (lead.address || lead.city) {
+      await enrichWithPropertyOwnership(leadId, lead)
+      dataSources.push("batchdata_property")
+    }
+
+    // 3. Search for online activity
+    await searchOnlineActivity(leadId, lead)
+    dataSources.push("osint")
+
+    // 4. Get IDX Broker interactions
+    await syncIDXBrokerActivity(leadId, lead)
+    dataSources.push("idx_broker")
+
+    // 5. Calculate engagement scores using consolidated service
+    // Determine which table this lead is in
+    const { data: contact } = await supabase.from("contacts").select("id, agent_id").eq("id", leadId).maybeSingle()
+    const { data: externalLead } = contact ? { data: null } : await supabase.from("leads").select("id, agent_id").eq("id", leadId).maybeSingle()
+    
+    const tableType = contact ? "contacts" : externalLead ? "leads" : null
+    const agentId = contact?.agent_id || externalLead?.agent_id || "system"
+    
+    if (tableType) {
+      await calculateLeadScore({
+        id: leadId,
+        agentId,
+        table: tableType,
+        recalculate: true
+      })
+    }
+
+    // 6. Detect motivated seller signals
+    await detectMotivatedSellerSignals(leadId)
+
+    // 7. Update intelligence profile
+    await updateIntelligenceProfile(leadId, dataSources)
+
+    revalidatePath("/intelligence")
+    return { success: true, dataSources }
+  } catch (error) {
+    console.error("[v0] Enrichment error:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+async function enrichWithPeopleData(leadId: string, lead: any) {
+  const supabase = createServiceClient()
+  const peopleData = new PeopleDataClient()
+
+  try {
+    const enrichedData = await peopleData.enrich({
+      email: lead.email,
+      phone: lead.phone,
+      firstName: lead.first_name,
+      lastName: lead.last_name,
+    })
+
+    if (enrichedData) {
+      await supabase.from("lead_people_data").insert({
+        lead_id: leadId,
+        demographic_data: enrichedData.demographics,
+        employment_data: enrichedData.employment,
+        financial_indicators: enrichedData.financial,
+        life_events: enrichedData.lifeEvents,
+        social_presence: enrichedData.social,
+        contact_enrichment: enrichedData.additionalContacts,
+        data_source: "peopledata",
+      })
+
+      // Collect OSINT data from social profiles
+      if (enrichedData.social?.profiles) {
+        for (const profile of enrichedData.social.profiles) {
+          await supabase.from("lead_osint_data").insert({
+            lead_id: leadId,
+            data_type: "social_profile",
+            data_source: profile.platform,
+            data_content: profile,
+            confidence_score: 0.85,
+          })
+        }
+      }
+    }
+  } catch (error) {
+    console.error("[v0] PeopleData enrichment error:", error)
+  }
+}
+
+async function enrichWithPropertyOwnership(leadId: string, lead: any) {
+  const supabase = createServiceClient()
+  const batchData = new BatchDataClient()
+
+  try {
+    let properties = []
+
+    if (lead.address) {
+      properties = await batchData.searchByAddress(lead.address, lead.city, lead.state)
+    } else if (lead.first_name && lead.last_name && lead.city) {
+      properties = await batchData.searchByName(lead.first_name, lead.last_name, lead.city, lead.state)
+    }
+
+    for (const property of properties) {
+      const purchaseDate = new Date(property.purchase_date)
+      const now = new Date()
+      const ownershipMonths = Math.floor((now.getTime() - purchaseDate.getTime()) / (1000 * 60 * 60 * 24 * 30))
+
+      await supabase.from("lead_property_ownership").insert({
+        lead_id: leadId,
+        property_address: property.address,
+        property_details: {
+          bedrooms: property.bedrooms,
+          bathrooms: property.bathrooms,
+          sqft: property.square_feet,
+          year_built: property.year_built,
+          lot_size: property.lot_size,
+        },
+        estimated_value: property.estimated_value,
+        equity_estimate: property.estimated_value - (property.mortgage_balance || 0),
+        mortgage_data: property.mortgage,
+        purchase_date: property.purchase_date,
+        ownership_length_months: ownershipMonths,
+        property_tax: property.annual_tax,
+        is_primary_residence: property.owner_occupied,
+        motivation_indicators: {},
+        data_source: "batchdata",
+      })
+    }
+  } catch (error) {
+    console.error("[v0] Property ownership enrichment error:", error)
+  }
+}
+
+async function searchOnlineActivity(leadId: string, lead: any) {
+  const supabase = createServiceClient()
+  const zenrows = new ZenrowsClient()
+
+  try {
+    const searchQueries = [
+      `"${lead.first_name} ${lead.last_name}" ${lead.city} real estate`,
+      `"${lead.first_name} ${lead.last_name}" ${lead.city} moving`,
+      `"${lead.first_name} ${lead.last_name}" ${lead.city} selling home`,
+    ]
+
+    for (const query of searchQueries) {
+      const results = await zenrows.googleSearch(query, {
+        location: `${lead.city}, ${lead.state}`,
+        num: 20,
+      })
+
+      const detectedIntent = analyzeSearchIntent(results)
+
+      if (detectedIntent) {
+        await supabase.from("google_search_activity").insert({
+          lead_id: leadId,
+          search_location: `${lead.city}, ${lead.state}`,
+          search_terms: [query],
+          detected_intent: detectedIntent,
+          search_patterns: { results_count: results.length },
+          scraped_via: "zenrows",
+        })
+      }
+    }
+
+    if (lead.city && lead.state) {
+      await searchNextdoorActivity(leadId, lead)
+    }
+
+    await searchRealEstateSites(leadId, lead)
+  } catch (error) {
+    console.error("[v0] Online activity search error:", error)
+  }
+}
+
+async function searchNextdoorActivity(leadId: string, lead: any) {
+  const supabase = createServiceClient()
+  const zenrows = new ZenrowsClient()
+
+  try {
+    const nextdoorResults = await zenrows.scrapeNextdoor({
+      location: `${lead.city}, ${lead.state}`,
+      keywords: ["moving", "selling home", "buying house", "realtor recommendation", "home search"],
+    })
+
+    for (const activity of nextdoorResults) {
+      const nameMatch = activity.content.toLowerCase().includes(`${lead.first_name} ${lead.last_name}`.toLowerCase())
+
+      if (nameMatch || activity.relevance_score > 70) {
+        await supabase.from("nextdoor_activity").insert({
+          lead_id: leadId,
+          activity_type: activity.type,
+          content_snippet: activity.content.substring(0, 500),
+          neighborhood: activity.neighborhood,
+          detected_keywords: activity.matched_keywords,
+          activity_url: activity.url,
+          relevance_score: activity.relevance_score,
+        })
+      }
+    }
+  } catch (error) {
+    console.error("[v0] Nextdoor search error:", error)
+  }
+}
+
+async function searchRealEstateSites(leadId: string, lead: any) {
+  const supabase = createServiceClient()
+  const zenrows = new ZenrowsClient()
+
+  const sites = ["zillow", "realtor.com", "redfin"]
+
+  for (const site of sites) {
+    try {
+      const searchResults = await zenrows.scrapeRealEstateSite({
+        site,
+        location: `${lead.city}, ${lead.state}`,
+        searchType: "user_activity",
+      })
+
+      if (searchResults.properties?.length > 0) {
+        await supabase.from("lead_property_searches").insert({
+          lead_id: leadId,
+          search_source: site,
+          search_location: `${lead.city}, ${lead.state}`,
+          properties_viewed: searchResults.properties,
+          search_criteria: searchResults.filters,
+          detected_via: "zenrows_scrape",
+        })
+      }
+    } catch (error) {
+      console.error(`[v0] ${site} scraping error:`, error)
+    }
+  }
+}
+
+async function syncIDXBrokerActivity(leadId: string, lead: any) {
+  const supabase = createServiceClient()
+  const idx = new IDXBrokerClient()
+
+  try {
+    const activity = await idx.getLeadActivity(lead.email)
+
+    for (const interaction of activity) {
+      await supabase.from("idx_property_interactions").insert({
+        lead_id: leadId,
+        property_mls_id: interaction.mlsID,
+        property_address: interaction.address,
+        property_details: {
+          price: interaction.listPrice,
+          beds: interaction.bedrooms,
+          baths: interaction.bathrooms,
+          sqft: interaction.sqft,
+          propertyType: interaction.propType,
+        },
+        interaction_type: interaction.type,
+        time_spent_seconds: interaction.timeSpent,
+        interaction_metadata: interaction.metadata,
+        interacted_at: interaction.timestamp,
+      })
+    }
+  } catch (error) {
+    console.error("[v0] IDX sync error:", error)
+  }
+}
+
+/**
+ * @deprecated This function is replaced by calculateLeadScore from lib/services/lead-management.service.ts
+ * Kept for backward compatibility but internally calls the consolidated service
+ */
+async function calculateEngagementScores(leadId: string) {
+  // This function has been replaced by the consolidated lead scoring service
+  // which handles both contacts and leads tables with more comprehensive scoring
+  console.log("[v0] calculateEngagementScores called - redirecting to consolidated service")
+  
+  const supabase = createServiceClient()
+  const { data: contact } = await supabase.from("contacts").select("id, agent_id").eq("id", leadId).maybeSingle()
+  const { data: externalLead } = contact ? { data: null } : await supabase.from("leads").select("id, agent_id").eq("id", leadId).maybeSingle()
+  
+  const tableType = contact ? "contacts" : externalLead ? "leads" : null
+  const agentId = contact?.agent_id || externalLead?.agent_id || "system"
+  
+  if (tableType) {
+    await calculateLeadScore({
+      id: leadId,
+      agentId,
+      table: tableType,
+      recalculate: true
+    })
+  }
+}
+
+function calculateAverageDaysBetween(behaviors: any[]): number {
+  if (behaviors.length < 2) return 999
+
+  const dates = behaviors.map((b) => new Date(b.occurred_at).getTime()).sort()
+  const gaps = []
+
+  for (let i = 1; i < dates.length; i++) {
+    gaps.push((dates[i] - dates[i - 1]) / (1000 * 60 * 60 * 24))
+  }
+
+  return gaps.reduce((a, b) => a + b, 0) / gaps.length
+}
+
+async function detectMotivatedSellerSignals(leadId: string) {
+  const supabase = createServiceClient()
+
+  const { data: properties } = await supabase.from("lead_property_ownership").select("*").eq("lead_id", leadId)
+
+  if (!properties || properties.length === 0) return
+
+  const { data: peopleData } = await supabase
+    .from("lead_people_data")
+    .select("*")
+    .eq("lead_id", leadId)
+    .order("enriched_at", { ascending: false })
+    .limit(1)
+    .single()
+
+  const signals: any[] = []
+
+  for (const property of properties) {
+    if (property.ownership_length_months >= 120) {
+      signals.push({
+        lead_id: leadId,
+        signal_type: "market_timing",
+        signal_details: {
+          reason: "Long-term ownership",
+          months: property.ownership_length_months,
+          property: property.property_address,
+        },
+        signal_strength: "moderate",
+        detected_via: "batchdata",
+      })
+    }
+
+    const equityPercent = property.equity_estimate / property.estimated_value
+    if (equityPercent > 0.5) {
+      signals.push({
+        lead_id: leadId,
+        signal_type: "high_equity",
+        signal_details: {
+          reason: "High equity position",
+          equity_percent: Math.round(equityPercent * 100),
+          equity_amount: property.equity_estimate,
+          property: property.property_address,
+        },
+        signal_strength: equityPercent > 0.75 ? "strong" : "moderate",
+        detected_via: "batchdata",
+      })
+    }
+
+    const propertyAge = new Date().getFullYear() - (property.property_details?.year_built || 0)
+    if (propertyAge > 40) {
+      signals.push({
+        lead_id: leadId,
+        signal_type: "property_condition",
+        signal_details: {
+          reason: "Older property may need updates",
+          age: propertyAge,
+          property: property.property_address,
+        },
+        signal_strength: "weak",
+        detected_via: "batchdata",
+      })
+    }
+
+    if (peopleData?.life_events) {
+      const motivatingEvents = ["divorce", "retirement", "job_change", "marriage", "new_baby"]
+      const recentEvents = peopleData.life_events.filter((event: any) => motivatingEvents.includes(event.type))
+
+      for (const event of recentEvents) {
+        signals.push({
+          lead_id: leadId,
+          signal_type: "life_event",
+          signal_details: {
+            reason: `Life event: ${event.type}`,
+            event: event,
+            property: property.property_address,
+          },
+          signal_strength: event.type === "divorce" ? "strong" : "moderate",
+          detected_via: "peopledata",
+        })
+      }
+    }
+  }
+
+  if (signals.length > 0) {
+    await supabase.from("motivated_seller_signals").insert(signals)
+  }
+
+  return signals
+}
+
+async function updateIntelligenceProfile(leadId: string, dataSources: string[]) {
+  const supabase = createServiceClient()
+
+  const { data: propertySearches } = await supabase.from("lead_property_searches").select("*").eq("lead_id", leadId)
+
+  const { data: idxInteractions } = await supabase.from("idx_property_interactions").select("*").eq("lead_id", leadId)
+
+  const { data: engagementScores } = await supabase
+    .from("lead_engagement_scores")
+    .select("*")
+    .eq("lead_id", leadId)
+    .single()
+
+  const { data: sellerSignals } = await supabase.from("motivated_seller_signals").select("*").eq("lead_id", leadId)
+
+  const { data: propertyOwnership } = await supabase.from("lead_property_ownership").select("*").eq("lead_id", leadId)
+
+  let buyerSellerType = "buyer"
+  if (propertyOwnership && propertyOwnership.length > 0) {
+    buyerSellerType = sellerSignals && sellerSignals.length > 2 ? "seller" : "both"
+  }
+
+  const propertyTypes: string[] = []
+  const locations: string[] = []
+  let minPrice = Number.POSITIVE_INFINITY
+  let maxPrice = 0
+
+  propertySearches?.forEach((search: any) => {
+    if (search.search_criteria?.propertyType) {
+      propertyTypes.push(search.search_criteria.propertyType)
+    }
+    if (search.search_criteria?.minPrice) {
+      minPrice = Math.min(minPrice, search.search_criteria.minPrice)
+    }
+    if (search.search_criteria?.maxPrice) {
+      maxPrice = Math.max(maxPrice, search.search_criteria.maxPrice)
+    }
+    if (search.search_location) {
+      locations.push(search.search_location)
+    }
+  })
+
+  idxInteractions?.forEach((interaction: any) => {
+    if (
+      interaction.property_details?.propertyType &&
+      !propertyTypes.includes(interaction.property_details.propertyType)
+    ) {
+      propertyTypes.push(interaction.property_details.propertyType)
+    }
+    if (interaction.property_details?.price) {
+      minPrice = Math.min(minPrice, interaction.property_details.price)
+      maxPrice = Math.max(maxPrice, interaction.property_details.price)
+    }
+  })
+
+  const priceRange =
+    minPrice !== Number.POSITIVE_INFINITY ? `$${minPrice.toLocaleString()} - $${maxPrice.toLocaleString()}` : null
+
+  let timeline = "researching"
+  if (engagementScores) {
+    if (engagementScores.overall_score > 70 && engagementScores.recency_score > 80) {
+      timeline = "immediate"
+    } else if (engagementScores.overall_score > 50) {
+      timeline = "1-3_months"
+    } else if (engagementScores.overall_score > 30) {
+      timeline = "3-6_months"
+    }
+  }
+
+  const motivationScore = calculateMotivationScore({
+    engagementScore: engagementScores?.overall_score || 0,
+    sellerSignals: sellerSignals?.length || 0,
+    propertyViews: idxInteractions?.length || 0,
+    searches: propertySearches?.length || 0,
+  })
+
+  const qualificationScore = calculateQualificationScore({
+    hasPropertyOwnership: propertyOwnership && propertyOwnership.length > 0,
+    engagementScore: engagementScores?.overall_score || 0,
+    hasFinancialData: !!propertyOwnership?.[0]?.equity_estimate,
+  })
+
+  await supabase.from("lead_intelligence").upsert({
+    lead_id: leadId,
+    buyer_seller_type: buyerSellerType,
+    identified_interests: [],
+    property_preferences: {},
+    price_range: priceRange,
+    property_type: [...new Set(propertyTypes)],
+    location_preferences: [...new Set(locations)],
+    timeline,
+    motivation_score: motivationScore,
+    qualification_score: qualificationScore,
+    data_sources: dataSources,
+    last_enriched_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  })
+}
+
+function calculateMotivationScore(data: {
+  engagementScore: number
+  sellerSignals: number
+  propertyViews: number
+  searches: number
+}): number {
+  let score = 0
+  score += data.engagementScore * 0.4
+  score += Math.min(30, data.sellerSignals * 10)
+  score += Math.min(20, data.propertyViews * 2)
+  score += Math.min(10, data.searches * 3)
+  return Math.round(Math.min(100, score))
+}
+
+function calculateQualificationScore(data: {
+  hasPropertyOwnership: boolean
+  engagementScore: number
+  hasFinancialData: boolean
+}): number {
+  let score = 0
+  if (data.hasPropertyOwnership) score += 40
+  if (data.hasFinancialData) score += 30
+  score += data.engagementScore * 0.3
+  return Math.round(Math.min(100, score))
+}
+
+function analyzeSearchIntent(results: any[]): string | null {
+  const keywords = results
+    .map((r) => r.title + " " + r.snippet)
+    .join(" ")
+    .toLowerCase()
+
+  if (keywords.includes("buy") || keywords.includes("buying") || keywords.includes("purchase")) {
+    return "buying"
+  }
+  if (keywords.includes("sell") || keywords.includes("selling") || keywords.includes("list")) {
+    return "selling"
+  }
+  if (keywords.includes("value") || keywords.includes("appraisal") || keywords.includes("worth")) {
+    return "valuation"
+  }
+  if (keywords.includes("agent") || keywords.includes("realtor")) {
+    return "agent_search"
+  }
+
+  return "market_research"
+}
+
+export async function updateLeadProfile(profileId: string, updates: any) {
+  try {
+    await requirePermission("edit:lead_intelligence")
+    const supabase = createServiceClient()
+
+    const { data, error } = await supabase
+      .from("unified_lead_profile")
+      .update(updates)
+      .eq("id", profileId)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    revalidatePath("/intelligence")
+    return { success: true, profile: data }
+  } catch (error) {
+    console.error("[v0] Error updating lead profile:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+export async function getAgentWorkloadStats() {
+  try {
+    const supabase = createServiceClient()
+
+    const { data, error } = await supabase
+      .from("unified_lead_profile")
+      .select("assigned_agent_id, temperature, ready_for_outreach")
+
+    if (error) throw error
+
+    // Aggregate by agent
+    const workload: Record<string, any> = {}
+    data?.forEach((profile) => {
+      if (!profile.assigned_agent_id) return
+
+      if (!workload[profile.assigned_agent_id]) {
+        workload[profile.assigned_agent_id] = {
+          total: 0,
+          hot: 0,
+          warm: 0,
+          cold: 0,
+          ready: 0,
+        }
+      }
+
+      workload[profile.assigned_agent_id].total++
+      workload[profile.assigned_agent_id][profile.temperature]++
+      if (profile.ready_for_outreach) {
+        workload[profile.assigned_agent_id].ready++
+      }
+    })
+
+    return { success: true, workload }
+  } catch (error) {
+    console.error("[v0] Error getting agent workload:", error)
+    return { success: false, error: String(error), workload: {} }
+  }
+}
+
+// ============================================
+// GOOGLE SEARCH INTENT ANALYSIS
+// ============================================
+
+export async function analyzeGoogleSearchIntent(targetLocation: { id: string; city: string; state: string; zip?: string }) {
+  const supabase = createServiceClient()
+  const zenrows = new ZenrowsClient()
+
+  const buyerSearches = [
+    `homes for sale in ${targetLocation.city}`,
+    `${targetLocation.city} real estate`,
+    `buy house ${targetLocation.city}`,
+    `first time home buyer ${targetLocation.city}`,
+  ]
+
+  const sellerSearches = [
+    `home value ${targetLocation.city}`,
+    `sell my house ${targetLocation.city}`,
+    `real estate agents ${targetLocation.city}`,
+  ]
+
+  try {
+    for (const query of [...buyerSearches, ...sellerSearches]) {
+      const searchData = await zenrows.googleSearch(query, {
+        location: `${targetLocation.city}, ${targetLocation.state}`,
+        num: 20,
+      })
+
+      await supabase.from("google_search_intelligence").insert({
+        search_query: query,
+        detected_location: targetLocation.city,
+        related_searches: searchData.relatedSearches || [],
+        trend: searchData.results?.length > 15 ? "high" : "moderate",
+        potential_leads_count: searchData.results?.length || 0,
+        scraped_at: new Date().toISOString(),
+      })
+    }
+
+    return { success: true }
+  } catch (error) {
+    console.error("[v0] Google search intent error:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+// ============================================
+// UNIFIED LEAD PROFILE CREATION
+// ============================================
+
+export async function createUnifiedLeadProfile(leadData: { source: string; email?: string; phone?: string }) {
+  const supabase = createServiceClient()
+  const { generateAIJSON } = await import("./ai-generate")
+
+  let profile = await findExistingProfile(leadData)
+
+  if (!profile) {
+    const { data: newProfile } = await supabase
+      .from("unified_lead_profile")
+      .insert({
+        lead_source: leadData.source,
+        confidence_score: 0,
+        intent_type: "unknown",
+        intent_strength: "researching",
+        first_detected_date: new Date().toISOString(),
+        contact_email: leadData.email,
+        contact_phone: leadData.phone,
+      })
+      .select()
+      .single()
+
+    profile = newProfile
+  }
+
+  const allSignals = await getAllSignalsForProfile(profile.id)
+
+  const prompt = `Analyze signals to determine real estate intent:
+
+BEHAVIORAL DATA: ${JSON.stringify(allSignals.behavioral)}
+PROPERTY DATA: ${JSON.stringify(allSignals.property)}
+
+{
+  "unified_intent": "buyer|seller|both",
+  "confidence_score": 0-100,
+  "intent_strength": "browsing|researching|active",
+  "estimated_timeline": "immediate|1-3months|3-6months",
+  "motivation_summary": "Why they're looking",
+  "key_signals": ["top signals"],
+  "ready_for_outreach": boolean
+}`
+
+  try {
+    const intelligenceData = await generateAIJSON(prompt)
+    const intelligence = intelligenceData.data
+
+    await supabase
+      .from("unified_lead_profile")
+      .update({
+        confidence_score: intelligence.confidence_score,
+        intent_type: intelligence.unified_intent,
+        intent_strength: intelligence.intent_strength,
+        estimated_timeline: intelligence.estimated_timeline,
+        ready_for_outreach: intelligence.ready_for_outreach,
+        temperature: intelligence.confidence_score > 70 ? "hot" : intelligence.confidence_score > 40 ? "warm" : "cold",
+      })
+      .eq("id", profile.id)
+
+    return { success: true, profile, intelligence }
+  } catch (error) {
+    console.error("[v0] Unified profile error:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+async function findExistingProfile(leadData: any) {
+  const supabase = createServiceClient()
+
+  if (leadData.email) {
+    const { data } = await supabase.from("unified_lead_profile").select("*").eq("contact_email", leadData.email).maybeSingle()
+    if (data) return data
+  }
+
+  return null
+}
+
+async function getAllSignalsForProfile(profileId: string) {
+  const supabase = createServiceClient()
+
+  const { data: behavioral } = await supabase.from("behavioral_signals").select("*").eq("unified_profile_id", profileId)
+  const { data: property } = await supabase.from("property_intelligence").select("*").eq("profile_id", profileId)
+
+  return {
+    behavioral: behavioral || [],
+    property: property || [],
+    total_count: (behavioral?.length || 0) + (property?.length || 0),
+  }
+}
+
+// ============================================
+// IDENTITY RESOLUTION
+// ============================================
+
+export async function resolveIdentity(behavioralSignalId: string) {
+  const supabase = createServiceClient()
+
+  const { data: signal } = await supabase.from("behavioral_signals").select("*").eq("id", behavioralSignalId).single()
+
+  if (!signal) return { success: false, error: "Signal not found" }
+
+  try {
+    if (signal.email_captured) {
+      const { data: contact } = await supabase.from("contacts").select("*").eq("email", signal.email_captured).maybeSingle()
+
+      if (contact) {
+        await supabase.from("behavioral_signals").update({ identified: true, contact_id: contact.id }).eq("id", signal.id)
+        return { success: true, contact, method: "email_match" }
+      }
+    }
+
+    return { success: false, message: "Unable to resolve identity" }
+  } catch (error) {
+    console.error("[v0] Identity resolution error:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+// ============================================
+// INTELLIGENT VALUE DELIVERY
+// ============================================
+
+export async function deliverIntelligentValue(leadProfileId: string) {
+  const supabase = createServiceClient()
+  const { generateAIJSON } = await import("./ai-generate")
+
+  const { data: profile } = await supabase.from("unified_lead_profile").select("*").eq("id", leadProfileId).single()
+
+  if (!profile || !profile.contact_email) {
+    return { success: false, error: "No email available" }
+  }
+
+  const prompt = `Create value-first email:
+
+Intent: ${profile.intent_type}
+Timeline: ${profile.estimated_timeline}
+
+{
+  "subject": "Email subject",
+  "emailBody": "Helpful email content with value",
+  "valueOffer": "Free resource to provide"
+}`
+
+  try {
+    const emailData = await generateAIJSON(prompt)
+
+    const valueOffer = profile.intent_type === "seller" ? {
+      type: "cma_report",
+      link: `/tools/home-value?ref=${profile.id}`,
+    } : {
+      type: "neighborhood_tool",
+      link: `/tools/neighborhood-compare?ref=${profile.id}`,
+    }
+
+    await supabase.from("intelligent_outreach_log").insert({
+      lead_profile_id: leadProfileId,
+      outreach_type: "value_first_email",
+      value_offer: valueOffer,
+      sent_at: new Date().toISOString(),
+    })
+
+    return { success: true, email: emailData.data, valueOffer }
+  } catch (error) {
+    console.error("[v0] Intelligent value delivery error:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+// ============================================
+// EXTERNAL BEHAVIOR TRACKING (Zillow, Realtor.com, etc.)
+// ============================================
+
+export async function scrapeExternalBehavior(targetLocation: { city: string; state: string; zip?: string }) {
+  const supabase = createServiceClient()
+  const { ApifyClient } = await import("@/lib/apify-client")
+  const { BatchDataClient } = await import("@/lib/batchdata-client")
+  const { generateAIJSON } = await import("./ai-generate")
+
+  const apify = new ApifyClient()
+  const batchData = new BatchDataClient()
+
+  try {
+    // Scrape Zillow using Apify
+    const zillowData = await apify.scrapeZillow(`${targetLocation.city}, ${targetLocation.state}`)
+
+    // Scrape Realtor.com using Apify
+    const realtorData = await apify.scrapeRealtorDotCom(`${targetLocation.city}, ${targetLocation.state}`)
+
+    // Scrape Redfin using Apify
+    const redfinData = await apify.scrapeRedfin(`${targetLocation.city}, ${targetLocation.state}`)
+
+    // Track most viewed properties across all sites
+    const allProperties = [...(zillowData || []), ...(realtorData || []), ...(redfinData || [])]
+
+    for (const property of allProperties.slice(0, 20)) {
+      // Enrich property data with BatchData
+      const enrichedData = await batchData.searchByAddress(property.address || "", targetLocation.city, targetLocation.state)
+
+      const propertyDetails = enrichedData[0] || {}
+
+      await supabase.from("external_behavior").insert({
+        source: property.source || "zillow",
+        behavior_type: "property_view",
+        property_address: property.address,
+        location: targetLocation.city,
+        detected_interest_level: "researching",
+        timestamp: new Date().toISOString(),
+      })
+
+      // Store enriched property intelligence
+      await supabase.from("property_intelligence").insert({
+        property_address: property.address,
+        city: targetLocation.city,
+        state: targetLocation.state,
+        estimated_value: property.price || propertyDetails.estimatedValue,
+        property_type: property.propertyType || propertyDetails.propertyType,
+        bedrooms: property.bedrooms || propertyDetails.bedrooms,
+        bathrooms: property.bathrooms || propertyDetails.bathrooms,
+        square_feet: property.sqft || propertyDetails.squareFeet,
+        owner_name: propertyDetails.ownerName,
+        owner_occupied: propertyDetails.ownerOccupied,
+        years_owned: propertyDetails.yearsOwned,
+        equity_estimate: propertyDetails.equity,
+      })
+    }
+
+    return { success: true, propertiesTracked: allProperties.length }
+  } catch (error) {
+    console.error("[v0] External behavior scraping error:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+// Track specific user behavior on external sites (when identifiable)
+export async function trackExternalActivity(data: {
+  visitorId: string
+  source: string
+  behaviorType: string
+  propertyAddress?: string
+  searchCriteria?: any
+  location: string
+}) {
+  const supabase = createServiceClient()
+
+  try {
+    // Find or create behavioral signal
+    const { data: signal } = await supabase
+      .from("behavioral_signals")
+      .select("*")
+      .eq("visitor_id", data.visitorId)
+      .maybeSingle()
+
+    if (!signal) {
+      return { success: false, error: "No behavioral signal found for visitor" }
+    }
+
+    // Log external behavior
+    await supabase.from("external_behavior").insert({
+      behavioral_signal_id: signal.id,
+      source: data.source,
+      behavior_type: data.behaviorType,
+      property_address: data.propertyAddress,
+      location: data.location,
+      detected_interest_level: "active",
+      timestamp: new Date().toISOString(),
+    })
+
+    // Update signal strength based on external activity
+    await supabase
+      .from("behavioral_signals")
+      .update({
+        intent_confidence_score: Math.min((signal.intent_confidence_score || 0) + 10, 100),
+      })
+      .eq("id", signal.id)
+
+    return { success: true, signalId: signal.id }
+  } catch (error) {
+    console.error("[v0] External activity tracking error:", error)
+    return { success: false, error: String(error) }
+  }
+}
+
+// ============================================
+// MOTIVATED SELLER DETECTION (Public Records + OSINT)
+// ============================================
+
+export async function fetchMotivatedSellers(targetLocation: { city: string; state: string }) {
+  const supabase = createServiceClient()
+  const osint = new OSINTClient()
+  const { ApifyClient } = await import("@/lib/apify-client")
+  const { BatchDataClient } = await import("@/lib/batchdata-client")
+  const { generateAIJSON } = await import("./ai-generate")
+
+  const apify = new ApifyClient()
+  const batchData = new BatchDataClient()
+
+  try {
+    // Get motivated sellers from BatchData (public records, high equity, etc.)
+    const batchDataSellers = await batchData.getMotivatedSellers({
+      city: targetLocation.city,
+      state: targetLocation.state,
+      minEquity: 50000,
+    })
+
+    // Search for foreclosure filings
+    const foreclosures = await osint.searchCourtRecords("", targetLocation.state)
+
+    // Scrape Nextdoor using Apify
+    const nextdoorPosts = await apify.scrapeSocialMedia("nextdoor", `${targetLocation.city} moving selling house`)
+
+    // Scrape Reddit using Apify
+    const redditPosts = await apify.scrapeSocialMedia("reddit", `${targetLocation.city} selling house need to sell`)
+
+    // Scrape Facebook using Apify
+    const fbPosts = await apify.scrapeSocialMedia("facebook", `${targetLocation.city} selling house`)
+
+    // Combine all sources
+    const allSignals = [...batchDataSellers, ...nextdoorPosts, ...redditPosts, ...fbPosts]
+
+    for (const signal of allSignals) {
+      const prompt = `Analyze this post for seller motivation:
+
+Post: ${signal.content || signal.text}
+Source: ${signal.source || "unknown"}
+Location: ${targetLocation.city}
+
+Determine:
+{
+  "is_motivated_seller": boolean,
+  "motivation_level": "low|medium|high|urgent",
+  "motivation_factors": ["list of reasons"],
+  "urgency_timeline": "immediate|1month|3months|unknown",
+  "estimated_property_value": number or null,
+  "contact_method": "How to reach out"
+}`
+
+      const analysis = await generateAIJSON(prompt)
+
+      if (analysis.data?.is_motivated_seller) {
+        await supabase.from("motivated_seller_scores").insert({
+          property_address: signal.property_address || "Unknown",
+          motivation_factors: analysis.data.motivation_factors,
+          readiness_to_sell_score: analysis.data.motivation_level === "urgent" ? 90 : analysis.data.motivation_level === "high" ? 75 : 50,
+          predicted_timeframe: analysis.data.urgency_timeline,
+          data_source: signal.source,
+        })
+
+        // Create social intelligence record
+        await supabase.from("social_intelligence").insert({
+          source: signal.source,
+          post_content: signal.content || signal.text,
+          post_url: signal.url,
+          detected_location: targetLocation.city,
+          intent_keywords_matched: analysis.data.motivation_factors,
+          ai_intent_score: analysis.data.motivation_level === "urgent" ? 95 : 70,
+          urgency_level: analysis.data.motivation_level,
+        })
+      }
+    }
+
+    return { success: true, motivatedSellers: allSignals.length }
+  } catch (error) {
+    console.error("[v0] Motivated seller detection error:", error)
+    return { success: false, error: String(error) }
+  }
+}

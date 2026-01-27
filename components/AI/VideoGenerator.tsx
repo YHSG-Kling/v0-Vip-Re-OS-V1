@@ -17,10 +17,10 @@ import {
   Send,
   ShieldCheck,
 } from "lucide-react"
-import { GoogleGenAI } from "@google/genai"
-import { n8nService } from "../../services/n8n"
+import { generateAIText } from "@/app/actions/ai-generate"
+import { executeWorkflow } from "../../app/actions/workflows"
 import type { AgentVideo, Agent } from "../../types"
-import { airtableService } from "../../services/airtable"
+import { supabaseService } from "../../services/supabaseService"
 import { analyzeContentQuality } from "../../lib/quality-checker"
 
 interface VideoGeneratorProps {
@@ -59,14 +59,12 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   const [statusMessage, setStatusMessage] = useState("")
   const [qualityScore, setQualityScore] = useState<any>(null)
 
-  // 1. Fetch Agent Media Settings (WF-MEDIA-01 Step 2)
   useEffect(() => {
     const loadAgent = async () => {
-      const agents = await airtableService.getAgents()
+      const agents = await supabaseService.getAgents()
       const match = agents?.find((a) => a.id === agentId)
       if (match) setAgentSettings(match)
       else {
-        // Fallback for demo if no real agent found
         setAgentSettings({
           id: agentId,
           name: "Sarah Smith",
@@ -80,67 +78,46 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
     loadAgent()
   }, [agentId])
 
-  // 2. AI Script Generation (WF-MEDIA-01 Step 3)
   const generateScript = async () => {
     setStatusMessage("Drafting AI script...")
-    if (!process.env.API_KEY)
-      return `Hi ${context.name}! I saw you were looking at property in ${context.city}. Our ${context.offer} plan is designed to save you time. Click the link below to get started!`
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY })
-      const prompt = `
-            Act as a high-performance real estate agent. Write a 45-second high-energy script for a personalized HeyGen avatar video.
+      const prompt = `Act as a high-performance real estate agent. Write a 45-second high-energy script for a personalized HeyGen avatar video.
             
-            PURPOSE: ${purpose}
-            RECIPIENT: ${context.name}
-            CITY/AREA: ${context.city}
-            PROPERTY: ${context.property || "N/A"}
-            OFFER/PLAN: ${context.offer || "N/A"}
-            MARKET STATS: ${context.marketStats || "N/A"}
-            CTA: ${context.cta || "Reply back"}
-            
-            CRITICAL: THEM-FIRST CONTENT PHILOSOPHY
-            - Write 80-90% about ${context.name} and their real estate situation
-            - Focus on THEIR needs, emotions, and goals
-            - Use "you" and "your" extensively (15%+ of words)
-            - Minimize "I", "me", "my" to under 10% of content
-            - Start with THEIR situation/pain point, not your introduction
-            - Show you understand what THEY care about regarding ${context.property || "their search"}
-            - Make it feel like this video was made specifically for them
-            
-            STRUCTURE:
-            1. Personal greeting acknowledging THEIR specific interest
-            2. Show you understand THEIR situation and what matters to them
-            3. How this helps THEM achieve their goals
-            4. Clear single Call to Action that benefits THEM
-            
-            TONE: Empathetic expert who puts their needs first.
-            Return ONLY the spoken script text.
-        `
+PURPOSE: ${purpose}
+RECIPIENT: ${context.name}
+CITY/AREA: ${context.city}
+PROPERTY: ${context.property || "N/A"}
+OFFER/PLAN: ${context.offer || "N/A"}
+MARKET STATS: ${context.marketStats || "N/A"}
+CTA: ${context.cta || "Reply"}
 
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-      })
+CRITICAL: THEM-FIRST CONTENT PHILOSOPHY
+- Write 80-90% about ${context.name} and their real estate situation
+- Focus on THEIR needs, emotions, and goals
+- Use "you" and "your" extensively (15%+ of words)
+- Minimize "I", "me", "my" to under 10% of content
+- Start with THEIR situation/pain point, not your introduction
+- Show you understand what THEY care about regarding ${context.property || "their search"}
+- Make it feel like this video was made specifically for them
 
-      const scriptText = response.text || "Hey! I wanted to reach out personally about your real estate goals."
+STRUCTURE:
+1. Personal greeting acknowledging THEIR specific interest
+2. Show you understand THEIR situation and what matters to them
+3. How this helps THEM achieve their goals
+4. Clear single Call to Action that benefits THEM
 
-      const quality = analyzeContentQuality(scriptText)
-      setQualityScore(quality)
+TONE: Empathetic expert who puts their needs first.
+Return ONLY the spoken script text.`
 
-      if (quality.score < 70) {
-        console.log("[v0] Warning: Script quality score low:", quality.score)
-        console.log("[v0] Suggestions:", quality.suggestions)
-      }
-
-      return scriptText
-    } catch (e) {
-      console.error(e)
-      return "Hi there! I wanted to touch base regarding your interest in the local market."
+      const response = await generateAIText(prompt)
+      return response.text || `Hi ${context.name}! I saw you were looking at property in ${context.city}. Our ${context.offer} plan is designed to save you time. Click the link below to get started!`
+    } catch (err) {
+      console.error("Script gen error", err)
+      return `Hi ${context.name}! I saw you were looking at property in ${context.city}. Our ${context.offer} plan is designed to save you time. Click the link below to get started!`
     }
   }
 
-  // 3. Orchestrate Production (WF-MEDIA-01 Step 5 & 6)
   const handleGenerate = async () => {
     if (!agentSettings?.heyGenAvatarId) {
       alert(
@@ -156,14 +133,12 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
     setScript(generatedScript)
     setProgress(25)
 
-    // Determine Background (Step 4)
     const bgType = context.backgroundOverride?.type || agentSettings.defaultVideoBackgroundType
     const bgValue = context.backgroundOverride?.value || agentSettings.defaultVideoBackgroundValue
 
     setStatusMessage("Synthesizing video via HeyGen API...")
 
-    // Call Production Workflow (n8n proxy)
-    const result = await n8nService.triggerWorkflow("wf-media-01-heygen-block", {
+    const result = await executeWorkflow("generate-video", {
       agentId,
       avatarId: agentSettings.heyGenAvatarId,
       voiceId: agentSettings.heyGenVoiceId,
@@ -173,7 +148,6 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
       campaignId,
     })
 
-    // Simulate Polling/Rendering Loop
     let currentProgress = 25
     const interval = setInterval(() => {
       currentProgress += Math.random() * 8
@@ -348,7 +322,7 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
                   <Smartphone size={14} /> AI Written Script
                 </p>
                 <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-inner italic text-xs text-slate-600 leading-relaxed overflow-y-auto max-h-32 scrollbar-hide">
-                  "{script}"
+                  {script}
                 </div>
                 {qualityScore && (
                   <div className="mt-4 p-4 bg-white rounded-xl border border-slate-100">

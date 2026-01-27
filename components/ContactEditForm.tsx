@@ -10,8 +10,8 @@ import type { Contact, ContactStatus } from "@/types/contact"
 
 interface ContactEditFormProps {
   contact: Contact
-  onSave: (updated: Contact) => Promise<void>
-  onCancel: () => void
+  onSave: () => void
+  onClose: () => void
 }
 
 const STATUS_OPTIONS: ContactStatus[] = [
@@ -42,7 +42,7 @@ const STATUS_LABELS: Record<ContactStatus, string> = {
   lifetime_customer: "Lifetime Customer",
 }
 
-export function ContactEditForm({ contact, onSave, onCancel }: ContactEditFormProps) {
+export function ContactEditForm({ contact, onSave, onClose }: ContactEditFormProps) {
   const [formData, setFormData] = useState({
     first_name: contact?.first_name || "",
     last_name: contact?.last_name || "",
@@ -111,15 +111,7 @@ export function ContactEditForm({ contact, onSave, onCancel }: ContactEditFormPr
       }
 
       setSuccess(true)
-      await onSave({
-        ...contact,
-        first_name: formData.first_name,
-        last_name: formData.last_name,
-        email: formData.email,
-        phone: formData.phone,
-        status: formData.status as ContactStatus,
-        notes: formData.notes,
-      })
+      onSave()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update contact")
     } finally {
@@ -218,8 +210,8 @@ export function ContactEditForm({ contact, onSave, onCancel }: ContactEditFormPr
       )}
 
       <div className="flex gap-3 justify-end pt-4">
-        <Button variant="outline" onClick={onCancel} disabled={loading}>
-          Cancel
+        <Button variant="outline" onClick={onClose} disabled={loading}>
+          Close
         </Button>
         <Button onClick={handleSave} disabled={loading} className="bg-emerald-600 hover:bg-emerald-700">
           {loading ? (
@@ -235,3 +227,5 @@ export function ContactEditForm({ contact, onSave, onCancel }: ContactEditFormPr
     </div>
   )
 }
+
+export default ContactEditForm

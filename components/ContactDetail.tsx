@@ -84,9 +84,9 @@ export function ContactDetail({
   agentInfo,
 }: ContactDetailProps) {
   const [newNote, setNewNote] = useState("")
-  const urgencyColors = getUrgencyColor(contact.timeline)
-  const daysUntil = calculateDaysUntilTimeline(contact.timeline)
-  const dashboardRoute = getPersonaDashboardRoute(contact.contact_persona)
+  const urgencyColors = getUrgencyColor(contact.timeline || "unknown")
+  const daysUntil = calculateDaysUntilTimeline(contact.timeline || "unknown")
+  const dashboardRoute = getPersonaDashboardRoute(contact.contact_persona || "other")
 
   const handleAddNote = () => {
     if (newNote.trim()) {
@@ -111,16 +111,16 @@ export function ContactDetail({
           <CardContent className="space-y-4">
             <div className="flex items-center gap-3">
               <div
-                className={`w-12 h-12 rounded-full ${TYPE_COLORS[contact.contact_type]} flex items-center justify-center text-white font-bold text-lg`}
+                className={`w-12 h-12 rounded-full ${TYPE_COLORS[contact.contact_type] || TYPE_COLORS.other} flex items-center justify-center text-white font-bold text-lg`}
               >
-                {contact.first_name[0]}
-                {contact.last_name[0]}
+                {(contact.first_name || "?")[0]}
+                {(contact.last_name || "?")[0]}
               </div>
               <div>
                 <h3 className="font-semibold text-lg">
-                  {contact.first_name} {contact.last_name}
+                  {contact.first_name || "Unknown"} {contact.last_name || "Contact"}
                 </h3>
-                <p className="text-sm text-slate-500">{PERSONA_LABELS[contact.contact_persona]}</p>
+                <p className="text-sm text-slate-500">{PERSONA_LABELS[contact.contact_persona] || "Contact"}</p>
               </div>
             </div>
 
@@ -155,8 +155,10 @@ export function ContactDetail({
 
             {/* Badges */}
             <div className="flex flex-wrap gap-2">
-              <Badge className={TYPE_COLORS[contact.contact_type] + " text-white"}>{contact.contact_type}</Badge>
-              <Badge variant="outline">{contact.status.replace("_", " ")}</Badge>
+              <Badge className={TYPE_COLORS[contact.contact_type || "other"] + " text-white"}>
+                {contact.contact_type || "other"}
+              </Badge>
+              <Badge variant="outline">{contact.status ? contact.status.replace(/_/g, " ") : "Unknown"}</Badge>
               {contact.has_login ? (
                 <Badge className="bg-green-100 text-green-800">
                   <CheckCircle className="w-3 h-3 mr-1" /> Has Login
@@ -176,7 +178,9 @@ export function ContactDetail({
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-slate-600">Timeline</p>
-                <p className={`text-xl font-bold ${urgencyColors.text}`}>{contact.timeline.replace("_", " ")}</p>
+                <p className={`text-xl font-bold ${urgencyColors.text}`}>
+                  {contact.timeline ? contact.timeline.replace(/_/g, " ") : "Unknown"}
+                </p>
               </div>
               <div className="text-right">
                 <p className="text-sm text-slate-600">Days Remaining</p>

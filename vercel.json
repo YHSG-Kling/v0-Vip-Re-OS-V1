@@ -1,0 +1,32 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/dotloop-sync",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/past-client-touchpoints",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/compliance-monitoring",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/workflow-retries",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/lead-scraping",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/contact-enrichment",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/poll-heygen-videos",
+      "schedule": "*/5 * * * *"
+    }
+  ]
+}

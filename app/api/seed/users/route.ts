@@ -13,7 +13,7 @@ export async function POST() {
 
   const TEST_USERS = [
     {
-      email: "admin@nexus.local",
+      email: "admin@smartengine.local",
       first_name: "Admin",
       last_name: "User",
       user_type: "admin",

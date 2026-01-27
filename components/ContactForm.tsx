@@ -663,7 +663,7 @@ export function ContactForm({ initialData, onSubmit, onCancel, isEditing }: Cont
               </Label>
               <Textarea
                 placeholder="Any additional notes about this contact..."
-                value={formData.notes}
+                value={formData.notes || ""}
                 onChange={(e) => updateField("notes", e.target.value)}
                 rows={5}
               />

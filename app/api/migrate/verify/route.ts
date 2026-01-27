@@ -1,21 +1,9 @@
 import { NextResponse } from "next/server"
-import { supabaseService } from "@/services/supabaseService"
+import { getSupabase } from "@/services/supabase"
 
 export async function GET() {
   try {
-    // First check if we can connect to Supabase
-    const healthCheck = await supabaseService.healthCheck()
-    if (!healthCheck.connected) {
-      return NextResponse.json(
-        {
-          error: "Failed to connect to Supabase",
-          details: healthCheck.error,
-          message:
-            "Please check your Supabase connection and ensure the tables are created by running the SQL schema script.",
-        },
-        { status: 500 },
-      )
-    }
+    const supabase = getSupabase()
 
     const results = {
       contacts: 0,
@@ -29,48 +17,96 @@ export async function GET() {
 
     // Check contacts
     try {
-      const contacts = await supabaseService.getContacts()
-      results.contacts = contacts.length
+      const { data, error } = await supabase.from("contacts").select("count", { count: "exact" }).limit(1)
+      if (error) {
+        if (error.code === "PGRST116") {
+          results.errors.push("Contacts table: Table does not exist - run SQL schema script")
+        } else {
+          results.errors.push(`Contacts table: ${error.message}`)
+        }
+      } else {
+        results.contacts = data?.[0]?.count || 0
+      }
     } catch (error) {
       results.errors.push(`Contacts table: ${error instanceof Error ? error.message : "Unknown error"}`)
     }
 
     // Check users
     try {
-      const users = await supabaseService.getUsers()
-      results.users = users.length
+      const { data, error } = await supabase.from("users").select("count", { count: "exact" }).limit(1)
+      if (error) {
+        if (error.code === "PGRST116") {
+          results.errors.push("Users table: Table does not exist - run SQL schema script")
+        } else {
+          results.errors.push(`Users table: ${error.message}`)
+        }
+      } else {
+        results.users = data?.[0]?.count || 0
+      }
     } catch (error) {
       results.errors.push(`Users table: ${error instanceof Error ? error.message : "Unknown error"}`)
     }
 
     // Check transactions
     try {
-      const transactions = await supabaseService.getTransactions()
-      results.transactions = transactions.length
+      const { data, error } = await supabase.from("transactions").select("count", { count: "exact" }).limit(1)
+      if (error) {
+        if (error.code === "PGRST116") {
+          results.errors.push("Transactions table: Table does not exist")
+        } else {
+          results.errors.push(`Transactions table: ${error.message}`)
+        }
+      } else {
+        results.transactions = data?.[0]?.count || 0
+      }
     } catch (error) {
       results.errors.push(`Transactions table: ${error instanceof Error ? error.message : "Unknown error"}`)
     }
 
     // Check listings
     try {
-      const listings = await supabaseService.getListings()
-      results.listings = listings.length
+      const { data, error } = await supabase.from("listings").select("count", { count: "exact" }).limit(1)
+      if (error) {
+        if (error.code === "PGRST116") {
+          results.errors.push("Listings table: Table does not exist")
+        } else {
+          results.errors.push(`Listings table: ${error.message}`)
+        }
+      } else {
+        results.listings = data?.[0]?.count || 0
+      }
     } catch (error) {
       results.errors.push(`Listings table: ${error instanceof Error ? error.message : "Unknown error"}`)
     }
 
     // Check agents
     try {
-      const agents = await supabaseService.getAgents()
-      results.agents = agents.length
+      const { data, error } = await supabase.from("agents").select("count", { count: "exact" }).limit(1)
+      if (error) {
+        if (error.code === "PGRST116") {
+          results.errors.push("Agents table: Table does not exist")
+        } else {
+          results.errors.push(`Agents table: ${error.message}`)
+        }
+      } else {
+        results.agents = data?.[0]?.count || 0
+      }
     } catch (error) {
       results.errors.push(`Agents table: ${error instanceof Error ? error.message : "Unknown error"}`)
     }
 
     // Check vendors
     try {
-      const vendors = await supabaseService.getVendors()
-      results.vendors = vendors.length
+      const { data, error } = await supabase.from("vendors").select("count", { count: "exact" }).limit(1)
+      if (error) {
+        if (error.code === "PGRST116") {
+          results.errors.push("Vendors table: Table does not exist")
+        } else {
+          results.errors.push(`Vendors table: ${error.message}`)
+        }
+      } else {
+        results.vendors = data?.[0]?.count || 0
+      }
     } catch (error) {
       results.errors.push(`Vendors table: ${error instanceof Error ? error.message : "Unknown error"}`)
     }
@@ -81,11 +117,16 @@ export async function GET() {
       message:
         results.errors.length === 0
           ? "All tables verified successfully!"
-          : "Some tables have issues - see errors array",
+          : `Some tables need setup - ${results.errors.length} issue(s) found`,
+      setupRequired: results.errors.length > 0,
     })
   } catch (error) {
     return NextResponse.json(
-      { error: "Migration verification failed", details: error instanceof Error ? error.message : "Unknown error" },
+      {
+        error: "Verification failed",
+        details: error instanceof Error ? error.message : "Unknown error",
+        message: "Make sure Supabase is connected and run the SQL schema script to create tables",
+      },
       { status: 500 },
     )
   }

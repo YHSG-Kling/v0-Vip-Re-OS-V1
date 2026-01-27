@@ -1,7 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { supabaseService } from "@/services/supabaseService"
-import { supabase } from "@/services/supabase"
+import { createContact } from "@/lib/services/contact-management.service"
+import { createClient } from "@/lib/supabase/server"
 import type { ContactFormData } from "@/types/contact"
+import { enrichContact } from "@/app/actions/contact-enrichment"
+import { handleError } from "@/lib/errors"
+import { supabase } from "@/lib/supabase/client" // Declare supabase variable
+import { supabaseService } from "@/lib/services/supabase.service" // Declare supabaseService variable
 
 export async function POST(request: NextRequest) {
   try {
@@ -15,7 +19,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Get agent_id from auth (placeholder - implement your auth)
+    // Get agent_id from auth
+    const supabase = await createClient()
     const {
       data: { user },
     } = await supabase.auth.getUser()
@@ -40,23 +45,30 @@ export async function POST(request: NextRequest) {
 
     const agentId = userRole?.toLowerCase() === "agent" ? user.id : body.agent_id || user.id
 
-    const contact = await supabaseService.createContact({
-      first_name: body.first_name,
-      last_name: body.last_name,
+    // Use consolidated contact management service
+    const result = await createContact({
+      agentId,
+      firstName: body.first_name,
+      lastName: body.last_name,
       email: body.email,
       phone: body.phone,
-      contact_type: body.contact_type,
-      contact_persona: body.contact_persona,
-      timeline: body.timeline,
       source: body.source,
       status: body.status || "new",
+      contactType: body.contact_type,
+      persona: body.contact_persona,
+      timeline: body.timeline,
       notes: body.notes,
-      agent_id: agentId,
     })
 
-    if (!contact) {
-      return NextResponse.json({ success: false, error: "Failed to create contact" }, { status: 500 })
+    if (!result.success || !result.contact) {
+      return NextResponse.json({ success: false, error: result.error || "Failed to create contact" }, { status: 500 })
     }
+
+    const contact = result.contact
+
+    enrichContact(contact.id, { source: "manual" }).catch((err) => {
+      console.error("[Contact Create] Enrichment error:", err)
+    })
 
     return NextResponse.json({
       success: true,

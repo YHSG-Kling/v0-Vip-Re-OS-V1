@@ -7,6 +7,7 @@ export enum UserRole {
   TC = "TC",
   COMPLIANCE_OFFICER = "compliance_officer",
   CONTACT = "contact",
+  TEAM_LEADER = "team_leader",
 }
 
 export type PersonaType =
@@ -1199,8 +1200,9 @@ export interface Agent {
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'ChannelType'" in UnifiedInbox.tsx
+ * Updated to include social media channels for unified inbox
  */
-export type ChannelType = "sms" | "email" | "whatsapp"
+export type ChannelType = "sms" | "email" | "whatsapp" | "facebook" | "instagram" | "twitter"
 
 /**
  * Added to fix "Module '"../../types"' has no exported member 'Conversation'" in UnifiedInbox.tsx

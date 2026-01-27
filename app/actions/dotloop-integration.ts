@@ -1,0 +1,635 @@
+"use server"
+
+import { createClient } from "@/lib/supabase/server"
+import { revalidatePath } from "next/cache"
+
+const DOTLOOP_API_BASE = "https://api-gateway.dotloop.com/public/v2"
+
+interface DotloopTransactionData {
+  listingId?: string
+  buyerId?: string
+  sellerId?: string
+  transactionType: "purchase" | "listing"
+  propertyAddress: string
+  agentId: string
+  purchasePrice?: number
+  estimatedCloseDate?: string
+}
+
+interface DotloopSyncData {
+  loopId: string
+  contactId: string
+  transactionId?: string
+}
+
+export async function createDotloopTransaction(data: DotloopTransactionData) {
+  try {
+    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
+    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
+
+    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
+      throw new Error("Dotloop API credentials not configured")
+    }
+
+    const response = await fetch(`${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${DOTLOOP_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: `${data.propertyAddress} - ${data.transactionType}`,
+        status: "Active",
+        transaction_type: data.transactionType === "purchase" ? "Purchase" : "Listing for Sale",
+        street_address: data.propertyAddress,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`Dotloop API error: ${response.statusText}`)
+    }
+
+    const result = await response.json()
+    const loopId = result.data?.loop_id
+
+    if (!loopId) {
+      throw new Error("No loop_id returned from Dotloop")
+    }
+
+    const supabase = await createClient()
+
+    if (data.listingId) {
+      // Update existing listing
+      const { error } = await supabase.from("listings").update({ dotloop_loop_id: loopId }).eq("id", data.listingId)
+
+      if (error) throw error
+    } else {
+      // Create new transaction record
+      const { error } = await supabase.from("transactions").insert({
+        agent_id: data.agentId,
+        buyer_id: data.buyerId,
+        seller_id: data.sellerId,
+        transaction_type: data.transactionType === "purchase" ? "buyer_side" : "seller_side",
+        status: "pending",
+        property_address: data.propertyAddress,
+        purchase_price: data.purchasePrice,
+        estimated_close_date: data.estimatedCloseDate,
+        dotloop_loop_id: loopId,
+        dotloop_sync_enabled: true,
+      })
+
+      if (error) throw error
+    }
+
+    revalidatePath("/transactions")
+    revalidatePath(`/listings/${data.listingId}`)
+
+    return { success: true, loopId }
+  } catch (error: any) {
+    console.error("[v0] Create Dotloop Transaction error:", error)
+    return { success: false, error: error.message }
+  }
+}
+
+export async function syncDotloopDocuments(data: DotloopSyncData) {
+  try {
+    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
+    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
+
+    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
+      throw new Error("Dotloop API credentials not configured")
+    }
+
+    const response = await fetch(`${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop/${data.loopId}/folder`, {
+      headers: {
+        Authorization: `Bearer ${DOTLOOP_API_KEY}`,
+      },
+    })
+
+    if (!response.ok) {
+      throw new Error(`Dotloop API error: ${response.statusText}`)
+    }
+
+    const folders = await response.json()
+    const supabase = await createClient()
+    let syncedCount = 0
+
+    for (const folder of folders.data || []) {
+      for (const document of folder.documents || []) {
+        // Check if already synced
+        const { data: existing } = await supabase
+          .from("client_documents")
+          .select("id")
+          .eq("dotloop_document_id", document.document_id)
+          .single()
+
+        if (!existing) {
+          // Create new document record
+          const { error } = await supabase.from("client_documents").insert({
+            contact_id: data.contactId,
+            transaction_id: data.transactionId,
+            dotloop_loop_id: data.loopId,
+            dotloop_document_id: document.document_id,
+            dotloop_folder_name: folder.name,
+            document_name: document.name,
+            document_type: mapFolderToDocType(folder.name),
+            status: document.is_signed ? "signed" : "pending_signature",
+            url: document.url,
+          })
+
+          if (!error) syncedCount++
+        }
+      }
+    }
+
+    if (data.transactionId) {
+      await supabase
+        .from("transactions")
+        .update({ last_dotloop_sync: new Date().toISOString() })
+        .eq("id", data.transactionId)
+    }
+
+    revalidatePath(`/transactions/${data.transactionId}`)
+
+    return { success: true, message: `Synced ${syncedCount} documents`, syncedCount }
+  } catch (error: any) {
+    console.error("[v0] Sync Dotloop Documents error:", error)
+    return { success: false, error: error.message }
+  }
+}
+
+export async function getDotloopSigningStatus(loopId: string) {
+  try {
+    const supabase = await createClient()
+
+    const { data: documents, error } = await supabase.from("client_documents").select("*").eq("dotloop_loop_id", loopId)
+
+    if (error) throw error
+
+    const total = documents?.length || 0
+    const signed = documents?.filter((doc) => doc.status === "signed").length || 0
+
+    return {
+      success: true,
+      total,
+      signed,
+      pending: total - signed,
+      percentComplete: total > 0 ? Math.round((signed / total) * 100) : 0,
+    }
+  } catch (error: any) {
+    console.error("[v0] Get Dotloop Signing Status error:", error)
+    return { success: false, error: error.message }
+  }
+}
+
+function mapFolderToDocType(folderName: string): string {
+  const lowerName = folderName.toLowerCase()
+  if (lowerName.includes("contract")) return "contract"
+  if (lowerName.includes("disclosure")) return "disclosure"
+  if (lowerName.includes("inspection")) return "inspection"
+  if (lowerName.includes("appraisal")) return "appraisal"
+  if (lowerName.includes("loan")) return "loan_doc"
+  if (lowerName.includes("closing")) return "closing_doc"
+  return "other"
+}
+
+// ============================================
+// DOTLOOP SIGNATURE MANAGEMENT
+// ============================================
+
+export async function sendForDotloopSignature(data: {
+  loopId: string
+  documentId: string
+  signers: Array<{ email: string; name: string; role: string }>
+  message?: string
+  userId?: string
+  contactId?: string
+}) {
+  try {
+    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
+    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
+
+    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
+      throw new Error("Dotloop API credentials not configured")
+    }
+
+    const supabase = await createClient()
+
+    // Get document details
+    const { data: document } = await supabase.from("client_documents").select("*").eq("id", data.documentId).single()
+
+    if (!document) throw new Error("Document not found")
+
+    // Add participants to the loop
+    for (const signer of data.signers) {
+      await fetch(`${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop/${data.loopId}/participant`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${DOTLOOP_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: signer.email,
+          full_name: signer.name,
+          role: signer.role,
+        }),
+      })
+    }
+
+    // Upload document to Dotloop if not already there
+    if (!document.dotloop_document_id) {
+      const uploadResponse = await fetch(
+        `${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop/${data.loopId}/folder/Documents/document`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${DOTLOOP_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name: document.document_name,
+            file_url: document.document_url,
+          }),
+        }
+      )
+
+      if (uploadResponse.ok) {
+        const uploadResult = await uploadResponse.json()
+        await supabase
+          .from("client_documents")
+          .update({
+            dotloop_document_id: uploadResult.data?.document_id,
+            dotloop_loop_id: data.loopId,
+          })
+          .eq("id", data.documentId)
+      }
+    }
+
+    // Update document status
+    await supabase
+      .from("client_documents")
+      .update({
+        signature_status: "pending_signature",
+        signature_provider: "dotloop",
+      })
+      .eq("id", data.documentId)
+
+    // Create signature request record
+    await supabase.from("signature_requests").insert({
+      document_id: data.documentId,
+      contact_id: data.contactId,
+      signing_order: data.signers,
+      all_parties: data.signers,
+      request_status: "pending",
+      sent_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+    })
+
+    // Log audit trail
+    await supabase.from("document_audit_trail").insert({
+      document_id: data.documentId,
+      document_source: "client_documents",
+      action: "sent_for_signature",
+      performed_by: data.userId || data.contactId,
+      performed_by_type: data.userId ? "agent" : "client",
+      notes: `Sent to ${data.signers.length} signer(s) via Dotloop`,
+    })
+
+    revalidatePath(`/transactions`)
+    return { success: true, loopId: data.loopId }
+  } catch (error: any) {
+    console.error("[v0] Send for Dotloop Signature error:", error)
+    return { success: false, error: error.message }
+  }
+}
+
+export async function getDotloopDocumentStatus(loopId: string, documentId?: string) {
+  try {
+    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
+    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
+
+    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
+      throw new Error("Dotloop API credentials not configured")
+    }
+
+    const response = await fetch(
+      `${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop/${loopId}/activity`,
+      {
+        headers: {
+          Authorization: `Bearer ${DOTLOOP_API_KEY}`,
+        },
+      }
+    )
+
+    if (!response.ok) {
+      throw new Error(`Dotloop API error: ${response.statusText}`)
+    }
+
+    const activities = await response.json()
+
+    // Filter for signature-related activities
+    const signatureActivities = activities.data?.filter(
+      (a: any) => a.activity_type === "signature" || a.activity_type === "document_signed"
+    )
+
+    return {
+      success: true,
+      activities: signatureActivities || [],
+      lastActivity: activities.data?.[0],
+    }
+  } catch (error: any) {
+    console.error("[v0] Get Dotloop Document Status error:", error)
+    return { success: false, error: error.message }
+  }
+}
+
+// ============================================
+// DOCUMENT SHARING
+// ============================================
+
+export async function createDocumentShareLink(data: {
+  documentId: string
+  sharedBy: string
+  sharedWithEmail?: string
+  accessLevel: "view" | "download" | "sign"
+  expiresInDays?: number
+  requiresPassword?: boolean
+  password?: string
+}) {
+  const supabase = await createClient()
+
+  const shareToken = crypto.randomUUID()
+  const expiresAt = data.expiresInDays
+    ? new Date(Date.now() + data.expiresInDays * 24 * 60 * 60 * 1000)
+    : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // Default 30 days
+
+  const { data: link, error } = await supabase
+    .from("document_sharing_links")
+    .insert({
+      document_id: data.documentId,
+      share_token: shareToken,
+      shared_by: data.sharedBy,
+      shared_with_email: data.sharedWithEmail,
+      access_level: data.accessLevel,
+      requires_password: data.requiresPassword || false,
+      password_hash: data.password || null,
+      expires_at: expiresAt.toISOString(),
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  // Log access
+  await supabase.from("document_audit_trail").insert({
+    document_id: data.documentId,
+    document_source: "client_documents",
+    action: "share_link_created",
+    performed_by: data.sharedBy,
+    performed_by_type: "agent",
+    notes: `Share link created for ${data.sharedWithEmail || "anyone with link"} (${data.accessLevel})`,
+  })
+
+  const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL}/documents/shared/${shareToken}`
+
+  revalidatePath("/documents")
+  return { link, shareUrl }
+}
+
+export async function accessSharedDocument(shareToken: string, password?: string) {
+  const supabase = await createClient()
+
+  const { data: link } = await supabase
+    .from("document_sharing_links")
+    .select("*, client_documents(*)")
+    .eq("share_token", shareToken)
+    .eq("is_active", true)
+    .single()
+
+  if (!link) {
+    return { success: false, error: "Invalid or expired link" }
+  }
+
+  // Check expiration
+  if (link.expires_at && new Date(link.expires_at) < new Date()) {
+    return { success: false, error: "This link has expired" }
+  }
+
+  // Check max access count
+  if (link.max_access_count && link.current_access_count >= link.max_access_count) {
+    return { success: false, error: "This link has reached its maximum access limit" }
+  }
+
+  // Check password if required
+  if (link.requires_password && link.password_hash !== password) {
+    return { success: false, error: "Incorrect password" }
+  }
+
+  // Increment access count
+  await supabase
+    .from("document_sharing_links")
+    .update({ current_access_count: (link.current_access_count || 0) + 1 })
+    .eq("id", link.id)
+
+  // Log access
+  await supabase.from("document_access_log").insert({
+    document_id: link.document_id,
+    accessed_by_type: "external",
+    accessed_by_email: link.shared_with_email,
+    access_type: link.access_level,
+  })
+
+  return {
+    success: true,
+    document: link.client_documents,
+    accessLevel: link.access_level,
+  }
+}
+
+// ============================================
+// DOCUMENT TEMPLATES
+// ============================================
+
+export async function getDocumentTemplates(filters?: {
+  templateType?: string
+  state?: string
+  category?: string
+}) {
+  const supabase = await createClient()
+
+  let query = supabase.from("document_templates").select("*").eq("is_active", true)
+
+  if (filters?.templateType) {
+    query = query.eq("template_type", filters.templateType)
+  }
+
+  if (filters?.state) {
+    query = query.contains("state_specific", [filters.state])
+  }
+
+  if (filters?.category) {
+    query = query.eq("template_category", filters.category)
+  }
+
+  const { data, error } = await query.order("template_name")
+
+  if (error) throw error
+  return data || []
+}
+
+// ============================================
+// DOCUMENT FOLDERS
+// ============================================
+
+export async function createDocumentFolder(data: {
+  folderName: string
+  folderType: "transaction" | "client" | "template" | "marketing" | "compliance"
+  parentFolderId?: string
+  transactionId?: string
+  leadId?: string
+  contactId?: string
+  userId: string
+}) {
+  const supabase = await createClient()
+
+  const { data: folder, error } = await supabase
+    .from("document_folders")
+    .insert({
+      folder_name: data.folderName,
+      folder_type: data.folderType,
+      parent_folder_id: data.parentFolderId,
+      related_transaction_id: data.transactionId,
+      related_lead_id: data.leadId,
+      created_by: data.userId,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+  return folder
+}
+
+export async function getDocumentFolders(filters?: {
+  transactionId?: string
+  leadId?: string
+  folderType?: string
+  userId?: string
+}) {
+  const supabase = await createClient()
+
+  let query = supabase.from("document_folders").select("*, client_documents(count)")
+
+  if (filters?.transactionId) {
+    query = query.eq("related_transaction_id", filters.transactionId)
+  }
+
+  if (filters?.leadId) {
+    query = query.eq("related_lead_id", filters.leadId)
+  }
+
+  if (filters?.folderType) {
+    query = query.eq("folder_type", filters.folderType)
+  }
+
+  if (filters?.userId) {
+    query = query.eq("created_by", filters.userId)
+  }
+
+  const { data, error } = await query.order("folder_name")
+
+  if (error) throw error
+  return data || []
+}
+
+export async function logDocumentAccess(data: {
+  documentId: string
+  accessedByType: "agent" | "client" | "admin" | "external"
+  accessedById?: string
+  accessedByEmail?: string
+  accessType: "view" | "download" | "edit" | "share" | "delete" | "upload"
+  ipAddress?: string
+  userAgent?: string
+}) {
+  const supabase = await createClient()
+
+  await supabase.from("document_access_log").insert({
+    document_id: data.documentId,
+    accessed_by_type: data.accessedByType,
+    accessed_by_id: data.accessedById,
+    accessed_by_email: data.accessedByEmail,
+    access_type: data.accessType,
+    ip_address: data.ipAddress,
+    user_agent: data.userAgent,
+  })
+}
+
+export async function getDocumentAccessLog(documentId: string) {
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from("document_access_log")
+    .select("*")
+    .eq("document_id", documentId)
+    .order("accessed_at", { ascending: false })
+    .limit(100)
+
+  if (error) throw error
+  return data || []
+}
+
+export async function generateDocumentFromTemplate(data: {
+  templateId: string
+  variables: Record<string, any>
+  documentName: string
+  contactId?: string
+  transactionId?: string
+  userId?: string
+}) {
+  const supabase = await createClient()
+
+  // Get template
+  const { data: template } = await supabase.from("document_templates").select("*").eq("id", data.templateId).single()
+
+  if (!template) throw new Error("Template not found")
+
+  // Generate document content by replacing variables
+  let documentContent = template.template_content || ""
+  for (const [key, value] of Object.entries(data.variables)) {
+    documentContent = documentContent.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), String(value))
+  }
+
+  // Create document record
+  const { data: document, error } = await supabase
+    .from("client_documents")
+    .insert({
+      document_name: data.documentName,
+      document_category: template.template_category,
+      document_type: template.template_type,
+      contact_id: data.contactId,
+      transaction_id: data.transactionId,
+      user_id: data.userId,
+      template_id: data.templateId,
+      document_url: template.template_file_url,
+      generated_content: documentContent,
+      processing_status: "verified",
+      compliance_checked: template.is_compliance_approved,
+      signature_status: template.requires_client_signature ? "pending_signature" : null,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  // Log audit trail
+  await supabase.from("document_audit_trail").insert({
+    document_id: document.id,
+    document_source: "client_documents",
+    action: "generated_from_template",
+    performed_by: data.userId || data.contactId,
+    performed_by_type: data.userId ? "agent" : "client",
+    notes: `Generated from template: ${template.template_name}`,
+  })
+
+  revalidatePath("/documents")
+  return document
+}

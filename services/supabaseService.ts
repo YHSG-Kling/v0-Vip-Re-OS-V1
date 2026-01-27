@@ -1,7 +1,8 @@
-// Comprehensive Supabase Service - Replaces airtableService entirely
+// Comprehensive Supabase Service - Production ready, all data from Supabase
 import { createClient } from "@supabase/supabase-js"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Contact } from "@/types/contact"
+import { aiMappingService } from "./aiMappingService"
 
 let supabaseInstance: SupabaseClient | null = null
 
@@ -26,6 +27,9 @@ function getSupabaseAdmin() {
 
   return supabaseInstance
 }
+
+// For production: Return empty array when no data found
+// Components should handle empty states gracefully
 
 export const supabaseService = {
   // =====================================================
@@ -60,8 +64,17 @@ export const supabaseService = {
       const { data, error } = await query.order("created_at", { ascending: false })
 
       if (error) {
-        console.error("[v0] [Supabase Service] getContacts error:", error)
+        console.error("[Supabase Service] getContacts error:", error)
+        if (error.code === "42P01" || error.message?.includes("does not exist")) {
+          console.error("[Supabase Service] contacts table doesn't exist - run migrations")
+          return []
+        }
         throw error
+      }
+
+      if (!data || data.length === 0) {
+        // Production: return empty array, components handle empty states
+        return []
       }
 
       console.log("[v0] [Supabase Service] getContacts returned:", data?.length || 0, "contacts")
@@ -70,6 +83,11 @@ export const supabaseService = {
       console.error("[Supabase Service] Error fetching contacts:", error)
       return []
     }
+  },
+
+  async getAllContacts(): Promise<Contact[]> {
+    console.log("[v0] [Supabase Service] getAllContacts called - fetching all contacts")
+    return this.getContacts() // Call getContacts without agentId to get all contacts
   },
 
   async getContactById(id: string): Promise<Contact | null> {
@@ -86,16 +104,34 @@ export const supabaseService = {
     }
   },
 
-  async createContact(contact: Partial<Contact>): Promise<Contact | null> {
+  async createContact(contactData: Partial<Contact>): Promise<Contact | null> {
     try {
       const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("contacts").insert(contact).select().single()
 
-      if (error) throw error
+      const { incrementUsage } = await import("@/lib/usage")
+
+      // Normalize status and persona using AI mapping
+      if (contactData.status) {
+        contactData.status = await aiMappingService.normalizeStatus(contactData.status)
+      }
+      if (contactData.persona) {
+        contactData.persona = await aiMappingService.normalizePersona(contactData.persona)
+      }
+
+      const { data, error } = await supabase.from("contacts").insert(contactData).select().single()
+
+      if (error) {
+        console.error("Error creating contact:", error)
+        return null
+      }
+
+      if (contactData.brokerage_id) {
+        await incrementUsage(contactData.brokerage_id, "contacts_count", 1)
+      }
 
       return data as Contact
     } catch (error) {
-      console.error("[Supabase Service] Error creating contact:", error)
+      console.error("Error in createContact:", error)
       return null
     }
   },
@@ -103,6 +139,17 @@ export const supabaseService = {
   async updateContact(id: string, updates: Partial<Contact>): Promise<Contact | null> {
     try {
       const supabase = getSupabaseAdmin()
+
+      // AI-map status if it's being updated
+      if (updates.status) {
+        updates.status = await aiMappingService.mapStatus(updates.status)
+      }
+
+      // AI-map persona if being updated
+      if (updates.contact_persona) {
+        updates.contact_persona = await aiMappingService.mapPersona(updates.contact_persona)
+      }
+
       const { data, error } = await supabase.from("contacts").update(updates).eq("id", id).select().single()
 
       if (error) throw error
@@ -329,7 +376,9 @@ export const supabaseService = {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("vendors").insert(vendor).select().single()
+
       if (error) throw error
+
       return data
     } catch (error) {
       console.error("[Supabase Service] Error creating vendor:", error)
@@ -1110,10 +1159,32 @@ export const supabaseService = {
     }
   },
 
-  async updateAutomationError(id: string, status: string) {
+  async getRecentErrors(hoursBack = 24, statusFilter?: string) {
+    try {
+      const supabase = getSupabaseAdmin()
+      const cutoffDate = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString()
+
+      let query = supabase.from("automation_errors").select("*").gte("created_at", cutoffDate)
+
+      if (statusFilter && statusFilter !== "all") {
+        query = query.eq("status", statusFilter)
+      }
+
+      const { data, error } = await query.order("created_at", { ascending: false })
+
+      if (error) throw error
+      return data || []
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching recent errors:", error)
+      return []
+    }
+  },
+
+  async updateAutomationError(id: string, status: string, notes?: string) {
     try {
       const supabase = getSupabaseAdmin()
       const updates: any = { status }
+      if (notes) updates.resolution_notes = notes
       if (status === "resolved") {
         updates.resolved_at = new Date().toISOString()
       }
@@ -1123,6 +1194,34 @@ export const supabaseService = {
       return data
     } catch (error) {
       console.error("[Supabase Service] Error updating automation error:", error)
+      return null
+    }
+  },
+
+  async updateErrorStatus(id: string, status: string, resolvedBy?: string) {
+    try {
+      const supabase = getSupabaseAdmin()
+      const updates: any = { status }
+
+      if (status === "resolved") {
+        updates.resolved_at = new Date().toISOString()
+        if (resolvedBy) {
+          updates.resolved_by = resolvedBy
+        }
+      }
+
+      if (status === "ignored") {
+        updates.ignored_at = new Date().toISOString()
+        if (resolvedBy) {
+          updates.ignored_by = resolvedBy
+        }
+      }
+
+      const { data, error } = await supabase.from("automation_errors").update(updates).eq("id", id).select().single()
+      if (error) throw error
+      return data
+    } catch (error) {
+      console.error("[Supabase Service] Error updating error status:", error)
       return null
     }
   },
@@ -1245,6 +1344,253 @@ export const supabaseService = {
     } catch (error) {
       console.error("[Supabase Service] Error updating property interests:", error)
       return null
+    }
+  },
+
+  // =====================================================
+  // SHOWINGS & OPEN HOUSES
+  // =====================================================
+
+  async getShowings(agentId?: string) {
+    try {
+      const supabase = getSupabaseAdmin()
+      let query = supabase.from("showings").select("*, listings(*), contacts(*)")
+
+      if (agentId) {
+        query = query.eq("agent_id", agentId)
+      }
+
+      const { data, error } = await query.order("showing_date", { ascending: false })
+      if (error) throw error
+
+      return data || []
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching showings:", error)
+      return []
+    }
+  },
+
+  async getOpenHouses(agentId?: string) {
+    try {
+      const supabase = getSupabaseAdmin()
+      let query = supabase.from("open_house_events").select("*, listings(*)")
+
+      if (agentId) {
+        query = query.eq("agent_id", agentId)
+      }
+
+      const { data, error } = await query.order("event_date", { ascending: false })
+      if (error) throw error
+
+      return data || []
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching open houses:", error)
+      return []
+    }
+  },
+
+  // =====================================================
+  // COMMUNICATIONS
+  // =====================================================
+
+  async getCommunicationHistory(contactId?: string) {
+    try {
+      const supabase = getSupabaseAdmin()
+      let query = supabase.from("communications").select("*, contacts(*)")
+
+      if (contactId) {
+        query = query.eq("contact_id", contactId)
+      }
+
+      const { data, error } = await query.order("created_at", { ascending: false }).limit(100)
+      if (error) throw error
+
+      return data || []
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching communications:", error)
+      return []
+    }
+  },
+
+  // =====================================================
+  // DOCUMENTS
+  // =====================================================
+
+  async getDocuments(entityId?: string) {
+    try {
+      const supabase = getSupabaseAdmin()
+      let query = supabase.from("documents").select("*, transactions(*)")
+
+      if (entityId) {
+        query = query.or(`contact_id.eq.${entityId},transaction_id.eq.${entityId}`)
+      }
+
+      const { data, error } = await query.order("created_at", { ascending: false })
+      if (error) throw error
+
+      return data || []
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching documents:", error)
+      return []
+    }
+  },
+
+  // =====================================================
+  // SPHERE / SOI
+  // =====================================================
+
+  async getSphere(agentId?: string) {
+    try {
+      const supabase = getSupabaseAdmin()
+      let query = supabase.from("sphere_of_influence").select("*, contacts(*)")
+
+      if (agentId) {
+        query = query.eq("agent_id", agentId)
+      }
+
+      const { data, error } = await query.order("relationship_strength", { ascending: false })
+      if (error) throw error
+
+      return data || []
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching sphere:", error)
+      return []
+    }
+  },
+
+  // =====================================================
+  // BADGES & LEADERBOARD
+  // =====================================================
+
+  async getBadges(userId?: string) {
+    try {
+      const supabase = getSupabaseAdmin()
+      let query = supabase.from("user_badges").select("*, badge_definitions(*)")
+
+      if (userId) {
+        query = query.eq("user_id", userId)
+      }
+
+      const { data, error } = await query.order("awarded_at", { ascending: false })
+      if (error) throw error
+
+      return data || []
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching badges:", error)
+      return []
+    }
+  },
+
+  async getLeaderboard() {
+    try {
+      const supabase = getSupabaseAdmin()
+      const { data, error } = await supabase
+        .from("agent_leaderboard")
+        .select("*, agents(*)")
+        .order("points", { ascending: false })
+        .limit(50)
+
+      if (error) throw error
+
+      return data || []
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching leaderboard:", error)
+      return []
+    }
+  },
+
+  // =====================================================
+  // FINANCIALS
+  // =====================================================
+
+  async getFinancials(type: "commissions" | "marketing") {
+    try {
+      const supabase = getSupabaseAdmin()
+
+      if (type === "commissions") {
+        const { data, error } = await supabase.from("commissions").select("*").order("created_at", { ascending: false })
+
+        if (error) {
+          console.error("[Supabase Service] Error fetching commissions:", error)
+          return []
+        }
+        return data || []
+      }
+
+      if (type === "marketing") {
+        const { data, error } = await supabase
+          .from("agent_expenses")
+          .select("*")
+          .order("created_at", { ascending: false })
+
+        if (error) {
+          console.error("[Supabase Service] Error fetching marketing:", error)
+          return []
+        }
+        return data || []
+      }
+
+      return []
+    } catch (error) {
+      console.error("[Supabase Service] Error in getFinancials:", error)
+      return []
+    }
+  },
+
+  // =====================================================
+  // BULK IMPORT
+  // =====================================================
+
+  async bulkImportContacts(
+    contacts: Partial<Contact>[],
+  ): Promise<{ success: number; failed: number; errors: string[] }> {
+    const results = { success: 0, failed: 0, errors: [] as string[] }
+
+    try {
+      // Extract all unique statuses and personas for batch mapping
+      const statuses = contacts.map((c) => c.status).filter(Boolean) as string[]
+      const personas = contacts.map((c) => c.persona).filter(Boolean) as string[]
+
+      // Batch map using AI
+      console.log(`[Supabase Service] Batch mapping ${statuses.length} statuses and ${personas.length} personas...`)
+      const mappedStatuses = await aiMappingService.batchMapStatuses(statuses)
+
+      // Create status lookup map
+      const statusMap = new Map<string, string>()
+      statuses.forEach((original, i) => {
+        statusMap.set(original, mappedStatuses[i])
+      })
+
+      // Apply mapped values to contacts
+      const normalizedContacts = contacts.map((contact) => ({
+        ...contact,
+        status: contact.status ? statusMap.get(contact.status) || contact.status : "new",
+        persona: contact.persona || "first_time_buyer",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }))
+
+      // Insert in batches of 100
+      const batchSize = 100
+      for (let i = 0; i < normalizedContacts.length; i += batchSize) {
+        const batch = normalizedContacts.slice(i, i + batchSize)
+        const supabase = getSupabaseAdmin()
+        const { data, error } = await supabase.from("contacts").insert(batch).select()
+
+        if (error) {
+          results.failed += batch.length
+          results.errors.push(`Batch ${i / batchSize + 1}: ${error.message}`)
+        } else {
+          results.success += data?.length || 0
+        }
+      }
+
+      console.log(`[Supabase Service] Import complete: ${results.success} success, ${results.failed} failed`)
+      return results
+    } catch (error) {
+      console.error("[Supabase Service] Error in bulk import:", error)
+      results.errors.push(String(error))
+      return results
     }
   },
 }

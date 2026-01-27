@@ -59,7 +59,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (error.name === "AbortError" || !mounted) {
           return
         }
-        console.error("[v0] Auth session error:", error)
+        console.error("Auth session error:", error)
         setIsLoading(false)
       })
 

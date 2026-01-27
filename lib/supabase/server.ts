@@ -4,8 +4,8 @@ import { cookies } from "next/headers"
 export async function createClient() {
   const cookieStore = await cookies()
 
-  const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
   if (!url || !key) {
     throw new Error("Missing Supabase environment variables. Please check your configuration.")
@@ -26,8 +26,23 @@ export async function createClient() {
         }
       },
     },
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      fetch: (url, options = {}) => {
+        return fetch(url, {
+          ...options,
+          // Remove any signal that might cause abort errors
+          signal: undefined,
+        })
+      },
+    },
   })
 }
 
 // Export createClient function for use in API routes
+// Also export as createServerClient for backward compatibility
 export { createClient as createServerClient }

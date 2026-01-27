@@ -78,7 +78,8 @@ export function getTimelineUrgency(timeline: ContactTimeline): "urgent" | "soon"
   }
 }
 
-export function getPersonaDashboardRoute(persona: ContactPersona): string {
+export function getPersonaDashboardRoute(persona: ContactPersona | null | undefined): string {
+  if (!persona) return "/dashboard/contact/other"
   return `/dashboard/contact/${persona}`
 }
 

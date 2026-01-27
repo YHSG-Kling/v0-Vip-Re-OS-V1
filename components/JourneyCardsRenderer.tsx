@@ -20,8 +20,7 @@ import {
   ArrowRight,
 } from "lucide-react"
 import { supabaseService } from "../services/supabaseService"
-import { determinePersona, determineStage } from "../services/airtable"
-import { n8nService } from "../services/n8n"
+import { executeWorkflow } from "../app/actions/workflows"
 import type { JourneyState, JourneyBlueprint, JourneyStage } from "../types"
 
 interface JourneyCardsRendererProps {
@@ -98,7 +97,7 @@ export const JourneyCardsRenderer: React.FC<JourneyCardsRendererProps> = ({ user
 
   const handleCardAction = async (card: any, action: any) => {
     if (action.type === "trigger_workflow") {
-      await n8nService.triggerWorkflow(action.workflow, {
+      await executeWorkflow(action.workflow, {
         userId,
         context: card.card_id,
       })
@@ -271,3 +270,22 @@ const ActivityIcon = ({ size }: { size: number }) => (
     <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
   </svg>
 )
+
+function determinePersona(contact: any, transaction: any): string {
+  if (transaction?.type === "seller" || contact?.intent?.toLowerCase().includes("sell")) {
+    return "seller"
+  }
+  if (transaction?.type === "buyer" || contact?.intent?.toLowerCase().includes("buy")) {
+    return "buyer"
+  }
+  return "lead"
+}
+
+function determineStage(contact: any, transaction: any, listing: any): JourneyStage {
+  if (transaction?.status === "closed") return "post_close"
+  if (transaction?.status === "closing") return "closing"
+  if (transaction?.status === "under_contract") return "under_contract"
+  if (listing || transaction) return "active"
+  if (contact?.status === "qualifying") return "qualifying"
+  return "lead"
+}
