@@ -1,3 +1,4 @@
+"use client"
 import { DollarSign, TrendingUp, Users, Home, AlertTriangle, Target } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
