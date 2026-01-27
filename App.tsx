@@ -15,7 +15,7 @@ import LoginPage from "./app/components/LoginPage"
 import OnboardingDashboard from "./app/components/OnboardingDashboard"
 
 // Lazy load all other components - they'll only be loaded when needed
-const AgentDashboard = lazy(() => import("./pages/agent/AgentDashboard"))
+const AgentDashboard = lazy(() => import("./app/components/AgentDashboard"))
 const BrokerDashboard = lazy(() => import("./pages/admin/BrokerDashboard"))
 const UserManagement = lazy(() => import("./pages/admin/UserManagement"))
 const ListingApprovals = lazy(() => import("./pages/admin/ListingApprovals"))

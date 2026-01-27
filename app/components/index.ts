@@ -83,6 +83,7 @@ export { ChatSessionsList } from './chat/ChatSessionsList'
 export { ApprovedContentLibrary } from './compliance/approved-content-library'
 
 // Dashboard Components
+export { default as AgentDashboard } from './AgentDashboard'
 export { KPICards } from './dashboard/KPICards'
 export { RiskTable } from './dashboard/RiskTable'
 
