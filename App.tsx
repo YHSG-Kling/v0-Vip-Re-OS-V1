@@ -12,7 +12,7 @@ import { VoiceAssistant } from "./components/VoiceAssistant"
 
 // Only LoginPage is loaded eagerly since it's the first screen
 import LoginPage from "./app/components/LoginPage"
-import OnboardingDashboard from "./pages/agent/OnboardingDashboard" // Declare OnboardingDashboard variable
+import OnboardingDashboard from "./app/components/OnboardingDashboard"
 
 // Lazy load all other components - they'll only be loaded when needed
 const AgentDashboard = lazy(() => import("./pages/agent/AgentDashboard"))
