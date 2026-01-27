@@ -153,13 +153,13 @@ All identified component files have been successfully copied to `app/components/
 ## Import Pattern
 
 Components can now be imported from:
-```typescript
+\`\`\`typescript
 import { Button } from '@/app/components/ui/button'
 import { Sidebar } from '@/app/components/Sidebar'
 import { PortalNav } from '@/app/components/portal/PortalNav'
-```
+\`\`\`
 
 Or use the barrel export:
-```typescript
+\`\`\`typescript
 import { Sidebar, ChatWidget, ContactForm } from '@/app/components'
-```
+\`\`\`

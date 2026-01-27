@@ -39,7 +39,7 @@
 
 ## 📁 New Directory Structure
 
-```
+\`\`\`
 app/
 ├── components/
 │   ├── index.ts                      ← Barrel exports
@@ -71,14 +71,14 @@ app/
 │   ├── lender/                       ← Lender components (2 files)
 │   ├── mobile/                       ← Mobile components (1 file)
 │   └── vendor/                       ← Vendor components (1 file)
-```
+\`\`\`
 
 ## 🔄 Sidebar: Vite → Next.js Conversion
 
 ### Key Changes Made
 
 **Before (Vite/React Router)**:
-```typescript
+\`\`\`typescript
 import { useNavigate } from 'react-router-dom'
 
 interface SidebarProps {
@@ -91,10 +91,10 @@ interface SidebarProps {
 <button onClick={() => onChangeView('agent-dashboard')}>
   Dashboard
 </button>
-```
+\`\`\`
 
 **After (Next.js)**:
-```typescript
+\`\`\`typescript
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
@@ -109,7 +109,7 @@ const currentView = pathname.replace(/^\//, '').replace(/\//g, '-')
 <Link href="/agent/dashboard">          {/* ← Declarative */}
   Dashboard
 </Link>
-```
+\`\`\`
 
 **Benefits**:
 - No manual state management for navigation
@@ -123,7 +123,7 @@ const currentView = pathname.replace(/^\//, '').replace(/\//g, '-')
 ### Immediate Actions Required
 
 1. **Copy remaining core components**:
-   ```bash
+   \`\`\`bash
    # 17 more core components to copy
    ContactDetailModal.tsx
    ContentGeneratorHub.tsx
@@ -142,10 +142,10 @@ const currentView = pathname.replace(/^\//, '').replace(/\//g, '-')
    providers.tsx
    theme-provider.tsx
    ContactEditForm.tsx
-   ```
+   \`\`\`
 
 2. **Copy component folders**:
-   ```bash
+   \`\`\`bash
    # Copy entire folders (maintaining structure)
    components/ui/        → app/components/ui/
    components/portal/    → app/components/portal/
@@ -156,10 +156,10 @@ const currentView = pathname.replace(/^\//, '').replace(/\//g, '-')
    components/dashboard/ → app/components/dashboard/
    components/intelligence/ → app/components/intelligence/
    # ... and all others
-   ```
+   \`\`\`
 
 3. **Update imports in existing pages**:
-   ```typescript
+   \`\`\`typescript
    // Find all files importing from old location
    // Before:
    import { Button } from '@/components/ui/button'
@@ -168,7 +168,7 @@ const currentView = pathname.replace(/^\//, '').replace(/\//g, '-')
    import { Button } from '@/app/components/ui/button'
    // OR use barrel export:
    import { Button } from '@/app/components'
-   ```
+   \`\`\`
 
 4. **Add "use client" where needed**:
    - Components using useState, useEffect, etc.
@@ -195,7 +195,7 @@ const currentView = pathname.replace(/^\//, '').replace(/\//g, '-')
 
 ### Importing Components
 
-```typescript
+\`\`\`typescript
 // Individual imports
 import { Sidebar } from '@/app/components/Sidebar'
 import { ApprovalsBanner } from '@/app/components/ApprovalsBanner'
@@ -216,11 +216,11 @@ import { Dialog } from '@/app/components/ui/dialog'
 // Nested components
 import { PortalNav } from '@/app/components/portal/PortalNav'
 import { AIAssistantPanel } from '@/app/components/ai/AIAssistantPanel'
-```
+\`\`\`
 
 ### Using Sidebar in Layout
 
-```typescript
+\`\`\`typescript
 // app/layout.tsx
 import { Sidebar } from '@/app/components/Sidebar'
 import { UserRole } from '@/types'
@@ -240,7 +240,7 @@ export default function RootLayout({ children }) {
     </html>
   )
 }
-```
+\`\`\`
 
 ## 🎯 Success Criteria
 

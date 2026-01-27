@@ -66,7 +66,7 @@ Successfully integrated AI-powered voice call features with Twilio Whisper Bridg
 
 ## ENVIRONMENT VARIABLES REQUIRED
 
-```bash
+\`\`\`bash
 # Twilio Configuration
 TWILIO_ACCOUNT_SID=your_account_sid
 TWILIO_AUTH_TOKEN=your_auth_token
@@ -78,7 +78,7 @@ VAPI_ASSISTANT_ID=your_assistant_id
 
 # OpenAI for AI Analysis
 OPENAI_API_KEY=your_openai_key
-```
+\`\`\`
 
 ---
 
@@ -100,7 +100,7 @@ OPENAI_API_KEY=your_openai_key
 ## USAGE EXAMPLES
 
 ### Start Whisper Bridge Call
-```typescript
+\`\`\`typescript
 import { initiateWhisperBridge } from "@/app/actions"
 
 const result = await initiateWhisperBridge({
@@ -110,10 +110,10 @@ const result = await initiateWhisperBridge({
   agentPhone: "+0987654321",
   whisperInstructions: "Help agent overcome price objections",
 })
-```
+\`\`\`
 
 ### Launch AI Voice Bot
-```typescript
+\`\`\`typescript
 import { triggerVapiVoiceBot } from "@/app/actions"
 
 const result = await triggerVapiVoiceBot({
@@ -123,7 +123,7 @@ const result = await triggerVapiVoiceBot({
   callPurpose: "lead_qualification",
   assistantInstructions: "Qualify buyer budget and timeline",
 })
-```
+\`\`\`
 
 ---
 

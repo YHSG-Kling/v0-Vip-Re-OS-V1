@@ -79,7 +79,7 @@ AI-powered conversation analytics with sentiment tracking, compliance monitoring
 ## Usage
 
 ### Logging a Conversation
-```typescript
+\`\`\`typescript
 import { logConversationMetadata } from "@/app/actions"
 
 await logConversationMetadata({
@@ -91,18 +91,18 @@ await logConversationMetadata({
   keyTopics: ["pricing", "inspection"],
   aiAssistUsed: true,
 })
-```
+\`\`\`
 
 ### Running Weekly Audit
-```typescript
+\`\`\`typescript
 import { runWeeklyAIAudit } from "@/app/actions"
 
 const result = await runWeeklyAIAudit()
 // Returns: { success: true, flagsCreated: 3 }
-```
+\`\`\`
 
 ### Fetching Analytics
-```typescript
+\`\`\`typescript
 import { getConversationAnalytics } from "@/app/actions"
 
 const analytics = await getConversationAnalytics({
@@ -110,7 +110,7 @@ const analytics = await getConversationAnalytics({
   startDate: "2026-01-01",
   endDate: "2026-01-31",
 })
-```
+\`\`\`
 
 ---
 

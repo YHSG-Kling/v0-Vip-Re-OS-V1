@@ -79,13 +79,13 @@ The compliance system has been successfully migrated from the legacy system with
 ## 🗂️ System Architecture
 
 ### Navigation Structure
-```
+\`\`\`
 Admin/Broker Navigation:
 ├── compliance (Compliance Manager)
 ├── risk-management (Risk Management)  
 ├── vendor-compliance (Vendor Compliance)
 └── ai-audit (AI Audit)
-```
+\`\`\`
 
 ### No Duplicates Found
 - ✅ Each feature has ONE dedicated page
@@ -142,7 +142,7 @@ Admin/Broker Navigation:
 ### 1. Database Tables Status
 Most tables exist, but verify these are created:
 
-```sql
+\`\`\`sql
 -- Already exist:
 ✅ compliance_reports
 ✅ contract_templates  
@@ -155,11 +155,11 @@ Most tables exist, but verify these are created:
 ⚠️ compliance_flags (for fair housing)
 ⚠️ task_master_templates
 ⚠️ license_tracking
-```
+\`\`\`
 
 ### 2. Missing Backend Actions
 Some actions are called but may need implementation:
-```typescript
+\`\`\`typescript
 // Check these exist in /app/actions/:
 - scanContentCompliance()
 - getComplianceViolations()
@@ -167,7 +167,7 @@ Some actions are called but may need implementation:
 - executeWorkflow("verify-vendor-insurance")
 - executeWorkflow("confirm-and-retrain-ai")
 - executeWorkflow("broker-takeover")
-```
+\`\`\`
 
 ### 3. Sidebar Navigation Updates
 The navigation labels could be clearer:

@@ -9,9 +9,9 @@ This directory contains utility scripts for managing the component migration fro
 Verifies that all component files have the `"use client"` directive at the top.
 
 **Usage:**
-```bash
+\`\`\`bash
 npx tsx scripts/verify-use-client.ts
-```
+\`\`\`
 
 **What it does:**
 - Checks all root component files
@@ -30,9 +30,9 @@ npx tsx scripts/verify-use-client.ts
 Automatically adds `"use client"` to all component files that are missing it.
 
 **Usage:**
-```bash
+\`\`\`bash
 npx tsx scripts/add-use-client.ts
-```
+\`\`\`
 
 **What it does:**
 - Scans the same files as verify-use-client.ts

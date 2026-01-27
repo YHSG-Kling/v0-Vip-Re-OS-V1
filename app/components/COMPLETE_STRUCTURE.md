@@ -9,7 +9,7 @@ All component folders have been successfully copied from `components/` to `app/c
 
 ## Directory Structure
 
-```
+\`\`\`
 app/components/
 │
 ├── Root Level (22 files)
@@ -90,7 +90,7 @@ app/components/
 │
 └── video/ (1 file) ✓
     └── VideoGenerationButtons.tsx
-```
+\`\`\`
 
 ---
 
@@ -147,7 +147,7 @@ These larger folders need to be copied separately:
 
 Import components from the new location:
 
-```tsx
+\`\`\`tsx
 // Old way (Vite)
 import { Sidebar } from '@/components/Sidebar'
 import { ChatWidget } from '@/components/ChatWidget'
@@ -158,7 +158,7 @@ import { ChatWidget } from '@/app/components/ChatWidget'
 
 // Or use barrel exports
 import { Sidebar, ChatWidget, ApprovalsBanner } from '@/app/components'
-```
+\`\`\`
 
 ---
 

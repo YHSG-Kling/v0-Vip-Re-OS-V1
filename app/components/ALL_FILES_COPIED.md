@@ -11,7 +11,7 @@ All component folders from `components/` have been successfully migrated to `app
 ## Complete File Inventory
 
 ### 📁 Root Level (22 files)
-```
+\`\`\`
 app/components/
 ├── ApprovalsBanner.tsx
 ├── ChatWidget.tsx
@@ -35,10 +35,10 @@ app/components/
 ├── video-generation-panel.tsx
 ├── providers.tsx
 └── theme-provider.tsx
-```
+\`\`\`
 
 ### 📁 ui/ - shadcn/ui Components (58 files)
-```
+\`\`\`
 app/components/ui/
 ├── CommandBar.tsx
 ├── Toast.tsx
@@ -98,10 +98,10 @@ app/components/ui/
 ├── toggle.tsx
 ├── tooltip.tsx
 └── use-mobile.tsx
-```
+\`\`\`
 
 ### 📁 portal/ - Client Portal (27 files)
-```
+\`\`\`
 app/components/portal/
 ├── BuyerPropertiesDashboard.tsx
 ├── ClientDocumentsWidget.tsx
@@ -131,10 +131,10 @@ app/components/portal/
 ├── SmartPropertyInsights.tsx
 ├── TaskCompletionDialog.tsx
 └── UnifiedPortalDashboard.tsx
-```
+\`\`\`
 
 ### 📁 AI/ - AI Tools (9 files)
-```
+\`\`\`
 app/components/AI/
 ├── AIToolModal.tsx
 ├── CMAGenerator.tsx
@@ -145,102 +145,102 @@ app/components/AI/
 ├── SmartGuide.tsx
 ├── VideoGenerator.tsx
 └── VoiceCommandButton.tsx
-```
+\`\`\`
 
 ### 📁 ai/ - AI Assistants (3 files)
-```
+\`\`\`
 app/components/ai/
 ├── AIAssistantPanel.tsx
 ├── AIInsightCard.tsx
 └── SmartSuggestion.tsx
-```
+\`\`\`
 
 ### 📁 chat/ - Chat Components (5 files)
-```
+\`\`\`
 app/components/chat/
 ├── ChatInterface.tsx
 ├── ChatSessionsList.tsx
 ├── LeadInsightsPanel.tsx
 ├── TemplateSelector.tsx
 └── ThemFirstCoach.tsx
-```
+\`\`\`
 
 ### 📁 compliance/ - Compliance Tools (4 files)
-```
+\`\`\`
 app/components/compliance/
 ├── approved-content-library.tsx
 ├── pending-approvals-list.tsx
 ├── submit-content-form.tsx
 └── violations-dashboard.tsx
-```
+\`\`\`
 
 ### 📁 dashboard/ - Dashboard Widgets (3 files)
-```
+\`\`\`
 app/components/dashboard/
 ├── KPICards.tsx
 ├── RiskTable.tsx
 └── TrendChart.tsx
-```
+\`\`\`
 
 ### 📁 intelligence/ - Lead Intelligence (4 files)
-```
+\`\`\`
 app/components/intelligence/
 ├── BehavioralInsights.tsx
 ├── LeadIntelligencePanel.tsx
 ├── MotivatedSellersMap.tsx
 └── OSINTTimeline.tsx
-```
+\`\`\`
 
 ### 📁 coordinator/ - Transaction Coordination (3 files)
-```
+\`\`\`
 app/components/coordinator/
 ├── deadline-tracking.tsx
 ├── milestone-queue.tsx
 └── transaction-list.tsx
-```
+\`\`\`
 
 ### 📁 content-studio/ - Content Creation (1 file)
-```
+\`\`\`
 app/components/content-studio/
 └── LinkToVideoGenerator.tsx
-```
+\`\`\`
 
 ### 📁 lender/ - Lender Portal (2 files)
-```
+\`\`\`
 app/components/lender/
 ├── loan-list.tsx
 └── loan-pipeline.tsx
-```
+\`\`\`
 
 ### 📁 mobile/ - Mobile Components (1 file)
-```
+\`\`\`
 app/components/mobile/
 └── QuickActionsFAB.tsx
-```
+\`\`\`
 
 ### 📁 vendor/ - Vendor Management (1 file)
-```
+\`\`\`
 app/components/vendor/
 └── bookings-list.tsx
-```
+\`\`\`
 
 ### 📁 video/ - Video Tools (1 file)
-```
+\`\`\`
 app/components/video/
 └── VideoGenerationButtons.tsx
-```
+\`\`\`
 
 ### 📁 listing/ - Listing Components (1 file)
-```
+\`\`\`
 app/components/listing/
 └── ListingDetailTabs.tsx
-```
+\`\`\`
 
 ### 📁 marketing/ - Marketing Tools (1 file)
-```
+\`\`\`
 app/components/marketing/
 └── PodcastStudio.tsx
-```
+\`\`\`
 
 ---
 
@@ -271,7 +271,7 @@ app/components/marketing/
 
 ## Import Examples
 
-```typescript
+\`\`\`typescript
 // UI Components
 import { Button } from '@/app/components/ui/button'
 import { Card } from '@/app/components/ui/card'
@@ -293,7 +293,7 @@ import { AIAssistantPanel } from '@/app/components/ai/AIAssistantPanel'
 // Specialty Components
 import { ListingDetailTabs } from '@/app/components/listing/ListingDetailTabs'
 import { PodcastStudio } from '@/app/components/marketing/PodcastStudio'
-```
+\`\`\`
 
 ---
 

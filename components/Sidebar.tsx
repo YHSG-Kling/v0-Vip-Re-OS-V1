@@ -1,6 +1,8 @@
 "use client"
 
 import type React from "react"
+import Link from "next/link"
+import { usePathname } from "next/navigation"
 import { UserRole } from "../types"
 import { usePermissions } from "../hooks/usePermissions"
 import { ROLE_NAVIGATION } from "../services/permissionsService"
@@ -52,9 +54,8 @@ import {
 
 interface SidebarProps {
   role: UserRole
-  onChangeView: (view: string) => void
-  currentView: string
   onLogout: () => void
+  onChangeView: (viewId: string) => void // Declare onChangeView
 }
 
 const ALL_NAV_ITEMS: Record<string, { label: string; icon: any }> = {
@@ -117,8 +118,13 @@ const ALL_NAV_ITEMS: Record<string, { label: string; icon: any }> = {
   "ai-chat": { label: "Smart Engine Chat", icon: MessageSquare },
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ role, onChangeView, currentView, onLogout }) => {
+const Sidebar: React.FC<SidebarProps> = ({ role, onLogout, onChangeView }) => {
   const { allowedNavigation, isAdminOrBroker } = usePermissions()
+  const pathname = usePathname()
+  
+  // Convert pathname to currentView format
+  // e.g., /agent/dashboard → agent-dashboard, /approvals → approvals, /crm → crm
+  const currentView = pathname === '/' ? '' : pathname.slice(1).replace(/\//g, '-')
 
   // Define navigation sections for admin/broker roles
   const ADMIN_SECTIONS = {

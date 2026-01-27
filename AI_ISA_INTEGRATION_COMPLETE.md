@@ -88,13 +88,13 @@ The AI ISA is an autonomous outbound calling system that handles lead nurturing,
 
 ## ENVIRONMENT VARIABLES REQUIRED
 
-```bash
+\`\`\`bash
 VAPI_API_KEY=your_vapi_api_key
 VAPI_PHONE_NUMBER=+1234567890  # Your Vapi outbound number
 TWILIO_ACCOUNT_SID=your_twilio_sid
 TWILIO_AUTH_TOKEN=your_twilio_token
 TWILIO_PHONE_NUMBER=+1234567890  # For SMS
-```
+\`\`\`
 
 ---
 
@@ -124,7 +124,7 @@ This AI ISA works alongside existing voice features:
 
 ## USAGE EXAMPLE
 
-```typescript
+\`\`\`typescript
 // Launch a campaign for new leads
 await launchAIISACampaign({
   agentId: user.id,
@@ -140,7 +140,7 @@ await launchAIISACampaign({
 // AI ISA calls each contact
 // Books appointments, updates CRM
 // Sends performance reports
-```
+\`\`\`
 
 ---
 

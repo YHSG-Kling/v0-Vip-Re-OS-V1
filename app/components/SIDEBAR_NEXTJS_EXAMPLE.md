@@ -7,17 +7,17 @@ The Sidebar component has been converted from React Router to Next.js routing.
 ## Key Changes
 
 ### 1. Imports
-```typescript
+\`\`\`typescript
 // Before (Vite/React Router)
 import { useNavigate, useLocation } from 'react-router-dom'
 
 // After (Next.js)
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-```
+\`\`\`
 
 ### 2. Props Interface
-```typescript
+\`\`\`typescript
 // Before - Required onChangeView callback
 interface SidebarProps {
   role: UserRole
@@ -31,10 +31,10 @@ interface SidebarProps {
   role: UserRole
   onLogout: () => void
 }
-```
+\`\`\`
 
 ### 3. Active Route Detection
-```typescript
+\`\`\`typescript
 // Before - Passed as prop
 const { currentView } = props
 
@@ -45,10 +45,10 @@ const currentView = pathname.replace(/^\//, '').replace(/\//g, '-')
 // /agent/dashboard -> agent-dashboard
 // /crm -> crm
 // /offers/lab -> offers-lab
-```
+\`\`\`
 
 ### 4. Navigation Links
-```typescript
+\`\`\`typescript
 // Before - Button with onClick
 <button
   onClick={() => onChangeView(item.id)}
@@ -66,13 +66,13 @@ const currentView = pathname.replace(/^\//, '').replace(/\//g, '-')
   <Icon />
   {item.label}
 </Link>
-```
+\`\`\`
 
 ## Usage in Next.js
 
 ### In Layout or Root Component
 
-```typescript
+\`\`\`typescript
 // app/layout.tsx or similar
 import { Sidebar } from './components/Sidebar'
 import { UserRole } from './types'
@@ -98,7 +98,7 @@ export default function RootLayout({ children }) {
     </html>
   )
 }
-```
+\`\`\`
 
 ### Route Mapping
 

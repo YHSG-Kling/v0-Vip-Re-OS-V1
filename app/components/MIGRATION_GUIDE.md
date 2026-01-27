@@ -19,7 +19,7 @@ The following components have been successfully moved to `app/components/`:
 
 ## Complete Directory Structure
 
-```
+\`\`\`
 app/components/
 ├── index.ts                          # Central export file
 ├── MIGRATION_GUIDE.md               # This file
@@ -206,14 +206,14 @@ app/components/
 │
 └── video/                           # Video components
     └── VideoGenerationButtons.tsx
-```
+\`\`\`
 
 ## Migration Steps for Remaining Components
 
 To complete the migration, copy each component from `components/` to `app/components/` maintaining the folder structure:
 
 ### Individual Files to Copy:
-```bash
+\`\`\`bash
 # Core components (already migrated: Sidebar, ApprovalsBanner, ChatWidget, ContactDetail, ContactForm, ContactsList)
 ContactDetailModal.tsx
 ContentGeneratorHub.tsx
@@ -231,10 +231,10 @@ marketing-package-dashboard.tsx
 video-generation-panel.tsx
 providers.tsx
 theme-provider.tsx
-```
+\`\`\`
 
 ### Folders to Copy (recursively):
-```bash
+\`\`\`bash
 AI/
 ai/
 chat/
@@ -251,21 +251,21 @@ portal/
 ui/
 vendor/
 video/
-```
+\`\`\`
 
 ## Next.js Migration Checklist
 
 When copying components, ensure each file:
 
 1. **Has "use client" directive** (if using React hooks):
-   ```typescript
+   \`\`\`typescript
    "use client"
    
    import React, { useState } from 'react'
-   ```
+   \`\`\`
 
 2. **Uses Next.js routing**:
-   ```typescript
+   \`\`\`typescript
    // Old (React Router)
    import { useNavigate } from 'react-router-dom'
    const navigate = useNavigate()
@@ -275,29 +275,29 @@ When copying components, ensure each file:
    import { useRouter } from 'next/navigation'
    const router = useRouter()
    router.push('/dashboard')
-   ```
+   \`\`\`
 
 3. **Uses Next.js Link component**:
-   ```typescript
+   \`\`\`typescript
    // Old
    import { Link } from 'react-router-dom'
    
    // New
    import Link from 'next/link'
-   ```
+   \`\`\`
 
 4. **Updates import paths**:
-   ```typescript
+   \`\`\`typescript
    // Old
    import { Button } from '@/components/ui/button'
    
    // New (if needed)
    import { Button } from '@/app/components/ui/button'
    // OR keep as is if using @ alias pointing to root
-   ```
+   \`\`\`
 
 5. **Has proper TypeScript types**:
-   ```typescript
+   \`\`\`typescript
    interface ComponentProps {
      data: string
      onAction: () => void
@@ -306,13 +306,13 @@ When copying components, ensure each file:
    export function Component({ data, onAction }: ComponentProps) {
      // ...
    }
-   ```
+   \`\`\`
 
 ## Import Paths
 
 After migration, import components using:
 
-```typescript
+\`\`\`typescript
 // Individual imports
 import { Sidebar } from '@/app/components/Sidebar'
 import { ApprovalsBanner } from '@/app/components/ApprovalsBanner'
@@ -320,7 +320,7 @@ import { Button } from '@/app/components/ui/button'
 
 // From index (if using barrel exports)
 import { Sidebar, ApprovalsBanner, ChatWidget } from '@/app/components'
-```
+\`\`\`
 
 ## Notes
 

@@ -134,32 +134,32 @@ Track:
 
 ## Environment Variables Required
 
-```bash
+\`\`\`bash
 # Already configured for Smart Engine platform:
 OPENAI_API_KEY=sk-...        # For embeddings and completions
 DATABASE_URL=postgresql://... # Supabase with pgvector
-```
+\`\`\`
 
 ---
 
 ## API Integration
 
 ### Vector Embeddings:
-```typescript
+\`\`\`typescript
 // OpenAI ada-002 embeddings (1536 dimensions)
 const embedding = await openai.embeddings.create({
   model: "text-embedding-ada-002",
   input: text
 })
-```
+\`\`\`
 
 ### Similarity Search:
-```sql
+\`\`\`sql
 -- Semantic search with pgvector
 SELECT * FROM rag_knowledge_base
 ORDER BY embedding <=> query_embedding
 LIMIT 5
-```
+\`\`\`
 
 ---
 
@@ -178,7 +178,7 @@ LIMIT 5
 
 ## Usage Example
 
-```typescript
+\`\`\`typescript
 // Agent uses AI tool with RAG enhancement
 const result = await executeAITool({
   loginId: agentId,
@@ -201,7 +201,7 @@ const explanation = await executeAITool({
     text: "What does 'contingent' mean?"
   }
 })
-```
+\`\`\`
 
 ---
 

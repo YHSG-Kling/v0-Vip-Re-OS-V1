@@ -67,25 +67,25 @@
 ## Deployment Steps
 
 1. **Run Schema Setup**
-   ```bash
+   \`\`\`bash
    # Execute the Supabase SQL schema script
    cat scripts/020-create-complete-supabase-schema.sql | psql YOUR_SUPABASE_CONNECTION
-   ```
+   \`\`\`
 
 2. **Verify Build**
-   ```bash
+   \`\`\`bash
    npm run build
-   ```
+   \`\`\`
 
 3. **Run Database Tests**
-   ```bash
+   \`\`\`bash
    npm run test:db
-   ```
+   \`\`\`
 
 4. **Deploy**
-   ```bash
+   \`\`\`bash
    npm run deploy
-   ```
+   \`\`\`
 
 ## Migration Summary
 

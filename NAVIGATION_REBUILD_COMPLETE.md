@@ -41,7 +41,7 @@ All 50+ routes verified with working components in App.tsx switch statement:
 ## 🎯 Navigation by Role
 
 ### ADMIN/BROKER (21 items)
-```
+\`\`\`
 Dashboard & Overview
 ├── Command Center (broker-dashboard)
 ├── System Vitals (system-health)
@@ -76,10 +76,10 @@ Compliance & Risk
 System & Settings
 ├── Settings (settings)
 └── Partners (partners)
-```
+\`\`\`
 
 ### AGENT (35 items)
-```
+\`\`\`
 Dashboard
 └── My Command Desk (agent-dashboard)
 
@@ -123,7 +123,7 @@ Resources
 Personal
 ├── My Onboarding (agent-onboarding)
 └── My Finances (financials)
-```
+\`\`\`
 
 ### CONTACT - Persona Dashboards (15 personas)
 - First Time Buyer Dashboard

@@ -149,9 +149,9 @@ All interactive React components in `app/components/` have been updated with the
 
 At the very top of each file (line 1), before any imports:
 
-```typescript
+\`\`\`typescript
 "use client"
-```
+\`\`\`
 
 This directive tells Next.js that the component is a Client Component and can use React hooks, event handlers, and browser APIs.
 
@@ -161,9 +161,9 @@ This directive tells Next.js that the component is a Client Component and can us
 
 To verify all files have the directive, run:
 
-```bash
+\`\`\`bash
 node scripts/verify-use-client.mjs
-```
+\`\`\`
 
 This will check all 161 files and report:
 - Files with "use client" ✅

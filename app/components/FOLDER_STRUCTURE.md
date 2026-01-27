@@ -3,7 +3,7 @@
 This document shows the complete component folder structure after migration.
 
 ## Root Level Components (22 files)
-```
+\`\`\`
 app/components/
 ├── ApprovalsBanner.tsx
 ├── ChatWidget.tsx
@@ -27,13 +27,13 @@ app/components/
 ├── providers.tsx
 ├── theme-provider.tsx
 └── video-generation-panel.tsx
-```
+\`\`\`
 
 ## Component Folders
 
 ### /ui (58 files)
 Shadcn/ui components + custom UI primitives
-```
+\`\`\`
 app/components/ui/
 ├── CommandBar.tsx
 ├── Toast.tsx
@@ -94,11 +94,11 @@ app/components/ui/
 ├── tooltip.tsx
 ├── use-mobile.tsx
 └── use-toast.ts
-```
+\`\`\`
 
 ### /portal (27 files)
 Client portal components for buyers and sellers
-```
+\`\`\`
 app/components/portal/
 ├── BuyerPropertiesDashboard.tsx
 ├── ClientDocumentsWidget.tsx
@@ -128,11 +128,11 @@ app/components/portal/
 ├── SmartPropertyInsights.tsx
 ├── TaskCompletionDialog.tsx
 └── UnifiedPortalDashboard.tsx
-```
+\`\`\`
 
 ### /AI (9 files)
 AI-powered tools and assistants
-```
+\`\`\`
 app/components/AI/
 ├── AIToolModal.tsx
 ├── CMAGenerator.tsx
@@ -143,21 +143,21 @@ app/components/AI/
 ├── SmartGuide.tsx
 ├── VideoGenerator.tsx
 └── VoiceCommandButton.tsx
-```
+\`\`\`
 
 ### /listing (1 file)
 Listing detail components
-```
+\`\`\`
 app/components/listing/
 └── ListingDetailTabs.tsx
-```
+\`\`\`
 
 ### /marketing (1 file)
 Marketing and content creation tools
-```
+\`\`\`
 app/components/marketing/
 └── PodcastStudio.tsx
-```
+\`\`\`
 
 ### Additional Folders to Copy
 The following folders need to be copied but weren't found in the initial scan:
@@ -184,7 +184,7 @@ The following folders need to be copied but weren't found in the initial scan:
 
 ## Import Paths
 After migration, import from:
-```typescript
+\`\`\`typescript
 // Old way (Vite)
 import { Button } from '@/components/ui/button'
 import Sidebar from '@/components/Sidebar'
@@ -195,7 +195,7 @@ import Sidebar from '@/app/components/Sidebar'
 
 // Or use the barrel export
 import { Button, Sidebar } from '@/app/components'
-```
+\`\`\`
 
 ## Next Steps
 1. Run: `node scripts/copy-components.mjs` to copy remaining folders

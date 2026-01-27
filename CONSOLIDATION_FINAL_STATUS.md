@@ -87,7 +87,7 @@ The lead management service now intelligently scores BOTH:
 - **Contacts table** (internal CRM) - Uses engagement, personas, budget alignment
 - **Leads table** (external scraped data) - Uses IDX interactions, seller signals, scraping recency
 
-```typescript
+\`\`\`typescript
 // Scores contacts
 await calculateLeadScore({ id: contactId, agentId, table: "contacts" })
 
@@ -96,7 +96,7 @@ await calculateLeadScore({ id: leadId, agentId, table: "leads" })
 
 // Scores BOTH tables
 await bulkRecalculateAllScores(agentId)
-```
+\`\`\`
 
 #### Open House Communications ⭐
 Complete email/SMS system with:

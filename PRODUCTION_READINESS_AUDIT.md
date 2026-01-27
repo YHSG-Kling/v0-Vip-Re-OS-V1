@@ -22,10 +22,10 @@ This audit confirms the NexusOS Real Estate Platform is **PRODUCTION READY** aft
 | `pages/**/*.tsx` | All 40+ pages - removed MOCK_*, mockData patterns | DONE |
 
 ### Verification:
-```
+\`\`\`
 grep -r "MOCK_|mockData|mock[A-Z]" pages/ -> 0 matches
 grep -r "demo-1|demo-2|demo-txn" app/actions/ -> 0 matches
-```
+\`\`\`
 
 ---
 
@@ -57,7 +57,7 @@ All implemented in `app/actions/`:
 
 ## 3. Data Flow Architecture
 
-```
+\`\`\`
 UI Components (pages/*.tsx)
     ↓
 Custom Hooks (hooks/*.ts)
@@ -69,7 +69,7 @@ Server Actions (app/actions/*.ts)
 Supabase Service (services/supabaseService.ts)
     ↓
 Supabase Database (PostgreSQL)
-```
+\`\`\`
 
 ---
 

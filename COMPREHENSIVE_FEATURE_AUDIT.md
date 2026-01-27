@@ -226,7 +226,7 @@ All features are production-ready with proper backend wiring - NO mock data or d
 
 ### Environment Variables Required for Full Functionality
 
-```env
+\`\`\`env
 # Core (Auto-configured via Vercel)
 SUPABASE_URL=your_supabase_url
 SUPABASE_ANON_KEY=your_supabase_anon_key
@@ -244,7 +244,7 @@ IDX_API_KEY=your_idx_api_key
 
 # Video Generation (Optional - for HeyGen)
 HEYGEN_API_KEY=your_heygen_key
-```
+\`\`\`
 
 ---
 

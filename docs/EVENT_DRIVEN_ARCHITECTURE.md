@@ -11,7 +11,7 @@ All important state changes in the system flow through a central `events` table 
 
 ## Event Flow
 
-```
+\`\`\`
 UI Action / Webhook
   ↓
 logEventAndTrigger()
@@ -25,13 +25,13 @@ Route to handler based on event_type
 Generate suggestions, send notifications, trigger workflows
   ↓
 Log processing results
-```
+\`\`\`
 
 ## Usage Examples
 
 ### From UI Components
 
-```typescript
+\`\`\`typescript
 import { logLeadCreated } from '@/lib/events/event-helpers'
 
 // When user creates a new lead
@@ -47,11 +47,11 @@ async function handleCreateLead(contactData) {
     timeline: 'immediate'
   })
 }
-```
+\`\`\`
 
 ### From API Routes
 
-```typescript
+\`\`\`typescript
 import { logEventAndTrigger } from '@/lib/events/event-helpers'
 
 export async function POST(request: Request) {
@@ -69,11 +69,11 @@ export async function POST(request: Request) {
   
   return Response.json({ success: true })
 }
-```
+\`\`\`
 
 ### From Webhooks
 
-```typescript
+\`\`\`typescript
 import { handleWebhookEvent } from '@/lib/events/event-helpers'
 
 export async function POST(request: Request) {
@@ -84,7 +84,7 @@ export async function POST(request: Request) {
   
   return Response.json({ received: true })
 }
-```
+\`\`\`
 
 ## Event Types
 
@@ -110,12 +110,12 @@ See `app/actions/orchestrator.ts` for all supported event types:
 
 Use `dedupe_key` to prevent duplicate processing:
 
-```typescript
+\`\`\`typescript
 await logEventAndTrigger({
   // ... other fields
   dedupe_key: `listing_signed_${listing_id}`
 })
-```
+\`\`\`
 
 Events with the same `dedupe_key` within 24 hours are rejected.
 

@@ -132,14 +132,14 @@ The following components now use supabaseService and workflowService:
 
 ## Environment Variables Required
 
-```env
+\`\`\`env
 # Supabase
 NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 
 # AI (for workflows)
 # AI Gateway is used by default, no API keys needed for OpenAI, Anthropic, etc.
-```
+\`\`\`
 
 ## Running the Migration
 
@@ -153,10 +153,10 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 
 Execute the SQL script to create all tables:
 
-```bash
+\`\`\`bash
 # In the v0 interface, run the script:
 scripts/001_create_supabase_schema.sql
-```
+\`\`\`
 
 Or manually in Supabase SQL Editor.
 
@@ -182,40 +182,40 @@ Add Supabase credentials to your project:
 ### Data Structure
 
 **Airtable**: Record-based with `fields` object
-```javascript
+\`\`\`javascript
 { id: "rec123", fields: { name: "John", email: "john@example.com" } }
-```
+\`\`\`
 
 **Supabase**: Direct row-based
-```javascript
+\`\`\`javascript
 { id: "uuid", name: "John", email: "john@example.com", created_at: "2024-01-01T00:00:00Z" }
-```
+\`\`\`
 
 ### Workflows
 
 **n8n**: Simulated workflows
-```javascript
+\`\`\`javascript
 await n8nService.triggerWorkflow("wf-ai-tool", { data })
 // Returns mock response
-```
+\`\`\`
 
 **Server Actions**: Real execution
-```javascript
+\`\`\`javascript
 await workflowService.executeAITool(toolName, inputData, context)
 // Actually calls AI SDK and logs to database
-```
+\`\`\`
 
 ### Relationships
 
 **Airtable**: Array of record IDs
-```javascript
+\`\`\`javascript
 { agent_id: ["recXYZ"] }
-```
+\`\`\`
 
 **Supabase**: Foreign key UUIDs
-```javascript
+\`\`\`javascript
 { agent_id: "uuid-xyz" }
-```
+\`\`\`
 
 ## Benefits of Migration
 

@@ -262,7 +262,7 @@ Generated: January 20, 2026
 5. ✅ Create `lib/db-utils/` for consistent database operations
 
 ### Code Organization:
-```
+\`\`\`
 app/
   actions/
     - Consolidate related functions into modules
@@ -283,7 +283,7 @@ lib/
   db-utils/          (NEW)
     - query builders
     - migration helpers
-```
+\`\`\`
 
 ### Testing Strategy:
 1. Add unit tests for all action functions

@@ -253,7 +253,7 @@ Smart Engine is now fully production-ready with:
 ## ENVIRONMENT VARIABLES REQUIRED
 
 ### Required for Core Features:
-```
+\`\`\`
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
@@ -263,10 +263,10 @@ TWILIO_AUTH_TOKEN=
 TWILIO_PHONE_NUMBER=
 SENDGRID_API_KEY=
 SENDGRID_FROM_EMAIL=
-```
+\`\`\`
 
 ### Optional for Enhanced Features:
-```
+\`\`\`
 HEYGEN_API_KEY=
 VAPI_API_KEY=
 IDX_API_BASE=
@@ -275,7 +275,7 @@ GHL_API_KEY=
 GHL_LOCATION_ID=
 STRIPE_SECRET_KEY=
 STRIPE_PUBLISHABLE_KEY=
-```
+\`\`\`
 
 ---
 

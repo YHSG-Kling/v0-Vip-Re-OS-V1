@@ -84,11 +84,11 @@ An **Offer** represents a legally binding purchase proposal:
 
 #### Offer Lifecycle States
 
-```
+\`\`\`
 draft → pending → [countered] → [accepted | rejected]
                       ↓
                  (new counter version created)
-```
+\`\`\`
 
 **State Transitions:**
 1. **draft**: Agent/buyer creating offer locally

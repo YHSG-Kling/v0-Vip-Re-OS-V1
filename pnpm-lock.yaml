@@ -11,6 +11,9 @@ importers:
       '@ai-sdk/google':
         specifier: 3.0.7
         version: 3.0.7(zod@4.3.5)
+      '@cfworker/json-schema':
+        specifier: latest
+        version: 4.1.1
       '@dnd-kit/core':
         specifier: 6.3.1
         version: 6.3.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -22,13 +25,13 @@ importers:
         version: 3.2.2(react@19.2.4)
       '@google/genai':
         specifier: ^1.33.0
-        version: 1.38.0(@modelcontextprotocol/sdk@1.25.3(hono@4.11.6)(zod@4.3.5))
+        version: 1.38.0(@modelcontextprotocol/sdk@1.25.3(@cfworker/json-schema@4.1.1)(hono@4.11.6)(zod@4.3.5))(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       '@google/generative-ai':
         specifier: 0.24.1
         version: 0.24.1
       '@modelcontextprotocol/sdk':
         specifier: latest
-        version: 1.25.3(hono@4.11.6)(zod@4.3.5)
+        version: 1.25.3(@cfworker/json-schema@4.1.1)(hono@4.11.6)(zod@4.3.5)
       '@radix-ui/react-accordion':
         specifier: 1.2.12
         version: 1.2.12(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -112,10 +115,10 @@ importers:
         version: 1.2.8(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@supabase/ssr':
         specifier: 0.8.0
-        version: 0.8.0(@supabase/supabase-js@2.39.3)
+        version: 0.8.0(@supabase/supabase-js@2.39.3(bufferutil@4.1.0)(utf-8-validate@6.0.6))
       '@supabase/supabase-js':
         specifier: 2.39.3
-        version: 2.39.3
+        version: 2.39.3(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       '@vercel/analytics':
         specifier: 1.6.1
         version: 1.6.1(next@16.1.1(@babel/core@7.28.6)(@opentelemetry/api@1.9.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(sass@1.97.3))(react@19.2.4)
@@ -128,6 +131,9 @@ importers:
       bcryptjs:
         specifier: 3.0.3
         version: 3.0.3
+      bufferutil:
+        specifier: latest
+        version: 4.1.0
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -175,7 +181,7 @@ importers:
         version: 3.3.2
       openai:
         specifier: 6.16.0
-        version: 6.16.0(ws@8.19.0)(zod@4.3.5)
+        version: 6.16.0(ws@8.19.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5)
       react:
         specifier: ^19.2.3
         version: 19.2.4
@@ -233,6 +239,9 @@ importers:
       use-sync-external-store:
         specifier: latest
         version: 1.6.0(react@19.2.4)
+      utf-8-validate:
+        specifier: latest
+        version: 6.0.6
       uuid:
         specifier: 13.0.0
         version: 13.0.0
@@ -241,7 +250,7 @@ importers:
         version: 1.1.2(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       ws:
         specifier: latest
-        version: 8.19.0
+        version: 8.19.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       yaml:
         specifier: latest
         version: 2.8.2
@@ -395,6 +404,9 @@ packages:
 
   '@bufbuild/protobuf@2.11.0':
     resolution: {integrity: sha512-sBXGT13cpmPR5BMgHE6UEEfEaShh5Ror6rfN3yEK5si7QVrtZg8LEPQb0VVhiLRUslD2yLnXtnRzG035J/mZXQ==}
+
+  '@cfworker/json-schema@4.1.1':
+    resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
 
   '@date-fns/tz@1.4.1':
     resolution: {integrity: sha512-P5LUNhtbj6YfI3iJjw5EL9eUAG6OitD0W3fWQcpQjDRc/QIsL0tRNuO1PcDvPccWL1fSTXXdE1ds+l95DV/OFA==}
@@ -2140,6 +2152,10 @@ packages:
   buffer-from@1.1.2:
     resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
 
+  bufferutil@4.1.0:
+    resolution: {integrity: sha512-ZMANVnAixE6AWWnPzlW2KpUrxhm9woycYvPOo67jWHyFowASTEd9s+QN1EIMsSDtwhIxN4sWE1jotpuDUIgyIw==}
+    engines: {node: '>=6.14.2'}
+
   bytes@3.1.2:
     resolution: {integrity: sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==}
     engines: {node: '>= 0.8'}
@@ -2827,6 +2843,10 @@ packages:
     resolution: {integrity: sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
 
+  node-gyp-build@4.8.4:
+    resolution: {integrity: sha512-LA4ZjwlnUblHVgq0oBF3Jl/6h/Nvs5fzBLwdEF4nuxnFdsfajde4WfxtJr3CaiH+F6ewcIB/q4jQ4UzPyid+CQ==}
+    hasBin: true
+
   node-releases@2.0.27:
     resolution: {integrity: sha512-nmh3lCkYZ3grZvqcCH+fjmQ7X+H0OeZgP40OierEaAptX4XofMh5kwNbWh7lBduUzCcV/8kZ+NDLCwm2iorIlA==}
 
@@ -3416,6 +3436,10 @@ packages:
     peerDependencies:
       react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
+  utf-8-validate@6.0.6:
+    resolution: {integrity: sha512-q3l3P9UtEEiAHcsgsqTgf9PPjctrDWoIXW3NpOHFdRDbLvu4DLIcxHangJ4RLrWkBcKjmcs/6NkerI8T/rE4LA==}
+    engines: {node: '>=6.14.2'}
+
   uuid@13.0.0:
     resolution: {integrity: sha512-XQegIaBTVUjSHliKqcnFqYypAd4S+WCYt5NIeRs6w/UAry7z8Y9j5ZwRRL4kzq9U3sD6v+85er9FvkEaBpji2w==}
     hasBin: true
@@ -3697,6 +3721,8 @@ snapshots:
 
   '@bufbuild/protobuf@2.11.0': {}
 
+  '@cfworker/json-schema@4.1.1': {}
+
   '@date-fns/tz@1.4.1': {}
 
   '@dnd-kit/accessibility@3.1.1(react@19.2.4)':
@@ -3904,13 +3930,13 @@ snapshots:
 
   '@floating-ui/utils@0.2.10': {}
 
-  '@google/genai@1.38.0(@modelcontextprotocol/sdk@1.25.3(hono@4.11.6)(zod@4.3.5))':
+  '@google/genai@1.38.0(@modelcontextprotocol/sdk@1.25.3(@cfworker/json-schema@4.1.1)(hono@4.11.6)(zod@4.3.5))(bufferutil@4.1.0)(utf-8-validate@6.0.6)':
     dependencies:
       google-auth-library: 10.5.0
       protobufjs: 7.5.4
-      ws: 8.19.0
+      ws: 8.19.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.25.3(hono@4.11.6)(zod@4.3.5)
+      '@modelcontextprotocol/sdk': 1.25.3(@cfworker/json-schema@4.1.1)(hono@4.11.6)(zod@4.3.5)
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -4052,7 +4078,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@modelcontextprotocol/sdk@1.25.3(hono@4.11.6)(zod@4.3.5)':
+  '@modelcontextprotocol/sdk@1.25.3(@cfworker/json-schema@4.1.1)(hono@4.11.6)(zod@4.3.5)':
     dependencies:
       '@hono/node-server': 1.19.9(hono@4.11.6)
       ajv: 8.17.1
@@ -4070,6 +4096,8 @@ snapshots:
       raw-body: 3.0.2
       zod: 4.3.5
       zod-to-json-schema: 3.25.1(zod@4.3.5)
+    optionalDependencies:
+      '@cfworker/json-schema': 4.1.1
     transitivePeerDependencies:
       - hono
       - supports-color
@@ -4993,19 +5021,19 @@ snapshots:
     dependencies:
       '@supabase/node-fetch': 2.6.15
 
-  '@supabase/realtime-js@2.93.1':
+  '@supabase/realtime-js@2.93.1(bufferutil@4.1.0)(utf-8-validate@6.0.6)':
     dependencies:
       '@types/phoenix': 1.6.7
       '@types/ws': 8.18.1
       tslib: 2.8.1
-      ws: 8.19.0
+      ws: 8.19.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@supabase/ssr@0.8.0(@supabase/supabase-js@2.39.3)':
+  '@supabase/ssr@0.8.0(@supabase/supabase-js@2.39.3(bufferutil@4.1.0)(utf-8-validate@6.0.6))':
     dependencies:
-      '@supabase/supabase-js': 2.39.3
+      '@supabase/supabase-js': 2.39.3(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       cookie: 1.1.1
 
   '@supabase/storage-js@2.93.1':
@@ -5013,13 +5041,13 @@ snapshots:
       iceberg-js: 0.8.1
       tslib: 2.8.1
 
-  '@supabase/supabase-js@2.39.3':
+  '@supabase/supabase-js@2.39.3(bufferutil@4.1.0)(utf-8-validate@6.0.6)':
     dependencies:
       '@supabase/functions-js': 2.93.1
       '@supabase/gotrue-js': 2.93.1
       '@supabase/node-fetch': 2.6.15
       '@supabase/postgrest-js': 1.21.4
-      '@supabase/realtime-js': 2.93.1
+      '@supabase/realtime-js': 2.93.1(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       '@supabase/storage-js': 2.93.1
     transitivePeerDependencies:
       - bufferutil
@@ -5208,6 +5236,10 @@ snapshots:
   buffer-equal-constant-time@1.0.1: {}
 
   buffer-from@1.1.2: {}
+
+  bufferutil@4.1.0:
+    dependencies:
+      node-gyp-build: 4.8.4
 
   bytes@3.1.2: {}
 
@@ -5895,6 +5927,8 @@ snapshots:
       fetch-blob: 3.2.0
       formdata-polyfill: 4.0.10
 
+  node-gyp-build@4.8.4: {}
+
   node-releases@2.0.27: {}
 
   object-assign@4.1.1: {}
@@ -5909,9 +5943,9 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  openai@6.16.0(ws@8.19.0)(zod@4.3.5):
+  openai@6.16.0(ws@8.19.0(bufferutil@4.1.0)(utf-8-validate@6.0.6))(zod@4.3.5):
     optionalDependencies:
-      ws: 8.19.0
+      ws: 8.19.0(bufferutil@4.1.0)(utf-8-validate@6.0.6)
       zod: 4.3.5
 
   package-json-from-dist@1.0.1: {}
@@ -6497,6 +6531,10 @@ snapshots:
     dependencies:
       react: 19.2.4
 
+  utf-8-validate@6.0.6:
+    dependencies:
+      node-gyp-build: 4.8.4
+
   uuid@13.0.0: {}
 
   varint@6.0.0: {}
@@ -6578,7 +6616,10 @@ snapshots:
 
   wrappy@1.0.2: {}
 
-  ws@8.19.0: {}
+  ws@8.19.0(bufferutil@4.1.0)(utf-8-validate@6.0.6):
+    optionalDependencies:
+      bufferutil: 4.1.0
+      utf-8-validate: 6.0.6
 
   yallist@3.1.1: {}
 
