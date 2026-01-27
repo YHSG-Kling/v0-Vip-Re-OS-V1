@@ -117,8 +117,13 @@ const ALL_NAV_ITEMS: Record<string, { label: string; icon: any }> = {
   "ai-chat": { label: "Smart Engine Chat", icon: MessageSquare },
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ role, onChangeView, currentView, onLogout }) => {
+const Sidebar: React.FC<SidebarProps> = ({ role, onLogout }) => {
   const { allowedNavigation, isAdminOrBroker } = usePermissions()
+  const pathname = usePathname()
+  
+  // Convert pathname to currentView format
+  // e.g., /agent/dashboard → agent-dashboard, /approvals → approvals, /crm → crm
+  const currentView = pathname === '/' ? '' : pathname.slice(1).replace(/\//g, '-')
 
   // Define navigation sections for admin/broker roles
   const ADMIN_SECTIONS = {
