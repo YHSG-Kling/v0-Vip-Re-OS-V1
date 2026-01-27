@@ -11,7 +11,7 @@ import { LayoutDashboard, MessageSquare, Briefcase, Navigation, Calendar, Shield
 import { VoiceAssistant } from "./components/VoiceAssistant"
 
 // Only LoginPage is loaded eagerly since it's the first screen
-import LoginPage from "./pages/auth/LoginPage"
+import LoginPage from "./app/components/LoginPage"
 import OnboardingDashboard from "./pages/agent/OnboardingDashboard" // Declare OnboardingDashboard variable
 
 // Lazy load all other components - they'll only be loaded when needed

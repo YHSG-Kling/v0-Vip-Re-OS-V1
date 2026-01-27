@@ -14,8 +14,12 @@ export { default as ChatWidget } from './ChatWidget'
 export { default as Providers } from './providers'
 export { ThemeProvider } from './theme-provider'
 
+// Authentication
+export { default as LoginPage } from './LoginPage'
+
 // Notifications & Banners
 export { ApprovalsBanner } from './ApprovalsBanner'
+export { default as ApprovalCounter } from './ApprovalCounter'
 
 // Contact Management
 export { default as ContactDetail } from './ContactDetail'
