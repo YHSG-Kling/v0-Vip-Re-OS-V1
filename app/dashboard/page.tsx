@@ -1,481 +1,237 @@
-"use client"
+'use client'
 
-import Link from "next/link"
-
-import { useState, useEffect } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Badge } from "@/components/ui/badge"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Phone,
-  Mail,
-  MessageSquare,
-  Video,
-  Calendar,
-  TrendingUp,
-  AlertTriangle,
-  Lightbulb,
-  Clock,
-  CheckCircle,
-  Send,
-  Eye,
-} from "lucide-react"
-import { createClient } from "@/lib/supabase/client"
-import { generateDailyGameplan } from "@/app/actions/copilot"
-import { generateAssistantSuggestions } from "@/app/actions/assistant"
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { useAuthStore } from '@/stores/authStore'
+import { UserRole } from '@/types'
+import Sidebar from '@/app/components/Sidebar'
+import LoadingSpinner from '@/app/components/LoadingSpinner'
 
 export default function DashboardPage() {
-  const [gameplan, setGameplan] = useState<any>(null)
-  const [suggestions, setSuggestions] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+  const router = useRouter()
+  const { user, isLoading, logout, checkAuth } = useAuthStore()
+  const [greeting, setGreeting] = useState('')
   const [currentTime, setCurrentTime] = useState(new Date())
 
+  // Check auth on mount
   useEffect(() => {
-    loadGameplan()
-    subscribeToUpdates()
+    checkAuth()
+  }, [checkAuth])
 
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!isLoading && !user) {
+      router.push('/login')
+    }
+  }, [user, isLoading, router])
+
+  // Set greeting based on time of day
+  useEffect(() => {
+    const hour = new Date().getHours()
+    if (hour < 12) {
+      setGreeting('Good morning')
+    } else if (hour < 18) {
+      setGreeting('Good afternoon')
+    } else {
+      setGreeting('Good evening')
+    }
+  }, [])
+
+  // Update current time every minute
+  useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 60000)
     return () => clearInterval(timer)
   }, [])
 
-  async function loadGameplan() {
-    try {
-      const supabase = createClient()
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-
-      if (!user) {
-        setLoading(false)
-        return
-      }
-
-      const plan = await generateDailyGameplan(user.id)
-      setGameplan(plan)
-
-      const { suggestions: sug } = await generateAssistantSuggestions(user.id, {
-        page: "dashboard",
-      })
-      setSuggestions(sug || [])
-
-      setLoading(false)
-    } catch (error) {
-      console.error("Failed to load gameplan:", error)
-      setLoading(false)
-    }
+  const handleLogout = async () => {
+    // Clear auth token cookie
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+    })
+    
+    // Clear local state and redirect
+    logout()
+    router.push('/login')
   }
 
-  function subscribeToUpdates() {
-    const supabase = createClient()
-
-    const channel = supabase
-      .channel("dashboard_updates")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "contacts",
-        },
-        () => {
-          loadGameplan()
-        },
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "transaction_milestones",
-        },
-        () => {
-          loadGameplan()
-        },
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "video_scripts",
-        },
-        () => {
-          loadGameplan()
-        },
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
+  // Show loading spinner while checking auth
+  if (isLoading) {
+    return <LoadingSpinner fullScreen size="lg" text="Loading your dashboard..." />
   }
 
-  if (loading) {
-    return (
-      <div className="container mx-auto py-8">
-        <div className="flex items-center justify-center min-h-[400px]">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-            <p className="text-muted-foreground">Loading your gameplan...</p>
-          </div>
-        </div>
-      </div>
-    )
+  // If no user after loading, show nothing (will redirect)
+  if (!user) {
+    return null
   }
 
-  const greeting =
-    currentTime.getHours() < 12 ? "Good morning" : currentTime.getHours() < 18 ? "Good afternoon" : "Good evening"
+  const userRole = user.role as UserRole
+  const firstName = user.name.split(' ')[0]
 
   return (
-    <div className="container mx-auto py-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold mb-2">{greeting}!</h1>
-        <p className="text-muted-foreground">
-          {currentTime.toLocaleDateString("en-US", {
-            weekday: "long",
-            month: "long",
-            day: "numeric",
-          })}{" "}
-          - Here&apos;s your gameplan for today
-        </p>
-      </div>
+    <div className="flex min-h-screen bg-slate-950">
+      {/* Sidebar Component */}
+      <Sidebar role={userRole} onLogout={handleLogout} />
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <QuickStatCard
-          icon={Phone}
-          label="Contacts to Call"
-          value={gameplan?.people_to_call?.length || 0}
-          color="text-blue-600"
-          bgColor="bg-blue-100"
-        />
-        <QuickStatCard
-          icon={AlertTriangle}
-          label="At-Risk Deals"
-          value={gameplan?.deals_to_protect?.length || 0}
-          color="text-red-600"
-          bgColor="bg-red-100"
-        />
-        <QuickStatCard
-          icon={Video}
-          label="Content Ready"
-          value={gameplan?.content_to_post?.length || 0}
-          color="text-purple-600"
-          bgColor="bg-purple-100"
-        />
-        <QuickStatCard
-          icon={CheckCircle}
-          label="Tasks Today"
-          value={12}
-          color="text-green-600"
-          bgColor="bg-green-100"
-        />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-3 space-y-6">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="p-2 bg-blue-100 rounded-lg">
-                    <Phone className="h-5 w-5 text-blue-600" />
-                  </div>
-                  <div>
-                    <CardTitle>People to Call</CardTitle>
-                    <CardDescription>Hot leads that need your attention today</CardDescription>
-                  </div>
-                </div>
-                <Badge variant="secondary" className="text-lg">
-                  {gameplan?.people_to_call?.length || 0}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[350px] pr-4">
-                {gameplan?.people_to_call && gameplan.people_to_call.length > 0 ? (
-                  <div className="space-y-3">
-                    {gameplan.people_to_call.map((contact: any) => (
-                      <ContactCard key={contact.id} contact={contact} />
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState icon={Phone} title="No calls scheduled" description="Great! You're all caught up." />
-                )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="p-2 bg-red-100 rounded-lg">
-                    <AlertTriangle className="h-5 w-5 text-red-600" />
-                  </div>
-                  <div>
-                    <CardTitle>Deals to Protect</CardTitle>
-                    <CardDescription>Transactions requiring immediate action</CardDescription>
-                  </div>
-                </div>
-                <Badge variant="destructive" className="text-lg">
-                  {gameplan?.deals_to_protect?.length || 0}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[350px] pr-4">
-                {gameplan?.deals_to_protect && gameplan.deals_to_protect.length > 0 ? (
-                  <div className="space-y-3">
-                    {gameplan.deals_to_protect.map((deal: any) => (
-                      <DealCard key={deal.id} deal={deal} />
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState
-                    icon={CheckCircle}
-                    title="All deals on track"
-                    description="No at-risk transactions. Keep up the great work!"
-                  />
-                )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="p-2 bg-purple-100 rounded-lg">
-                    <Video className="h-5 w-5 text-purple-600" />
-                  </div>
-                  <div>
-                    <CardTitle>Content to Post</CardTitle>
-                    <CardDescription>Approved content ready to share</CardDescription>
-                  </div>
-                </div>
-                <Badge variant="secondary" className="text-lg">
-                  {gameplan?.content_to_post?.length || 0}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[350px] pr-4">
-                {gameplan?.content_to_post && gameplan.content_to_post.length > 0 ? (
-                  <div className="space-y-3">
-                    {gameplan.content_to_post.map((content: any) => (
-                      <ContentCard key={content.id} content={content} />
-                    ))}
-                  </div>
-                ) : (
-                  <EmptyState
-                    icon={Video}
-                    title="No content ready"
-                    description="Review and approve video scripts to get started."
-                  />
-                )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="lg:col-span-1">
-          <Card className="sticky top-4">
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <Lightbulb className="h-5 w-5 text-yellow-500" />
-                <CardTitle>AI Assistant</CardTitle>
-              </div>
-              <CardDescription>Smart suggestions for you</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[calc(100vh-250px)]">
-                <div className="space-y-4">
-                  {suggestions && suggestions.length > 0 ? (
-                    suggestions.map((suggestion, i) => <SuggestionCard key={i} suggestion={suggestion} />)
-                  ) : (
-                    <div className="text-center py-8">
-                      <Lightbulb className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
-                      <p className="text-sm text-muted-foreground">No suggestions right now. Check back soon!</p>
-                    </div>
-                  )}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function QuickStatCard({ icon: Icon, label, value, color, bgColor }: any) {
-  return (
-    <Card>
-      <CardContent className="pt-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-muted-foreground mb-1">{label}</p>
-            <p className="text-2xl font-bold">{value}</p>
-          </div>
-          <div className={`p-3 rounded-lg ${bgColor}`}>
-            <Icon className={`h-6 w-6 ${color}`} />
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function ContactCard({ contact }: any) {
-  return (
-    <div className="flex items-center justify-between p-4 border rounded-lg hover:bg-accent transition-colors group">
-      <div className="flex items-center gap-3 flex-1 min-w-0">
-        <Avatar className="h-10 w-10">
-          <AvatarImage src={contact.avatar_url || "/placeholder.svg"} />
-          <AvatarFallback>
-            {contact.first_name?.[0]}
-            {contact.last_name?.[0]}
-          </AvatarFallback>
-        </Avatar>
-        <div className="flex-1 min-w-0">
-          <p className="font-medium truncate">
-            {contact.first_name} {contact.last_name}
+      {/* Main Content Area */}
+      <main className="ml-64 flex-1 p-8">
+        {/* Welcome Section */}
+        <div className="mb-8">
+          <h1 className="text-4xl font-bold text-white mb-2">
+            {greeting}, {firstName}!
+          </h1>
+          <p className="text-slate-400 text-lg">
+            Welcome to your Smart Engine VIP Agents dashboard
           </p>
-          <div className="flex items-center gap-2 mt-1">
-            <Badge variant="outline" className="text-xs">
-              Score: {contact.lead_score}
-            </Badge>
-            <span className="text-xs text-muted-foreground truncate">{contact.stage}</span>
+          <p className="text-slate-500 text-sm mt-1">
+            {currentTime.toLocaleDateString("en-US", {
+              weekday: "long",
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })}
+          </p>
+        </div>
+
+        {/* Role Badge */}
+        <div className="mb-8">
+          <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600/20 border border-blue-600/30 rounded-lg">
+            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+            <span className="text-blue-400 font-semibold text-sm uppercase tracking-wider">
+              {user.role.replace('_', ' ')}
+            </span>
           </div>
         </div>
-      </div>
-      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <Button size="sm" variant="ghost" className="h-8 w-8 p-0">
-          <Phone className="h-4 w-4" />
-        </Button>
-        <Button size="sm" variant="ghost" className="h-8 w-8 p-0">
-          <MessageSquare className="h-4 w-4" />
-        </Button>
-        <Button size="sm" variant="ghost" className="h-8 w-8 p-0">
-          <Mail className="h-4 w-4" />
-        </Button>
-      </div>
-    </div>
-  )
-}
 
-function DealCard({ deal }: any) {
-  return (
-    <div className="p-4 border rounded-lg hover:bg-accent transition-colors space-y-3">
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
-          <p className="font-medium">{deal.listings?.address || "Transaction"}</p>
-          <p className="text-sm text-muted-foreground">{deal.title}</p>
-        </div>
-        <Badge variant="destructive">At Risk</Badge>
-      </div>
+        {/* Dashboard Content Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* Quick Stats Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 hover:border-blue-600/50 transition-colors">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-white font-semibold">Quick Stats</h3>
+              <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center">
+                <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400 text-sm">Active Tasks</span>
+                <span className="text-white font-bold">12</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400 text-sm">Pending Items</span>
+                <span className="text-white font-bold">5</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-400 text-sm">This Week</span>
+                <span className="text-green-500 font-bold">+24%</span>
+              </div>
+            </div>
+          </div>
 
-      <div className="flex items-start gap-2 text-sm">
-        <Clock className="h-4 w-4 text-orange-500 mt-0.5 flex-shrink-0" />
-        <span className="text-muted-foreground">Due: {new Date(deal.due_date).toLocaleDateString()}</span>
-      </div>
+          {/* Recent Activity Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 hover:border-blue-600/50 transition-colors">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-white font-semibold">Recent Activity</h3>
+              <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center">
+                <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="flex items-start gap-3">
+                <div className="w-2 h-2 bg-blue-500 rounded-full mt-1.5" />
+                <div>
+                  <p className="text-white text-sm">New lead assigned</p>
+                  <p className="text-slate-500 text-xs">2 hours ago</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <div className="w-2 h-2 bg-green-500 rounded-full mt-1.5" />
+                <div>
+                  <p className="text-white text-sm">Task completed</p>
+                  <p className="text-slate-500 text-xs">5 hours ago</p>
+                </div>
+              </div>
+              <div className="flex items-start gap-3">
+                <div className="w-2 h-2 bg-yellow-500 rounded-full mt-1.5" />
+                <div>
+                  <p className="text-white text-sm">Document pending review</p>
+                  <p className="text-slate-500 text-xs">1 day ago</p>
+                </div>
+              </div>
+            </div>
+          </div>
 
-      <div className="flex gap-2 pt-2">
-        <Button size="sm" variant="outline" className="flex-1 bg-transparent" asChild>
-          <Link href={`/transactions/${deal.id}`}>
-            <Eye className="h-3 w-3 mr-1" />
-            View Details
-          </Link>
-        </Button>
-        <Button size="sm" className="flex-1">
-          <CheckCircle className="h-3 w-3 mr-1" />
-          Take Action
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function ContentCard({ content }: any) {
-  return (
-    <div className="p-4 border rounded-lg hover:bg-accent transition-colors space-y-3">
-      <div className="flex items-start gap-3">
-        <div className="w-20 h-20 bg-muted rounded-lg flex items-center justify-center flex-shrink-0">
-          <Video className="h-8 w-8 text-muted-foreground" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className="font-medium truncate">{content.script_purpose || "Video Content"}</p>
-          <p className="text-sm text-muted-foreground">For: {content.contacts?.first_name || "Social Media"}</p>
-          <div className="flex items-center gap-2 mt-2">
-            <Badge variant="outline" className="text-xs">
-              Ready
-            </Badge>
+          {/* Notifications Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 hover:border-blue-600/50 transition-colors">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-white font-semibold">Notifications</h3>
+              <div className="w-8 h-8 bg-blue-600/20 rounded-lg flex items-center justify-center relative">
+                <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+                </svg>
+                <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-slate-900" />
+              </div>
+            </div>
+            <div className="space-y-3">
+              <div className="p-3 bg-slate-800/50 rounded-lg">
+                <p className="text-white text-sm mb-1">New message from client</p>
+                <p className="text-slate-400 text-xs">Check your inbox</p>
+              </div>
+              <div className="p-3 bg-slate-800/50 rounded-lg">
+                <p className="text-white text-sm mb-1">Upcoming showing</p>
+                <p className="text-slate-400 text-xs">Tomorrow at 2:00 PM</p>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="flex gap-2">
-        <Button size="sm" variant="outline" className="flex-1 bg-transparent">
-          <Eye className="h-3 w-3 mr-1" />
-          Preview
-        </Button>
-        <Button size="sm" className="flex-1">
-          <Send className="h-3 w-3 mr-1" />
-          Post Now
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function SuggestionCard({ suggestion }: any) {
-  const icons: any = {
-    action: Phone,
-    insight: TrendingUp,
-    reminder: Calendar,
-    ai_suggestion: Lightbulb,
-    alert: AlertTriangle,
-  }
-
-  const Icon = icons[suggestion.suggestion_type] || Lightbulb
-
-  const priorityConfig: any = {
-    critical: { color: "text-red-500", bgColor: "bg-red-50", borderColor: "border-red-200" },
-    high: { color: "text-orange-500", bgColor: "bg-orange-50", borderColor: "border-orange-200" },
-    medium: { color: "text-blue-500", bgColor: "bg-blue-50", borderColor: "border-blue-200" },
-    low: { color: "text-gray-500", bgColor: "bg-gray-50", borderColor: "border-gray-200" },
-  }
-
-  const config = priorityConfig[suggestion.priority] || priorityConfig.medium
-
-  return (
-    <div className={`p-3 border rounded-lg ${config.borderColor} ${config.bgColor} space-y-2`}>
-      <div className="flex items-start gap-2">
-        <Icon className={`h-4 w-4 mt-0.5 flex-shrink-0 ${config.color}`} />
-        <div className="flex-1 min-w-0">
-          <p className="font-medium text-sm">{suggestion.title}</p>
-          <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{suggestion.description}</p>
+        {/* Additional Info Section */}
+        <div className="mt-8 bg-gradient-to-br from-blue-600/10 to-blue-800/10 border border-blue-600/20 rounded-xl p-8">
+          <div className="flex items-start gap-4">
+            <div className="w-12 h-12 bg-blue-600/20 rounded-xl flex items-center justify-center flex-shrink-0">
+              <svg className="w-6 h-6 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+            </div>
+            <div>
+              <h3 className="text-xl font-bold text-white mb-2">Powered by Smart Engine AI</h3>
+              <p className="text-slate-300 leading-relaxed">
+                Your intelligent assistant is ready to help you manage contacts, generate insights, and streamline your workflow. 
+                Explore the navigation menu to access all features tailored to your role.
+              </p>
+            </div>
+          </div>
         </div>
-      </div>
-      {suggestion.action_payload?.action && (
-        <Button size="sm" variant="outline" className="w-full text-xs bg-transparent">
-          {suggestion.action_payload.action.replace(/_/g, " ")}
-        </Button>
-      )}
-    </div>
-  )
-}
 
-function EmptyState({ icon: Icon, title, description }: any) {
-  return (
-    <div className="flex flex-col items-center justify-center py-12 text-center">
-      <div className="p-3 bg-muted rounded-full mb-3">
-        <Icon className="h-8 w-8 text-muted-foreground" />
-      </div>
-      <h3 className="font-medium mb-1">{title}</h3>
-      <p className="text-sm text-muted-foreground">{description}</p>
+        {/* User Info Debug Section */}
+        <div className="mt-8 p-6 bg-slate-900/50 border border-slate-800 rounded-xl">
+          <h3 className="text-slate-400 text-sm font-semibold mb-4 uppercase tracking-wider">Account Information</h3>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-slate-500">Name:</span>
+              <span className="text-white ml-2">{user.name}</span>
+            </div>
+            <div>
+              <span className="text-slate-500">Email:</span>
+              <span className="text-white ml-2">{user.email}</span>
+            </div>
+            <div>
+              <span className="text-slate-500">Role:</span>
+              <span className="text-white ml-2">{user.role}</span>
+            </div>
+            {user.brokerageId && (
+              <div>
+                <span className="text-slate-500">Brokerage ID:</span>
+                <span className="text-white ml-2">{user.brokerageId}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </main>
     </div>
   )
 }

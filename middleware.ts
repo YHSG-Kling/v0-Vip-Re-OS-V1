@@ -2,13 +2,18 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
 // Routes that don't require authentication
-const publicRoutes = ['/login', '/register', '/forgot-password']
+const publicRoutes = ['/', '/login', '/register', '/forgot-password']
 
 // API routes that don't require authentication
-const publicApiRoutes = ['/api/auth/login', '/api/auth/register', '/api/auth/refresh']
+const publicApiRoutes = ['/api/auth/login', '/api/auth/register', '/api/auth/refresh', '/api/auth/demo-users', '/api/auth/logout']
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
+  
+  // Allow root path (it will handle its own redirect)
+  if (pathname === '/') {
+    return NextResponse.next()
+  }
   
   // Allow public routes
   if (publicRoutes.some(route => pathname.startsWith(route))) {
