@@ -52,6 +52,7 @@ interface AuthState {
   error: string | null
   login: (email: string, password: string) => Promise<boolean>
   logout: () => void
+  checkAuth: () => void
   setUser: (user: User | null) => void
   setRole: (role: UserRole) => void
   clearError: () => void
@@ -63,7 +64,7 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       role: UserRole.CONTACT,
       isAuthenticated: false,
-      isLoading: false,
+      isLoading: true,
       error: null,
 
       login: async (email: string, password: string) => {
@@ -191,6 +192,17 @@ export const useAuthStore = create<AuthState>()(
           isAuthenticated: false,
           error: null,
         })
+      },
+
+      checkAuth: () => {
+        // This will be called on mount to check localStorage and set isLoading to false
+        const state = get()
+        set({ isLoading: false })
+        
+        // If user exists in state but not authenticated, clear the user
+        if (state.user && !state.isAuthenticated) {
+          set({ user: null, role: UserRole.CONTACT })
+        }
       },
 
       setUser: (user) => {
