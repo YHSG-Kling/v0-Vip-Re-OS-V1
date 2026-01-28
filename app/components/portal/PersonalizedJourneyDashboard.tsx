@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
-import { CheckCircle2, Clock, ChevronRight, FileText, Video, Calculator, BookOpen, Play, Download, ExternalLink, Lightbulb, Target, Type as type, LucideIcon } from "lucide-react"
+import { CheckCircle2, Clock, ChevronRight, FileText, Video, Calculator, BookOpen, Play, Download, ExternalLink, Lightbulb, Target, Type as type, type LucideIcon } from "lucide-react"
 import Link from "next/link"
 import { getPersonaConfig, getPersonaJourneyStages } from "@/lib/portal/persona-config"
 import { calculateJourneyProgress } from "@/lib/portal/journey-utils"
@@ -86,7 +86,7 @@ export default function PersonalizedJourneyDashboard({
   } = journeyProgress
 
   const [activeTab, setActiveTab] = useState("stages")
-  const [expandedStage, setExpandedStage] = useState<string | undefined>(stages[currentStageIndex]?.id)
+  const [expandedStage, setExpandedStage] = useState<string>(stages[currentStageIndex]?.id || stages[0]?.id || "")
 
   const getStageStatus = (index: number): "completed" | "current" | "upcoming" => {
     if (index < currentStageIndex) return "completed"
