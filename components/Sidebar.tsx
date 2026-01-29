@@ -6,6 +6,8 @@ import { usePathname } from "next/navigation"
 import { UserRole } from "../types"
 import { usePermissions } from "../hooks/usePermissions"
 import { ROLE_NAVIGATION } from "../services/permissionsService"
+import Link from "next/link"
+import { getNavItemUrl } from "../../../constants/routes"
 import {
   LayoutDashboard,
   Users,
@@ -221,10 +223,11 @@ const Sidebar: React.FC<SidebarProps> = ({ role, onLogout, onChangeView }) => {
           } else {
             const Icon = item.icon
             const isActive = currentView === item.id
+            const href = getNavItemUrl(item.id!)
             return (
-              <button
+              <Link
                 key={item.id}
-                onClick={() => onChangeView(item.id!)}
+                href={href}
                 className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-[11px] font-bold transition-all ${
                   isActive
                     ? "bg-blue-700 text-white shadow-lg shadow-blue-950/50"
@@ -233,7 +236,7 @@ const Sidebar: React.FC<SidebarProps> = ({ role, onLogout, onChangeView }) => {
               >
                 <Icon size={16} />
                 {item.label}
-              </button>
+              </Link>
             )
           }
         })}
