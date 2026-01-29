@@ -65,3 +65,7 @@ export const ROUTE_MAP: Record<string, string> = {
   workflows: "/workflows",
   "video-assistant": "/video-assistant",
 }
+
+export function getNavItemUrl(navId: string): string {
+  return ROUTE_MAP[navId] || `/${navId}`
+}
