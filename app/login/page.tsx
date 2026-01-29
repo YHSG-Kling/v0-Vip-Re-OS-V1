@@ -91,6 +91,8 @@ export default function LoginPage() {
     setError(null)
     setSelectedEmail(email)
 
+    console.log('[v0] Starting login for:', email)
+
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
@@ -101,19 +103,28 @@ export default function LoginPage() {
       })
 
       const data = await response.json()
+      console.log('[v0] Login response:', data)
 
       if (data.success && data.user) {
-        // Update Zustand store
-        const { login } = useAuthStore.getState()
-        await login(email, '') // Password not used for demo login
+        // Update Zustand store directly with the API response user data
+        const { setUser } = useAuthStore.getState()
+        setUser({
+          id: data.user.id,
+          email: data.user.email,
+          name: data.user.name,
+          role: data.user.role,
+        })
+        
+        console.log('[v0] User authenticated, redirecting to dashboard')
         
         // Redirect to dashboard
         router.push('/dashboard')
       } else {
+        console.error('[v0] Login failed:', data.error)
         setError(data.error || 'Login failed')
       }
     } catch (err) {
-      console.error('Login error:', err)
+      console.error('[v0] Login error:', err)
       setError('An unexpected error occurred. Please try again.')
     } finally {
       setIsLoading(false)
