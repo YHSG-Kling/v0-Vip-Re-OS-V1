@@ -372,7 +372,7 @@ export async function getVendorBookings(vendorId: string) {
       *,
       transactions(
         property_address,
-        agents(first_name, last_name, email, phone)
+        agents(id, user_id(first_name, last_name, email, phone))
       )
     `)
     .eq("vendor_id", vendorId)
@@ -392,13 +392,13 @@ export async function getComplianceOfficerDashboard(officerId: string) {
     supabase.from("compliance_reviews").select("*").in("review_status", ["pending", "in_review"]).order("created_at"),
     supabase
       .from("compliance_flags")
-      .select("*, agents(first_name, last_name)")
+      .select("*, agents(id, user_id(first_name, last_name))")
       .eq("resolution_status", "open")
       .order("detected_at", { ascending: false })
       .limit(20),
     supabase
       .from("agent_performance_metrics")
-      .select("agent_id, compliance_score, agents(first_name, last_name)")
+      .select("agent_id, compliance_score, agents(id, user_id(first_name, last_name))")
       .order("compliance_score")
       .limit(10),
   ])
