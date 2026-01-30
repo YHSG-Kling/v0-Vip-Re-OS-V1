@@ -1212,3 +1212,40 @@ export async function getLenderDashboard(lenderId: string) {
 
   return { lender, loans }
 }
+/**
+ * Submit vendor invoice
+ */
+export async function submitVendorInvoice(params: {
+  bookingId: string
+  amount: number
+  invoiceDate: string
+  dueDate: string
+  invoiceNumber: string
+  notes?: string
+}): Promise<{ success: boolean; invoiceId?: string; error?: string }> {
+  try {
+    const supabase = createServiceClient()
+    
+    const { data, error } = await supabase
+      .from("vendor_invoices")
+      .insert({
+        booking_id: params.bookingId,
+        amount: params.amount,
+        invoice_date: params.invoiceDate,
+        due_date: params.dueDate,
+        invoice_number: params.invoiceNumber,
+        notes: params.notes,
+        status: "pending",
+        created_at: new Date().toISOString(),
+      })
+      .select("id")
+      .single()
+    
+    if (error) throw error
+    
+    return { success: true, invoiceId: data.id }
+  } catch (error) {
+    console.error("[Multi-persona] Submit invoice error:", error)
+    return { success: false, error: String(error) }
+  }
+}
