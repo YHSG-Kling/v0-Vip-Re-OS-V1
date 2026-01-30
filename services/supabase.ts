@@ -11,12 +11,11 @@ export function getSupabase() {
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    console.error("[v0] Supabase configuration missing:")
-    console.error("[v0] NEXT_PUBLIC_SUPABASE_URL:", supabaseUrl ? "set" : "MISSING")
-    console.error("[v0] NEXT_PUBLIC_SUPABASE_ANON_KEY:", supabaseAnonKey ? "set" : "MISSING")
-    throw new Error(
-      "Supabase configuration incomplete. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to Vars section.",
-    )
+    console.warn("[v0] Supabase configuration missing - using fallback mode")
+    console.warn("[v0] NEXT_PUBLIC_SUPABASE_URL:", supabaseUrl ? "set" : "MISSING")
+    console.warn("[v0] NEXT_PUBLIC_SUPABASE_ANON_KEY:", supabaseAnonKey ? "set" : "MISSING")
+    // Return null instead of throwing to allow app to work without Supabase
+    return null
   }
 
   supabaseInstance = createClient(supabaseUrl, supabaseAnonKey, {
@@ -51,6 +50,17 @@ export const supabase = new Proxy({} as ReturnType<typeof createClient>, {
       return undefined
     }
     const client = getSupabase()
+    if (!client) {
+      // Return safe fallbacks if Supabase is not configured
+      if (prop === 'auth') {
+        return {
+          getSession: () => Promise.resolve({ data: { session: null }, error: null }),
+          onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
+          signOut: () => Promise.resolve({ error: null }),
+        }
+      }
+      return undefined
+    }
     return (client as any)[prop]
   },
 })
