@@ -215,7 +215,7 @@ Provide:
 }
 
 // Calculate net sheet
-export function calculateNetSheet(params: {
+export async function calculateNetSheet(params: {
   sale_price: number
   listing_price?: number
   earnest_money: number
