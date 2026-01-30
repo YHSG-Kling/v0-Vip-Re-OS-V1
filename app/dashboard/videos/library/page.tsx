@@ -1,9 +1,8 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Suspense } from "react"
 import { useRouter } from "next/navigation"
 import { useSearchParams } from "next/navigation"
-import { Suspense } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -54,9 +53,14 @@ interface VideoItem {
   property_address?: string
 }
 
-const Loading = () => null
+const Loading = () => (
+  <div className="flex items-center justify-center py-16">
+    <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
+  </div>
+)
 
-export default function VideoLibraryPage() {
+// ✅ INNER COMPONENT: Uses useSearchParams (wrapped in Suspense boundary)
+function VideoLibraryContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const { user } = useAuth()
@@ -341,9 +345,7 @@ export default function VideoLibraryPage() {
 
         {/* Video Grid/List */}
         {loading ? (
-          <div className="flex items-center justify-center py-16">
-            <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
-          </div>
+          <Loading />
         ) : filteredVideos.length === 0 ? (
           <Card>
             <CardContent className="p-16 text-center">
@@ -528,6 +530,15 @@ export default function VideoLibraryPage() {
         )}
       </div>
     </div>
+  )
+}
+
+// ✅ OUTER COMPONENT: Wraps content in Suspense boundary
+export default function VideoLibraryPage() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <VideoLibraryContent />
+    </Suspense>
   )
 }
 
