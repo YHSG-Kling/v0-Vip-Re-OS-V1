@@ -673,7 +673,7 @@ export async function getPendingApprovals() {
 
   const { data, error } = await supabase
     .from("content_approval_queue")
-    .select("*, agents(first_name, last_name)")
+    .select("*, agents(id, user_id(first_name, last_name, email))")
     .in("compliance_status", ["pending", "needs_revision"])
     .order("submitted_at", { ascending: true })
 
@@ -693,8 +693,8 @@ export async function getComplianceViolations(agentId?: string, userId?: string)
     .from("compliance_flags")
     .select(`
       *,
-      agents (first_name, last_name, email)
-    `)
+  agents (id, user_id(first_name, last_name, email))
+`)
     .order("detected_at", { ascending: false })
 
   if (agentId) {
