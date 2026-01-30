@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
         detected_by: "automated_audit",
       }))
 
-      await supabase.from("compliance_violations").insert(violations)
+      await supabase.from("compliance_flags").insert(violations)
       results.cold_lead_violations_detected = coldLeadViolations.length
     }
 
@@ -119,7 +119,7 @@ export async function GET(request: NextRequest) {
         detected_by: "automated_audit",
       }))
 
-      await supabase.from("compliance_violations").insert(violations)
+      await supabase.from("compliance_flags").insert(violations)
     }
 
     return NextResponse.json({
