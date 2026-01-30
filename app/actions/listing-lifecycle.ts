@@ -5,7 +5,7 @@ import { logListingAppointmentSet, logListingSigned, logListingLive } from "@/li
 import { revalidatePath } from "next/cache"
 
 // Re-exports moved to direct imports from listings.ts
-// Users should import directly: import { getListings, createListing } from "@/app/actions/listings"
+import { getListings, createListing } from "@/app/actions/listings"
 
 // =====================================================
 // LISTING LIFECYCLE SERVER ACTIONS
