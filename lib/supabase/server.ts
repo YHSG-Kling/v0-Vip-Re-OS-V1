@@ -1,8 +1,44 @@
 import { createServerClient } from "@supabase/ssr"
 
 export async function createClient() {
-  const { cookies } = await import("next/headers")
-  const cookieStore = await cookies()
+  let cookieStore
+  
+  try {
+    const { cookies } = await import("next/headers")
+    cookieStore = await cookies()
+  } catch (error) {
+    // If cookies() fails (e.g., during static generation), return a minimal client
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+    if (!url || !key) {
+      throw new Error("Missing Supabase environment variables. Please check your configuration.")
+    }
+
+    return createServerClient(url, key, {
+      cookies: {
+        getAll() {
+          return []
+        },
+        setAll(cookiesToSet) {
+          // Silently fail during static generation
+        },
+      },
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false,
+      },
+      global: {
+        fetch: (url, options = {}) => {
+          return fetch(url, {
+            ...options,
+            signal: undefined,
+          })
+        },
+      },
+    })
+  }
 
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
