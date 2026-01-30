@@ -4,8 +4,8 @@ import { createClient } from "@/lib/supabase/server"
 import { logListingAppointmentSet, logListingSigned, logListingLive } from "@/lib/events/event-helpers"
 import { revalidatePath } from "next/cache"
 
-// Re-export from listings.ts for backward compatibility
-export { getListings, createListing } from "./listings"
+// Re-exports moved to direct imports from listings.ts
+// Users should import directly: import { getListings, createListing } from "@/app/actions/listings"
 
 // =====================================================
 // LISTING LIFECYCLE SERVER ACTIONS
