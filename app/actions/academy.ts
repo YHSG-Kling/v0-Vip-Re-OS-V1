@@ -98,7 +98,7 @@ export async function cloneTemplate(templateId: string) {
 
   // Clone the playbook
   const { data: clonedPlaybook, error: cloneError } = await supabase
-    .from("playbooks")
+    .from("plan_tasks")
     .insert({
       name: `${template.name} (Copy)`,
       description: template.description,
