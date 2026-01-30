@@ -391,7 +391,7 @@ export async function getComplianceOfficerDashboard(officerId: string) {
   const [{ data: pendingReviews }, { data: recentViolations }, { data: agentScores }] = await Promise.all([
     supabase.from("compliance_reviews").select("*").in("review_status", ["pending", "in_review"]).order("created_at"),
     supabase
-      .from("compliance_violations")
+      .from("compliance_flags")
       .select("*, agents(first_name, last_name)")
       .eq("resolution_status", "open")
       .order("detected_at", { ascending: false })
@@ -1100,9 +1100,9 @@ export async function calculateComplianceRiskScore(agentId: string) {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 
   const [{ data: violations }, { data: unapprovedContent }, { data: themFirstScores }] = await Promise.all([
-    supabase.from("compliance_violations").select("*").eq("agent_id", agentId).gte("detected_at", thirtyDaysAgo.toISOString()),
+    supabase.from("compliance_flags").select("*").eq("agent_id", agentId).gte("detected_at", thirtyDaysAgo.toISOString()),
     supabase
-      .from("content_approvals")
+      .from("content_approval_queue")
       .select("*")
       .eq("agent_id", agentId)
       .eq("compliance_status", "needs_revision")
