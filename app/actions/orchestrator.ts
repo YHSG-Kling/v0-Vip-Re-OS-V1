@@ -1,4 +1,4 @@
-"use server"
+
 
 import { createServerClient } from "@/lib/supabase/server"
 import { generateSmartSuggestion } from "./assistant"
