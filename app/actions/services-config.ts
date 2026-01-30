@@ -73,7 +73,7 @@ export async function getServicesRegistry() {
 export async function getAIAgentTemplates() {
   const supabase = await createClient()
 
-  const { data, error } = await supabase.from("ai_agents").select("*").order("created_at", { ascending: true })
+  const { data, error } = await supabase.from("agents").select("*").order("created_at", { ascending: true })
 
   if (error) {
     console.error("Error fetching AI agent templates:", error)
@@ -94,7 +94,7 @@ export async function createAIAgentTemplate(params: {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("ai_agents")
+    .from("agents")
     .insert({
       agent_name: params.agent_name,
       agent_type: params.agent_type,
@@ -116,7 +116,7 @@ export async function createAIAgentTemplate(params: {
 export async function toggleAIAgentTemplate(agentId: string, active: boolean) {
   const supabase = await createClient()
 
-  const { error } = await supabase.from("ai_agents").update({ active }).eq("id", agentId)
+  const { error } = await supabase.from("agents").update({ active }).eq("id", agentId)
 
   if (error) throw error
 
@@ -131,7 +131,7 @@ export async function toggleAIAgentTemplate(agentId: string, active: boolean) {
 export async function getPlaybooks() {
   const supabase = await createClient()
 
-  const { data, error } = await supabase.from("playbooks").select("*").order("usage_count", { ascending: false })
+  const { data, error } = await supabase.from("plan_tasks").select("*").order("usage_count", { ascending: false })
 
   if (error) {
     console.error("Error fetching playbooks:", error)
@@ -150,7 +150,7 @@ export async function createPlaybook(params: {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("playbooks")
+    .from("plan_tasks")
     .insert({
       playbook_name: params.playbook_name,
       trigger_type: params.trigger_type,
@@ -171,7 +171,7 @@ export async function createPlaybook(params: {
 export async function togglePlaybook(playbookId: string, active: boolean) {
   const supabase = await createClient()
 
-  const { error } = await supabase.from("playbooks").update({ active }).eq("id", playbookId)
+  const { error } = await supabase.from("plan_tasks").update({ active }).eq("id", playbookId)
 
   if (error) throw error
 
@@ -186,7 +186,7 @@ export async function togglePlaybook(playbookId: string, active: boolean) {
 export async function getStageRules() {
   const supabase = await createClient()
 
-  const { data, error } = await supabase.from("stage_rules").select("*").order("entity_type", { ascending: true })
+  const { data, error } = await supabase.from("compliance_rules").select("*").order("entity_type", { ascending: true })
 
   if (error) {
     console.error("Error fetching stage rules:", error)
@@ -206,7 +206,7 @@ export async function createStageRule(params: {
 }) {
   const supabase = await createClient()
 
-  const { data, error } = await supabase.from("stage_rules").insert(params).select().single()
+  const { data, error } = await supabase.from("compliance_rules").insert(params).select().single()
 
   if (error) throw error
 
@@ -217,7 +217,7 @@ export async function createStageRule(params: {
 export async function deleteStageRule(ruleId: string) {
   const supabase = await createClient()
 
-  const { error } = await supabase.from("stage_rules").delete().eq("id", ruleId)
+  const { error } = await supabase.from("compliance_rules").delete().eq("id", ruleId)
 
   if (error) throw error
 
@@ -245,7 +245,7 @@ export async function togglePlaybookStatus(playbookId: string, enabled: boolean)
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("playbooks")
+    .from("plan_tasks")
     .update({ enabled, updated_at: new Date().toISOString() })
     .eq("id", playbookId)
     .select()
