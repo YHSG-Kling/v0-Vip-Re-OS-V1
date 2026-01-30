@@ -1,4 +1,3 @@
-"use server"
 
 import { createClient } from "@/lib/supabase/server"
 import { sendSMS, sendEmail } from "@/app/actions/communications"
