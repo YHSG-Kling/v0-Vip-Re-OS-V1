@@ -10,7 +10,7 @@
 import { sendEmail } from "@/app/actions/communications"
 
 // Re-export main communication functions from the canonical source
-export { 
+import { 
   sendSMS, 
   logCall, 
   getContactHistory,
