@@ -1,4 +1,4 @@
-"use server"
+
 
 import { createServiceClient } from "./supabase/service"
 
