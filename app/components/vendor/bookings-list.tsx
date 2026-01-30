@@ -18,7 +18,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { MapPin, Calendar, Clock, User, DollarSign, FileText } from "lucide-react"
-import { updateVendorBookingStatus, submitVendorInvoice } from "@/app/actions/multi-persona"
+import { updateVendorBookingStatus_v2 , submitVendorInvoice } from "@/app/actions/multi-persona"
 
 interface Booking {
   id: string
