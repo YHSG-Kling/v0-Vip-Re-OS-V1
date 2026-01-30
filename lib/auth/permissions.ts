@@ -25,9 +25,28 @@ export interface BrokerageContext {
 
 /**
  * Creates a Supabase server client for server-side operations
+ * ✅ FIXED: Wrapped cookies() call to handle static generation context
  */
 function getSupabaseServerClient() {
-  const cookieStore = cookies()
+  let cookieStore
+  try {
+    cookieStore = cookies()
+  } catch (error) {
+    // If cookies() fails (e.g., during static generation), return a minimal client
+    // This allows pages to generate statically without auth context
+    return createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return undefined
+          },
+        },
+      }
+    )
+  }
+
   return createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
     cookies: {
       get(name: string) {
@@ -36,23 +55,6 @@ function getSupabaseServerClient() {
     },
   })
 }
-
-/**
- * Get the current authenticated user with their role and brokerage information
- * @returns UserWithRole object or null if not authenticated
- */
-export async function getCurrentUserWithRole(): Promise<UserWithRole | null> {
-  const supabase = getSupabaseServerClient()
-
-  // Get current user from Supabase Auth
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
-    return null
-  }
 
   // Get user's brokerage and role information
   const { data: userBrokerageRole, error: roleError } = await supabase
