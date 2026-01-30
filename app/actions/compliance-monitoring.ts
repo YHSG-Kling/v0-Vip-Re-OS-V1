@@ -690,11 +690,11 @@ export async function getComplianceViolations(agentId?: string, userId?: string)
   const supabase = await createClient()
 
   let query = supabase
-    .from("compliance_flags")
+    .from("compliance_violations")  // ✅ CORRECT TABLE!
     .select(`
       *,
-  agents (id, user_id(first_name, last_name, email))
-`)
+      agents (id, user_id(first_name, last_name, email))
+    `)
     .order("detected_at", { ascending: false })
 
   if (agentId) {
