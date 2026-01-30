@@ -633,7 +633,7 @@ export async function checkStateCompliance(
 // DOCUMENT EDUCATIONAL OVERLAYS (STATIC)
 // ============================================
 
-export function getEducationalOverlay(documentType: string) {
+export async function getEducationalOverlay(documentType: string) {
   const overlays: Record<string, any> = {
     purchase_agreement: {
       common_questions: [
