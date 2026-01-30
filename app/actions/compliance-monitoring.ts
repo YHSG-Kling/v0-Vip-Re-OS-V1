@@ -491,7 +491,7 @@ export async function submitContentForApproval(data: {
 
   // Create approval request
   const { data: approval, error } = await supabase
-    .from("content_approvals")
+    .from("content_approval_queue")
     .insert({
       user_id: data.userId,
       agent_id: data.agentId,
@@ -540,13 +540,13 @@ export async function reviewContentApproval(data: {
     }
   }
 
-  const { error } = await supabase.from("content_approvals").update(updateData).eq("id", data.approvalId)
+  const { error } = await supabase.from("content_approval_queue").update(updateData).eq("id", data.approvalId)
 
   if (error) throw error
 
   // If approved, add to library
   if (data.status === "approved") {
-    const { data: approval } = await supabase.from("content_approvals").select("*").eq("id", data.approvalId).single()
+    const { data: approval } = await supabase.from("content_approval_queue").select("*").eq("id", data.approvalId).single()
 
     if (approval) {
       await supabase.from("approved_content_library").insert({
@@ -593,7 +593,7 @@ export async function logCommunicationWithCompliance(data: {
     }
 
     // Log violation
-    await supabase.from("compliance_violations").insert({
+    await supabase.from("compliance_flags").insert({
       user_id: data.userId,
       agent_id: data.agentId,
       violation_type: "cold_lead_channel_violation",
@@ -643,7 +643,7 @@ export async function getApprovedContentLibrary(filters?: {
 }) {
   const supabase = await createClient()
 
-  let query = supabase.from("approved_content_library").select("*, content_approvals(*)").eq("is_active", true)
+  let query = supabase.from("approved_content_library").select("*, content_approval_queue(*)").eq("is_active", true)
 
   if (filters?.category) {
     query = query.eq("content_category", filters.category)
@@ -672,7 +672,7 @@ export async function getPendingApprovals() {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("content_approvals")
+    .from("content_approval_queue")
     .select("*, agents(first_name, last_name)")
     .in("compliance_status", ["pending", "needs_revision"])
     .order("submitted_at", { ascending: true })
@@ -690,7 +690,7 @@ export async function getComplianceViolations(agentId?: string, userId?: string)
   const supabase = await createClient()
 
   let query = supabase
-    .from("compliance_violations")
+    .from("compliance_flags")
     .select(`
       *,
       agents (first_name, last_name, email)
@@ -741,7 +741,7 @@ export async function generateComplianceReport(filters: {
   const { data: logs } = await logsQuery
 
   let violationsQuery = supabase
-    .from("compliance_violations")
+    .from("compliance_flags")
     .select("*")
     .gte("detected_at", filters.startDate)
     .lte("detected_at", filters.endDate)
