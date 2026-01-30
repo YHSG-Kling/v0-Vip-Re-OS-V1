@@ -374,7 +374,7 @@ export async function handleAllTasksCompletedEvent(payload: any) {
 }
 
 // Pre-populate form data based on task type
-export function getTaskFormFields(taskType: string): {
+export async function getTaskFormFields(taskType: string): {
   fields: { name: string; label: string; type: string; required: boolean; options?: string[] }[]
   description: string
 } {
