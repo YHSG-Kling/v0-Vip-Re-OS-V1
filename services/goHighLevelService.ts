@@ -1,4 +1,4 @@
-"use server"
+
 
 // =====================================================
 // GO HIGH LEVEL (GHL) INTEGRATION SERVICE
