@@ -1,4 +1,3 @@
-"use server"
 
 /**
  * GoHighLevel (GHL) Integration for AI Chat
