@@ -6,6 +6,53 @@
 --         newsletter_performance_analytics, newsletter_seo_scores
 -- ============================================================================
 
+-- Drop existing policies and tables if they exist
+DROP POLICY IF EXISTS "Users view templates from own brokerage" ON newsletter_brokers_templates;
+DROP POLICY IF EXISTS "Users create templates in own brokerage" ON newsletter_brokers_templates;
+DROP POLICY IF EXISTS "Users update templates in own brokerage" ON newsletter_brokers_templates;
+DROP POLICY IF EXISTS "Users delete templates in own brokerage" ON newsletter_brokers_templates;
+
+DROP POLICY IF EXISTS "View sections from own templates" ON newsletter_sections;
+DROP POLICY IF EXISTS "Insert sections for own templates" ON newsletter_sections;
+DROP POLICY IF EXISTS "Update sections for own templates" ON newsletter_sections;
+DROP POLICY IF EXISTS "Delete sections for own templates" ON newsletter_sections;
+
+DROP POLICY IF EXISTS "View local content from own brokerage" ON newsletter_local_content;
+DROP POLICY IF EXISTS "Insert local content to own brokerage" ON newsletter_local_content;
+DROP POLICY IF EXISTS "Update local content in own brokerage" ON newsletter_local_content;
+DROP POLICY IF EXISTS "Delete local content in own brokerage" ON newsletter_local_content;
+
+DROP POLICY IF EXISTS "View news sources from own brokerage" ON local_news_sources;
+DROP POLICY IF EXISTS "Insert news sources to own brokerage" ON local_news_sources;
+DROP POLICY IF EXISTS "Update news sources in own brokerage" ON local_news_sources;
+DROP POLICY IF EXISTS "Delete news sources in own brokerage" ON local_news_sources;
+
+DROP POLICY IF EXISTS "View scheduled sends from own brokerage" ON newsletter_scheduled_sends;
+DROP POLICY IF EXISTS "Insert scheduled sends to own brokerage" ON newsletter_scheduled_sends;
+DROP POLICY IF EXISTS "Update scheduled sends in own brokerage" ON newsletter_scheduled_sends;
+DROP POLICY IF EXISTS "Delete scheduled sends in own brokerage" ON newsletter_scheduled_sends;
+
+DROP POLICY IF EXISTS "View send tracking from own brokerage" ON newsletter_send_tracking;
+DROP POLICY IF EXISTS "Insert send tracking for own scheduled sends" ON newsletter_send_tracking;
+DROP POLICY IF EXISTS "Update send tracking for own scheduled sends" ON newsletter_send_tracking;
+
+DROP POLICY IF EXISTS "View analytics from own brokerage" ON newsletter_performance_analytics;
+DROP POLICY IF EXISTS "Insert analytics for own scheduled sends" ON newsletter_performance_analytics;
+DROP POLICY IF EXISTS "Update analytics for own scheduled sends" ON newsletter_performance_analytics;
+
+DROP POLICY IF EXISTS "View seo scores from own brokerage" ON newsletter_seo_scores;
+DROP POLICY IF EXISTS "Insert seo scores for own scheduled sends" ON newsletter_seo_scores;
+DROP POLICY IF EXISTS "Update seo scores for own scheduled sends" ON newsletter_seo_scores;
+
+DROP TABLE IF EXISTS newsletter_seo_scores CASCADE;
+DROP TABLE IF EXISTS newsletter_performance_analytics CASCADE;
+DROP TABLE IF EXISTS newsletter_send_tracking CASCADE;
+DROP TABLE IF EXISTS newsletter_scheduled_sends CASCADE;
+DROP TABLE IF EXISTS local_news_sources CASCADE;
+DROP TABLE IF EXISTS newsletter_local_content CASCADE;
+DROP TABLE IF EXISTS newsletter_sections CASCADE;
+DROP TABLE IF EXISTS newsletter_brokers_templates CASCADE;
+
 -- ============================================================================
 -- TABLE 1: newsletter_brokers_templates
 -- Purpose: Store approved newsletter templates per brokerage
@@ -115,9 +162,7 @@ CREATE TABLE IF NOT EXISTS newsletter_scheduled_sends (
   ab_test_variant TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   sent_at TIMESTAMPTZ,
-  failed_reason TEXT,
-  
-  CONSTRAINT send_time_future CHECK (scheduled_send_time > now())
+  failed_reason TEXT
 );
 
 -- ============================================================================
