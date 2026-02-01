@@ -1,0 +1,7 @@
+export { default as PersonaDashboardTabs } from './PersonaDashboardTabs.tsx'
+export { default as PersonaFeatureCards } from './PersonaFeatureCards.tsx'
+export { default as PersonaPropertiesDashboard } from './PersonaPropertiesDashboard.tsx'
+export { default as PersonaQuickActions } from './PersonaQuickActions.tsx'
+export { default as PersonaWelcomeHero } from './PersonaWelcomeHero.tsx'
+export { default as PersonaWidgetGrid } from './PersonaWidgetGrid.tsx'
+export { default as PersonalizedJourneyDashboard } from './PersonalizedJourneyDashboard.tsx'
