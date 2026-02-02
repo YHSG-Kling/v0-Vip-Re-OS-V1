@@ -5,10 +5,10 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { signInWithMagicLink } from '@/app/actions/auth'
-import { demoLogin } from '@/app/actions/demo-login'
 import { MagicLinkState } from '@/app/types/auth'
 import { AUTH_MESSAGES, DEMO_CONFIG, DEMO_USERS } from '@/app/constants/auth'
+import { signInWithMagicLink } from '@/app/actions/auth'
+import { demoLogin } from '@/app/actions/demo-login'
 
 export function LoginForm() {
   const router = useRouter()
