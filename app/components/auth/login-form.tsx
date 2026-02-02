@@ -25,9 +25,14 @@ export function LoginForm() {
 
   // Load demo users on mount
   useEffect(() => {
+    console.log('[v0] DEMO_CONFIG.ENABLED:', DEMO_CONFIG.ENABLED)
+    console.log('[v0] DEMO_USERS count:', DEMO_USERS.length)
     if (DEMO_CONFIG.ENABLED) {
       setDemoMode(true)
       setDemoUsers(DEMO_USERS)
+      console.log('[v0] Demo mode activated with', DEMO_USERS.length, 'users')
+    } else {
+      console.log('[v0] Demo mode is DISABLED')
     }
   }, [])
 
