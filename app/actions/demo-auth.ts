@@ -36,19 +36,18 @@ export async function demoSignIn(email: string): Promise<SignInResponse> {
   try {
     const supabase = await createClient()
 
-    // Sign in using password (your demo users use 'DEMO_USER' as password)
+    // Use the password that's stored in the database
     const { data, error } = await supabase.auth.signInWithPassword({
-      email: demoUser.email,
+      email: email,
       password: DEMO_CONFIG.DEMO_PASSWORD,
     })
 
     if (error) {
-      console.error('Demo sign in error:', error)
       return {
         success: false,
         error: {
-          message: error.message || 'Demo login failed',
-          code: error.code || 'auth_error',
+          message: `Authentication failed: ${error.message}`,
+          code: error.name,
         },
       }
     }
@@ -57,7 +56,7 @@ export async function demoSignIn(email: string): Promise<SignInResponse> {
       return {
         success: false,
         error: {
-          message: 'No user returned from auth',
+          message: 'No user returned from authentication',
           code: 'no_user',
         },
       }
@@ -65,15 +64,17 @@ export async function demoSignIn(email: string): Promise<SignInResponse> {
 
     return {
       success: true,
-      message: `Demo login as ${demoUser.role}`,
+      data: {
+        user: data.user,
+        session: data.session,
+      },
     }
-  } catch (err) {
-    console.error('Demo sign in error:', err)
+  } catch (error) {
     return {
       success: false,
       error: {
-        message: 'Demo login failed',
-        code: 'demo_error',
+        message: error instanceof Error ? error.message : 'Unknown error occurred',
+        code: 'unexpected_error',
       },
     }
   }
