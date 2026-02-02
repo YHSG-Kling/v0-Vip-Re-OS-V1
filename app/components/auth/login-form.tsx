@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { signInWithMagicLink } from '@/app/actions/auth'
-import { demoSignIn } from '@/app/actions/demo-auth'
+import { demoLogin } from '@/app/actions/demo-login'
 import { MagicLinkState } from '@/app/types/auth'
 import { AUTH_MESSAGES, DEMO_CONFIG, DEMO_USERS } from '@/app/constants/auth'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -84,8 +84,8 @@ export function LoginForm() {
     setState((prev) => ({ ...prev, isLoading: true }))
     console.log('[v0] Initiating demo login for:', email)
     
-    // demoSignIn now handles redirect internally
-    await demoSignIn(email)
+    // demoLogin now handles redirect internally
+    await demoLogin(email)
   }
 
   const getMessageColor = () => {
