@@ -10,6 +10,8 @@ import { MagicLinkState } from '@/app/types/auth'
 import { AUTH_MESSAGES, DEMO_CONFIG, DEMO_USERS } from '@/app/constants/auth'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
+// Demo login with one-click authentication
+
 export function LoginForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
