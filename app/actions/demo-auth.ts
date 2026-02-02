@@ -1,6 +1,6 @@
 'use server'
 
-import { createServerAuthClient } from '@/lib/supabase/server'
+import { createClient } from '@/lib/supabase/server'
 import { DEMO_CONFIG, DEMO_USERS } from '@/app/constants/auth'
 import { SignInResponse } from '@/app/types/auth'
 
@@ -34,7 +34,7 @@ export async function demoSignIn(email: string): Promise<SignInResponse> {
   }
 
   try {
-    const supabase = await createServerAuthClient()
+    const supabase = await createClient()
 
     // Sign in using password (your demo users use 'DEMO_USER' as password)
     const { data, error } = await supabase.auth.signInWithPassword({
@@ -77,20 +77,4 @@ export async function demoSignIn(email: string): Promise<SignInResponse> {
       },
     }
   }
-}
-
-/**
- * Get all demo users (for demo user selector)
- */
-export function getDemoUsers() {
-  if (!DEMO_CONFIG.ENABLED) {
-    return []
-  }
-
-  return DEMO_USERS.map((user) => ({
-    email: user.email,
-    name: user.name,
-    role: user.role,
-    description: user.description,
-  }))
 }
