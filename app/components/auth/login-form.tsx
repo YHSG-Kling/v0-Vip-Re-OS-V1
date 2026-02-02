@@ -82,19 +82,10 @@ export function LoginForm() {
 
   const handleDemoLogin = async (email: string) => {
     setState((prev) => ({ ...prev, isLoading: true }))
-
-    const result = await demoSignIn(email)
-
-    if (result.success) {
-      // Redirect to dashboard (middleware will handle role-based redirect)
-      router.push('/agent/dashboard')
-    } else {
-      setState((prev) => ({
-        ...prev,
-        error: result.error?.message,
-        isLoading: false,
-      }))
-    }
+    console.log('[v0] Initiating demo login for:', email)
+    
+    // demoSignIn now handles redirect internally
+    await demoSignIn(email)
   }
 
   const getMessageColor = () => {
