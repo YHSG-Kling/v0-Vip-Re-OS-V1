@@ -6,9 +6,8 @@ import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { signInWithMagicLink } from '@/app/actions/auth'
 import { demoSignIn } from '@/app/actions/demo-auth'
-import { getDemoUsers } from '@/app/constants/demo-users'
 import { MagicLinkState } from '@/app/types/auth'
-import { AUTH_MESSAGES } from '@/app/constants/auth'
+import { AUTH_MESSAGES, DEMO_CONFIG, DEMO_USERS } from '@/app/constants/auth'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 export function LoginForm() {
@@ -26,9 +25,10 @@ export function LoginForm() {
 
   // Load demo users on mount
   useEffect(() => {
-    const users = getDemoUsers()
-    setDemoMode(users.length > 0)
-    setDemoUsers(users)
+    if (DEMO_CONFIG.ENABLED) {
+      setDemoMode(true)
+      setDemoUsers(DEMO_USERS)
+    }
   }, [])
 
   // Handle messages from URL
