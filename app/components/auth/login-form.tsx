@@ -1,14 +1,17 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { useSearchParams } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { signInWithMagicLink } from '@/app/actions/auth'
+import { demoSignIn, getDemoUsers } from '@/app/actions/demo-auth'
 import { MagicLinkState } from '@/app/types/auth'
 import { AUTH_MESSAGES } from '@/app/constants/auth'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-export function LoginForm() {
+export default function LoginPage() {
+  const router = useRouter()
   const searchParams = useSearchParams()
   
   const [state, setState] = useState<MagicLinkState>({
@@ -16,6 +19,16 @@ export function LoginForm() {
     message: null,
     isLoading: false,
   })
+
+  const [demoMode, setDemoMode] = useState(false)
+  const [demoUsers, setDemoUsers] = useState<any[]>([])
+
+  // Load demo users on mount
+  useEffect(() => {
+    const users = getDemoUsers()
+    setDemoMode(users.length > 0)
+    setDemoUsers(users)
+  }, [])
 
   // Handle messages from URL
   useEffect(() => {
@@ -29,7 +42,7 @@ export function LoginForm() {
     }
   }, [searchParams])
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleMagicLinkSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
 
     if (!state.email) {
@@ -59,89 +72,215 @@ export function LoginForm() {
     }
   }
 
-  const getMessageColor = () => {
-    if (state.error) return 'text-red-600 bg-red-50 border-red-200'
-    if (state.message === 'check-email') return 'text-green-600 bg-green-50 border-green-200'
-    return 'text-blue-600 bg-blue-50 border-blue-200'
+  const handleDemoLogin = async (email: string) => {
+    setState((prev) => ({ ...prev, isLoading: true }))
+
+    const result = await demoSignIn(email)
+
+    if (result.success) {
+      // Redirect to dashboard (middleware will handle role-based redirect)
+      router.push('/agent/dashboard')
+    } else {
+      setState((prev) => ({
+        ...prev,
+        error: result.error?.message,
+        isLoading: false,
+      }))
+    }
   }
 
+  const getMessageColor = () => {
+    if (state.error) return 'text-red-600 bg-red-50'
+    if (state.message === 'check-email') return 'text-green-600 bg-green-50'
+    return 'text-blue-600 bg-blue-50'
+  }
+
+  // Group demo users by role for better UI
+  const groupedUsers = demoUsers.reduce((acc, user) => {
+    if (!acc[user.role]) {
+      acc[user.role] = []
+    }
+    acc[user.role].push(user)
+    return acc
+  }, {} as Record<string, any[]>)
+
+  const roleOrder = ['agent', 'broker', 'admin', 'transaction_coordinator', 'compliance_manager', 'lender', 'title_agent', 'contact', 'vendor']
+
   return (
-    <div className="w-full max-w-md">
-      {/* Header */}
-      <div className="text-center mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">VIP Agents AI</h1>
-        <p className="text-gray-600 mt-2">Real Estate Operating System</p>
+    <div className="min-h-screen bg-white flex items-center justify-center px-4">
+      <div className="w-full max-w-2xl">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-gray-900">VIP Agents</h1>
+          <p className="text-gray-600 mt-2">Real Estate Operating System</p>
+        </div>
+
+        {/* Message */}
+        {(state.error || state.message) && (
+          <div className={`p-3 rounded-md mb-6 text-sm font-medium ${getMessageColor()}`}>
+            {state.error || AUTH_MESSAGES[state.message!]}
+          </div>
+        )}
+
+        {/* Tabs for Demo vs Magic Link */}
+        {demoMode ? (
+          <Tabs defaultValue="demo" className="w-full">
+            <TabsList className="grid w-full grid-cols-2 bg-gray-100">
+              <TabsTrigger value="demo" className="text-sm">
+                🚀 Quick Demo Login
+              </TabsTrigger>
+              <TabsTrigger value="magic-link" className="text-sm">
+                Magic Link
+              </TabsTrigger>
+            </TabsList>
+
+            {/* DEMO MODE TAB */}
+            <TabsContent value="demo" className="space-y-4 mt-4">
+              <div className="bg-blue-50 border border-blue-200 rounded-md p-4 mb-4">
+                <p className="text-sm text-blue-900">
+                  ✨ <strong>Demo Mode:</strong> Click any user below to instantly log in and test all features
+                </p>
+              </div>
+
+              {/* Group users by role */}
+              {roleOrder.map((role) => {
+                if (!groupedUsers[role]) return null
+                
+                return (
+                  <div key={role}>
+                    <h3 className="text-sm font-semibold text-gray-900 mb-2 capitalize">
+                      {role.replace(/_/g, ' ')}
+                    </h3>
+                    <div className="space-y-2 mb-4">
+                      {groupedUsers[role].map((user) => (
+                        <button
+                          key={user.email}
+                          onClick={() => handleDemoLogin(user.email)}
+                          disabled={state.isLoading}
+                          className="w-full p-3 rounded-md border border-gray-200 hover:bg-blue-50 hover:border-blue-300 transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <div className="font-medium text-gray-900">{user.name}</div>
+                          <div className="text-xs text-gray-600">{user.description}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </TabsContent>
+
+            {/* MAGIC LINK TAB */}
+            <TabsContent value="magic-link" className="space-y-4 mt-4">
+              {state.message !== 'check-email' ? (
+                <form onSubmit={handleMagicLinkSubmit} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-900 mb-2">
+                      Email Address
+                    </label>
+                    <Input
+                      type="email"
+                      placeholder="you@example.com"
+                      value={state.email}
+                      onChange={(e) =>
+                        setState((prev) => ({
+                          ...prev,
+                          email: e.target.value,
+                          error: undefined,
+                        }))
+                      }
+                      disabled={state.isLoading}
+                      className="border-gray-200 bg-gray-50"
+                    />
+                  </div>
+
+                  <Button
+                    type="submit"
+                    disabled={state.isLoading}
+                    className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    {state.isLoading ? 'Sending link...' : 'Send Magic Link'}
+                  </Button>
+                </form>
+              ) : (
+                <div className="text-center">
+                  <p className="text-gray-600 mb-4">
+                    We've sent a sign-in link to <strong>{state.email}</strong>
+                  </p>
+                  <p className="text-sm text-gray-500 mb-6">
+                    The link expires in 24 hours.
+                  </p>
+                  <Button
+                    onClick={() => setState((prev) => ({ ...prev, message: null, email: '' }))}
+                    variant="outline"
+                    className="w-full border-gray-200"
+                  >
+                    Try Another Email
+                  </Button>
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
+        ) : (
+          /* Original magic link form (if demo mode disabled) */
+          <>
+            {state.message !== 'check-email' ? (
+              <form onSubmit={handleMagicLinkSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-900 mb-2">
+                    Email Address
+                  </label>
+                  <Input
+                    type="email"
+                    placeholder="you@example.com"
+                    value={state.email}
+                    onChange={(e) =>
+                      setState((prev) => ({
+                        ...prev,
+                        email: e.target.value,
+                        error: undefined,
+                      }))
+                    }
+                    disabled={state.isLoading}
+                    className="border-gray-200 bg-gray-50"
+                  />
+                </div>
+
+                <Button
+                  type="submit"
+                  disabled={state.isLoading}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  {state.isLoading ? 'Sending link...' : 'Send Magic Link'}
+                </Button>
+              </form>
+            ) : (
+              <div className="text-center">
+                <p className="text-gray-600 mb-4">
+                  We've sent a sign-in link to <strong>{state.email}</strong>
+                </p>
+                <p className="text-sm text-gray-500 mb-6">
+                  The link expires in 24 hours.
+                </p>
+                <Button
+                  onClick={() => setState((prev) => ({ ...prev, message: null, email: '' }))}
+                  variant="outline"
+                  className="w-full border-gray-200"
+                >
+                  Try Another Email
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Footer */}
+        <p className="text-center text-sm text-gray-500 mt-6">
+          By signing in, you agree to our{' '}
+          <a href="#" className="text-blue-600 hover:underline">
+            Terms of Service
+          </a>
+        </p>
       </div>
-
-      {/* Message */}
-      {(state.error || state.message) && (
-        <div className={`p-4 rounded-lg border mb-6 text-sm font-medium ${getMessageColor()}`}>
-          {state.error || (state.message ? AUTH_MESSAGES[state.message as keyof typeof AUTH_MESSAGES] || '' : '')}
-        </div>
-      )}
-
-      {/* Form */}
-      {state.message !== 'check-email' ? (
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-900 mb-2">
-              Email Address
-            </label>
-            <Input
-              type="email"
-              placeholder="you@example.com"
-              value={state.email}
-              onChange={(e) =>
-                setState((prev) => ({
-                  ...prev,
-                  email: e.target.value,
-                  error: undefined,
-                }))
-              }
-              disabled={state.isLoading}
-              className="border-gray-300 bg-white focus:border-blue-600 focus:ring-blue-600"
-            />
-          </div>
-
-          <Button
-            type="submit"
-            disabled={state.isLoading}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white"
-          >
-            {state.isLoading ? 'Sending link...' : 'Send Magic Link'}
-          </Button>
-        </form>
-      ) : (
-        <div className="text-center space-y-4">
-          <div className="p-6 bg-green-50 border border-green-200 rounded-lg">
-            <p className="text-gray-900 font-medium mb-2">
-              Check your email
-            </p>
-            <p className="text-gray-600 text-sm">
-              {'We\'ve sent a sign-in link to '}
-              <strong className="text-gray-900">{state.email}</strong>
-            </p>
-            <p className="text-xs text-gray-500 mt-3">
-              The link expires in 24 hours.
-            </p>
-          </div>
-          <Button
-            onClick={() => setState({ email: '', message: null, isLoading: false })}
-            variant="outline"
-            className="w-full border-gray-300 text-gray-700 hover:bg-gray-50"
-          >
-            Try Another Email
-          </Button>
-        </div>
-      )}
-
-      {/* Footer */}
-      <p className="text-center text-sm text-gray-500 mt-8">
-        {'By signing in, you agree to our '}
-        <a href="#" className="text-blue-600 hover:underline">
-          Terms of Service
-        </a>
-      </p>
     </div>
   )
 }
