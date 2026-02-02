@@ -69,7 +69,7 @@ export const PUBLIC_ROUTES = [
 ]// Add at top level, alongside existing constants
 
 export const DEMO_CONFIG = {
-  ENABLED: process.env.NEXT_PUBLIC_DEMO_MODE === 'true',
+  ENABLED: process.env.NEXT_PUBLIC_DEMO_MODE === 'true' || process.env.NEXT_PUBLIC_DEMO_MODE === 'yes',
   // Demo users use hardcoded password 'DEMO_USER' (as in your password_hash field)
   DEMO_PASSWORD: 'DEMO_USER',
 }
