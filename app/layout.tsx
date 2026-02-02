@@ -3,14 +3,15 @@ import type { Metadata } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { Providers } from '@/components/providers'
+import { AppShell } from '@/app/components/layout/app-shell'
 import './globals.css'
 
 const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'VIPOS - Real Estate CRM',
-  description: 'AI-powered real estate CRM platform for agents, brokers, and teams',
+  title: 'VIP Agents AI - Real Estate CRM',
+  description: 'AI-powered real estate operating system for agents, brokers, and teams',
   generator: 'v0.app',
   icons: {
     icon: [
@@ -37,10 +38,10 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className="dark">
-      <body className={`font-sans antialiased bg-background text-foreground`}>
+    <html lang="en" suppressHydrationWarning>
+      <body className="font-sans antialiased bg-white text-gray-900">
         <Providers>
-          {children}
+          <AppShell>{children}</AppShell>
         </Providers>
         <Analytics />
       </body>
