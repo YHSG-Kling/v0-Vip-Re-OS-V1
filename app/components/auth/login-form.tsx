@@ -11,7 +11,7 @@ import { MagicLinkState } from '@/app/types/auth'
 import { AUTH_MESSAGES } from '@/app/constants/auth'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
-export default function LoginPage() {
+export function LoginForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   
