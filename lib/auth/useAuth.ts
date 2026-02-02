@@ -54,6 +54,20 @@ export function useAuth(): UseAuthReturn {
     }
 
     getUser()
+
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session?.user) {
+        setUser(null)
+        setUserContext(null)
+      } else {
+        getUser()
+      }
+    })
+
+    return () => {
+      subscription.unsubscribe()
+    }
   }, [supabase, router])
 
   return { user, userContext, loading, error }
