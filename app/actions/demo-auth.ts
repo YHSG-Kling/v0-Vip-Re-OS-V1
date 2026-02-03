@@ -1,11 +1,16 @@
+// app/actions/demo-auth.ts
+// Server actions for demo user authentication
+
 'use server';
 
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
-import { DEMO_USERS, DEMO_CONFIG } from '@/app/constants/auth';
+import { DEMO_USERS, DEMO_CONFIG, AUTH_MESSAGES } from '@/app/constants/auth';
 
+/**
+ * Sign in with demo user email
+ */
 export async function demoSignIn(userEmail: string) {
-  // Validate demo mode is enabled
   if (!DEMO_CONFIG.ENABLED) {
     return {
       success: false,
@@ -13,7 +18,7 @@ export async function demoSignIn(userEmail: string) {
     };
   }
 
-  // Find user in demo users
+  // Find demo user
   const demoUser = DEMO_USERS.find(
     (user) => user.email.toLowerCase() === userEmail.toLowerCase()
   );
@@ -21,18 +26,12 @@ export async function demoSignIn(userEmail: string) {
   if (!demoUser) {
     return {
       success: false,
-      error: 'Demo user not found. Check email and try again.',
-      availableUsers: DEMO_USERS.map((u) => ({
-        email: u.email,
-        name: `${u.firstName} ${u.lastName}`,
-        role: u.role,
-      })),
+      error: 'Demo user not found',
     };
   }
 
   try {
-    // Create Supabase client
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -51,87 +50,102 @@ export async function demoSignIn(userEmail: string) {
       }
     );
 
-    // Sign in with demo user
-    const { data, error } = await supabase.auth.signInWithPassword({
+    // Try to sign in
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
       email: demoUser.email,
       password: demoUser.password,
     });
 
-    if (error) {
-      // If user doesn't exist in Supabase yet, create them
-      if (error.message.includes('Invalid login credentials')) {
-        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-          email: demoUser.email,
-          password: demoUser.password,
-        });
+    if (!signInError && signInData.user) {
+      // Sign in successful
+      return {
+        success: true,
+        user: {
+          id: signInData.user.id,
+          email: signInData.user.email,
+          firstName: demoUser.firstName,
+          lastName: demoUser.lastName,
+          role: demoUser.role,
+        },
+      };
+    }
 
-        if (signUpError) {
-          return {
-            success: false,
-            error: `Sign up failed: ${signUpError.message}`,
-          };
-        }
+    // User might not exist, try to create them
+    if (signInError && signInError.message.includes('Invalid login credentials')) {
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: demoUser.email,
+        password: demoUser.password,
+      });
 
-        // Store additional user data in custom table
-        const { error: profileError } = await supabase
-          .from('user_profiles')
-          .upsert({
-            id: signUpData.user?.id,
+      if (signUpError) {
+        return {
+          success: false,
+          error: `Failed to create demo account: ${signUpError.message}`,
+        };
+      }
+
+      if (!signUpData.user) {
+        return {
+          success: false,
+          error: 'Failed to create user account',
+        };
+      }
+
+      // Store demo user profile
+      const { error: profileError } = await supabase
+        .from('user_profiles')
+        .upsert(
+          {
+            id: signUpData.user.id,
             email: demoUser.email,
-            firstName: demoUser.firstName,
-            lastName: demoUser.lastName,
+            first_name: demoUser.firstName,
+            last_name: demoUser.lastName,
             role: demoUser.role,
             agency: demoUser.agency,
             specialization: demoUser.specialization,
             state: demoUser.state,
-            isDemo: true,
-            createdAt: new Date().toISOString(),
-          });
-
-        if (profileError) {
-          console.error('Profile creation error:', profileError);
-        }
-
-        return {
-          success: true,
-          user: {
-            id: signUpData.user?.id,
-            email: demoUser.email,
-            firstName: demoUser.firstName,
-            lastName: demoUser.lastName,
-            role: demoUser.role,
+            is_demo: true,
+            created_at: new Date().toISOString(),
           },
-          message: 'Demo account created successfully',
-        };
+          { onConflict: 'id' }
+        );
+
+      if (profileError) {
+        console.error('Profile creation error:', profileError);
       }
 
       return {
-        success: false,
-        error: error.message,
+        success: true,
+        user: {
+          id: signUpData.user.id,
+          email: demoUser.email,
+          firstName: demoUser.firstName,
+          lastName: demoUser.lastName,
+          role: demoUser.role,
+        },
+        isNewAccount: true,
       };
     }
 
     return {
-      success: true,
-      user: {
-        id: data.user?.id,
-        email: data.user?.email,
-        firstName: demoUser.firstName,
-        lastName: demoUser.lastName,
-        role: demoUser.role,
-      },
+      success: false,
+      error: signInError?.message || 'Authentication failed',
     };
   } catch (error: any) {
+    console.error('Demo sign in error:', error);
     return {
       success: false,
-      error: error.message || 'Authentication failed',
+      error: error.message || AUTH_MESSAGES.SIGN_IN_ERROR,
     };
   }
 }
 
+/**
+ * Sign out current user
+ */
 export async function demoSignOut() {
   try {
-    const cookieStore = cookies();
+    const cookieStore = await cookies();
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -161,8 +175,10 @@ export async function demoSignOut() {
 
     return {
       success: true,
+      message: AUTH_MESSAGES.SIGN_OUT_SUCCESS,
     };
   } catch (error: any) {
+    console.error('Demo sign out error:', error);
     return {
       success: false,
       error: error.message || 'Sign out failed',
@@ -170,16 +186,68 @@ export async function demoSignOut() {
   }
 }
 
+/**
+ * Get all demo users (for demo selection UI)
+ */
 export async function getDemoUsers() {
   if (!DEMO_CONFIG.ENABLED) {
     return [];
   }
 
   return DEMO_USERS.map((user) => ({
+    id: user.id,
     email: user.email,
     name: `${user.firstName} ${user.lastName}`,
     role: user.role,
     agency: user.agency,
     specialization: user.specialization,
+    state: user.state,
   }));
+}
+
+/**
+ * Get demo users grouped by role
+ */
+export async function getDemoUsersByRole() {
+  if (!DEMO_CONFIG.ENABLED) {
+    return {};
+  }
+
+  const grouped: Record<string, typeof DEMO_USERS> = {};
+
+  DEMO_USERS.forEach((user) => {
+    if (!grouped[user.role]) {
+      grouped[user.role] = [];
+    }
+    grouped[user.role].push(user);
+  });
+
+  return grouped;
+}
+
+/**
+ * Validate demo credentials (for testing)
+ */
+export async function validateDemoCredentials(email: string, password: string) {
+  const user = DEMO_USERS.find(
+    (u) => u.email.toLowerCase() === email.toLowerCase()
+  );
+
+  if (!user) {
+    return { valid: false, reason: 'User not found' };
+  }
+
+  if (user.password !== password) {
+    return { valid: false, reason: 'Invalid password' };
+  }
+
+  return {
+    valid: true,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: `${user.firstName} ${user.lastName}`,
+      role: user.role,
+    },
+  };
 }
