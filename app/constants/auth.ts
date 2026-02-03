@@ -1,13 +1,66 @@
-// Demo mode configuration
-export const DEMO_CONFIG = {
-  ENABLED: true,
-  MODE: 'password', // password | magic-link | oauth
-  AUTO_LOGIN: false,
+// Complete auth constants for VIP Real Estate OS
+// This file exports everything your codebase needs
+
+// ============================================
+// AUTH MESSAGES (Required by app/actions/auth.ts)
+// ============================================
+export const AUTH_MESSAGES = {
+  SIGN_IN_SUCCESS: 'Successfully signed in',
+  SIGN_IN_ERROR: 'Failed to sign in',
+  SIGN_UP_SUCCESS: 'Account created successfully',
+  SIGN_UP_ERROR: 'Failed to create account',
+  SIGN_OUT_SUCCESS: 'Successfully signed out',
+  SIGN_OUT_ERROR: 'Failed to sign out',
+  MAGIC_LINK_SENT: 'Magic link sent to your email',
+  MAGIC_LINK_ERROR: 'Failed to send magic link',
+  SESSION_EXPIRED: 'Your session has expired',
+  UNAUTHORIZED: 'Unauthorized access',
+  INVALID_CREDENTIALS: 'Invalid email or password',
+  USER_NOT_FOUND: 'User not found',
+  EMAIL_EXISTS: 'Email already in use',
+  PASSWORD_TOO_WEAK: 'Password must be at least 8 characters',
+  INVALID_EMAIL: 'Invalid email address',
 };
 
-// 20 Demo Users - Real Estate Personas
+// ============================================
+// ROUTE CONFIGURATIONS (Required by middleware.ts)
+// ============================================
+export const PUBLIC_ROUTES = [
+  '/login',
+  '/signup',
+  '/auth/callback',
+  '/reset-password',
+  '/forgot-password',
+  '/api/auth',
+  '/api/auth/callback',
+  '/api/auth/logout',
+  '/public',
+];
+
+export const PROTECTED_ROUTES = [
+  '/dashboard',
+  '/api/contacts',
+  '/api/leads',
+  '/api/listings',
+  '/api/transactions',
+  '/portal',
+];
+
+// ============================================
+// DEMO MODE CONFIGURATION
+// ============================================
+export const DEMO_CONFIG = {
+  ENABLED: process.env.NEXT_PUBLIC_DEMO_MODE === 'true',
+  MODE: 'password' as const,
+  AUTO_LOGIN: false,
+  PASSWORD: process.env.NEXT_PUBLIC_DEMO_PASSWORD || 'Demo@123456',
+};
+
+// ============================================
+// DEMO USERS (20 Real Estate Personas)
+// ============================================
 export const DEMO_USERS = [
-  // Agents
+  // Agents (5)
   {
     id: '1',
     email: 'agent1@vipos.com',
@@ -64,7 +117,7 @@ export const DEMO_USERS = [
     state: 'CO',
   },
 
-  // Team Leads
+  // Team Leads (2)
   {
     id: '6',
     email: 'lead1@vipos.com',
@@ -88,7 +141,7 @@ export const DEMO_USERS = [
     state: 'TX',
   },
 
-  // Brokers
+  // Brokers (2)
   {
     id: '8',
     email: 'broker1@vipos.com',
@@ -112,7 +165,7 @@ export const DEMO_USERS = [
     state: 'NY',
   },
 
-  // Managers
+  // Managers (1)
   {
     id: '10',
     email: 'manager1@vipos.com',
@@ -125,7 +178,7 @@ export const DEMO_USERS = [
     state: 'CA',
   },
 
-  // Transaction Coordinators
+  // Transaction Coordinators (2)
   {
     id: '11',
     email: 'tc1@vipos.com',
@@ -149,7 +202,7 @@ export const DEMO_USERS = [
     state: 'TX',
   },
 
-  // Clients - Buyers
+  // Clients - Buyers (2)
   {
     id: '13',
     email: 'buyer1@vipos.com',
@@ -173,7 +226,7 @@ export const DEMO_USERS = [
     state: 'FL',
   },
 
-  // Clients - Sellers
+  // Clients - Sellers (2)
   {
     id: '15',
     email: 'seller1@vipos.com',
@@ -197,7 +250,7 @@ export const DEMO_USERS = [
     state: 'TX',
   },
 
-  // Admin Users
+  // Admins (2)
   {
     id: '17',
     email: 'admin1@vipos.com',
@@ -221,7 +274,7 @@ export const DEMO_USERS = [
     state: 'CA',
   },
 
-  // Support
+  // Support (1)
   {
     id: '19',
     email: 'support@vipos.com',
@@ -234,7 +287,7 @@ export const DEMO_USERS = [
     state: 'CA',
   },
 
-  // Super Admin
+  // Super Admin (1)
   {
     id: '20',
     email: 'superadmin@vipos.com',
@@ -247,3 +300,114 @@ export const DEMO_USERS = [
     state: 'CA',
   },
 ];
+
+// ============================================
+// ROLE DEFINITIONS
+// ============================================
+export const ROLES = {
+  SUPERADMIN: 'superadmin',
+  ADMIN: 'admin',
+  BROKER: 'broker',
+  MANAGER: 'manager',
+  TEAM_LEAD: 'team_lead',
+  AGENT: 'agent',
+  TC: 'tc',
+  BUYER: 'buyer',
+  SELLER: 'seller',
+  SUPPORT: 'support',
+} as const;
+
+// ============================================
+// ROLE PERMISSIONS
+// ============================================
+export const ROLE_PERMISSIONS = {
+  superadmin: ['*'], // All permissions
+  admin: [
+    'manage_users',
+    'manage_agents',
+    'manage_leads',
+    'manage_listings',
+    'view_analytics',
+    'manage_compliance',
+  ],
+  broker: [
+    'manage_agents',
+    'view_all_listings',
+    'view_all_leads',
+    'approve_listings',
+    'view_analytics',
+  ],
+  manager: [
+    'manage_team',
+    'view_team_leads',
+    'view_team_listings',
+    'approve_team_content',
+  ],
+  team_lead: [
+    'manage_agents',
+    'view_team_listings',
+    'view_team_leads',
+  ],
+  agent: [
+    'manage_own_listings',
+    'manage_own_leads',
+    'view_own_contacts',
+  ],
+  tc: [
+    'manage_transactions',
+    'view_all_transactions',
+    'update_transaction_status',
+  ],
+  buyer: [
+    'view_listings',
+    'view_saved_properties',
+    'contact_agent',
+  ],
+  seller: [
+    'manage_own_listings',
+    'view_offers',
+    'contact_agent',
+  ],
+  support: [
+    'view_all_tickets',
+    'respond_to_support',
+    'view_user_accounts',
+  ],
+};
+
+// ============================================
+// SESSION CONFIGURATION
+// ============================================
+export const SESSION_CONFIG = {
+  MAX_AGE: 24 * 60 * 60, // 24 hours
+  REFRESH_THRESHOLD: 60 * 60, // 1 hour before expiry
+  COOKIE_NAME: 'session',
+  SECURE: process.env.NODE_ENV === 'production',
+  HTTP_ONLY: true,
+  SAME_SITE: 'lax' as const,
+};
+
+// ============================================
+// PASSWORD REQUIREMENTS
+// ============================================
+export const PASSWORD_REQUIREMENTS = {
+  MIN_LENGTH: 8,
+  REQUIRE_UPPERCASE: true,
+  REQUIRE_LOWERCASE: true,
+  REQUIRE_NUMBERS: true,
+  REQUIRE_SPECIAL: true,
+};
+
+// ============================================
+// AUTH ERROR CODES
+// ============================================
+export const AUTH_ERROR_CODES = {
+  INVALID_CREDENTIALS: 'invalid_credentials',
+  USER_NOT_FOUND: 'user_not_found',
+  EMAIL_EXISTS: 'email_exists',
+  SESSION_EXPIRED: 'session_expired',
+  UNAUTHORIZED: 'unauthorized',
+  INVALID_TOKEN: 'invalid_token',
+  WEAK_PASSWORD: 'weak_password',
+  INVALID_EMAIL: 'invalid_email',
+} as const;
