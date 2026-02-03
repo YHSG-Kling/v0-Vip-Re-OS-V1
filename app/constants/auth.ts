@@ -1,218 +1,249 @@
-export const AUTH_CONFIG = {
-  SESSION_DURATION: 24 * 60 * 60 * 1000, // 24 hours
-  REFRESH_BUFFER: 5 * 60 * 1000, // Refresh 5 mins before expiry
-  MAGIC_LINK_EXPIRY: 24 * 60 * 60, // 24 hours in seconds
-  
-  COOKIE_CONFIG: {
-    name: 'sb-auth-token',
-    maxAge: 24 * 60 * 60, // 24 hours
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax' as const,
-    path: '/',
-  },
-}
-
-export const AUTH_MESSAGES = {
-  SIGN_IN_SENT: 'Magic link sent! Check your email to sign in.',
-  CHECK_EMAIL: 'Check your email for the sign-in link.',
-  LINK_EXPIRED: 'This sign-in link has expired. Please request a new one.',
-  LINK_USED: 'This link has already been used. Please sign in normally.',
-  INVALID_SESSION: 'Your session is invalid. Please sign in again.',
-  SESSION_EXPIRED: 'Your session has expired. Please sign in again.',
-  ERROR: 'An error occurred. Please try again.',
-  INVALID_EMAIL: 'Please enter a valid email address.',
-  USER_NOT_FOUND: 'No account found with this email.',
-  NO_ROLE: 'Your account does not have an assigned role. Contact support.',
-  SERVER_ERROR: 'Server error. Please try again later.',
-}
-
-export const AUTH_ROUTES = {
-  LOGIN: '/login',
-  CALLBACK: '/auth/callback',
-  LOGOUT: '/auth/logout',
-  DASHBOARD: '/agent/dashboard', // Default after login
-  REDIRECT_BY_ROLE: {
-    agent: '/agent/dashboard',
-    broker: '/broker/dashboard',
-    isa: '/isa/dashboard',
-    admin: '/admin/dashboard',
-    vendor: '/vendor/dashboard',
-    contact: '/contact/portal',
-    compliance_manager: '/compliance/dashboard',
-    transaction_coordinator: '/transaction/dashboard',
-    lender: '/lender/dashboard',
-    title_agent: '/title/dashboard',
-  },
-}
-
-export const PROTECTED_ROUTES = [
-  '/agent',
-  '/broker',
-  '/isa',
-  '/admin',
-  '/vendor',
-  '/contact',
-  '/compliance',
-  '/transaction',
-  '/lender',
-  '/title',
-  '/dashboard',
-  '/newsletters',
-]
-
-export const PUBLIC_ROUTES = [
-  '/login',
-  '/auth/callback',
-  '/auth/logout',
-  '/auth/error',
-]// Add at top level, alongside existing constants
-
+// Demo mode configuration
 export const DEMO_CONFIG = {
-  ENABLED: process.env.NEXT_PUBLIC_DEMO_MODE === 'true' || process.env.NEXT_PUBLIC_DEMO_MODE === 'yes',
-  // Demo users use hardcoded password 'DEMO_USER' (as in your password_hash field)
-  DEMO_PASSWORD: 'DEMO_USER',
-}
+  ENABLED: true,
+  MODE: 'password', // password | magic-link | oauth
+  AUTO_LOGIN: false,
+};
 
-// Your actual demo users from Supabase
+// 20 Demo Users - Real Estate Personas
 export const DEMO_USERS = [
-  // AGENTS
+  // Agents
   {
+    id: '1',
     email: 'agent1@vipos.com',
-    name: 'Michael Chen',
-    role: 'agent' as const,
-    description: 'Real estate agent',
+    password: 'Demo@123456',
+    firstName: 'Sarah',
+    lastName: 'Johnson',
+    role: 'agent',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Luxury Homes',
+    state: 'CA',
   },
   {
+    id: '2',
     email: 'agent2@vipos.com',
-    name: 'Jessica Martinez',
-    role: 'agent' as const,
-    description: 'Real estate agent',
+    password: 'Demo@123456',
+    firstName: 'Michael',
+    lastName: 'Chen',
+    role: 'agent',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Commercial',
+    state: 'TX',
   },
   {
-    email: 'teamlead@vipos.com',
-    name: 'David Williams',
-    role: 'agent' as const,
-    description: 'Team lead / Senior agent',
+    id: '3',
+    email: 'agent3@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Jennifer',
+    lastName: 'Martinez',
+    role: 'agent',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Residential',
+    state: 'FL',
+  },
+  {
+    id: '4',
+    email: 'agent4@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'David',
+    lastName: 'Patel',
+    role: 'agent',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Investment',
+    state: 'NY',
+  },
+  {
+    id: '5',
+    email: 'agent5@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Amanda',
+    lastName: 'Williams',
+    role: 'agent',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Relocation',
+    state: 'CO',
   },
 
-  // BROKER
+  // Team Leads
   {
-    email: 'broker@vipos.com',
-    name: 'Sarah Johnson',
-    role: 'broker' as const,
-    description: 'Brokerage owner',
+    id: '6',
+    email: 'lead1@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Robert',
+    lastName: 'Thompson',
+    role: 'team_lead',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Team Management',
+    state: 'CA',
+  },
+  {
+    id: '7',
+    email: 'lead2@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Lisa',
+    lastName: 'Anderson',
+    role: 'team_lead',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Team Management',
+    state: 'TX',
   },
 
-  // ADMIN
+  // Brokers
   {
-    email: 'admin@vipos.com',
-    name: 'Admin User',
-    role: 'admin' as const,
-    description: 'System administrator',
+    id: '8',
+    email: 'broker1@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'James',
+    lastName: 'Wilson',
+    role: 'broker',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Brokerage',
+    state: 'CA',
+  },
+  {
+    id: '9',
+    email: 'broker2@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Patricia',
+    lastName: 'Davis',
+    role: 'broker',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Brokerage',
+    state: 'NY',
   },
 
-  // TRANSACTION COORDINATOR
+  // Managers
   {
-    email: 'tc@vipos.com',
-    name: 'Tom Wilson',
-    role: 'transaction_coordinator' as const,
-    description: 'Transaction coordinator',
+    id: '10',
+    email: 'manager1@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Richard',
+    lastName: 'Brown',
+    role: 'manager',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Operations',
+    state: 'CA',
   },
 
-  // COMPLIANCE MANAGER
+  // Transaction Coordinators
   {
-    email: 'compliance@vipos.com',
-    name: 'Lisa Anderson',
-    role: 'compliance_manager' as const,
-    description: 'Compliance manager',
+    id: '11',
+    email: 'tc1@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Karen',
+    lastName: 'Miller',
+    role: 'tc',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Transactions',
+    state: 'CA',
+  },
+  {
+    id: '12',
+    email: 'tc2@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Thomas',
+    lastName: 'Moore',
+    role: 'tc',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Transactions',
+    state: 'TX',
   },
 
-  // CONTACTS (Different personas)
+  // Clients - Buyers
   {
-    email: 'buyer_ftb@vipos.com',
-    name: 'Emma Thompson',
-    role: 'contact' as const,
-    description: 'Buyer - First time homebuyer',
+    id: '13',
+    email: 'buyer1@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'John',
+    lastName: 'Smith',
+    role: 'buyer',
+    agency: 'VIP Real Estate Group',
+    specialization: 'First-Time Buyer',
+    state: 'CA',
   },
   {
-    email: 'buyer_luxury@vipos.com',
-    name: 'Robert Park',
-    role: 'contact' as const,
-    description: 'Buyer - Luxury market',
-  },
-  {
-    email: 'buyer_relocating@vipos.com',
-    name: 'Jennifer Chen',
-    role: 'contact' as const,
-    description: 'Buyer - Relocating professional',
-  },
-  {
-    email: 'seller_motivated@vipos.com',
-    name: 'James Rodriguez',
-    role: 'contact' as const,
-    description: 'Seller - Motivated seller',
-  },
-  {
-    email: 'seller_downsizing@vipos.com',
-    name: 'Margaret Douglas',
-    role: 'contact' as const,
-    description: 'Seller - Downsizing',
-  },
-  {
-    email: 'investor_commercial@vipos.com',
-    name: 'David Lee',
-    role: 'contact' as const,
-    description: 'Investor - Commercial',
-  },
-  {
-    email: 'investor_residential@vipos.com',
-    name: 'Patricia Murphy',
-    role: 'contact' as const,
-    description: 'Investor - Residential',
+    id: '14',
+    email: 'buyer2@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Emily',
+    lastName: 'Taylor',
+    role: 'buyer',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Luxury Buyer',
+    state: 'FL',
   },
 
-  // LENDER
+  // Clients - Sellers
   {
-    email: 'lender@vipos.com',
-    name: 'Kevin Banks',
-    role: 'lender' as const,
-    description: 'Mortgage lender',
+    id: '15',
+    email: 'seller1@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Margaret',
+    lastName: 'Jackson',
+    role: 'seller',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Home Seller',
+    state: 'NY',
+  },
+  {
+    id: '16',
+    email: 'seller2@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Charles',
+    lastName: 'White',
+    role: 'seller',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Investment Property',
+    state: 'TX',
   },
 
-  // TITLE OFFICER
+  // Admin Users
   {
-    email: 'title@vipos.com',
-    name: 'Susan Legal',
-    role: 'title_agent' as const,
-    description: 'Title company officer',
+    id: '17',
+    email: 'admin1@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Christopher',
+    lastName: 'Harris',
+    role: 'admin',
+    agency: 'VIP Real Estate Group',
+    specialization: 'System Admin',
+    state: 'CA',
+  },
+  {
+    id: '18',
+    email: 'admin2@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Jessica',
+    lastName: 'Clark',
+    role: 'admin',
+    agency: 'VIP Real Estate Group',
+    specialization: 'System Admin',
+    state: 'CA',
   },
 
-  // ADDITIONAL VENDOR ROLES (Not in our 10 main roles - treat as vendors)
+  // Support
   {
-    email: 'inspector@vipos.com',
-    name: 'Mark Quality',
-    role: 'vendor' as const,
-    description: 'Home inspector',
-  },
-  {
-    email: 'appraiser@vipos.com',
-    name: 'Nancy Value',
-    role: 'vendor' as const,
-    description: 'Real estate appraiser',
-  },
-  {
-    email: 'escrow@vipos.com',
-    name: 'Richard Escrow',
-    role: 'vendor' as const,
-    description: 'Escrow officer',
+    id: '19',
+    email: 'support@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'Daniel',
+    lastName: 'Lewis',
+    role: 'support',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Support',
+    state: 'CA',
   },
 
-  // VENDOR
+  // Super Admin
   {
-    email: 'vendor@vipos.com',
-    name: 'Victor Services',
-    role: 'vendor' as const,
-    description: 'Service vendor',
+    id: '20',
+    email: 'superadmin@vipos.com',
+    password: 'Demo@123456',
+    firstName: 'William',
+    lastName: 'Walker',
+    role: 'superadmin',
+    agency: 'VIP Real Estate Group',
+    specialization: 'Super Admin',
+    state: 'CA',
   },
-]
+];
