@@ -1,9 +1,9 @@
 'use strict'
 
-import { UserRole } from '@/app/types/roles'
+import { UserType } from '@/app/types/roles'
 import { NavigationConfig, NavItem } from '@/app/types/navigation'
 
-export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
+export const NAVIGATION_BY_ROLE: Record<UserType, NavigationConfig> = {
   agent: {
     sidebarItems: [
       { id: 'dashboard', label: 'Dashboard', href: '/agent/dashboard', icon: 'LayoutGrid' },
@@ -206,7 +206,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
   },
 
-  compliance_manager: {
+  compliance_officer: {
     sidebarItems: [
       { id: 'dashboard', label: 'Compliance Dashboard', href: '/compliance/dashboard', icon: 'LayoutGrid' },
       { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badge: { count: 2, color: 'red' } },
@@ -232,7 +232,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
   },
 
-  transaction_coordinator: {
+  TC: {
     sidebarItems: [
       { id: 'dashboard', label: 'Coordinator Dashboard', href: '/transaction/dashboard', icon: 'LayoutGrid' },
       { id: 'deals', label: 'Active Deals', href: '/transaction/deals', icon: 'Handshake', badge: { count: 8, color: 'red' } },
@@ -314,7 +314,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
 export function getNavigationForRole(role: string | string[]): NavigationConfig {
   const roles = Array.isArray(role) ? role : [role]
   const primaryRole = roles[0]
-  return NAVIGATION_BY_ROLE[primaryRole as UserRole] || NAVIGATION_BY_ROLE.contact
+  return NAVIGATION_BY_ROLE[primaryRole as UserType] || NAVIGATION_BY_ROLE.contact
 }
 
 export function filterNavItemsByPermissions(items: NavItem[], userPermissions: string[]): NavItem[] {

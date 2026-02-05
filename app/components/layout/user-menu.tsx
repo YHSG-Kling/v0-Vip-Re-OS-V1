@@ -34,7 +34,7 @@ export function UserMenu({ userContext }: UserMenuProps) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="border-gray-200 bg-white">
         <div className="px-2 py-1.5">
-          <p className="text-sm font-medium text-gray-900">{userContext.firstName} {userContext.lastName}</p>
+          <p className="text-sm font-medium text-gray-900">{userContext.first_name} {userContext.last_name}</p>
           <p className="text-xs text-gray-600">{userContext.email}</p>
         </div>
         <DropdownMenuSeparator className="bg-gray-200" />

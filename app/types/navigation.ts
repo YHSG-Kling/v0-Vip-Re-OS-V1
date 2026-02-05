@@ -1,6 +1,6 @@
 'use strict'
 
-import { UserRole } from './roles'
+import { UserType } from './roles'
 
 export interface NavItem {
   id: string
@@ -9,7 +9,7 @@ export interface NavItem {
   icon?: string
   badge?: { count: number; color: 'red' | 'blue' | 'green' }
   children?: NavItem[]
-  requiredRoles?: UserRole[]
+  requiredRoles?: UserType[]
   requiredPermissions?: string[]
   divider?: boolean
 }

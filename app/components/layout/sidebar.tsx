@@ -89,7 +89,7 @@ export function Sidebar({ navigation, userContext }: SidebarProps) {
     <nav className="flex-1 overflow-y-auto p-4 space-y-1">
       <div className="px-3 py-4 mb-6 border-b border-gray-200">
         <h1 className="text-lg font-bold text-gray-900">VIP Agents</h1>
-        <p className="text-xs text-gray-600">{userContext.firstName} {userContext.lastName}</p>
+        <p className="text-xs text-gray-600">{userContext.first_name} {userContext.last_name}</p>
       </div>
       {navigation.sidebarItems.map((item) => renderNavItem(item))}
     </nav>
