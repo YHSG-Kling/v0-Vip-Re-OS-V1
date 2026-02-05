@@ -1,10 +1,10 @@
 'use client';
-export const dynamic = 'force-dynamic';
+
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { Loader2 } from 'lucide-react';
-
+export const dynamic = 'force-dynamic';
 export default function CallbackPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
