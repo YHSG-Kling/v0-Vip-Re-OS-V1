@@ -2,7 +2,7 @@
 
 import React from 'react'
 import { usePathname } from 'next/navigation'
-import { useAuth } from '@/lib/auth/useAuth'
+import { useAuth } from '@/app/hooks/use-auth'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
@@ -14,14 +14,18 @@ interface AppShellProps {
 }
 
 export function AppShell({ children }: AppShellProps) {
-  const { user, userContext } = useAuth()
+  const { user: userContext, isAuthenticated, isLoading } = useAuth()
   const pathname = usePathname()
 
   if (pathname.startsWith('/auth') || pathname.startsWith('/login')) {
     return <>{children}</>
   }
 
-  if (!user || !userContext) {
+  if (isLoading) {
+    return <>{children}</>
+  }
+
+  if (!isAuthenticated || !userContext) {
     return <>{children}</>
   }
 

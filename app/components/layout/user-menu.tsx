@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { UserContext } from '@/app/types/roles'
 import { useRouter } from 'next/navigation'
+import { useAuth } from '@/app/hooks/use-auth'
 import { User } from 'lucide-react'
 
 interface UserMenuProps {
@@ -19,10 +20,10 @@ interface UserMenuProps {
 
 export function UserMenu({ userContext }: UserMenuProps) {
   const router = useRouter()
+  const { signOut } = useAuth()
 
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' })
-    router.push('/login')
+    await signOut()
   }
 
   return (
