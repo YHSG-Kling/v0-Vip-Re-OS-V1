@@ -1,11 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { Loader2 } from 'lucide-react';
-export const dynamic = 'force-dynamic';
-export default function CallbackPage() {
+
+function CallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [error, setError] = useState<string | null>(null);
@@ -14,32 +13,24 @@ export default function CallbackPage() {
   useEffect(() => {
     const handleCallback = async () => {
       try {
-        console.log('[v0] Processing auth callback...');
-        
         const code = searchParams.get('code');
         if (!code) {
-          console.error('[v0] No authentication code found');
           setError('No authentication code found');
           setLoading(false);
           return;
         }
 
         const supabase = createClient();
-        const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
 
-        if (exchangeError) {
-          console.error('[v0] Session exchange error:', exchangeError);
-          setError(exchangeError.message);
+        if (error) {
+          setError(error.message);
           setLoading(false);
           return;
         }
 
-        console.log('[v0] Auth callback successful, redirecting to dashboard...');
-        
-        // Redirect to dashboard
         router.push('/dashboard');
       } catch (err) {
-        console.error('[v0] Callback processing error:', err);
         setError('An error occurred during authentication');
         setLoading(false);
       }
@@ -50,9 +41,9 @@ export default function CallbackPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center">
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="h-12 w-12 animate-spin text-blue-600 mx-auto mb-4" />
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
           <p className="text-gray-600">Signing you in...</p>
         </div>
       </div>
@@ -61,12 +52,12 @@ export default function CallbackPage() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-8 w-full max-w-md">
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg shadow-md p-8 w-full max-w-md">
           <h1 className="text-2xl font-bold text-red-600 mb-4">Authentication Error</h1>
           <p className="text-gray-700 mb-4">{error}</p>
-          <a
-            href="/login"
+          
+            href="/auth/login"
             className="block w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-center transition-colors"
           >
             Back to Login
@@ -77,4 +68,19 @@ export default function CallbackPage() {
   }
 
   return null;
+}
+
+export default function CallbackPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <CallbackContent />
+    </Suspense>
+  );
 }
