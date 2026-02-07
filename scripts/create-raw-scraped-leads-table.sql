@@ -1,7 +1,7 @@
 -- Create raw_scraped_leads table if it doesn't exist
 CREATE TABLE IF NOT EXISTS raw_scraped_leads (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  brokerage_id uuid REFERENCES brokerages(id) NOT NULL,
+  brokerage_id uuid NOT NULL REFERENCES brokerages(id),
   source text NOT NULL,
   raw_data jsonb NOT NULL,
   processing_status text DEFAULT 'pending',
@@ -22,30 +22,51 @@ CREATE INDEX IF NOT EXISTS idx_raw_scraped_leads_created_at ON raw_scraped_leads
 ALTER TABLE raw_scraped_leads ENABLE ROW LEVEL SECURITY;
 
 -- Policy: Brokers and admins can view their brokerage's raw leads
-CREATE POLICY IF NOT EXISTS "Brokers and admins view raw leads"
-  ON raw_scraped_leads
-  FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM users 
-      WHERE id = auth.uid() 
-      AND role IN ('admin', 'broker')
-    )
-    OR
-    EXISTS (
-      SELECT 1 FROM agents 
-      WHERE user_id = auth.uid()
-    )
-  );
+DO $$ 
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE tablename = 'raw_scraped_leads' AND policyname = 'Brokers and admins view raw leads'
+  ) THEN
+    CREATE POLICY "Brokers and admins view raw leads"
+      ON raw_scraped_leads
+      FOR SELECT
+      USING (
+        EXISTS (
+          SELECT 1 FROM users 
+          WHERE id = auth.uid() 
+          AND role IN ('admin', 'broker')
+        )
+        OR
+        EXISTS (
+          SELECT 1 FROM agents 
+          WHERE user_id = auth.uid()
+        )
+      );
+  END IF;
+END $$;
 
 -- Policy: System can insert raw leads
-CREATE POLICY IF NOT EXISTS "System insert raw leads"
-  ON raw_scraped_leads
-  FOR INSERT
-  WITH CHECK (true);
+DO $$ 
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE tablename = 'raw_scraped_leads' AND policyname = 'System insert raw leads'
+  ) THEN
+    CREATE POLICY "System insert raw leads"
+      ON raw_scraped_leads
+      FOR INSERT
+      WITH CHECK (true);
+  END IF;
+END $$;
 
 -- Policy: System can update raw leads
-CREATE POLICY IF NOT EXISTS "System update raw leads"
-  ON raw_scraped_leads
-  FOR UPDATE
-  USING (true);
+DO $$ 
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE tablename = 'raw_scraped_leads' AND policyname = 'System update raw leads'
+  ) THEN
+    CREATE POLICY "System update raw leads"
+      ON raw_scraped_leads
+      FOR UPDATE
+      USING (true);
+  END IF;
+END $$;
