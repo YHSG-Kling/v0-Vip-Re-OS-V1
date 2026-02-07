@@ -219,10 +219,6 @@ BEGIN
       ON public.vendor_subscriptions
       FOR SELECT
       USING (
-        brokerage_id IN (
-          SELECT CAST(brokerage_id AS uuid) FROM users WHERE id = auth.uid()
-        )
-        OR
         EXISTS (
           SELECT 1 FROM users WHERE id = auth.uid() AND user_type IN ('admin', 'broker')
         )
@@ -256,10 +252,6 @@ BEGIN
       ON public.vendor_transactions
       FOR SELECT
       USING (
-        brokerage_id IN (
-          SELECT CAST(brokerage_id AS uuid) FROM users WHERE id = auth.uid()
-        )
-        OR
         EXISTS (
           SELECT 1 FROM users WHERE id = auth.uid() AND user_type IN ('admin', 'broker')
         )
