@@ -200,7 +200,7 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
       .update({ lead_id: newLead.id })
       .eq('id', rawRecordId)
 
-    await this.logDeduplication({
+    await logDeduplication({
       raw_record_id: rawRecordId,
       lead_id: newLead.id,
       stage: 'lead_creation',
