@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS vendor_usage_tracking (
   brokerage_id uuid REFERENCES brokerages(id) NOT NULL,
   agent_id uuid REFERENCES agents(id),
   request_metadata jsonb,
-  created_at timestamp DEFAULT now()
+  created_at timestamp with time zone DEFAULT now()
 );
 
 CREATE INDEX idx_vendor_tracking_vendor ON vendor_usage_tracking(vendor_name);
@@ -21,19 +21,19 @@ CREATE INDEX idx_vendor_tracking_lead ON vendor_usage_tracking(lead_id);
 -- Enable RLS
 ALTER TABLE vendor_usage_tracking ENABLE ROW LEVEL SECURITY;
 
--- Policy: Brokers and admins can view their brokerage's vendor usage
+-- Policy: Brokers and admins can view vendor usage
 CREATE POLICY "Brokers and admins view vendor usage"
   ON vendor_usage_tracking
   FOR SELECT
   USING (
-    brokerage_id IN (
-      SELECT brokerage_id FROM users WHERE id = auth.uid()
-    )
-    OR
     EXISTS (
       SELECT 1 FROM users 
       WHERE id = auth.uid() 
       AND role IN ('admin', 'broker')
+    )
+    OR
+    agent_id IN (
+      SELECT id FROM agents WHERE user_id = auth.uid()
     )
   );
 
