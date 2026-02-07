@@ -5,20 +5,10 @@ import { createClient } from "@/lib/supabase/server"
 export async function getContactDetails(contactId: string) {
   const supabase = await createClient()
 
-  // Get contact with related data
+  // Get contact data
   const { data: contact, error } = await supabase
     .from("contacts")
-    .select(`
-      *,
-      conversations (
-        id,
-        type,
-        status,
-        created_at,
-        last_message_at,
-        message_count
-      )
-    `)
+    .select("*")
     .eq("id", contactId)
     .single()
 
@@ -27,7 +17,21 @@ export async function getContactDetails(contactId: string) {
     return { contact: null, error: error.message }
   }
 
-  return { contact, error: null }
+  // Get conversations separately
+  const { data: conversations } = await supabase
+    .from("conversations")
+    .select("*")
+    .eq("contact_id", contactId)
+    .order("created_at", { ascending: false })
+    .limit(10)
+
+  return { 
+    contact: {
+      ...contact,
+      conversations: conversations || []
+    }, 
+    error: null 
+  }
 }
 
 export async function getContactCreditAccounts(contactId: string) {
