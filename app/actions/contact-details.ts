@@ -10,12 +10,13 @@ export async function getContactDetails(contactId: string) {
     .from("contacts")
     .select(`
       *,
-      interactions (
+      conversations (
         id,
-        interaction_type,
-        interaction_date,
-        notes,
-        outcome
+        type,
+        status,
+        created_at,
+        last_message_at,
+        message_count
       )
     `)
     .eq("id", contactId)
@@ -92,28 +93,28 @@ export async function getContactActivity(contactId: string) {
   const supabase = await createClient()
 
   // Fetch all activity types
-  const [interactions, communications, tasks, notes] = await Promise.all([
+  const [conversations, messages, tasks, activities] = await Promise.all([
     supabase
-      .from("interactions")
-      .select("*, agent:agents!interactions_agent_id_fkey(first_name, last_name)")
-      .eq("contact_id", contactId)
-      .order("interaction_date", { ascending: false })
-      .limit(50),
-    supabase
-      .from("communications")
+      .from("conversations")
       .select("*")
-      .eq("contact_id", contactId)
-      .order("sent_at", { ascending: false })
-      .limit(50),
-    supabase
-      .from("tasks")
-      .select("*, assigned_agent:agents!tasks_assigned_to_fkey(first_name, last_name)")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(50),
     supabase
-      .from("contact_notes")
-      .select("*, created_by_agent:agents!contact_notes_created_by_fkey(first_name, last_name)")
+      .from("messages")
+      .select("*")
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
+      .limit(50),
+    supabase
+      .from("tasks")
+      .select("*")
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
+      .limit(50),
+    supabase
+      .from("activities")
+      .select("*")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(50)
@@ -121,24 +122,24 @@ export async function getContactActivity(contactId: string) {
 
   // Combine and sort by date
   const activity = [
-    ...(interactions.data || []).map((item: any) => ({ 
+    ...(conversations.data || []).map((item: any) => ({ 
       ...item, 
-      activity_type: "interaction", 
-      activity_date: item.interaction_date 
+      activity_type: "conversation", 
+      activity_date: item.created_at 
     })),
-    ...(communications.data || []).map((item: any) => ({ 
+    ...(messages.data || []).map((item: any) => ({ 
       ...item, 
-      activity_type: "communication", 
-      activity_date: item.sent_at 
+      activity_type: "message", 
+      activity_date: item.created_at 
     })),
     ...(tasks.data || []).map((item: any) => ({ 
       ...item, 
       activity_type: "task", 
       activity_date: item.created_at 
     })),
-    ...(notes.data || []).map((item: any) => ({ 
+    ...(activities.data || []).map((item: any) => ({ 
       ...item, 
-      activity_type: "note", 
+      activity_type: "activity", 
       activity_date: item.created_at 
     }))
   ].sort((a, b) => new Date(b.activity_date).getTime() - new Date(a.activity_date).getTime())
@@ -162,10 +163,10 @@ export async function getContactInteractions(contactId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("interactions")
-    .select("*, agent:agents!interactions_agent_id_fkey(first_name, last_name)")
+    .from("conversations")
+    .select("*")
     .eq("contact_id", contactId)
-    .order("interaction_date", { ascending: false })
+    .order("created_at", { ascending: false })
 
   return { interactions: data || [], error }
 }
