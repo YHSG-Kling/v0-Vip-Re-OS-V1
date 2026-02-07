@@ -243,68 +243,78 @@ export async function analyzeConversation(conversationId: string, loginId: strin
 }
 
 /**
- * Validate AI ISA call outcome
+ * Validate ISA conversation (reads from conversations table, not ai_isa_calls)
+ * SIGNALS ONLY - emits validation signal to activities table
  */
-export async function validateAIISACall(callId: string, loginId: string) {
-  if (!isValidUUID(callId) || !isValidUUID(loginId)) {
-    return { success: false, error: "Invalid call or login ID" }
+export async function validateISAConversation(conversationId: string, loginId: string) {
+  if (!isValidUUID(conversationId) || !isValidUUID(loginId)) {
+    return { success: false, error: "Invalid conversation or login ID" }
   }
 
   const supabase = await createClient()
 
   try {
-    // Get call details
-    const { data: call } = await supabase
-      .from("ai_isa_calls")
-      .select("*")
-      .eq("id", callId)
-      .eq("login_id", loginId)
+    // Get conversation with ISA context
+    const { data: conversation } = await supabase
+      .from("conversations")
+      .select("*, messages(*), contacts(*)")
+      .eq("id", conversationId)
       .single()
 
-    if (!call) {
-      return { success: false, error: "Call not found" }
+    if (!conversation) {
+      return { success: false, error: "Conversation not found" }
     }
 
-    // Prepare ISA transcript
+    // Extract transcript from messages
+    const transcript_text = conversation.messages
+      .map((m: any) => `${m.direction}: ${m.content}`)
+      .join('\n')
+
+    const duration_seconds = conversation.duration_seconds || 0
+
+    // Prepare ISA transcript from conversation data
     const isa_transcript: ISATranscript = {
-      transcript_text: call.conversation_transcript || '',
-      duration_seconds: call.call_duration_seconds || 0,
-      outcome: call.outcome as any,
-      qualification_data: call.qualification_result,
-      appointment_data: call.appointment_scheduled_id ? {
-        scheduled_time: call.created_at // Simplified
-      } : undefined
+      transcript_text,
+      duration_seconds,
+      outcome: conversation.outcome as any || 'unknown',
+      qualification_data: conversation.metadata?.qualification_result,
+      appointment_data: conversation.metadata?.appointment_data
     }
 
     // Validate conversation
     const validation_result = validateISAConversation(
       isa_transcript,
-      call.outcome as any
+      conversation.outcome as any || 'unknown'
     )
 
-    // Store validation results
+    // ONLY WRITE: Store validation signal in conversation_insights
     await supabase
-      .from("ai_isa_calls")
+      .from("conversation_insights")
       .update({
-        validation_status: validation_result.is_valid ? 'validated' : 'failed',
-        validation_confidence: validation_result.confidence_score,
-        validation_issues: validation_result.issues_detected,
-        requires_human_review: validation_result.should_human_review,
-        validation_summary: validation_result.validation_summary
+        insights_metadata: supabase.raw(`
+          jsonb_set(
+            COALESCE(insights_metadata, '{}'::jsonb),
+            '{isa_validation}',
+            ?::jsonb
+          )
+        `, [JSON.stringify(validation_result)])
       })
-      .eq("id", callId)
+      .eq("conversation_id", conversationId)
 
-    // Create task for human review if needed
+    // ONLY WRITE: Emit signal if human review needed
     if (validation_result.should_human_review) {
       await supabase
-        .from("tasks")
+        .from("activities")
         .insert({
-          assigned_to: loginId,
-          contact_id: call.contact_id,
-          title: "Review AI ISA Call - Validation Required",
-          description: validation_result.validation_summary,
-          due_date: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // 2 hours
-          priority: validation_result.confidence_score < 40 ? 'urgent' : 'high'
+          type: 'ISA_VALIDATION_REVIEW_SIGNAL',
+          entity_type: 'conversation',
+          entity_id: conversationId,
+          metadata: {
+            validation_result,
+            priority: validation_result.confidence_score < 40 ? 'urgent' : 'high',
+            system: 'System 3.4 - ISA Validator'
+          },
+          created_at: new Date().toISOString()
         })
     }
 
@@ -423,6 +433,7 @@ export async function analyzeVoiceConversation(conversationId: string, loginId: 
 
 /**
  * Real-time conversation monitoring (called periodically or on message send)
+ * SIGNALS ONLY - emits critical alerts to activities table, NO task/notification creation
  */
 export async function monitorConversationRealtime(conversationId: string, loginId: string) {
   if (!isValidUUID(conversationId) || !isValidUUID(loginId)) {
@@ -441,43 +452,30 @@ export async function monitorConversationRealtime(conversationId: string, loginI
 
     const { escalation_signal, health_score } = result.insights
 
-    // Check if immediate action needed
+    // ONLY WRITE: Emit critical escalation signal to activities if immediate attention needed
     if (escalation_signal.level === 'critical' || health_score.status === 'critical') {
-      // Create urgent notification
-      await supabase
-        .from("notifications")
-        .insert({
-          recipient_id: loginId,
-          notification_type: "conversation_escalation",
-          title: "Critical Conversation Alert",
-          message: `Conversation requires immediate attention: ${escalation_signal.recommended_action}`,
-          priority: "urgent",
-          metadata: {
-            conversation_id: conversationId,
-            escalation_level: escalation_signal.level,
-            health_status: health_score.status
-          }
-        })
-
-      // Create escalation task
       const { data: conversation } = await supabase
         .from("conversations")
         .select("contact_id")
         .eq("id", conversationId)
         .single()
 
-      if (conversation) {
-        await supabase
-          .from("tasks")
-          .insert({
-            assigned_to: loginId,
-            contact_id: conversation.contact_id,
-            title: "Urgent: Conversation Escalation",
-            description: escalation_signal.recommended_action,
-            due_date: new Date(Date.now() + escalation_signal.metadata.time_to_escalate_minutes * 60 * 1000).toISOString(),
-            priority: "urgent"
-          })
-      }
+      await supabase
+        .from("activities")
+        .insert({
+          type: 'CRITICAL_ESCALATION_SIGNAL',
+          entity_type: 'conversation',
+          entity_id: conversationId,
+          metadata: {
+            contact_id: conversation?.contact_id,
+            escalation_level: escalation_signal.level,
+            health_status: health_score.status,
+            recommended_action: escalation_signal.recommended_action,
+            urgency_minutes: escalation_signal.metadata.time_to_escalate_minutes,
+            system: 'System 3.4 - Real-time Monitor'
+          },
+          created_at: new Date().toISOString()
+        })
     }
 
     return {
