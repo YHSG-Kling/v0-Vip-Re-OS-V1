@@ -20,6 +20,7 @@ export interface RoutingDecision {
   eligible: boolean
   reason: string
   policy: RoutingPolicy
+  thresholdsMet: Record<string, boolean>
   evaluatedAt: string
 }
 
@@ -35,26 +36,32 @@ const DEFAULT_POLICY: RoutingPolicy = {
   requiresEnrichmentComplete: true,
 }
 
-export function evaluateRoutingEligibility(
+export async function evaluateRoutingEligibility(
   lead: any,
+  leadScore: number,
+  brokerageId: string,
+  supabase: any,
   policy: RoutingPolicy = DEFAULT_POLICY
-): RoutingDecision {
+): Promise<RoutingDecision> {
   // Check blocked stages
   if (policy.blockedStages.includes(lead.lead_stage)) {
     return {
       eligible: false,
       reason: `Lead is in blocked stage: ${lead.lead_stage}`,
       policy,
+      thresholdsMet: { stageAllowed: false },
       evaluatedAt: new Date().toISOString(),
     }
   }
 
   // Check score threshold
-  if (lead.lead_score < policy.minimumScore) {
+  const scoreToCheck = leadScore || lead.lead_score || 0
+  if (scoreToCheck < policy.minimumScore) {
     return {
       eligible: false,
-      reason: `Lead score ${lead.lead_score} below minimum ${policy.minimumScore}`,
+      reason: `Lead score ${scoreToCheck} below minimum ${policy.minimumScore}`,
       policy,
+      thresholdsMet: { scoreThreshold: false },
       evaluatedAt: new Date().toISOString(),
     }
   }
@@ -65,6 +72,7 @@ export function evaluateRoutingEligibility(
       eligible: false,
       reason: `Enrichment status is ${lead.enrichment_status}, not complete`,
       policy,
+      thresholdsMet: { enrichmentComplete: false },
       evaluatedAt: new Date().toISOString(),
     }
   }
@@ -75,6 +83,7 @@ export function evaluateRoutingEligibility(
       eligible: false,
       reason: 'Email required but missing',
       policy,
+      thresholdsMet: { contactInfoPresent: false },
       evaluatedAt: new Date().toISOString(),
     }
   }
@@ -84,6 +93,7 @@ export function evaluateRoutingEligibility(
       eligible: false,
       reason: 'Phone required but missing',
       policy,
+      thresholdsMet: { contactInfoPresent: false },
       evaluatedAt: new Date().toISOString(),
     }
   }
@@ -93,6 +103,12 @@ export function evaluateRoutingEligibility(
     eligible: true,
     reason: 'All routing criteria met',
     policy,
+    thresholdsMet: {
+      scoreThreshold: true,
+      enrichmentComplete: true,
+      contactInfoPresent: true,
+      stageAllowed: true,
+    },
     evaluatedAt: new Date().toISOString(),
   }
 }
