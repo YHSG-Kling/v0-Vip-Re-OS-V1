@@ -2,6 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateAssignmentEligibility } from "@/lib/lead-assignment/assignment-eligibility"
+import { promoteLeadToContact } from "@/app/actions/contact-promotion/promote-lead-to-contact"
 
 export interface AssignmentResult {
   success: boolean
@@ -83,6 +84,33 @@ export async function assignAgentToLead(
     })
 
     console.log(`[v0] Successfully assigned agent ${agentId} to lead ${leadId}`)
+
+    // Step 5: TRIGGER LEAD-TO-CONTACT PROMOTION
+    // The moment an agent is assigned, the relationship begins
+    // Lead must be promoted to Contact (canonical lifecycle rule)
+    console.log(`[v0] Triggering lead-to-contact promotion for ${leadId}`)
+    
+    const promotionResult = await promoteLeadToContact(leadId)
+    
+    if (!promotionResult.success) {
+      console.error(`[v0] Failed to promote lead ${leadId}: ${promotionResult.message}`)
+      // Log warning but don't fail assignment
+      // The agent is assigned; promotion can be retried
+      await supabase.from("automation_errors").insert({
+        workflow_name: "post_assignment_promotion",
+        error_message: `Agent assigned but promotion failed: ${promotionResult.message}`,
+        severity: "high",
+        status: "unresolved",
+        context_json: JSON.stringify({
+          leadId,
+          agentId,
+          timestamp: new Date().toISOString()
+        }),
+        created_at: new Date().toISOString()
+      })
+    } else {
+      console.log(`[v0] Lead ${leadId} promoted to contact ${promotionResult.contactId}`)
+    }
 
     return {
       success: true,
