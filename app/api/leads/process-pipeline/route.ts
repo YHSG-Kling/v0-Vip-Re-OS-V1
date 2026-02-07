@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { LeadPipelineProcessor } from "@/lib/lead-pipeline/pipeline-processor"
+import { processRawRecord } from "@/lib/lead-pipeline/pipeline-processor"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300
@@ -50,7 +50,6 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = createServiceClient()
-    const pipeline = new LeadPipelineProcessor(supabase)
 
     console.log(`[v0] Processing ${limit} records from ${raw_table} for brokerage ${brokerage_id}`)
 
@@ -87,11 +86,7 @@ export async function POST(request: NextRequest) {
     // Process each raw record through the pipeline
     for (const raw of rawRecords) {
       try {
-        const result = await pipeline.processRawLead({
-          rawRecord: raw,
-          rawTable: raw_table,
-          brokerageId: brokerage_id,
-        })
+        const result = await processRawRecord(raw.id, brokerage_id)
 
         results.processed++
 

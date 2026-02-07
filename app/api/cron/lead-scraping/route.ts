@@ -4,7 +4,7 @@ import { ZenrowsClient } from "@/lib/external/zenrows-client"
 import { BatchDataClient } from "@/lib/external/batchdata-client"
 import { PeopleDataClient } from "@/lib/external/peopledata-client"
 import { ApifyClient } from "@/lib/external/apify-client"
-import { LeadPipelineProcessor } from "@/lib/lead-pipeline/pipeline-processor"
+import { processRawRecord } from "@/lib/lead-pipeline/pipeline-processor"
 import { createLead } from "@/app/actions/leads"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
 
@@ -30,9 +30,6 @@ export async function GET(request: Request) {
     osint_searches: 0,
     errors: [] as string[],
   }
-
-  // Initialize pipeline processor with all clients
-  const pipeline = new LeadPipelineProcessor(supabase)
 
   try {
     // Get active markets with their parameters

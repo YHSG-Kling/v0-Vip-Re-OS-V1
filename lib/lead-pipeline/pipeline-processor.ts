@@ -25,9 +25,7 @@ export interface PipelineResult {
   stage: string
 }
 
-export class LeadPipelineProcessor {
-  
-  async processRawRecord(rawRecordId: string, brokerageId: string): Promise<PipelineResult> {
+export async function processRawRecord(rawRecordId: string, brokerageId: string): Promise<PipelineResult> {
     const supabase = await createClient()
 
     const { data: rawRecord, error: fetchError } = await supabase
@@ -59,14 +57,14 @@ export class LeadPipelineProcessor {
       }
     }
 
-    const preEnrichDuplicate = await this.findBestMatch(
+    const preEnrichDuplicate = await findBestMatch(
       rawRecord,
       'pre_enrichment',
       supabase
     )
 
     if (preEnrichDuplicate) {
-      await this.logDeduplication({
+      await logDeduplication({
         raw_record_id: rawRecordId,
         duplicate_of_lead_id: preEnrichDuplicate.type === 'lead' ? preEnrichDuplicate.id : null,
         duplicate_of_contact_id: preEnrichDuplicate.type === 'contact' ? preEnrichDuplicate.id : null,
@@ -80,9 +78,9 @@ export class LeadPipelineProcessor {
       }, supabase)
     }
 
-    const enriched = await this.enrichWithPeopleData(rawRecord)
+    const enriched = await enrichWithPeopleData(rawRecord)
 
-    const postEnrichDuplicate = await this.findBestMatch(
+    const postEnrichDuplicate = await findBestMatch(
       enriched,
       'post_enrichment',
       supabase
@@ -106,7 +104,7 @@ export class LeadPipelineProcessor {
           })
           .eq('id', postEnrichDuplicate.id)
 
-        await this.logDeduplication({
+        await logDeduplication({
           raw_record_id: rawRecordId,
           lead_id: postEnrichDuplicate.type === 'lead' ? postEnrichDuplicate.id : null,
           duplicate_of_lead_id: postEnrichDuplicate.type === 'lead' ? postEnrichDuplicate.id : null,
@@ -128,7 +126,7 @@ export class LeadPipelineProcessor {
           stage: 'post_enrichment_dedup',
         }
       } else {
-        await this.logDeduplication({
+        await logDeduplication({
           raw_record_id: rawRecordId,
           duplicate_of_lead_id: postEnrichDuplicate.type === 'lead' ? postEnrichDuplicate.id : null,
           duplicate_of_contact_id: postEnrichDuplicate.type === 'contact' ? postEnrichDuplicate.id : null,
@@ -152,7 +150,7 @@ export class LeadPipelineProcessor {
     }
 
     if (!enriched.email) {
-      await this.logDeduplication({
+      await logDeduplication({
         raw_record_id: rawRecordId,
         stage: 'viability_gate',
         match_score: 0,
@@ -222,7 +220,7 @@ export class LeadPipelineProcessor {
     }
   }
 
-  private async enrichWithPeopleData(rawRecord: RawRecord): Promise<any> {
+async function enrichWithPeopleData(rawRecord: RawRecord): Promise<any> {
     const enrichmentResult = await skipTraceWithPeopleData({
       name: `${rawRecord.first_name} ${rawRecord.last_name}`,
       phone: rawRecord.phone || undefined,
@@ -253,7 +251,7 @@ export class LeadPipelineProcessor {
     }
   }
 
-  private async findBestMatch(
+async function findBestMatch(
     record: RawRecord,
     stage: string,
     supabase: any
@@ -289,9 +287,8 @@ export class LeadPipelineProcessor {
     return bestMatch
   }
 
-  private async logDeduplication(log: any, supabase: any) {
-    await supabase
-      .from('lead_deduplication_log')
-      .insert(log)
-  }
+async function logDeduplication(log: any, supabase: any) {
+  await supabase
+    .from('lead_deduplication_log')
+    .insert(log)
 }
