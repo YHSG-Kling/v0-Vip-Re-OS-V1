@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { ZenrowsClient } from "@/lib/zenrows-client"
-import { BatchDataClient } from "@/lib/batchdata-client"
-import { PeopleDataClient } from "@/lib/peopledata-client"
-import { OSINTClient } from "@/lib/osint-client"
-import { ContactValidationClient } from "@/lib/contact-validation"
+import { ZenrowsClient } from "@/lib/external/zenrows-client"
+import { BatchDataClient } from "@/lib/external/batchdata-client"
+import { PeopleDataClient } from "@/lib/external/peopledata-client"
+import { ApifyClient } from "@/lib/external/apify-client"
+import { processRawRecord } from "@/lib/lead-pipeline/pipeline-processor"
 import { createLead } from "@/app/actions/leads"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
 
@@ -30,13 +30,6 @@ export async function GET(request: Request) {
     osint_searches: 0,
     errors: [] as string[],
   }
-
-  // Initialize all clients
-  const zenrows = new ZenrowsClient()
-  const batchdata = new BatchDataClient()
-  const peopledata = new PeopleDataClient()
-  const osint = new OSINTClient()
-  const validation = new ContactValidationClient()
 
   try {
     // Get active markets with their parameters

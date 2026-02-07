@@ -1,35 +1,12 @@
-import { createClient } from "@supabase/supabase-js"
-
-let supabaseInstance: ReturnType<typeof createClient> | null = null
+// Re-export the singleton Supabase client to avoid multiple GoTrueClient instances
+import { supabase as supabaseClient, createClient as createClientSingleton } from "@/lib/supabase/client"
 
 export function getSupabase() {
-  if (supabaseInstance) {
-    return supabaseInstance
-  }
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-
-  if (!supabaseUrl || !supabaseAnonKey) {
-    console.warn("[v0] Supabase configuration missing - using fallback mode")
-    console.warn("[v0] NEXT_PUBLIC_SUPABASE_URL:", supabaseUrl ? "set" : "MISSING")
-    console.warn("[v0] NEXT_PUBLIC_SUPABASE_ANON_KEY:", supabaseAnonKey ? "set" : "MISSING")
-    // Return null instead of throwing to allow app to work without Supabase
-    return null
-  }
-
-  supabaseInstance = createClient(supabaseUrl, supabaseAnonKey, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-    },
-  })
-
-  return supabaseInstance
+  return supabaseClient
 }
 
 export function createBrowserClient() {
-  return getSupabase()
+  return createClientSingleton()
 }
 
 export const isSupabaseConfigured = () => {
@@ -44,23 +21,5 @@ export const isSupabaseConfigured = () => {
   return !!(supabaseUrl && supabaseAnonKey)
 }
 
-export const supabase = new Proxy({} as ReturnType<typeof createClient>, {
-  get(target, prop) {
-    if (typeof window === "undefined") {
-      return undefined
-    }
-    const client = getSupabase()
-    if (!client) {
-      // Return safe fallbacks if Supabase is not configured
-      if (prop === 'auth') {
-        return {
-          getSession: () => Promise.resolve({ data: { session: null }, error: null }),
-          onAuthStateChange: () => ({ data: { subscription: { unsubscribe: () => {} } } }),
-          signOut: () => Promise.resolve({ error: null }),
-        }
-      }
-      return undefined
-    }
-    return (client as any)[prop]
-  },
-})
+// Re-export the singleton client
+export const supabase = supabaseClient
