@@ -67,7 +67,11 @@ async function evaluateSingleCheck(
       return await checkDocumentsVerified(supabase, listingId)
     
     case "dotloop_signatures":
-      return await checkDotloopSignatures(supabase, listingId)
+      // Legacy name - redirect to provider_signatures
+      return await checkProviderSignatures(supabase, listingId)
+    
+    case "provider_signatures":
+      return await checkProviderSignatures(supabase, listingId)
     
     case "media_approved":
       return await checkMediaApproved(supabase, listingId)
@@ -143,43 +147,32 @@ async function checkDocumentsVerified(
 }
 
 /**
- * Check: dotloop_signatures
- * Verifies Dotloop signatures are complete
+ * Check: provider_signatures (provider-agnostic)
+ * Verifies transaction provider signatures are complete
+ * 
+ * Looks for normalized event: provider.signatures.complete
+ * NO checking dotloop_loop_id anymore
  */
-async function checkDotloopSignatures(
+async function checkProviderSignatures(
   supabase: SupabaseClient,
   listingId: string
 ): Promise<ReadinessCheckResult> {
-  const { data: listing } = await supabase
-    .from("listings")
-    .select("dotloop_loop_id, dotloop_status")
-    .eq("id", listingId)
-    .single()
-  
-  if (!listing?.dotloop_loop_id) {
-    return {
-      check: "dotloop_signatures",
-      passed: false,
-      reason: "Listing not synced to Dotloop",
-    }
-  }
-  
-  // Check activities table for signature completion signals
+  // Check activities table for normalized signature completion event
   const { data: activities } = await supabase
     .from("activities")
-    .select("activity_type, status")
+    .select("activity_type, metadata")
     .eq("listing_id", listingId)
-    .eq("activity_type", "dotloop_signature_complete")
+    .eq("activity_type", "provider.signatures.complete")
     .order("created_at", { ascending: false })
     .limit(1)
   
   const signatureComplete = activities && activities.length > 0
   
   return {
-    check: "dotloop_signatures",
+    check: "provider_signatures",
     passed: signatureComplete,
-    reason: signatureComplete ? undefined : "Dotloop signatures not complete",
-    details: { dotloop_loop_id: listing.dotloop_loop_id },
+    reason: signatureComplete ? undefined : "Provider signatures not complete",
+    details: signatureComplete ? { provider: activities[0]?.metadata?.provider } : {},
   }
 }
 

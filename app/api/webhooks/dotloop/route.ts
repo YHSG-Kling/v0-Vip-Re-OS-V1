@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
         const allSigned = allDocs?.every((d) => d.status === "signed")
 
         if (allSigned && doc.transaction_id) {
-          // Trigger workflow: all docs signed
+          // Emit BOTH legacy and normalized events
           await logEventAndTrigger({
             event_type: "transaction.documents_complete",
             user_id: doc.contact_id,
@@ -44,6 +44,19 @@ export async function POST(request: NextRequest) {
             },
             source: "dotloop_webhook",
             dedupe_key: `docs-complete-${doc.transaction_id}`,
+          })
+
+          // Emit normalized provider event
+          await logEventAndTrigger({
+            event_type: "provider.signatures.complete",
+            user_id: doc.contact_id,
+            payload: {
+              transactionId: doc.transaction_id,
+              external_id: loop_id,
+              provider: "dotloop",
+            },
+            source: "dotloop_webhook",
+            dedupe_key: `provider-sigs-complete-${doc.transaction_id}`,
           })
         }
       }
