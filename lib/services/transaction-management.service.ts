@@ -5,6 +5,7 @@ import { isValidUUID, validateTransactionData } from "@/lib/validations"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 import { TRANSACTION_TYPES, TRANSACTION_STATUSES } from "@/lib/constants"
 import { revalidatePath } from "next/cache"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 
 /**
  * Unified Transaction Management Service
@@ -298,15 +299,22 @@ export async function archiveTransaction(transactionId: string, agentId: string)
 export async function calculateTransactionCommission(params: {
   transactionId: string
   salePrice: number
+  brokerageId: string
   commissionRate?: number
 }) {
   try {
-    const commissionRate = params.commissionRate || 0.03 // Default 3%
-    const grossCommission = params.salePrice * commissionRate
-    const agentSplit = grossCommission * 0.7 // Default 70% to agent
-    const brokerageSplit = grossCommission * 0.3 // 30% to brokerage
-
     const supabase = await createClient()
+
+    // Get brokerage commission structure
+    const commissionStructure = await getDefaultCommissionStructure(params.brokerageId)
+    
+    // Use provided rate or default to buyer side rate from brokerage config
+    const commissionRate = params.commissionRate || commissionStructure.totalBuyerSideRate
+    const grossCommission = params.salePrice * commissionRate
+    
+    // Use actual agent/brokerage split from config
+    const agentSplit = params.salePrice * commissionStructure.agentBuyerSideRate
+    const brokerageSplit = params.salePrice * commissionStructure.brokerageBuyerSideRate
 
     // Store commission calculation
     await supabase.from("commission_splits").insert({

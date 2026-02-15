@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateAIJSON } from "@/app/actions/ai-generate"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 
 // ============================================
 // PREDICTIVE LEAD CONVERSION ENGINE
@@ -1528,6 +1529,20 @@ Response JSON structure:
 export async function massGenerateCMAs(agentId: string) {
   const supabase = await createClient()
 
+  // Get agent's brokerage for commission structure
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("*, profiles!inner(brokerage_id)")
+    .eq("id", agentId)
+    .single()
+
+  const brokerageId = agent?.profiles?.brokerage_id
+  if (!brokerageId) {
+    throw new Error("Agent brokerage not found")
+  }
+
+  const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+
   // Get all leads with property ownership in agent's service areas
   const { data: leads, error } = await supabase
     .from("leads")
@@ -1600,7 +1615,7 @@ export async function massGenerateCMAs(agentId: string) {
       priority: "high",
       estimated_impact: {
         potential_listing: true,
-        estimated_commission: gain.equityGain * 0.06 * 0.5,
+        estimated_commission: gain.equityGain * commissionStructure.agentListingSideRate,
       },
     })
   }

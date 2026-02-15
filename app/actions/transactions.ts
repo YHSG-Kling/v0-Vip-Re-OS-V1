@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 
 // ============================================
 // TRANSACTION CRUD
@@ -2433,10 +2434,19 @@ export async function loadAgentDashboard() {
     throw new Error("Not authenticated")
   }
 
-  // Get agent record from user ID
-  const { data: agent } = await supabase.from("agents").select("*").eq("user_id", user.id).maybeSingle()
+  // Get agent record from user ID with brokerage info
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("*, profiles!inner(brokerage_id)")
+    .eq("user_id", user.id)
+    .maybeSingle()
 
   const agentId = agent?.id || user.id
+  const brokerageId = agent?.profiles?.brokerage_id
+
+  if (!brokerageId) {
+    throw new Error("Agent brokerage not found")
+  }
 
   // Load all agent's transactions
   const { data: transactions } = await supabase
@@ -2446,7 +2456,7 @@ export async function loadAgentDashboard() {
     .order("created_at", { ascending: false })
 
   // Calculate pipeline metrics
-  const pipeline = calculatePipeline(transactions || [])
+  const pipeline = await calculatePipeline(transactions || [], brokerageId)
   const atRiskDeals = identifyAtRiskDeals(transactions || [])
   const upcomingMilestones = await getUpcomingMilestones(agentId)
 
@@ -2459,7 +2469,7 @@ export async function loadAgentDashboard() {
   }
 }
 
-function calculatePipeline(transactions: any[]) {
+async function calculatePipeline(transactions: any[], brokerageId: string) {
   const stages = {
     prospecting: transactions.filter((t) => t.status === "lead" || t.status === "prospecting"),
     active_offer: transactions.filter((t) => t.status === "offer" || t.status === "negotiation"),
@@ -2471,7 +2481,10 @@ function calculatePipeline(transactions: any[]) {
   }
 
   const totalValue = transactions.reduce((sum, t) => sum + (t.purchase_price || 0), 0)
-  const estimatedCommission = totalValue * 0.03 // Simplified 3% commission
+  
+  // Get brokerage commission structure for accurate commission estimate
+  const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+  const estimatedCommission = totalValue * commissionStructure.agentBuyerSideRate // Agent's portion only
 
   return {
     stages,

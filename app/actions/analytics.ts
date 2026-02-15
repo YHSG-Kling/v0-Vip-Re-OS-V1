@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 
 // ============================================
 // VALUE METRICS AGGREGATION
@@ -225,6 +226,20 @@ export async function trackLeadValueJourney(contactId: string) {
 export async function loadValueDrivenDashboard(agentId: string, period: string = "month") {
   const supabase = await createClient()
 
+  // Get agent's brokerage for commission structure
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("*, profiles!inner(brokerage_id)")
+    .eq("id", agentId)
+    .single()
+
+  const brokerageId = agent?.profiles?.brokerage_id
+  if (!brokerageId) {
+    throw new Error("Agent brokerage not found")
+  }
+
+  const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+
   // Calculate date range
   const endDate = new Date()
   let startDate = new Date()
@@ -269,7 +284,7 @@ export async function loadValueDrivenDashboard(agentId: string, period: string =
   const guidesShared = valueMetrics?.reduce((sum, m) => sum + (m.guides_downloaded_count || 0), 0) || 0
 
   const closedDeals = transactions?.filter((t) => t.status === "closed") || []
-  const monthlyGCI = closedDeals.reduce((sum, t) => sum + ((t.purchase_price || 0) * 0.03), 0)
+  const monthlyGCI = closedDeals.reduce((sum, t) => sum + ((t.purchase_price || 0) * commissionStructure.agentBuyerSideRate), 0)
   const activeLeads = transactions?.filter((t) => t.status !== "closed" && t.status !== "cancelled").length || 0
 
   // Get trust capital
