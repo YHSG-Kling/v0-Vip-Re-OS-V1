@@ -7,18 +7,30 @@
 
 import type { ITransactionProvider } from "./transaction-provider.interface"
 import { DotloopProvider } from "./dotloop-provider"
+import type { TransactionProvider } from "./transaction-provider.interface"
+import { getTransactionProvider as getProviderName } from "@/lib/brokerage/get-brokerage-settings"
 
-type ProviderName = "dotloop" | "skyslope" | "formsimplicity" | "brokermint"
-
-const PROVIDER_REGISTRY: Record<ProviderName, () => ITransactionProvider> = {
-  dotloop: () => new DotloopProvider(),
-  // Future providers (add as needed):
-  // skyslope: () => new SkySlopeProvider(),
-  // formsimplicity: () => new FormSimplicityProvider(),
-  // brokermint: () => new BrokerMintProvider(),
-  skyslope: () => new DotloopProvider(), // Fallback to Dotloop
-  formsimplicity: () => new DotloopProvider(), // Fallback to Dotloop
-  brokermint: () => new DotloopProvider(), // Fallback to Dotloop
+/**
+ * Resolve the correct provider based on brokerage configuration
+ * Reads from System 7.2 — Brokerage Settings Resolver
+ */
+export async function getTransactionProvider(
+  brokerageId: string
+): Promise<TransactionProvider> {
+  const providerName = await getProviderName(brokerageId)
+  
+  switch (providerName) {
+    case "dotloop":
+      return new DotloopProvider()
+    case "skyslope":
+      throw new Error("SkySlope provider not yet implemented")
+    case "formsimplicity":
+      throw new Error("FormSimplicity provider not yet implemented")
+    case "brokermint":
+      throw new Error("BrokerMint provider not yet implemented")
+    default:
+      throw new Error(`Unknown transaction provider: ${providerName}`)
+  }
 }
 
 /**
