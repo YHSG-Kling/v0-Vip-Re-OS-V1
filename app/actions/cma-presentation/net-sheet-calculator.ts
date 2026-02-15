@@ -10,6 +10,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 
 export interface NetSheetInput {
   listingId: string
@@ -90,6 +91,21 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
     const supabase = await createClient()
 
+    // Get agent's brokerage for commission structure
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("brokerage_id")
+      .eq("id", input.agentId)
+      .single()
+
+    const brokerageId = profile?.brokerage_id
+    if (!brokerageId) {
+      return { success: false, error: "Agent brokerage not found" }
+    }
+
+    // Get brokerage commission structure
+    const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+
     // Emit start event
     await supabase.from("activities").insert({
       type: "seller.net_sheet.started",
@@ -106,18 +122,18 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
     const scenarios: NetSheetScenario[] = []
     
     // Primary scenario
-    scenarios.push(calculateScenario("Primary Scenario", input.salePrice, input))
+    scenarios.push(calculateScenario("Primary Scenario", input.salePrice, input, commissionStructure))
     
     // Alternate scenario if provided
     if (input.alternatePrice && input.alternatePrice > 0) {
-      scenarios.push(calculateScenario("Alternate Scenario", input.alternatePrice, input))
+      scenarios.push(calculateScenario("Alternate Scenario", input.alternatePrice, input, commissionStructure))
     }
     
     // Conservative scenario (-5%)
-    scenarios.push(calculateScenario("Conservative (-5%)", input.salePrice * 0.95, input))
+    scenarios.push(calculateScenario("Conservative (-5%)", input.salePrice * 0.95, input, commissionStructure))
     
     // Optimistic scenario (+5%)
-    scenarios.push(calculateScenario("Optimistic (+5%)", input.salePrice * 1.05, input))
+    scenarios.push(calculateScenario("Optimistic (+5%)", input.salePrice * 1.05, input, commissionStructure))
 
     // Calculate expiration (90 days)
     const expiresAt = new Date()
@@ -157,15 +173,17 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
 /**
  * Calculate a single net sheet scenario
+ * Note: Commission rates should be passed from generateNetSheet after fetching from brokerage settings
  */
 function calculateScenario(
   scenarioName: string,
   salePrice: number,
-  input: NetSheetInput
+  input: NetSheetInput,
+  commissionStructure: Awaited<ReturnType<typeof getDefaultCommissionStructure>>
 ): NetSheetScenario {
-  // Default commission rates
-  const listingCommissionRate = input.listingCommissionRate || 0.03
-  const buyerCommissionRate = input.buyerCommissionRate || 0.03
+  // Use brokerage commission structure if rates not explicitly provided
+  const listingCommissionRate = input.listingCommissionRate || commissionStructure.totalListingSideRate
+  const buyerCommissionRate = input.buyerCommissionRate || commissionStructure.totalBuyerSideRate
   
   // Calculate costs
   const listingCommission = salePrice * listingCommissionRate
