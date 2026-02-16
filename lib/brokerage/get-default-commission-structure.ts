@@ -1,486 +1,125 @@
-Platform Stabilization + Hardcoded Removal + Event Layer Separation
-Version: Production Correction Pass
-Scope: All Offer, Lifecycle, Calculator, SLA, Compliance Logic
-CONTEXT
+/**
+ * SYSTEM 7.2 Extension — Commission Structure Resolver
+ *
+ * Provides brokerage-specific commission rates and splits.
+ * Eliminates ALL hardcoded 0.03, 0.06, 0.7/0.3 assumptions.
+ *
+ * Rules:
+ * - All functions require brokerageId (multi-tenant platform)
+ * - No fallback rates — throw error if not configured
+ * - Commission authority is always internal (commission_structures table owns rates)
+ */
 
-You are working inside a:
+import { createServiceClient } from "@/lib/supabase/service"
 
-Next.js 15
+export interface CommissionStructure {
+  id: string
+  brokerage_id: string
+  name: string
+  is_default: boolean
+  
+  // Listing side (seller agent commission)
+  listing_commission_rate: number // Total listing side (e.g. 0.03 = 3%)
+  listing_agent_split: number // Agent's % of listing commission (e.g. 0.70 = 70%)
+  listing_brokerage_split: number // Brokerage's % (e.g. 0.30 = 30%)
+  
+  // Buyer side (buyer agent commission)
+  buyer_commission_rate: number // Total buyer side (e.g. 0.03 = 3%)
+  buyer_agent_split: number // Agent's % of buyer commission (e.g. 0.70 = 70%)
+  buyer_brokerage_split: number // Brokerage's % (e.g. 0.30 = 30%)
+  
+  // Derived helpers (computed, not stored)
+  totalListingSideRate: number // listing_commission_rate
+  totalBuyerSideRate: number // buyer_commission_rate
+  agentListingSideRate: number // listing_commission_rate * listing_agent_split
+  brokerageListingSideRate: number // listing_commission_rate * listing_brokerage_split
+  agentBuyerSideRate: number // buyer_commission_rate * buyer_agent_split
+  brokerageBuyerSideRate: number // buyer_commission_rate * buyer_brokerage_split
+}
 
-Supabase (Postgres)
+/**
+ * Get the default commission structure for a brokerage.
+ *
+ * Throws error if not configured — no hardcoded fallbacks.
+ *
+ * @param brokerageId - UUID of the brokerage
+ * @returns Commission structure with computed helper fields
+ */
+export async function getDefaultCommissionStructure(
+  brokerageId: string
+): Promise<CommissionStructure> {
+  if (!brokerageId) {
+    throw new Error("[commission-resolver] brokerageId is required")
+  }
 
-TypeScript
-
-Multi-tenant brokerage SaaS platform
-
-System 7.2 (Brokerage Settings Resolver) exists.
-
-lifecycle_events table has just been created.
-
-You must refactor the entire system to remove:
-
-Hardcoded commission values
-
-Hardcoded state fallbacks
-
-Hardcoded deadlines
-
-Hardcoded property tax rates
-
-Hardcoded provider assumptions
-
-Hardcoded closing entity assumptions
-
-Hardcoded TX fallback logic
-
-Direct access to global_settings.additional_settings
-
-System lifecycle writes to activities
-
-🔴 ABSOLUTE NON-NEGOTIABLE RULES
-
-❌ No direct reads from global_settings.additional_settings
-❌ No hardcoded commission rates (0.03, 0.06, etc.)
-❌ No hardcoded state fallbacks ("TX")
-❌ No hardcoded SLA durations
-❌ No hardcoded provider names
-❌ No hardcoded property tax rates
-❌ No hardcoded offer expiration windows
-❌ No direct writes of system state to activities
-❌ No assuming QuickBooks is the accounting provider
-❌ No assuming Dotloop is the transaction provider
-❌ No assuming title company is the closing entity
-
-✅ SYSTEM STRUCTURE RULES
-1️⃣ Canonical System Events → lifecycle_events
-
-Replace ALL system lifecycle writes:
-
-supabase.from("activities")
-
-
-With:
-
-supabase.from("lifecycle_events")
-
-
-activities remains for:
-
-CRM notes
-
-Tasks
-
-Manual interactions
-
-lifecycle_events is the canonical event store for:
-
-buyer.offer.*
-
-transaction.*
-
-compliance.*
-
-listing.*
-
-lifecycle state transitions
-
-2️⃣ Offer Engine Must Match Actual Schema
-
-Current schema:
-
-offers (
-  id,
-  transaction_id,
-  listing_id,
-  contact_id,
-  offer_number,
-  offer_price,
-  earnest_money,
-  contingencies,
-  status,
-  submitted_at,
-  response_deadline,
-  responded_at
-)
-
-
-Refactor 7.1B to:
-
-offer_amount → offer_price
-
-buyer_id → contact_id
-
-expires_at → response_deadline
-
-Remove assumptions about non-existent columns
-
-Store extra structured offer data in metadata JSON if needed
-
-DO NOT modify schema unless absolutely required.
-
-🔵 PHASE 1 — REMOVE ALL HARDCODED BUSINESS LOGIC
-A. Commission Refactor
-
-Files to refactor:
-
-offer-management.ts
-
-analytics.ts
-
-transactions.ts
-
-calculators.ts
-
-transaction-management.service.ts
-
-brokerKPIs.ts
-
-Remove:
-
-0.03
-0.06
-commissionRate || 0.03
-
-
-Replace with:
-
-const structure = await getDefaultCommissionStructure(brokerageId)
-
-
-Create helper:
-
-async function getDefaultCommissionStructure(brokerageId: string) {
   const supabase = createServiceClient()
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("commission_structures")
     .select("*")
     .eq("brokerage_id", brokerageId)
     .eq("is_default", true)
     .single()
 
-  if (!data) {
-    throw new Error("No default commission structure configured")
+  if (error || !data) {
+    throw new Error(
+      `[commission-resolver] No default commission structure found for brokerage ${brokerageId}. ` +
+      `Create a commission structure with is_default=true before running commission calculations.`
+    )
   }
 
-  return data
+  // Add computed helper fields for convenience
+  return {
+    ...data,
+    totalListingSideRate: data.listing_commission_rate,
+    totalBuyerSideRate: data.buyer_commission_rate,
+    agentListingSideRate: data.listing_commission_rate * data.listing_agent_split,
+    brokerageListingSideRate: data.listing_commission_rate * data.listing_brokerage_split,
+    agentBuyerSideRate: data.buyer_commission_rate * data.buyer_agent_split,
+    brokerageBuyerSideRate: data.buyer_commission_rate * data.buyer_brokerage_split,
+  }
 }
 
-
-No fallback allowed.
-
-B. State Refactor (Forms + Compliance + Guidelines)
-
-Files:
-
-ai-offer-creation.ts
-
-documents.ts
-
-ai-predictions.ts
-
-Remove:
-
-STATE_OFFER_FORMS
-guidelines[state] || guidelines.TX
-lead.state || "TX"
-
-
-Replace with:
-
-const state = await getRequiredPrimaryState(brokerageId)
-
-const requirements = await supabase
-  .from("state_compliance_requirements")
-  .select("*")
-  .eq("state", state)
-
-
-If primary_state is null → throw error.
-
-No Texas fallback.
-
-C. Transfer Tax & Closing Costs Refactor
-
-File: calculators.ts
-
-Remove:
-
-homeValue * 0.001
-homeValue * 0.007
-homeValue * 0.015
-
-
-Replace with:
-
-const state = await getRequiredPrimaryState(brokerageId)
-const closingType = await getClosingEntityType(brokerageId)
-
-const { data: taxRules } = await supabase
-  .from("state_compliance_requirements")
-  .select("*")
-  .eq("state", state)
-  .in("applies_to_closing_type", [closingType, "both"])
-
-
-All cost logic must derive from table data.
-
-D. SLA / Deadline Refactor
-
-Files:
-
-sla-metadata.ts
-
-offer-management.ts
-
-lead-readiness.ts
-
-copilot.ts
-
-ai-isa.ts
-
-Remove ALL literals:
-
-48
-72
-168
-7
-14
-
-
-Replace with:
-
-const { pipeline_settings } = await getBrokerageSettings(brokerageId)
-
-
-Use:
-
-offer_expiration_hours
-
-stale_lead_warning_days
-
-stale_lead_critical_days
-
-financial_verification_sla_hours
-
-first_tour_sla_hours
-
-offer_submission_sla_hours
-
-E. Property Tax & PMI Refactor
-
-File: calculators.ts
-
-Remove:
-
-propertyTaxRate = 0.0125
-pmi_rate literal
-
-
-Replace with:
-
-const { financial_defaults } = await getBrokerageSettings(brokerageId)
-
-
-Use:
-
-property_tax_rate
-
-pmi_rate
-
-pmi_threshold_percent
-
-F. Accounting Provider Assumptions
-
-Search entire repo for:
-
-quickbooks
-
-xero
-
-skyslope accounting
-
-brokermint accounting
-
-Replace with:
-
-const provider = await getAccountingProvider(brokerageId)
-
-
-Branch behavior accordingly.
-
-Never assume QuickBooks.
-
-🔵 PHASE 2 — Offer Engine Realignment (7.1B)
-Replace ALL lifecycle writes
-
-Change:
-
-supabase.from("activities")
-
-
-To:
-
-supabase.from("lifecycle_events")
-
-
-Insert:
-
-{
-  brokerage_id,
-  entity_type,
-  entity_id,
-  event_type,
-  actor_user_id,
-  metadata
+/**
+ * Get all commission structures for a brokerage (default + custom).
+ *
+ * @param brokerageId - UUID of the brokerage
+ * @returns Array of commission structures with computed fields
+ */
+export async function getAllCommissionStructures(
+  brokerageId: string
+): Promise<CommissionStructure[]> {
+  if (!brokerageId) {
+    throw new Error("[commission-resolver] brokerageId is required")
+  }
+
+  const supabase = createServiceClient()
+
+  const { data, error } = await supabase
+    .from("commission_structures")
+    .select("*")
+    .eq("brokerage_id", brokerageId)
+    .order("is_default", { ascending: false })
+
+  if (error) {
+    throw new Error(
+      `[commission-resolver] Failed to load commission structures: ${error.message}`
+    )
+  }
+
+  if (!data || data.length === 0) {
+    throw new Error(
+      `[commission-resolver] No commission structures found for brokerage ${brokerageId}`
+    )
+  }
+
+  return data.map((structure) => ({
+    ...structure,
+    totalListingSideRate: structure.listing_commission_rate,
+    totalBuyerSideRate: structure.buyer_commission_rate,
+    agentListingSideRate: structure.listing_commission_rate * structure.listing_agent_split,
+    brokerageListingSideRate: structure.listing_commission_rate * structure.listing_brokerage_split,
+    agentBuyerSideRate: structure.buyer_commission_rate * structure.buyer_agent_split,
+    brokerageBuyerSideRate: structure.buyer_commission_rate * structure.buyer_brokerage_split,
+  }))
 }
-
-Offer Status Rule
-
-status column = UI reflection only
-
-lifecycle derived from lifecycle_events
-
-keep updating status for filtering
-
-never use status as source of truth
-
-Compliance Gate Rule
-
-Acceptance MUST verify:
-
-SELECT 1
-FROM lifecycle_events
-WHERE entity_type = 'offer'
-AND entity_id = $1
-AND event_type = 'buyer.offer.compliance.passed'
-
-
-If not present → block acceptance.
-
-🔵 PHASE 3 — Enforce Resolver Usage Everywhere
-
-Search for:
-
-from("global_settings")
-
-
-Remove all direct reads.
-
-Replace with:
-
-await getBrokerageSettings(brokerageId)
-
-🔵 PHASE 4 — Remove Default Provider Assumptions
-
-In DEFAULT_SETTINGS:
-
-transaction_provider: null
-
-
-Add:
-
-getRequiredTransactionProvider()
-
-
-Throw error if not configured.
-
-No silent dotloop default.
-
-🔵 PHASE 5 — Closing Entity Routing
-
-Anywhere system says:
-
-"notify title agent"
-
-Replace with:
-
-const closingType = await getClosingEntityType(brokerageId)
-
-
-If:
-
-attorney → route to participant_type 'attorney'
-
-title_company → use transaction_title_escrow
-
-escrow_company → use escrow participant
-
-No hardcoded language.
-
-🔵 PHASE 6 — Replace All Hardcoded TX Fallbacks
-
-Search:
-
-|| "TX"
-|| guidelines.TX
-|| forms.TX
-
-
-Replace with:
-
-const state = await getPrimaryState(brokerageId)
-if (!state) throw
-
-🔵 PHASE 7 — System Event Naming Convention
-
-All lifecycle events must follow:
-
-namespace.domain.action.state
-
-
-Examples:
-
-buyer.offer.draft.created
-
-buyer.offer.signature.requested
-
-buyer.offer.accepted
-
-transaction.compliance.scan.started
-
-transaction.closing.disbursed
-
-No vague event names.
-
-🔵 FINAL VALIDATION CHECKLIST
-
-After refactor:
-
-Configuration
-
- No direct global_settings reads
-
- No hardcoded commission values
-
- No hardcoded state fallbacks
-
- No hardcoded SLA durations
-
- No hardcoded property tax
-
- No provider hardcoding
-
-Events
-
- All system lifecycle writes go to lifecycle_events
-
- activities only used for CRM tasks
-
- Acceptance requires compliance.passed event
-
- Status column used only for UI reflection
-
-Offer Engine
-
- Fields match actual offers schema
-
- No phantom columns referenced
-
- response_deadline used instead of expires_at
-
-Multi-Tenant Safety
-
- All resolver functions require brokerageId
-
- No single-tenant assumptions anywhere

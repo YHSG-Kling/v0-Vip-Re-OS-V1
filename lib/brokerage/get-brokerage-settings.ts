@@ -342,6 +342,34 @@ export async function getAccountingAuthority(
 }
 
 // ─────────────────────────────────────────────────────────────
+// Specific Pipeline Setting Getters
+// ─────────────────────────────────────────────────────────────
+
+/** Get offer expiration hours from pipeline settings */
+export async function getOfferExpirationHours(
+  brokerageId: string
+): Promise<number> {
+  const settings = await getPipelineSettings(brokerageId)
+  return settings.offer_expiration_hours
+}
+
+/** Get stale lead warning threshold in days */
+export async function getStaleLeadWarningDays(
+  brokerageId: string
+): Promise<number> {
+  const settings = await getPipelineSettings(brokerageId)
+  return settings.stale_lead_warning_days
+}
+
+/** Get financial verification SLA in hours */
+export async function getFinancialVerificationSLAHours(
+  brokerageId: string
+): Promise<number> {
+  const settings = await getPipelineSettings(brokerageId)
+  return settings.financial_verification_sla_hours
+}
+
+// ─────────────────────────────────────────────────────────────
 // Convenience: Load Full Settings Once, Destructure Locally
 //
 // Use this pattern in files that need multiple settings values
