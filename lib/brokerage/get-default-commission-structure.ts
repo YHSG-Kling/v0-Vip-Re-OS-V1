@@ -1,98 +1,151 @@
 /**
- * SYSTEM 7.2 Extension — Commission Structure Resolver
+ * Phase 2 — Commission Structure Resolver (Build13 Aligned)
  *
- * Provides brokerage-specific commission rates and splits.
- * Eliminates ALL hardcoded 0.03, 0.06, 0.7/0.3 assumptions.
+ * Queries agent_commission_profiles + commission_structures
+ * using build13 schema columns.
  *
- * Rules:
- * - All functions require brokerageId (multi-tenant platform)
- * - No fallback rates — throw error if not configured
- * - Commission authority is always internal (commission_structures table owns rates)
+ * RULES:
+ * - base_percentage stored as whole number (3 = 3%)
+ * - split_percent stored as whole number (80 = 80%)
+ * - Convert to decimal via / 100
+ * - Returns whole dollar fees (no cents conversion yet)
+ * - Agent identity = agents.id (never users.id)
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface CommissionStructure {
-  id: string
-  brokerage_id: string
-  name: string
-  is_default: boolean
+  // Rates (decimal)
+  agentBuyerSideRate: number      // What agent earns on buyer side
+  agentListingSideRate: number    // What agent earns on listing side
+  brokerageBuyerSideRate: number  // What brokerage keeps on buyer side
+  brokerageListingSideRate: number// What brokerage keeps on listing side
+  totalBuyerSideRate: number      // Total commission rate buyer side
+  totalListingSideRate: number    // Total commission rate listing side
   
-  // Listing side (seller agent commission)
-  listing_commission_rate: number // Total listing side (e.g. 0.03 = 3%)
-  listing_agent_split: number // Agent's % of listing commission (e.g. 0.70 = 70%)
-  listing_brokerage_split: number // Brokerage's % (e.g. 0.30 = 30%)
+  // Fees (whole dollars)
+  transactionFeeValue: number
+  transactionFeeType: string | null
+  deskFeeValue: number
+  deskFeeType: string | null
+  technologyFeeValue: number
+  technologyFeeType: string | null
+  eoFeeValue: number
+  eoFeeType: string | null
+  royaltyValue: number
+  royaltyType: string | null
+  referralValue: number
+  referralType: string | null
+  residualValue: number
+  residualType: string | null
   
-  // Buyer side (buyer agent commission)
-  buyer_commission_rate: number // Total buyer side (e.g. 0.03 = 3%)
-  buyer_agent_split: number // Agent's % of buyer commission (e.g. 0.70 = 70%)
-  buyer_brokerage_split: number // Brokerage's % (e.g. 0.30 = 30%)
-  
-  // Derived helpers (computed, not stored)
-  totalListingSideRate: number // listing_commission_rate
-  totalBuyerSideRate: number // buyer_commission_rate
-  agentListingSideRate: number // listing_commission_rate * listing_agent_split
-  brokerageListingSideRate: number // listing_commission_rate * listing_brokerage_split
-  agentBuyerSideRate: number // buyer_commission_rate * buyer_agent_split
-  brokerageBuyerSideRate: number // buyer_commission_rate * buyer_brokerage_split
+  // Metadata
+  capAmount: number | null
+  structureType: string | null
 }
 
 /**
- * Get the default commission structure for a brokerage.
- *
- * Throws error if not configured — no hardcoded fallbacks.
- *
- * @param brokerageId - UUID of the brokerage
- * @returns Commission structure with computed helper fields
+ * Get agent commission profile + brokerage default structure
+ * 
+ * @param agentId - agents.id (NOT users.id)
+ * @param brokerageId - brokerage_id for multi-tenant filter
  */
 export async function getDefaultCommissionStructure(
-  brokerageId: string
+  brokerageId: string,
+  agentId?: string
 ): Promise<CommissionStructure> {
-  if (!brokerageId) {
-    throw new Error("[commission-resolver] brokerageId is required")
-  }
-
   const supabase = createServiceClient()
 
-  const { data, error } = await supabase
+  // Get agent profile if agentId provided
+  let agentProfile = null
+  if (agentId) {
+    const { data } = await supabase
+      .from("agent_commission_profiles")
+      .select("*")
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
+      .order("effective_date", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    
+    agentProfile = data
+  }
+
+  // Get brokerage default structure
+  const { data: structure, error } = await supabase
     .from("commission_structures")
     .select("*")
     .eq("brokerage_id", brokerageId)
     .eq("is_default", true)
+    .eq("is_active", true)
     .single()
 
-  if (error || !data) {
+  if (error || !structure) {
     throw new Error(
-      `[commission-resolver] No default commission structure found for brokerage ${brokerageId}. ` +
-      `Create a commission structure with is_default=true before running commission calculations.`
+      `[commission-resolver] No default commission structure found for brokerage ${brokerageId}`
     )
   }
 
-  // Add computed helper fields for convenience
+  // Convert base_percentage (whole number → decimal)
+  const grossRate = (structure.base_percentage || 0) / 100
+
+  // If agent profile exists, use their split; otherwise use 70% default
+  const agentSplit = agentProfile
+    ? (agentProfile.split_percent || 0) / 100
+    : 0.7
+
+  // Agent gets agentSplit, brokerage gets remainder
+  const agentBuyerSideRate = grossRate * agentSplit
+  const brokerageBuyerSideRate = grossRate * (1 - agentSplit)
+
+  // Assume listing side same as buyer side unless overridden
+  const agentListingSideRate = agentBuyerSideRate
+  const brokerageListingSideRate = brokerageBuyerSideRate
+
+  // Extract fees from agent profile (prefer new _value columns)
+  const transactionFeeValue = agentProfile?.transaction_fee_value ?? agentProfile?.transaction_fee ?? 0
+  const deskFeeValue = agentProfile?.desk_fee_value ?? 0
+  const technologyFeeValue = agentProfile?.technology_fee_value ?? 0
+  const eoFeeValue = agentProfile?.eo_fee_value ?? 0
+  const royaltyValue = agentProfile?.royalty_value ?? 0
+  const referralValue = agentProfile?.referral_value ?? 0
+  const residualValue = agentProfile?.residual_value ?? 0
+
   return {
-    ...data,
-    totalListingSideRate: data.listing_commission_rate,
-    totalBuyerSideRate: data.buyer_commission_rate,
-    agentListingSideRate: data.listing_commission_rate * data.listing_agent_split,
-    brokerageListingSideRate: data.listing_commission_rate * data.listing_brokerage_split,
-    agentBuyerSideRate: data.buyer_commission_rate * data.buyer_agent_split,
-    brokerageBuyerSideRate: data.buyer_commission_rate * data.buyer_brokerage_split,
+    agentBuyerSideRate,
+    agentListingSideRate,
+    brokerageBuyerSideRate,
+    brokerageListingSideRate,
+    totalBuyerSideRate: grossRate,
+    totalListingSideRate: grossRate,
+    
+    transactionFeeValue,
+    transactionFeeType: agentProfile?.transaction_fee_type ?? null,
+    deskFeeValue,
+    deskFeeType: agentProfile?.desk_fee_type ?? null,
+    technologyFeeValue,
+    technologyFeeType: agentProfile?.technology_fee_type ?? null,
+    eoFeeValue,
+    eoFeeType: agentProfile?.eo_fee_type ?? null,
+    royaltyValue,
+    royaltyType: agentProfile?.royalty_type ?? null,
+    referralValue,
+    referralType: agentProfile?.referral_type ?? null,
+    residualValue,
+    residualType: agentProfile?.residual_type ?? null,
+    
+    capAmount: agentProfile?.cap_amount ?? null,
+    structureType: agentProfile?.structure_type ?? null,
   }
 }
 
 /**
- * Get all commission structures for a brokerage (default + custom).
- *
- * @param brokerageId - UUID of the brokerage
- * @returns Array of commission structures with computed fields
+ * Get all commission structures for a brokerage
  */
 export async function getAllCommissionStructures(
   brokerageId: string
-): Promise<CommissionStructure[]> {
-  if (!brokerageId) {
-    throw new Error("[commission-resolver] brokerageId is required")
-  }
-
+): Promise<any[]> {
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
@@ -107,19 +160,5 @@ export async function getAllCommissionStructures(
     )
   }
 
-  if (!data || data.length === 0) {
-    throw new Error(
-      `[commission-resolver] No commission structures found for brokerage ${brokerageId}`
-    )
-  }
-
-  return data.map((structure) => ({
-    ...structure,
-    totalListingSideRate: structure.listing_commission_rate,
-    totalBuyerSideRate: structure.buyer_commission_rate,
-    agentListingSideRate: structure.listing_commission_rate * structure.listing_agent_split,
-    brokerageListingSideRate: structure.listing_commission_rate * structure.listing_brokerage_split,
-    agentBuyerSideRate: structure.buyer_commission_rate * structure.buyer_agent_split,
-    brokerageBuyerSideRate: structure.buyer_commission_rate * structure.buyer_brokerage_split,
-  }))
+  return data || []
 }
