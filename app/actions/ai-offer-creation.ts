@@ -413,7 +413,7 @@ export async function createOfferDotloop(params: {
         body: JSON.stringify({
           name: `${params.propertyAddress} - Buyer Offer`,
           status: "Active",
-          transaction_type: "Purchase",
+          deal_type: "Purchase",
           street_address: params.propertyAddress,
         }),
       }
@@ -517,7 +517,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
         agent_id: params.agentId,
         buyer_id: params.buyerId,
         listing_id: params.listingId,
-        transaction_type: "buyer_side",
+        deal_type: "buyer_side",
         status: "offer_submitted",
         property_address: listing.address,
         purchase_price: params.offerAmount,

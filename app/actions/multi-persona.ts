@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 
 // ============================================
 // BROKERAGE ADMIN FUNCTIONS
@@ -633,11 +634,16 @@ export async function calculateAgentBilling(data: {
     .gte("actual_closing_date", data.billingPeriodStart)
     .lte("actual_closing_date", data.billingPeriodEnd)
 
-  // Get agent's commission structure
-  const { data: agent } = await supabase.from("agents").select("commission_split, cap_amount").eq("id", data.agentId).single()
+  // commission_split on agents table is deprecated — use agent_commission_profiles via resolver
+  let brokerageSplit: number
+  if (data.agentId && data.brokerageId) {
+    const structure = await getDefaultCommissionStructure(data.brokerageId, data.agentId)
+    brokerageSplit = 1 - structure.splitDecimal
+  } else {
+    throw new Error("[multi-persona] brokerageId and agentId required to resolve commission structure")
+  }
 
   const grossCommission = transactions?.reduce((sum, t) => sum + (t.commission_amount || 0), 0) || 0
-  const brokerageSplit = (100 - (agent?.commission_split || 70)) / 100
   const brokerageSplitAmount = grossCommission * brokerageSplit
 
   // Standard fees (configurable per brokerage)

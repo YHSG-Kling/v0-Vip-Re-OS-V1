@@ -283,7 +283,7 @@ export async function getAgentCommissions(agentId: string, year?: number) {
     .from("agent_commissions")
     .select(`
       *,
-      transaction:transactions(id, property_address, sale_price, status)
+      transaction:transactions(id, property_address, purchase_price, status)
     `)
     .eq("agent_id", agentId)
     .gte("close_date", startDate)
@@ -724,7 +724,7 @@ export async function getAgentStats(userIdOrAgentId: string) {
   return {
     activeDeals: activeTransactions,
     pendingGCI: 0, // Would need commissions table
-    ytdVolume: 0, // Would need transactions with sale_price
+    ytdVolume: 0, // Would need transactions with purchase_price
     ytdGCI: 0, // Would need commissions table
     leadsToday,
     contactCount,

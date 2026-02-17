@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateAIJSON } from "@/app/actions/ai-generate"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 
 // ============================================
 // SELLER NET PROCEEDS CALCULATOR
@@ -37,11 +38,16 @@ export async function calculateSellerNet(data: {
   repairsConcessions?: number
   stagingCost?: number
   movingCost?: number
+  brokerageId: string
 }) {
   const supabase = await createClient()
 
+  // Get brokerage commission structure
+  const commissionStructure = await getDefaultCommissionStructure(data.brokerageId)
+  const totalCommissionRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
+
   const costs = {
-    agent_commission: data.homeValue * 0.06, // 6% transparent commission
+    agent_commission: data.homeValue * totalCommissionRate,
     title_insurance: await getLocalTitleCost(data.location, data.homeValue),
     escrow_fees: await getLocalEscrowFees(data.location, data.homeValue),
     transfer_tax: calculateTransferTax(data.homeValue, data.state),
@@ -713,7 +719,7 @@ export async function calculateAffordability(data: {
       total: Math.round(totalMonthlyPayment),
     },
     hiddenCosts: {
-      closing_costs: Math.round(maxHomePrice * 0.03),
+      closing_costs: Math.round(maxHomePrice * 0.025), // Approximate buyer closing costs (non-commission)
       maintenance_budget: Math.round(maxHomePrice * 0.01) / 12,
       utilities_estimate: 250,
     },
@@ -741,10 +747,15 @@ export async function calculateRentVsBuy(data: {
   annualAppreciation?: number
   city?: string
   visitorId?: string
+  brokerageId: string
 }) {
   const vid = data.visitorId || generateVisitorId()
 
-  const appreciationRate = data.annualAppreciation || 0.03 // 3% default
+  // Get brokerage commission structure for selling scenario
+  const commissionStructure = await getDefaultCommissionStructure(data.brokerageId)
+  const totalCommissionRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
+
+  const appreciationRate = data.annualAppreciation || 0.03 // 3% default (market appreciation, not brokerage config)
   const propertyTaxRate = 0.0125
   const maintenanceRate = 0.01
 
@@ -762,7 +773,7 @@ export async function calculateRentVsBuy(data: {
 
   // Calculate over time period
   let totalRentCost = 0
-  let totalOwnershipCost = data.downPayment + data.homePrice * 0.03 // Down payment + closing costs
+  let totalOwnershipCost = data.downPayment + data.homePrice * 0.025 // Down payment + buyer closing costs (non-commission)
   let homeValueAfterYears = data.homePrice
 
   for (let year = 1; year <= data.yearsToStay; year++) {
@@ -779,10 +790,10 @@ export async function calculateRentVsBuy(data: {
 
   // Calculate equity and ROI for buying
   const equityBuilt = homeValueAfterYears - loanAmount
-  const netProceedsAfterSelling = homeValueAfterYears - loanAmount - homeValueAfterYears * 0.06 // After commission
+  const netProceedsAfterSelling = homeValueAfterYears - loanAmount - homeValueAfterYears * totalCommissionRate // After commission
 
   const breakEvenPoint = Math.ceil(
-    (data.downPayment + data.homePrice * 0.03) / ((totalMonthlyOwnership - data.rentAmount) * 12 + data.homePrice * appreciationRate),
+    (data.downPayment + data.homePrice * 0.025) / ((totalMonthlyOwnership - data.rentAmount) * 12 + data.homePrice * appreciationRate),
   )
 
   // Track usage

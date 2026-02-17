@@ -1,10 +1,12 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { generateText, generateObject } from "ai"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
+import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 
 // ============================================================================
 // AI FINANCIAL MANAGEMENT SYSTEM
@@ -260,7 +262,18 @@ export async function aiCalculateCommission(params: CommissionEntry) {
 
     // Calculate commission breakdown
     const grossCommission = params.grossCommission
-    const agentSplit = params.splitPercentage || agentProfile?.commission_split || 70
+    
+    if (!params.splitPercentage && !params.brokerageId) {
+      throw new Error("[ai-financial-management] brokerageId required to resolve commission structure")
+    }
+    let agentSplit = params.splitPercentage
+    if (!agentSplit && params.brokerageId && params.agentId) {
+      const structure = await getDefaultCommissionStructure(params.brokerageId, params.agentId)
+      agentSplit = structure.splitDecimal * 100
+    }
+    if (!agentSplit) {
+      throw new Error("[ai-financial-management] Cannot resolve agent split — no profile configured")
+    }
     const brokerageFee = params.brokerageFee || 0
     const franchiseFee = params.franchiseFee || 0
 

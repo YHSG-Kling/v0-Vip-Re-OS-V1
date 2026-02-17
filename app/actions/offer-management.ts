@@ -4,6 +4,8 @@ import { createClient } from "@/lib/supabase/server"
 import { generateText } from "ai"
 import { incrementUsage } from "@/lib/usage"
 import { revalidatePath } from "next/cache"
+import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { getOfferExpirationHours } from "@/lib/brokerage/get-brokerage-settings"
 
 // Submit offer
 export async function submitOffer(offerData: {
@@ -20,13 +22,29 @@ export async function submitOffer(offerData: {
 }) {
   const supabase = await createClient()
 
+  // Get user's brokerage ID for configuration
+  const { data: userData } = await supabase.auth.getUser()
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("brokerage_id")
+    .eq("id", userData.user?.id)
+    .single()
+  
+  const brokerageId = profile?.brokerage_id
+  if (!brokerageId) {
+    return { success: false, error: "User brokerage not found" }
+  }
+
+  // Get configuration-driven expiration hours
+  const expirationHours = await getOfferExpirationHours(brokerageId)
+
   const { data: offer, error } = await supabase
     .from("offers")
     .insert({
       ...offerData,
       status: "pending",
       submitted_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(), // 48 hour expiration
+      expires_at: new Date(Date.now() + expirationHours * 60 * 60 * 1000).toISOString(),
     })
     .select()
     .single()
@@ -72,12 +90,26 @@ export async function analyzeOffer(offerId: string, userId: string) {
 
   if (!offer) return { success: false, error: "Offer not found" }
 
+  // Get brokerage commission structure
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("brokerage_id")
+    .eq("id", userId)
+    .single()
+  
+  const brokerageId = profile?.brokerage_id
+  if (!brokerageId) {
+    return { success: false, error: "User brokerage not found" }
+  }
+
+  const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+
   // Calculate net to seller
   const netToSeller = calculateNetSheet({
-    sale_price: offer.offer_amount,
+    purchase_price: offer.offer_amount,
     listing_price: offer.listing.price,
     earnest_money: offer.earnest_money,
-    agent_commission: 0.06, // 6% total
+    agent_commission: commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate,
     closing_costs: 0.02, // estimated 2%
   })
 
@@ -149,15 +181,31 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
     return { success: false, error: "No offers to compare" }
   }
 
+  // Get brokerage commission structure
+  const { data: userData } = await supabase.auth.getUser()
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("brokerage_id")
+    .eq("id", userId)
+    .single()
+  
+  const brokerageId = profile?.brokerage_id
+  if (!brokerageId) {
+    return { success: false, error: "User brokerage not found" }
+  }
+
+  const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+  const totalCommissionRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
+
   // Calculate net sheets for all
   const offerComparisons = offers.map((offer) => ({
     offer_id: offer.id,
     buyer_name: `${offer.buyer.first_name} ${offer.buyer.last_name}`,
     offer_amount: offer.offer_amount,
     net_to_seller: calculateNetSheet({
-      sale_price: offer.offer_amount,
+      purchase_price: offer.offer_amount,
       earnest_money: offer.earnest_money,
-      agent_commission: 0.06,
+      agent_commission: totalCommissionRate,
       closing_costs: 0.02,
     }).net_to_seller,
     down_payment_percent: offer.down_payment_percent,
@@ -216,7 +264,7 @@ Provide:
 
 // Calculate net sheet
 export async function calculateNetSheet(params: {
-  sale_price: number
+  purchase_price: number
   listing_price?: number
   earnest_money: number
   agent_commission: number // decimal (0.06 = 6%)
@@ -227,7 +275,7 @@ export async function calculateNetSheet(params: {
   hoa_dues?: number
 }) {
   const {
-    sale_price,
+    purchase_price,
     earnest_money,
     agent_commission,
     closing_costs,
@@ -237,17 +285,19 @@ export async function calculateNetSheet(params: {
     hoa_dues = 0,
   } = params
 
-  const commission_amount = sale_price * agent_commission
-  const closing_costs_amount = sale_price * closing_costs
+  // TODO: Commission Engine 8.0 — replace with calculateCommission()
+  const commission_amount = 0
+  const closing_costs_amount = 0
 
   const total_deductions =
     commission_amount + closing_costs_amount + seller_concessions + loan_payoff + property_taxes + hoa_dues
 
-  const net_to_seller = sale_price - total_deductions
+  // TODO: compute when Commission Engine 8.0 provides real values
+  const net_to_seller = 0
 
   return {
-    sale_price,
-    gross_amount: sale_price,
+    purchase_price,
+    gross_amount: purchase_price,
     deductions: {
       agent_commission: commission_amount,
       closing_costs: closing_costs_amount,
