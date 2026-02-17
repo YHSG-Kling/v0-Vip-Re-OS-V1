@@ -15,6 +15,13 @@ export async function getRequiredTransactionProvider(brokerageId: string): Promi
 }
 
 /**
+ * Alias for compatibility with existing code
+ */
+export async function getTransactionProvider(brokerageId: string): Promise<string> {
+  return getRequiredTransactionProvider(brokerageId)
+}
+
+/**
  * Get accounting provider (can be null - optional feature)
  */
 export async function getAccountingProvider(brokerageId: string): Promise<string | null> {
@@ -27,11 +34,11 @@ export async function getAccountingProvider(brokerageId: string): Promise<string
  * THROWS if not configured
  */
 export async function getClosingEntityType(brokerageId: string): Promise<'attorney' | 'title_company' | 'escrow_company'> {
-  const { closing_settings } = await getBrokerageSettings(brokerageId)
+  const settings = await getBrokerageSettings(brokerageId)
 
-  if (!closing_settings?.closing_entity_type) {
+  if (!settings.closing_entity_type) {
     throw new Error(`Brokerage ${brokerageId} must configure closing_entity_type in settings`)
   }
 
-  return closing_settings.closing_entity_type as 'attorney' | 'title_company' | 'escrow_company'
+  return settings.closing_entity_type as 'attorney' | 'title_company' | 'escrow_company'
 }
