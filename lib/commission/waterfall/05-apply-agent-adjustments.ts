@@ -1,46 +1,50 @@
-import { getCommissionAdjustments } from '../resolve-adjustments'
-import { dollarsToCents, calculatePercentCents } from '../utils'
-import type { WaterfallContext, CommissionDistribution } from '../types'
+import { createServiceClient } from "@/lib/supabase/service"
+import { dollarsToCents, calculatePercentAmount } from "../utils"
+import type { DistributionRecord } from "../types"
 
-/**
- * STEP 5: Apply Agent-Level Adjustments
- * Read commission_adjustments WHERE applies_to = 'agent'
- */
 export async function applyAgentAdjustments(
+  agentPortionCents: number,
   transactionId: string,
-  agentPortionCents: number
-): Promise<Pick<WaterfallContext, 'agentPortionCents' | 'agentAdjustments'>> {
-  const adjustments = await getCommissionAdjustments(transactionId, 'agent')
-
+  brokerageId: string
+): Promise<{ adjustedAgentCents: number; agentAdjustments: DistributionRecord[] }> {
+  
+  const supabase = createServiceClient()
+  const agentAdjustments: DistributionRecord[] = []
   let adjustedAgentCents = agentPortionCents
-  const agentAdjustments: CommissionDistribution[] = []
-
-  for (const adj of adjustments) {
-    let adjCents: number
-
-    if (adj.value_type === 'percent') {
-      adjCents = calculatePercentCents(agentPortionCents, adj.value)
-    } else {
-      adjCents = dollarsToCents(adj.value)
-    }
-
+  
+  const { data: agentAdjs } = await supabase
+    .from("commission_adjustments")
+    .select("*")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", brokerageId)
+    .eq("is_active", true)
+    .eq("applies_to", "agent")
+  
+  if (!agentAdjs || agentAdjs.length === 0) {
+    return { adjustedAgentCents, agentAdjustments: [] }
+  }
+  
+  for (const adj of agentAdjs) {
+    const adjCents = adj.value_type === 'percent'
+      ? calculatePercentAmount(agentPortionCents, adj.value)
+      : dollarsToCents(adj.value)
+    
     if (adj.direction === 'credit') {
       adjustedAgentCents -= adjCents
     } else {
       adjustedAgentCents += adjCents
     }
-
+    
     agentAdjustments.push({
-      distribution_type: 'adjustment',
-      calculatedCents: adjCents,
+      distribution_type: 'fee',
+      recipient_type: adj.recipient_type,
+      calculation_type: adj.value_type,
+      calculation_value: adj.value,
+      calculated_amount: adjCents / 100,
       source_of_funds: 'agent',
-      description: adj.description || `Agent adjustment: ${adj.value_type}`,
-      adjustment_id: adj.id
+      notes: adj.notes
     })
   }
-
-  return {
-    agentPortionCents: adjustedAgentCents,
-    agentAdjustments
-  }
+  
+  return { adjustedAgentCents, agentAdjustments }
 }

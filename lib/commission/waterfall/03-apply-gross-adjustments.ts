@@ -1,46 +1,50 @@
-import { getCommissionAdjustments } from '../resolve-adjustments'
-import { dollarsToCents, calculatePercentCents } from '../utils'
-import type { WaterfallContext, CommissionDistribution } from '../types'
+import { createServiceClient } from "@/lib/supabase/service"
+import { dollarsToCents, calculatePercentAmount } from "../utils"
+import type { DistributionRecord } from "../types"
 
-/**
- * STEP 3: Apply Gross-Level Adjustments
- * Read commission_adjustments WHERE applies_to = 'gross'
- */
 export async function applyGrossAdjustments(
+  grossCommissionCents: number,
   transactionId: string,
-  grossCommissionCents: number
-): Promise<Pick<WaterfallContext, 'adjustedGrossCents' | 'grossAdjustments'>> {
-  const adjustments = await getCommissionAdjustments(transactionId, 'gross')
-
+  brokerageId: string
+): Promise<{ adjustedGrossCents: number; grossAdjustments: DistributionRecord[] }> {
+  
+  const supabase = createServiceClient()
+  const grossAdjustments: DistributionRecord[] = []
   let adjustedGrossCents = grossCommissionCents
-  const grossAdjustments: CommissionDistribution[] = []
-
-  for (const adj of adjustments) {
-    let adjCents: number
-
-    if (adj.value_type === 'percent') {
-      adjCents = calculatePercentCents(grossCommissionCents, adj.value)
-    } else {
-      adjCents = dollarsToCents(adj.value)
-    }
-
+  
+  const { data: grossAdjs } = await supabase
+    .from("commission_adjustments")
+    .select("*")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", brokerageId)
+    .eq("is_active", true)
+    .eq("applies_to", "gross")
+  
+  if (!grossAdjs || grossAdjs.length === 0) {
+    return { adjustedGrossCents, grossAdjustments: [] }
+  }
+  
+  for (const adj of grossAdjs) {
+    const adjCents = adj.value_type === 'percent'
+      ? calculatePercentAmount(grossCommissionCents, adj.value)
+      : dollarsToCents(adj.value)
+    
     if (adj.direction === 'credit') {
       adjustedGrossCents -= adjCents
     } else {
       adjustedGrossCents += adjCents
     }
-
+    
     grossAdjustments.push({
-      distribution_type: 'adjustment',
-      calculatedCents: adjCents,
-      source_of_funds: 'gross',
-      description: adj.description || `Gross adjustment: ${adj.value_type}`,
-      adjustment_id: adj.id
+      distribution_type: 'fee',
+      recipient_type: adj.recipient_type,
+      calculation_type: adj.value_type,
+      calculation_value: adj.value,
+      calculated_amount: adjCents / 100,
+      source_of_funds: 'brokerage',
+      notes: adj.notes
     })
   }
-
-  return {
-    adjustedGrossCents,
-    grossAdjustments
-  }
+  
+  return { adjustedGrossCents, grossAdjustments }
 }

@@ -1,46 +1,50 @@
-import { getCommissionAdjustments } from '../resolve-adjustments'
-import { dollarsToCents, calculatePercentCents } from '../utils'
-import type { WaterfallContext, CommissionDistribution } from '../types'
+import { createServiceClient } from "@/lib/supabase/service"
+import { dollarsToCents, calculatePercentAmount } from "../utils"
+import type { DistributionRecord } from "../types"
 
-/**
- * STEP 6: Apply Brokerage-Level Adjustments
- * Read commission_adjustments WHERE applies_to = 'brokerage'
- */
 export async function applyBrokerageAdjustments(
+  brokeragePortionCents: number,
   transactionId: string,
-  brokeragePortionCents: number
-): Promise<Pick<WaterfallContext, 'brokeragePortionCents' | 'brokerageAdjustments'>> {
-  const adjustments = await getCommissionAdjustments(transactionId, 'brokerage')
-
+  brokerageId: string
+): Promise<{ adjustedBrokerageCents: number; brokerageAdjustments: DistributionRecord[] }> {
+  
+  const supabase = createServiceClient()
+  const brokerageAdjustments: DistributionRecord[] = []
   let adjustedBrokerageCents = brokeragePortionCents
-  const brokerageAdjustments: CommissionDistribution[] = []
-
-  for (const adj of adjustments) {
-    let adjCents: number
-
-    if (adj.value_type === 'percent') {
-      adjCents = calculatePercentCents(brokeragePortionCents, adj.value)
-    } else {
-      adjCents = dollarsToCents(adj.value)
-    }
-
+  
+  const { data: brokerageAdjs } = await supabase
+    .from("commission_adjustments")
+    .select("*")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", brokerageId)
+    .eq("is_active", true)
+    .eq("applies_to", "brokerage")
+  
+  if (!brokerageAdjs || brokerageAdjs.length === 0) {
+    return { adjustedBrokerageCents, brokerageAdjustments: [] }
+  }
+  
+  for (const adj of brokerageAdjs) {
+    const adjCents = adj.value_type === 'percent'
+      ? calculatePercentAmount(brokeragePortionCents, adj.value)
+      : dollarsToCents(adj.value)
+    
     if (adj.direction === 'credit') {
       adjustedBrokerageCents -= adjCents
     } else {
       adjustedBrokerageCents += adjCents
     }
-
+    
     brokerageAdjustments.push({
-      distribution_type: 'adjustment',
-      calculatedCents: adjCents,
+      distribution_type: 'fee',
+      recipient_type: adj.recipient_type,
+      calculation_type: adj.value_type,
+      calculation_value: adj.value,
+      calculated_amount: adjCents / 100,
       source_of_funds: 'brokerage',
-      description: adj.description || `Brokerage adjustment: ${adj.value_type}`,
-      adjustment_id: adj.id
+      notes: adj.notes
     })
   }
-
-  return {
-    brokeragePortionCents: adjustedBrokerageCents,
-    brokerageAdjustments
-  }
+  
+  return { adjustedBrokerageCents, brokerageAdjustments }
 }
