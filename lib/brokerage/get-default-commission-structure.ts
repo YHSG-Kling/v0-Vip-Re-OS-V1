@@ -2,6 +2,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 
 export interface CommissionStructureResolved {
   grossRateDecimal: number
+  resolvedFrom: "deal_override" | "agent_profile" | "brokerage_default"
+  resolvedGrossRateDecimal: number
 
   agentBuyerSideRate: number
   agentListingSideRate: number
@@ -35,7 +37,8 @@ export interface CommissionStructureResolved {
 
 export async function getDefaultCommissionStructure(
   brokerageId: string,
-  agentId: string
+  agentId?: string,
+  dealCommissionRate?: number
 ): Promise<CommissionStructureResolved> {
 
   const supabase = createServiceClient()
@@ -56,35 +59,49 @@ export async function getDefaultCommissionStructure(
     )
   }
 
-  const grossRateDecimal =
-    structure.commission_type === "percentage"
-      ? Number(structure.base_percentage) / 100
-      : 0
+  // 2️⃣ Get agent commission profile (optional)
+  let profile = null
 
-  // 2️⃣ Get agent commission profile
-  const { data: profile } = await supabase
-    .from("agent_commission_profiles")
-    .select("*")
-    .eq("agent_id", agentId)
-    .eq("brokerage_id", brokerageId)
-    .eq("is_active", true)
-    .maybeSingle()
+  if (agentId) {
+    const { data } = await supabase
+      .from("agent_commission_profiles")
+      .select("*")
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
+      .maybeSingle()
 
-  if (!profile) {
+    profile = data
+  }
+
+  // 3️⃣ Resolve gross rate with priority: deal > agent profile > brokerage default
+  let resolvedGrossRateDecimal: number
+  let resolvedFrom: "deal_override" | "agent_profile" | "brokerage_default"
+
+  if (dealCommissionRate != null) {
+    resolvedGrossRateDecimal = dealCommissionRate / 100
+    resolvedFrom = "deal_override"
+  } else if (profile?.split_percent != null) {
+    resolvedGrossRateDecimal = profile.split_percent / 100
+    resolvedFrom = "agent_profile"
+  } else if (structure?.base_percentage != null) {
+    resolvedGrossRateDecimal = structure.base_percentage / 100
+    resolvedFrom = "brokerage_default"
+  } else {
     throw new Error(
-      `[commission-resolver] No active commission profile found for agent ${agentId} ` +
-      `in brokerage ${brokerageId}. ` +
-      `Create an agent_commission_profiles record before running commission calculations.`
+      `[commission-resolver] No commission rate configured for brokerage ${brokerageId}`
     )
   }
 
-  const splitDecimal = Number(profile.split_percent) / 100
+  const splitDecimal = profile ? Number(profile.split_percent) / 100 : 0
 
-  const agentSide = grossRateDecimal * splitDecimal
-  const brokerageSide = grossRateDecimal - agentSide
+  const agentSide = resolvedGrossRateDecimal * splitDecimal
+  const brokerageSide = resolvedGrossRateDecimal - agentSide
 
   return {
-    grossRateDecimal,
+    grossRateDecimal: resolvedGrossRateDecimal,
+    resolvedFrom,
+    resolvedGrossRateDecimal,
 
     agentBuyerSideRate: agentSide,
     agentListingSideRate: agentSide,

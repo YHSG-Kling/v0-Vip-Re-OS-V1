@@ -58,3 +58,47 @@ export async function setContractDate(params: {
     }
   })
 }
+
+export async function assertAdjustmentsUnlocked(params: {
+  transactionId: string
+  brokerageId: string
+  userId: string
+  role: string
+}): Promise<void> {
+  const supabase = createServiceClient()
+
+  const { data: transaction } = await supabase
+    .from("transactions")
+    .select("contract_date")
+    .eq("id", params.transactionId)
+    .eq("brokerage_id", params.brokerageId)
+    .maybeSingle()
+
+  if (!transaction) {
+    throw new Error(
+      `[contract-governance] Transaction ${params.transactionId} not found`
+    )
+  }
+
+  if (transaction.contract_date) {
+    const allowedOverrideRoles = ["broker", "admin"]
+
+    if (!allowedOverrideRoles.includes(params.role)) {
+      throw new Error(
+        "[contract-governance] Commission adjustments locked after contract_date."
+      )
+    }
+
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "transaction",
+      entity_id: params.transactionId,
+      event_type: "transaction.commission.adjustment.lock_overridden",
+      brokerage_id: params.brokerageId,
+      actor_user_id: params.userId,
+      metadata: {
+        role: params.role,
+        contract_date: transaction.contract_date,
+      }
+    })
+  }
+}

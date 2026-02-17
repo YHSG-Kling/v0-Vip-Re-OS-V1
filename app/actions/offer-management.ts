@@ -102,7 +102,11 @@ export async function analyzeOffer(offerId: string, userId: string) {
     return { success: false, error: "User brokerage not found" }
   }
 
-  const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+  const commissionStructure = await getDefaultCommissionStructure(
+    brokerageId,
+    userId,
+    null
+  )
 
   // Calculate net to seller
   const netToSeller = calculateNetSheet({
@@ -194,7 +198,11 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
     return { success: false, error: "User brokerage not found" }
   }
 
-  const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+  const commissionStructure = await getDefaultCommissionStructure(
+    brokerageId,
+    userId,
+    null
+  )
   const totalCommissionRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
 
   // Calculate net sheets for all
@@ -285,15 +293,13 @@ export async function calculateNetSheet(params: {
     hoa_dues = 0,
   } = params
 
-  // TODO: Commission Engine 8.0 — replace with calculateCommission()
-  const commission_amount = 0
-  const closing_costs_amount = 0
+  const commission_amount = purchase_price * agent_commission
+  const closing_costs_amount = purchase_price * closing_costs
 
   const total_deductions =
     commission_amount + closing_costs_amount + seller_concessions + loan_payoff + property_taxes + hoa_dues
 
-  // TODO: compute when Commission Engine 8.0 provides real values
-  const net_to_seller = 0
+  const net_to_seller = purchase_price - total_deductions
 
   return {
     purchase_price,

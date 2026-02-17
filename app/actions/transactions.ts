@@ -99,6 +99,7 @@ export async function createTransaction(transactionData: {
   agent_id?: string
   close_date?: string
   notes?: string
+  commissionPercentage?: number
 }) {
   const supabase = await createClient()
 
@@ -107,6 +108,7 @@ export async function createTransaction(transactionData: {
     .insert({
       ...transactionData,
       status: transactionData.status || "new",
+      commission_percentage: transactionData.commissionPercentage ?? null,
     })
     .select()
     .single()
@@ -119,6 +121,30 @@ export async function createTransaction(transactionData: {
   // Auto-generate milestones based on transaction type
   if (data) {
     await generateMilestones(data.id, transactionData.transaction_type)
+    
+    // Log lifecycle event if commission was overridden
+    if (transactionData.commissionPercentage != null) {
+      const { data: userData } = await supabase.auth.getUser()
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("brokerage_id")
+        .eq("id", userData.user?.id)
+        .single()
+
+      if (profile?.brokerage_id) {
+        await supabase.from("lifecycle_events").insert({
+          entity_type: "transaction",
+          entity_id: data.id,
+          event_type: "transaction.commission.overridden",
+          brokerage_id: profile.brokerage_id,
+          actor_user_id: userData.user?.id,
+          metadata: {
+            commission_percentage: transactionData.commissionPercentage,
+            resolved_from: "deal_override",
+          }
+        })
+      }
+    }
   }
 
   revalidatePath("/transactions")
@@ -140,13 +166,20 @@ export async function updateTransaction(
     contract_date: string
     close_date: string
     notes: string
+    commissionPercentage: number
   }>,
 ) {
   const supabase = await createClient()
 
+  const updatePayload: any = { ...updates, updated_at: new Date().toISOString() }
+  if (updates.commissionPercentage !== undefined) {
+    updatePayload.commission_percentage = updates.commissionPercentage
+    delete updatePayload.commissionPercentage
+  }
+
   const { data, error } = await supabase
     .from("transactions")
-    .update({ ...updates, updated_at: new Date().toISOString() })
+    .update(updatePayload)
     .eq("id", transactionId)
     .select()
     .single()
