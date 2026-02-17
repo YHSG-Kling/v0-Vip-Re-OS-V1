@@ -40,10 +40,33 @@ export interface WaterfallContext {
   transactionId: string
   brokerageId: string
   agentId: string
+
+  // Core values
   purchasePriceCents: number
   grossRateDecimal: number
   agentSplitPercent: number
   resolvedFrom: 'deal_override' | 'agent_profile' | 'brokerage_default'
-  calculationMode: 'preview' | 'final'
-  triggeredBy?: string | null
+
+  // Running totals (ALL CENTS)
+  grossCommissionCents: number
+  adjustedGrossCents: number
+  agentPortionCents: number
+  brokeragePortionCents: number
+  agentNetCents: number
+  brokerageFinalCents: number
+  agentFinalNetCents: number
+  totalFeesCents: number
+
+  // Cap
+  capApplied: boolean
+  capStatus: 'pre_cap' | 'hit_cap' | 'post_cap' | 'n/a'
+  amountTowardsCap: number
+
+  // Distribution collections
+  grossAdjustments: DistributionRecord[]
+  agentAdjustments: DistributionRecord[]
+  brokerageAdjustments: DistributionRecord[]
+  teamDistributions: DistributionRecord[]
+  revenueShareDistributions: DistributionRecord[]
+  feeDistributions: DistributionRecord[]
 }

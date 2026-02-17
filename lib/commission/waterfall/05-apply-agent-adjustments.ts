@@ -1,50 +1,51 @@
-import { createServiceClient } from "@/lib/supabase/service"
-import { dollarsToCents, calculatePercentAmount } from "../utils"
-import type { DistributionRecord } from "../types"
+import { createServiceClient } from '@/lib/supabase/service'
+import { dollarsToCents } from '../utils'
+import type { WaterfallContext, DistributionRecord } from '../types'
 
+/**
+ * STEP 5: Apply Agent Adjustments
+ * Query commission_adjustments for agent-side changes
+ */
 export async function applyAgentAdjustments(
-  agentPortionCents: number,
-  transactionId: string,
-  brokerageId: string
-): Promise<{ adjustedAgentCents: number; agentAdjustments: DistributionRecord[] }> {
-  
+  context: WaterfallContext
+): Promise<WaterfallContext> {
   const supabase = createServiceClient()
-  const agentAdjustments: DistributionRecord[] = []
-  let adjustedAgentCents = agentPortionCents
-  
-  const { data: agentAdjs } = await supabase
-    .from("commission_adjustments")
-    .select("*")
-    .eq("transaction_id", transactionId)
-    .eq("brokerage_id", brokerageId)
-    .eq("is_active", true)
-    .eq("applies_to", "agent")
-  
-  if (!agentAdjs || agentAdjs.length === 0) {
-    return { adjustedAgentCents, agentAdjustments: [] }
+
+  const { data: adjustments } = await supabase
+    .from('commission_adjustments')
+    .select('*')
+    .eq('transaction_id', context.transactionId)
+    .eq('applies_to', 'agent')
+    .eq('is_active', true)
+
+  if (!adjustments || adjustments.length === 0) {
+    return context
   }
-  
-  for (const adj of agentAdjs) {
-    const adjCents = adj.value_type === 'percent'
-      ? calculatePercentAmount(agentPortionCents, adj.value)
-      : dollarsToCents(adj.value)
-    
-    if (adj.direction === 'credit') {
-      adjustedAgentCents -= adjCents
-    } else {
-      adjustedAgentCents += adjCents
-    }
-    
+
+  let agentPortionCents = context.agentPortionCents
+  const agentAdjustments: DistributionRecord[] = []
+
+  for (const adj of adjustments) {
+    const adjustmentCents = adj.adjustment_type === 'flat'
+      ? dollarsToCents(adj.adjustment_value)
+      : Math.round(context.agentPortionCents * (adj.adjustment_value / 100))
+
+    agentPortionCents += adjustmentCents
+
     agentAdjustments.push({
       distribution_type: 'fee',
-      recipient_type: adj.recipient_type,
-      calculation_type: adj.value_type,
-      calculation_value: adj.value,
-      calculated_amount: adjCents / 100,
+      calculation_type: adj.adjustment_type,
+      calculation_value: adj.adjustment_value,
+      calculated_amount: adjustmentCents / 100,
       source_of_funds: 'agent',
-      notes: adj.notes
+      rule_id: adj.id,
+      notes: adj.reason
     })
   }
-  
-  return { adjustedAgentCents, agentAdjustments }
+
+  return {
+    ...context,
+    agentPortionCents,
+    agentAdjustments
+  }
 }

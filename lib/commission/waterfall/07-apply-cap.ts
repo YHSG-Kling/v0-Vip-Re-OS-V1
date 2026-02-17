@@ -3,35 +3,33 @@ import { dollarsToCents, centsToDollars } from '../utils'
 import type { WaterfallContext } from '../types'
 
 /**
- * STEP 7: Apply Cap (CORRECTED - Brokerage-Side Cap)
+ * STEP 7: Apply Cap (PURE FUNCTION - NO DB UPDATES)
  * Cap tracks brokerage's cumulative earnings, NOT agent's
  * When capped, brokerage gets $0 and agent gets full brokerage portion as bonus
+ * NO DATABASE UPDATES - only computation
  */
 export async function applyCap(
-  agentId: string,
-  brokerageId: string,
-  agentPortionCents: number,
-  brokeragePortionCents: number
-): Promise<Pick<WaterfallContext, 'agentNetCents' | 'brokerageFinalCents' | 'agentBonusCents' | 'capApplied' | 'capStatus' | 'amountTowardsCap'>> {
+  context: WaterfallContext
+): Promise<WaterfallContext> {
   const supabase = createServiceClient()
 
   // Get cap tracking record
   const { data: capTracking } = await supabase
     .from('agent_cap_tracking')
     .select('*')
-    .eq('agent_id', agentId)
-    .eq('brokerage_id', brokerageId)
+    .eq('agent_id', context.agentId)
+    .eq('brokerage_id', context.brokerageId)
     .eq('is_active', true)
     .maybeSingle()
 
-  // No cap configured - agent gets their portion, brokerage gets theirs
+  // No cap configured
   if (!capTracking) {
     return {
-      agentNetCents: agentPortionCents,
-      brokerageFinalCents: brokeragePortionCents,
-      agentBonusCents: 0,
+      ...context,
+      agentNetCents: context.agentPortionCents,
+      brokerageFinalCents: context.brokeragePortionCents,
       capApplied: false,
-      capStatus: 'pre_cap',
+      capStatus: 'n/a',
       amountTowardsCap: 0
     }
   }
@@ -49,45 +47,32 @@ export async function applyCap(
   if (remainingCapCents <= 0) {
     // Already capped — brokerage gets $0, agent gets full brokerage portion
     brokerageFinalCents = 0
-    agentBonusCents = brokeragePortionCents
+    agentBonusCents = context.brokeragePortionCents
     capApplied = true
     capStatus = 'post_cap'
     amountTowardsCap = 0
-  } else if (brokeragePortionCents <= remainingCapCents) {
+  } else if (context.brokeragePortionCents <= remainingCapCents) {
     // Still under cap — brokerage keeps their portion
-    brokerageFinalCents = brokeragePortionCents
+    brokerageFinalCents = context.brokeragePortionCents
     agentBonusCents = 0
     capApplied = false
     capStatus = 'pre_cap'
-    amountTowardsCap = brokeragePortionCents
+    amountTowardsCap = context.brokeragePortionCents
   } else {
     // This deal hits cap boundary
     brokerageFinalCents = remainingCapCents
-    agentBonusCents = brokeragePortionCents - remainingCapCents
+    agentBonusCents = context.brokeragePortionCents - remainingCapCents
     capApplied = true
     capStatus = 'hit_cap'
     amountTowardsCap = remainingCapCents
   }
 
-  // Update cap tracking (will be persisted in step 11)
-  const newPaidToDate = centsToDollars(paidToDateCents + amountTowardsCap)
-  const isCapped = newPaidToDate >= capTracking.cap_amount
-
-  await supabase
-    .from('agent_cap_tracking')
-    .update({
-      cap_paid_to_date: newPaidToDate,
-      is_capped: isCapped,
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', capTracking.id)
-
-  const agentNetCents = agentPortionCents + agentBonusCents
+  const agentNetCents = context.agentPortionCents + agentBonusCents
 
   return {
+    ...context,
     agentNetCents,
     brokerageFinalCents,
-    agentBonusCents,
     capApplied,
     capStatus,
     amountTowardsCap

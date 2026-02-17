@@ -1,17 +1,18 @@
-import { dollarsToCents, validatePositive } from "../utils"
+import type { WaterfallContext } from '../types'
 
+/**
+ * STEP 2: Calculate Gross Commission
+ * grossCommissionCents = purchasePriceCents * grossRateDecimal
+ * adjustedGrossCents = grossCommissionCents (will be adjusted in step 3)
+ */
 export function calculateGrossCommission(
-  purchasePrice: number,
-  grossRateDecimal: number
-): { grossCommissionCents: number } {
-  validatePositive(purchasePrice, "purchase_price")
-  
-  if (grossRateDecimal <= 0 || grossRateDecimal > 1) {
-    throw new Error(`[commission-engine:calculate-gross] Invalid gross rate: ${grossRateDecimal}`)
+  context: WaterfallContext
+): WaterfallContext {
+  const grossCommissionCents = Math.round(context.purchasePriceCents * context.grossRateDecimal)
+
+  return {
+    ...context,
+    grossCommissionCents,
+    adjustedGrossCents: grossCommissionCents
   }
-  
-  const purchasePriceCents = dollarsToCents(purchasePrice)
-  const grossCommissionCents = Math.round(purchasePriceCents * grossRateDecimal)
-  
-  return { grossCommissionCents }
 }

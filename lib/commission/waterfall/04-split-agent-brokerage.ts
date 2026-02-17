@@ -6,14 +6,14 @@ import type { WaterfallContext } from '../types'
  * brokeragePortionCents = adjustedGrossCents - agentPortionCents
  */
 export function splitAgentBrokerage(
-  adjustedGrossCents: number,
-  agentSplitPercent: number
-): Pick<WaterfallContext, 'agentPortionCents' | 'brokeragePortionCents'> {
-  const agentSplitDecimal = agentSplitPercent / 100
-  const agentPortionCents = Math.round(adjustedGrossCents * agentSplitDecimal)
-  const brokeragePortionCents = adjustedGrossCents - agentPortionCents
+  context: WaterfallContext
+): WaterfallContext {
+  const agentSplitDecimal = context.agentSplitPercent / 100
+  const agentPortionCents = Math.round(context.adjustedGrossCents * agentSplitDecimal)
+  const brokeragePortionCents = context.adjustedGrossCents - agentPortionCents
 
   return {
+    ...context,
     agentPortionCents,
     brokeragePortionCents
   }

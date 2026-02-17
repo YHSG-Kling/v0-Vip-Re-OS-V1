@@ -1,67 +1,96 @@
-import { createServiceClient } from '@/lib/supabase/service'
-import { dollarsToCents, calculatePercentCents, sumCents } from '../utils'
-import type { WaterfallContext, CommissionDistribution } from '../types'
+import { getDefaultCommissionStructure } from '@/lib/brokerage/get-default-commission-structure'
+import { dollarsToCents } from '../utils'
+import type { WaterfallContext, DistributionRecord } from '../types'
 
 /**
  * STEP 10: Fees
- * Apply transaction_fee, desk_fee, technology_fee, eo_fee
+ * Apply transaction fee, desk fee, tech fee, E&O fee from commission structure
  */
 export async function applyFees(
-  agentId: string,
-  brokerageId: string,
-  agentFinalCents: number
-): Promise<Pick<WaterfallContext, 'feeDistributions' | 'agentFinalNetCents' | 'totalFeesCents'>> {
-  const supabase = createServiceClient()
+  context: WaterfallContext
+): Promise<WaterfallContext> {
+  const structure = await getDefaultCommissionStructure(
+    context.brokerageId,
+    context.agentId
+  )
 
-  // Get agent commission profile for fee configuration
-  const { data: profile } = await supabase
-    .from('agent_commission_profiles')
-    .select('*')
-    .eq('agent_id', agentId)
-    .eq('brokerage_id', brokerageId)
-    .eq('is_active', true)
-    .maybeSingle()
+  const feeDistributions: DistributionRecord[] = []
+  let totalFeesCents = 0
 
-  if (!profile) {
-    return {
-      feeDistributions: [],
-      agentFinalNetCents: agentFinalCents,
-      totalFeesCents: 0
-    }
-  }
-
-  const feeDistributions: CommissionDistribution[] = []
-  const feeTypes = ['transaction_fee', 'desk_fee', 'technology_fee', 'eo_fee']
-
-  for (const feeType of feeTypes) {
-    const feeValueType = profile[`${feeType}_type`]
-    const feeValue = profile[`${feeType}_value`]
-
-    if (!feeValue || feeValue === 0) continue
-
-    let feeCents: number
-
-    if (feeValueType === 'flat') {
-      feeCents = dollarsToCents(feeValue)
-    } else {
-      // percent
-      feeCents = calculatePercentCents(agentFinalCents, feeValue)
-    }
-
+  // Transaction fee
+  if (structure.transactionFeeValue > 0) {
+    const feeCents = structure.transactionFeeType === 'flat'
+      ? dollarsToCents(structure.transactionFeeValue)
+      : Math.round(context.agentNetCents * (structure.transactionFeeValue / 100))
+    
+    totalFeesCents += feeCents
     feeDistributions.push({
       distribution_type: 'fee',
-      calculatedCents: feeCents,
+      calculation_type: structure.transactionFeeType,
+      calculation_value: structure.transactionFeeValue,
+      calculated_amount: feeCents / 100,
       source_of_funds: 'agent',
-      description: `${feeType.replace(/_/g, ' ')}: ${feeValueType === 'flat' ? `$${feeValue}` : `${feeValue}%`}`
+      notes: 'Transaction fee'
     })
   }
 
-  const totalFeesCents = sumCents(feeDistributions.map(d => d.calculatedCents))
-  const agentFinalNetCents = agentFinalCents - totalFeesCents
+  // Desk fee
+  if (structure.deskFeeValue > 0) {
+    const feeCents = structure.deskFeeType === 'flat'
+      ? dollarsToCents(structure.deskFeeValue)
+      : Math.round(context.agentNetCents * (structure.deskFeeValue / 100))
+    
+    totalFeesCents += feeCents
+    feeDistributions.push({
+      distribution_type: 'fee',
+      calculation_type: structure.deskFeeType,
+      calculation_value: structure.deskFeeValue,
+      calculated_amount: feeCents / 100,
+      source_of_funds: 'agent',
+      notes: 'Desk fee'
+    })
+  }
+
+  // Technology fee
+  if (structure.technologyFeeValue > 0) {
+    const feeCents = structure.technologyFeeType === 'flat'
+      ? dollarsToCents(structure.technologyFeeValue)
+      : Math.round(context.agentNetCents * (structure.technologyFeeValue / 100))
+    
+    totalFeesCents += feeCents
+    feeDistributions.push({
+      distribution_type: 'fee',
+      calculation_type: structure.technologyFeeType,
+      calculation_value: structure.technologyFeeValue,
+      calculated_amount: feeCents / 100,
+      source_of_funds: 'agent',
+      notes: 'Technology fee'
+    })
+  }
+
+  // E&O fee
+  if (structure.eoFeeValue > 0) {
+    const feeCents = structure.eoFeeType === 'flat'
+      ? dollarsToCents(structure.eoFeeValue)
+      : Math.round(context.agentNetCents * (structure.eoFeeValue / 100))
+    
+    totalFeesCents += feeCents
+    feeDistributions.push({
+      distribution_type: 'fee',
+      calculation_type: structure.eoFeeType,
+      calculation_value: structure.eoFeeValue,
+      calculated_amount: feeCents / 100,
+      source_of_funds: 'agent',
+      notes: 'E&O insurance fee'
+    })
+  }
+
+  const agentFinalNetCents = context.agentNetCents - totalFeesCents
 
   return {
-    feeDistributions,
+    ...context,
     agentFinalNetCents,
-    totalFeesCents
+    totalFeesCents,
+    feeDistributions
   }
 }

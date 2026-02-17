@@ -1,5 +1,4 @@
 import type { CalculateCommissionParams, CommissionCalculationResult } from "./types"
-import { CURRENT_ENGINE_VERSION } from "./types"
 import { resolveGrossRate } from "./waterfall/01-resolve-rate"
 import { calculateGrossCommission } from "./waterfall/02-calculate-gross"
 import { applyGrossAdjustments } from "./waterfall/03-apply-gross-adjustments"
@@ -12,6 +11,11 @@ import { applyRevenueShare } from "./waterfall/09-revenue-share"
 import { applyFees } from "./waterfall/10-fees"
 import { validateAndPersist } from "./waterfall/11-validate-persist"
 
+/**
+ * Commission Engine 8.0
+ * Pure functional waterfall - single context object flows through all steps
+ * No mutation, no side effects until Step 11
+ */
 export async function calculateCommission(
   params: CalculateCommissionParams
 ): Promise<CommissionCalculationResult> {
@@ -19,74 +23,38 @@ export async function calculateCommission(
   const { transactionId, brokerageId, calculationMode = 'final', triggeredBy = null } = params
   
   try {
-    const { grossRateDecimal, resolvedFrom, agentId, agentSplitPercent, purchasePrice } = 
-      await resolveGrossRate(transactionId, brokerageId)
-    
-    const { grossCommissionCents } = calculateGrossCommission(purchasePrice, grossRateDecimal)
-    
-    const { adjustedGrossCents, grossAdjustments } = 
-      await applyGrossAdjustments(grossCommissionCents, transactionId, brokerageId)
-    
-    const { agentPortionCents, brokeragePortionCents } = 
-      splitAgentBrokerage(adjustedGrossCents, agentSplitPercent)
-    
-    const { adjustedAgentCents, agentAdjustments } = 
-      await applyAgentAdjustments(agentPortionCents, transactionId, brokerageId)
-    
-    const { adjustedBrokerageCents, brokerageAdjustments } = 
-      await applyBrokerageAdjustments(brokeragePortionCents, transactionId, brokerageId)
-    
-    const { agentNetCents, brokerageFinalCents, capApplied, capStatus, amountTowardsCap } = 
-      await applyCap(adjustedBrokerageCents, adjustedAgentCents, agentId, brokerageId)
-    
-    const { teamDistributions, agentFinalCents: agentAfterTeam } = 
-      await applyTeamSplit(agentNetCents, agentId, brokerageId)
-    
-    const { revenueShareDistributions, agentFinalCents } = 
-      await applyRevenueShare(agentAfterTeam, agentId, brokerageId)
-    
-    const { feeDistributions, agentFinalNetCents, totalFeesCents } = 
-      await applyFees(agentFinalCents, agentId, brokerageId)
-    
-    const allDistributions = [
-      ...grossAdjustments,
-      ...agentAdjustments,
-      ...brokerageAdjustments,
-      ...teamDistributions,
-      ...revenueShareDistributions,
-      ...feeDistributions,
-      {
-        distribution_type: 'agent' as const,
-        agent_id: agentId,
-        calculation_type: 'flat' as const,
-        calculated_amount: agentFinalNetCents / 100,
-        source_of_funds: 'brokerage' as const,
-        cap_applied: capApplied,
-        cap_status: capStatus
-      },
-      {
-        distribution_type: 'brokerage' as const,
-        calculation_type: 'flat' as const,
-        calculated_amount: brokerageFinalCents / 100,
-        source_of_funds: 'brokerage' as const
-      }
-    ]
-    
-    return await validateAndPersist({
-      transactionId,
-      brokerageId,
-      agentId,
-      grossCommissionCents: adjustedGrossCents,
-      agentFinalNetCents,
-      brokerageFinalCents,
-      totalFeesCents,
-      capApplied,
-      capStatus,
-      amountTowardsCap,
-      distributions: allDistributions,
-      calculationMode,
-      triggeredBy
-    })
+    // Step 1: Resolve gross rate
+    let context = await resolveGrossRate(transactionId, brokerageId)
+
+    // Step 2: Calculate gross commission
+    context = calculateGrossCommission(context)
+
+    // Step 3: Apply gross adjustments
+    context = await applyGrossAdjustments(context)
+
+    // Step 4: Split agent/brokerage
+    context = splitAgentBrokerage(context)
+
+    // Step 5: Apply agent adjustments
+    context = await applyAgentAdjustments(context)
+
+    // Step 6: Apply brokerage adjustments
+    context = await applyBrokerageAdjustments(context)
+
+    // Step 7: Apply cap
+    context = await applyCap(context)
+
+    // Step 8: Apply team split
+    context = await applyTeamSplit(context)
+
+    // Step 9: Apply revenue share
+    context = await applyRevenueShare(context)
+
+    // Step 10: Apply fees
+    context = await applyFees(context)
+
+    // Step 11: Validate and persist
+    return await validateAndPersist(context, calculationMode, triggeredBy)
     
   } catch (error: any) {
     const { createServiceClient } = await import("@/lib/supabase/service")

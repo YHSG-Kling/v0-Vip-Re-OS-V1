@@ -1,10 +1,12 @@
 import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 import { createServiceClient } from "@/lib/supabase/service"
+import { dollarsToCents } from "../utils"
+import type { WaterfallContext } from "../types"
 
 export async function resolveGrossRate(
   transactionId: string,
   brokerageId: string
-) {
+): Promise<WaterfallContext> {
   const supabase = createServiceClient()
   
   const { data: transaction } = await supabase
@@ -29,10 +31,29 @@ export async function resolveGrossRate(
   )
   
   return {
-    grossRateDecimal: structure.resolvedGrossRateDecimal,
-    resolvedFrom: structure.resolvedFrom,
+    transactionId,
+    brokerageId,
     agentId: transaction.agent_id,
+    purchasePriceCents: dollarsToCents(transaction.purchase_price),
+    grossRateDecimal: structure.resolvedGrossRateDecimal,
     agentSplitPercent: structure.splitDecimal * 100,
-    purchasePrice: transaction.purchase_price
+    resolvedFrom: structure.resolvedFrom,
+    grossCommissionCents: 0,
+    adjustedGrossCents: 0,
+    agentPortionCents: 0,
+    brokeragePortionCents: 0,
+    agentNetCents: 0,
+    brokerageFinalCents: 0,
+    agentFinalNetCents: 0,
+    totalFeesCents: 0,
+    capApplied: false,
+    capStatus: 'n/a',
+    amountTowardsCap: 0,
+    grossAdjustments: [],
+    agentAdjustments: [],
+    brokerageAdjustments: [],
+    teamDistributions: [],
+    revenueShareDistributions: [],
+    feeDistributions: []
   }
 }
