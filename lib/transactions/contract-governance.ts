@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js"
+import { createServiceClient } from "@/lib/supabase/service"
 
 export async function setContractDate(params: {
   transactionId: string
@@ -7,6 +7,7 @@ export async function setContractDate(params: {
   userId: string
   role: string
   override?: boolean
+  reason?: string
 }) {
 
   const { transactionId, brokerageId, contractDate, userId, role, override } = params
@@ -17,20 +18,19 @@ export async function setContractDate(params: {
     throw new Error("Unauthorized to set contract date")
   }
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
+  const supabase = createServiceClient()
 
   const { data: transaction } = await supabase
     .from("transactions")
     .select("compliance_passed_at, contract_date")
     .eq("id", transactionId)
     .eq("brokerage_id", brokerageId)
-    .single()
+    .maybeSingle()
 
   if (!transaction) {
-    throw new Error("Transaction not found")
+    throw new Error(
+      `[contract-governance] Transaction ${transactionId} not found in brokerage ${brokerageId}`
+    )
   }
 
   if (!transaction.compliance_passed_at) {
@@ -52,7 +52,9 @@ export async function setContractDate(params: {
     brokerage_id: brokerageId,
     actor_user_id: userId,
     metadata: {
-      contract_date: contractDate
+      contract_date: contractDate,
+      previous_date: transaction.contract_date ?? null,
+      reason: params.reason ?? null,
     }
   })
 }

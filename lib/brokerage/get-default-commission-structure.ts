@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js"
+import { createServiceClient } from "@/lib/supabase/service"
 
 export interface CommissionStructureResolved {
   grossRateDecimal: number
@@ -38,10 +38,7 @@ export async function getDefaultCommissionStructure(
   agentId: string
 ): Promise<CommissionStructureResolved> {
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  )
+  const supabase = createServiceClient()
 
   // 1️⃣ Get brokerage default gross commission structure
   const { data: structure, error: structureError } = await supabase
@@ -50,10 +47,13 @@ export async function getDefaultCommissionStructure(
     .eq("brokerage_id", brokerageId)
     .eq("is_default", true)
     .eq("is_active", true)
-    .single()
+    .maybeSingle()
 
   if (structureError || !structure) {
-    throw new Error("Default commission structure not found for brokerage")
+    throw new Error(
+      `[commission-resolver] No default commission structure found for brokerage ${brokerageId}. ` +
+      `Configure a default commission structure before running commission calculations.`
+    )
   }
 
   const grossRateDecimal =
@@ -68,10 +68,14 @@ export async function getDefaultCommissionStructure(
     .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
     .eq("is_active", true)
-    .single()
+    .maybeSingle()
 
   if (!profile) {
-    throw new Error("Agent commission profile not found")
+    throw new Error(
+      `[commission-resolver] No active commission profile found for agent ${agentId} ` +
+      `in brokerage ${brokerageId}. ` +
+      `Create an agent_commission_profiles record before running commission calculations.`
+    )
   }
 
   const splitDecimal = Number(profile.split_percent) / 100
