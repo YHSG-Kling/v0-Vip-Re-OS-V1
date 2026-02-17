@@ -105,7 +105,7 @@ export async function analyzeOffer(offerId: string, userId: string) {
   const commissionStructure = await getDefaultCommissionStructure(
     brokerageId,
     userId,
-    null
+    offer?.commission_percentage ?? undefined
   )
 
   // Calculate net to seller
@@ -201,7 +201,7 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
   const commissionStructure = await getDefaultCommissionStructure(
     brokerageId,
     userId,
-    null
+    offers[0]?.commission_percentage ?? undefined
   )
   const totalCommissionRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
 
