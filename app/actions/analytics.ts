@@ -186,8 +186,8 @@ export async function trackLeadValueJourney(contactId: string) {
   const conversionValue = contact.transactions?.reduce((sum: number, t: any) => sum + (t.purchase_price || 0), 0)
 
   const firstInteraction = new Date(contact.created_at)
-  const conversionDate = contact.transactions?.[0]?.closing_date
-    ? new Date(contact.transactions[0].closing_date)
+  const conversionDate = contact.transactions?.[0]?.close_date
+    ? new Date(contact.transactions[0].close_date)
     : null
   const timeToConversion = conversionDate
     ? Math.ceil((conversionDate.getTime() - firstInteraction.getTime()) / (1000 * 60 * 60 * 24))

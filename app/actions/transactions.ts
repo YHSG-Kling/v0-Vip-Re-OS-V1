@@ -97,9 +97,7 @@ export async function createTransaction(transactionData: {
   client_email?: string
   client_phone?: string
   agent_id?: string
-  brokerage_id?: string
-  contract_date?: string
-  closing_date?: string
+  close_date?: string
   notes?: string
 }) {
   const supabase = await createClient()
@@ -140,7 +138,7 @@ export async function updateTransaction(
     client_phone: string
     agent_id: string
     contract_date: string
-    closing_date: string
+    close_date: string
     notes: string
   }>,
 ) {
@@ -1016,7 +1014,9 @@ export async function calculateCommissions(transactionId: string) {
         let amount = comm.flat_amount || 0
 
         if (comm.rate_percentage) {
-          amount = salePrice * (comm.rate_percentage / 100)
+          // TODO: Commission Engine 8.0 — route through calculateCommission()
+      // Do not compute commission inline. This is a temporary stub.
+      amount = 0
         }
 
         if (comm.split_percentage) {
@@ -1224,8 +1224,8 @@ export async function getTransactionStats(agentId?: string) {
     .from("transactions")
     .select("id", { count: "exact", head: true })
     .eq("status", "closing")
-    .gte("closing_date", startOfMonth.toISOString())
-    .lt("closing_date", endOfMonth.toISOString())
+    .gte("close_date", startOfMonth.toISOString())
+    .lt("close_date", endOfMonth.toISOString())
 
   const { count: closingThisMonth } = await closingQuery
 
@@ -1280,7 +1280,7 @@ export async function createTransparentTransaction(data: {
   agent_id: string
   purchase_price?: number
   financing_type?: string
-  closing_date?: string
+  close_date?: string
 }) {
   const supabase = await createClient()
 
@@ -1294,7 +1294,7 @@ export async function createTransparentTransaction(data: {
       agent_id: data.agent_id,
       contract_price: data.purchase_price,
       financing_type: data.financing_type,
-      closing_date: data.closing_date,
+      close_date: data.close_date,
       current_stage: "offer",
       transparency_score: 100,
       health_score: 100,
@@ -1363,7 +1363,7 @@ export async function generateClientTimeline(transactionId: string, transactionT
 
 Transaction Type: ${transactionType}
 Financing: ${financingType}
-Closing Date: ${transaction.closing_date || "TBD"}
+Closing Date: ${transaction.close_date || "TBD"}
 
 Create milestones for ${transactionType === "buyer_side" ? "BUYER" : "SELLER"}:
 
@@ -1785,7 +1785,7 @@ export async function monitorTransactionHealth(transactionId: string) {
     .filter((c: any) => c.direction === "inbound")
     .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
 
-  const daysUntilClose = transaction.closing_date ? Math.ceil((new Date(transaction.closing_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : 0
+  const daysUntilClose = transaction.close_date ? Math.ceil((new Date(transaction.close_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : 0
 
   const prompt = `Analyze transaction health and predict potential issues:
 
@@ -1809,7 +1809,7 @@ Calculate health scores (0-100):
   "financing_health": 90,
   "risk_factors": ["Appraisal scheduled late", "Client slow to respond"],
   "recommendations": ["Follow up on appraisal", "Send timeline reminder to client"],
-  "predicted_close_date": "${transaction.closing_date}",
+  "predicted_close_date": "${transaction.close_date}",
   "confidence_in_closing": "high",
   "client_notification_needed": false,
   "broker_escalation_needed": false
@@ -1909,7 +1909,7 @@ export async function detectTransactionDelays(transactionId: string) {
 
   const prompt = `Analyze the impact of these delays on closing date:
 
-Target Close Date: ${transaction.closing_date}
+Target Close Date: ${transaction.close_date}
 Current Delays: ${JSON.stringify(delays)}
 
 {
@@ -2036,7 +2036,7 @@ export async function loadClientDashboard(transactionId: string, contactId?: str
       status_message: await generateFriendlyStatusMessage(transaction, persona),
       progress_percent: calculateOverallProgress(transaction, timeline),
       health_indicator: health.overall_health >= 75 ? "on_track" : "needs_attention",
-      days_until_closing: calculateDaysUntil(transaction.closing_date),
+      days_until_closing: calculateDaysUntil(transaction.close_date),
       persona_theme: personaConfig.theme,
     },
     timeline: timeline.map((m: any) => ({
@@ -2503,7 +2503,7 @@ function identifyAtRiskDeals(transactions: any[]) {
       if (t.status === "closed") return false
 
       // Risk factors
-      const closingDate = t.closing_date ? new Date(t.closing_date) : null
+      const closingDate = t.close_date ? new Date(t.close_date) : null
       const daysTilClosing = closingDate ? Math.ceil((closingDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)) : 999
 
       const hasExpiredContingency = t.inspection_contingency_date && new Date(t.inspection_contingency_date) < today
@@ -2532,8 +2532,8 @@ function getRiskFactors(transaction: any): string[] {
     factors.push("Financing contingency expired")
   }
 
-  if (transaction.closing_date) {
-    const daysTilClosing = Math.ceil((new Date(transaction.closing_date).getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+  if (transaction.close_date) {
+    const daysTilClosing = Math.ceil((new Date(transaction.close_date).getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
     if (daysTilClosing < 7 && daysTilClosing > 0) {
       factors.push(`Closing in ${daysTilClosing} days`)
     }
@@ -2552,9 +2552,9 @@ function calculateRiskPriority(transaction: any): number {
   if ((transaction.health_score || 100) < 40) priority += 50
   else if ((transaction.health_score || 100) < 60) priority += 30
 
-  if (transaction.closing_date) {
+  if (transaction.close_date) {
     const daysTilClosing = Math.ceil(
-      (new Date(transaction.closing_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+      (new Date(transaction.close_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
     )
     if (daysTilClosing < 3) priority += 40
     else if (daysTilClosing < 7) priority += 20

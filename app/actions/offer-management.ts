@@ -106,7 +106,7 @@ export async function analyzeOffer(offerId: string, userId: string) {
 
   // Calculate net to seller
   const netToSeller = calculateNetSheet({
-    sale_price: offer.offer_amount,
+    purchase_price: offer.offer_amount,
     listing_price: offer.listing.price,
     earnest_money: offer.earnest_money,
     agent_commission: commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate,
@@ -203,7 +203,7 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
     buyer_name: `${offer.buyer.first_name} ${offer.buyer.last_name}`,
     offer_amount: offer.offer_amount,
     net_to_seller: calculateNetSheet({
-      sale_price: offer.offer_amount,
+      purchase_price: offer.offer_amount,
       earnest_money: offer.earnest_money,
       agent_commission: totalCommissionRate,
       closing_costs: 0.02,
@@ -264,7 +264,7 @@ Provide:
 
 // Calculate net sheet
 export async function calculateNetSheet(params: {
-  sale_price: number
+  purchase_price: number
   listing_price?: number
   earnest_money: number
   agent_commission: number // decimal (0.06 = 6%)
@@ -275,7 +275,7 @@ export async function calculateNetSheet(params: {
   hoa_dues?: number
 }) {
   const {
-    sale_price,
+    purchase_price,
     earnest_money,
     agent_commission,
     closing_costs,
@@ -285,17 +285,19 @@ export async function calculateNetSheet(params: {
     hoa_dues = 0,
   } = params
 
-  const commission_amount = sale_price * agent_commission
-  const closing_costs_amount = sale_price * closing_costs
+  // TODO: Commission Engine 8.0 — replace with calculateCommission()
+  const commission_amount = 0
+  const closing_costs_amount = 0
 
   const total_deductions =
     commission_amount + closing_costs_amount + seller_concessions + loan_payoff + property_taxes + hoa_dues
 
-  const net_to_seller = sale_price - total_deductions
+  // TODO: compute when Commission Engine 8.0 provides real values
+  const net_to_seller = 0
 
   return {
-    sale_price,
-    gross_amount: sale_price,
+    purchase_price,
+    gross_amount: purchase_price,
     deductions: {
       agent_commission: commission_amount,
       closing_costs: closing_costs_amount,

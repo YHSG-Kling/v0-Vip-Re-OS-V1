@@ -79,7 +79,7 @@ ${contacts.map((c: any) => `
 Contact: ${c.first_name} ${c.last_name}
 Stage: ${c.stage}
 Last Transaction: ${c.transactions?.[0]?.actual_close_date || 'N/A'}
-Transaction Value: $${c.transactions?.[0]?.sale_price?.toLocaleString() || 'N/A'}
+Transaction Value: $${c.transactions?.[0]?.purchase_price?.toLocaleString() || 'N/A'}
 Interactions (30 days): ${c.interactions?.filter((i: any) => new Date(i.interaction_date) > new Date(Date.now() - 30*24*60*60*1000)).length || 0}
 Past Referrals Given: ${c.referrals?.length || 0}
 NPS Score: ${c.nps_score || 'Unknown'}
@@ -314,7 +314,7 @@ export async function recommendReferralReward(params: {
       prompt: `Recommend appropriate referral reward:
 
 Referrer: ${referral.referring_contact?.first_name} ${referral.referring_contact?.last_name}
-Referrer's Transaction Value: $${referral.referring_contact?.transactions?.[0]?.sale_price?.toLocaleString() || 'Unknown'}
+Referrer's Transaction Value: $${referral.referring_contact?.transactions?.[0]?.purchase_price?.toLocaleString() || 'Unknown'}
 Referral Value: $${referral.potential_value?.toLocaleString() || 'Unknown'}
 Referral Status: ${referral.status}
 Previous Referrals From This Contact: ${referral.referring_contact?.referrals?.length || 0}
@@ -401,7 +401,7 @@ Referrals: ${referrals?.length || 0} total
 ${referrals?.map((r: any) => `- ${r.referred_name}: ${r.status}, Value: $${r.potential_value?.toLocaleString() || 'Unknown'}`).join('\n')}
 
 Referral Transactions: ${transactions?.length || 0}
-Total Value: $${transactions?.reduce((sum: number, t: any) => sum + (t.sale_price || 0), 0).toLocaleString()}
+Total Value: $${transactions?.reduce((sum: number, t: any) => sum + (t.purchase_price || 0), 0).toLocaleString()}
 
 Provide:
 1. Overall program health

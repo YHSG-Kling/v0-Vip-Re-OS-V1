@@ -185,10 +185,12 @@ function calculateScenario(
   const listingCommissionRate = input.listingCommissionRate || commissionStructure.totalListingSideRate
   const buyerCommissionRate = input.buyerCommissionRate || commissionStructure.totalBuyerSideRate
   
-  // Calculate costs
-  const listingCommission = salePrice * listingCommissionRate
-  const buyerCommission = salePrice * buyerCommissionRate
-  const closingCosts = input.closingCosts || (salePrice * 0.02) // Default 2%
+  // Commission Engine 8.0 will compute final values.
+  // Use resolver rates from getDefaultCommissionStructure() passed in via commissionStructure.
+  const listingCommission = salePrice * (commissionStructure?.agentListingSideRate ?? 0)
+  const buyerCommission = salePrice * (commissionStructure?.agentBuyerSideRate ?? 0)
+  const closingCosts = input.closingCosts ?? 0
+  // TODO: replace closingCosts default with getFinancialDefaults(brokerageId).closingCostPercent
   const mortgagePayoff = input.mortgagePayoffAmount || input.mortgageBalance || 0
   const propertyTaxes = input.propertyTaxes || 0
   const hoaFees = input.hoaFees || 0

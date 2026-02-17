@@ -305,16 +305,12 @@ export async function calculateTransactionCommission(params: {
   try {
     const supabase = await createClient()
 
-    // Get brokerage commission structure
-    const commissionStructure = await getDefaultCommissionStructure(params.brokerageId)
-    
-    // Use provided rate or default to buyer side rate from brokerage config
-    const commissionRate = params.commissionRate || commissionStructure.totalBuyerSideRate
-    const grossCommission = params.salePrice * commissionRate
-    
-    // Use actual agent/brokerage split from config
-    const agentSplit = params.salePrice * commissionStructure.agentBuyerSideRate
-    const brokerageSplit = params.salePrice * commissionStructure.brokerageBuyerSideRate
+    // Commission Engine 8.0 will own this calculation.
+    // getDefaultCommissionStructure() provides rates — multiplication happens in engine only.
+    // TODO: wire calculateCommission({ transactionId, brokerageId, agentId }) here.
+    const grossCommission = 0
+    const agentSplit = 0
+    const brokerageSplit = 0
 
     // Store commission calculation
     await supabase.from("commission_splits").insert({

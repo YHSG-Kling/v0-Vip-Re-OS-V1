@@ -161,7 +161,7 @@ export async function aiGenerateReviewRequest(params: {
 Agent: ${agent?.first_name} ${agent?.last_name}
 Client: ${transaction.contacts?.first_name} ${transaction.contacts?.last_name}
 Property: ${transaction.property_address}
-Transaction type: ${transaction.transaction_type}
+Transaction type: ${transaction.deal_type}
 Close date: ${transaction.close_date}
 
 Guidelines:
