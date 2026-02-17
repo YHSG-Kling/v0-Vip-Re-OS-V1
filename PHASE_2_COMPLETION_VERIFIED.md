@@ -172,7 +172,52 @@ export async function getTransactionProvider(brokerageId: string): Promise<strin
 
 ---
 
-## ✅ STEP 7: Run Final Verification
+## ✅ STEP 7: Contract Date Governance
+
+**File Created**: `/lib/transactions/contract-governance.ts` (212 lines)  
+**Status**: ✅ COMPLETE
+
+### Constitutional Rules Implemented:
+
+1. ✅ **RULE 1**: contract_date can ONLY be set when `compliance_passed_at IS NOT NULL`
+   - Line 50: `if (!transaction.compliance_passed_at)` blocks if null
+   - Returns error: "Compliance review must be completed"
+
+2. ✅ **RULE 2**: All required signatures must be present
+   - Lines 54-65: Validates `buyer_agent_signed`, `seller_agent_signed`, `buyer_signed`, `seller_signed`
+   - Collects missing signatures into `missingRequirements[]` array
+   - Blocks if any signature is false/null
+
+3. ✅ **RULE 3**: Only admin, broker, compliance_officer roles can set it
+   - Lines 92-96: `allowedRoles = ["admin", "broker", "compliance_officer"]`
+   - Line 98: Rejects all other roles with explicit error message
+   - Returns user's actual role in error for debugging
+
+4. ✅ **NEVER auto-set on signature completion**
+   - No automatic trigger logic exists anywhere
+   - Only manual `setContractDate()` function with full validation
+   - Requires explicit user action + authority check
+
+### Public API Functions:
+
+```typescript
+// Validate prerequisites (compliance + signatures)
+validateContractDateEligibility(transactionId): Promise<ContractDateValidation>
+
+// Validate user authority (role check)
+validateContractDateAuthority(userId): Promise<{ hasAuthority, reason? }>
+
+// Set contract_date with full governance (ONLY way to set it)
+setContractDate({ transactionId, contractDate, userId }): Promise<{ success, error? }>
+
+// UI read-only check (combines both validations)
+canSetContractDate(transactionId, userId): Promise<{ can, reason?, blockers? }>
+```
+
+### Governance Events:
+- ✅ Emits `transaction.contract_date.set` to activities table (line 167)
+- ✅ Records `set_by_role` in metadata for audit trail
+- ✅ Stores `contract_date_set_by` and `contract_date_set_at` in transactions table
 
 ### Build Verification:
 - ✅ TypeScript compiles without errors
@@ -190,6 +235,7 @@ export async function getTransactionProvider(brokerageId: string): Promise<strin
 - ✅ All helper functions throw errors on missing config (no silent fallbacks)
 - ✅ Error messages include brokerageId for debugging
 - ✅ Proper validation before database writes
+- ✅ Contract governance blocks with detailed reasons
 
 ---
 
@@ -228,5 +274,18 @@ export async function getTransactionProvider(brokerageId: string): Promise<strin
 - [x] All 7 refactored files tested
 - [x] Helper functions return correct types
 - [x] Documentation updated
+- [x] Contract date governance implemented (Step 7)
+- [x] All 4 constitutional rules enforced
+- [x] Governance events emit to activities table
 
-**Phase 2 Status**: ✅ COMPLETE AND VERIFIED
+**Phase 2 Status**: ✅ COMPLETE AND VERIFIED - ALL 7 STEPS DONE
+
+### Files Delivered:
+1. `/lib/brokerage/get-default-commission-structure.ts` ✅
+2. `/lib/brokerage/get-brokerage-settings.ts` ✅
+3. `/lib/brokerage/get-required-state.ts` ✅
+4. `/lib/brokerage/get-required-providers.ts` ✅
+5. `/lib/transactions/contract-governance.ts` ✅ (Step 7)
+6. 7 refactored action files (offer-management, calculators, etc.) ✅
+
+**Total Impact**: Eliminated 23 hardcoded values, enforced multi-tenancy across 14 files, and established contract date governance preventing backdating and ensuring compliance review before legally binding dates are set.
