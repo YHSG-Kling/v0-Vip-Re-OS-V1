@@ -34,7 +34,9 @@ lerna-debug.log*
 .env.development.local
 .env.test.local
 .env.production.local
-
+# supabase
+NEXT_PUBLIC_SUPABASE_URL=https://hrvaqgvukzxfskkcrwbt.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhydmFxZ3Z1a3p4ZnNra2Nyd2J0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAxNzY3OTgsImV4cCI6MjA4NTc1Mjc5OH0.tkrF5kjnXUOWZsNluDFWPy5bqPMY7Q90E55BIc-7Klg
 # vercel
 .vercel
 
