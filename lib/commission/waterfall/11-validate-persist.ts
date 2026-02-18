@@ -104,9 +104,16 @@ export async function validateAndPersist(
       brokerage_id: context.brokerageId,
       distribution_type: dist.distribution_type,
       agent_id: dist.agent_id,
-      amount: dist.calculated_amount,
+      team_id: dist.team_id,
+      calculation_type: dist.calculation_type,
+      calculation_value: dist.calculation_value,
+      calculated_amount: dist.calculated_amount,
       source_of_funds: dist.source_of_funds,
-      notes: dist.notes,
+      cap_applied: dist.cap_applied || false,
+      cap_status: dist.cap_status || 'n/a',
+      rule_id: dist.rule_id,
+      calculation_version: CURRENT_ENGINE_VERSION,
+      status: 'pending',
       created_at: new Date().toISOString()
     })),
     {
@@ -115,9 +122,13 @@ export async function validateAndPersist(
       brokerage_id: context.brokerageId,
       distribution_type: 'agent',
       agent_id: context.agentId,
-      amount: centsToDollars(context.agentFinalNetCents),
+      calculation_type: 'flat',
+      calculated_amount: centsToDollars(context.agentFinalNetCents),
       source_of_funds: 'brokerage',
-      notes: 'Agent final net',
+      cap_applied: context.capApplied,
+      cap_status: context.capStatus,
+      calculation_version: CURRENT_ENGINE_VERSION,
+      status: 'pending',
       created_at: new Date().toISOString()
     },
     {
@@ -125,9 +136,13 @@ export async function validateAndPersist(
       transaction_id: context.transactionId,
       brokerage_id: context.brokerageId,
       distribution_type: 'brokerage',
-      amount: centsToDollars(context.brokerageFinalCents),
+      calculation_type: 'flat',
+      calculated_amount: centsToDollars(context.brokerageFinalCents),
       source_of_funds: 'brokerage',
-      notes: 'Brokerage final',
+      cap_applied: false,
+      cap_status: 'n/a',
+      calculation_version: CURRENT_ENGINE_VERSION,
+      status: 'pending',
       created_at: new Date().toISOString()
     }
   ]
@@ -191,13 +206,17 @@ export async function validateAndPersist(
     cap_applied: context.capApplied,
     cap_status: context.capStatus,
     total_fees: centsToDollars(context.totalFeesCents),
-    distributions: distributionRows.map(d => ({
+      distributions: distributionRows.map(d => ({
       distribution_type: d.distribution_type as any,
       agent_id: d.agent_id,
-      calculation_type: 'flat',
-      calculated_amount: d.amount,
+      team_id: d.team_id,
+      calculation_type: d.calculation_type,
+      calculation_value: d.calculation_value,
+      calculated_amount: d.calculated_amount,
       source_of_funds: d.source_of_funds as any,
-      notes: d.notes
+      cap_applied: d.cap_applied,
+      cap_status: d.cap_status,
+      rule_id: d.rule_id
     }))
   }
 }

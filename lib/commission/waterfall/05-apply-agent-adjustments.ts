@@ -26,20 +26,20 @@ export async function applyAgentAdjustments(
   const agentAdjustments: DistributionRecord[] = []
 
   for (const adj of adjustments) {
-    const adjustmentCents = adj.adjustment_type === 'flat'
-      ? dollarsToCents(adj.adjustment_value)
-      : Math.round(context.agentPortionCents * (adj.adjustment_value / 100))
+    const adjustmentCents = adj.value_type === 'flat'
+      ? dollarsToCents(adj.value)
+      : Math.round(context.agentPortionCents * (adj.value / 100))
 
     agentPortionCents += adjustmentCents
 
     agentAdjustments.push({
       distribution_type: 'fee',
-      calculation_type: adj.adjustment_type,
-      calculation_value: adj.adjustment_value,
+      calculation_type: adj.value_type,
+      calculation_value: adj.value,
       calculated_amount: adjustmentCents / 100,
       source_of_funds: 'agent',
       rule_id: adj.id,
-      notes: adj.reason
+      notes: adj.notes
     })
   }
 
