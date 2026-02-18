@@ -58,6 +58,15 @@ export async function applyTeamSplit(
 
   // Calculate agent's final amount after team deductions
   const agentFinalCents = context.agentNetCents - totalTeamDeductionCents
+  
+  // Safety check: prevent negative balance from bad configuration
+  if (agentFinalCents < 0) {
+    throw new Error(
+      `[team-split] Team split deductions exceed available commission. ` +
+      `Agent ${context.agentId} would have negative balance. ` +
+      `Available: ${context.agentNetCents / 100}, Deductions: ${totalTeamDeductionCents / 100}`
+    )
+  }
 
   return {
     ...context,
