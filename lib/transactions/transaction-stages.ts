@@ -40,6 +40,9 @@ export const ALLOWED_TRANSITIONS: Record<TransactionStage, TransactionStage[]> =
   LOST: [], // Terminal state
 }
 
+// Alias for compatibility
+export const STAGE_TRANSITIONS = ALLOWED_TRANSITIONS
+
 // Critical milestones that block stage advancement if overdue
 export const CRITICAL_MILESTONES = [
   'inspection_deadline',

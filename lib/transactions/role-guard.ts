@@ -161,3 +161,17 @@ export async function canActAsExternalParty(
   
   return { allowed: false, reason: "Not an external party" }
 }
+
+/**
+ * Assert user has required role (throws if not)
+ */
+export async function assertUserHasRole(
+  context: RoleContext,
+  requiredRoles: UserRole[]
+): Promise<void> {
+  if (!requiredRoles.includes(context.role)) {
+    throw new Error(
+      `[role-guard] User role '${context.role}' not authorized. Required: ${requiredRoles.join(', ')}`
+    )
+  }
+}

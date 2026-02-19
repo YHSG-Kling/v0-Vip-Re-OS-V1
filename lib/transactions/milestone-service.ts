@@ -225,3 +225,26 @@ export async function setMilestoneDate(
     created_at: new Date().toISOString()
   })
 }
+
+/**
+ * Get all milestones for a transaction
+ */
+export async function getMilestones(
+  transactionId: string,
+  brokerageId: string
+): Promise<any[]> {
+  const supabase = createServiceClient()
+  
+  const { data, error } = await supabase
+    .from("transaction_milestones")
+    .select("*")
+    .eq("transaction_id", transactionId)
+    .eq("brokerage_id", brokerageId)
+    .order("milestone_date", { ascending: true })
+  
+  if (error) {
+    throw new Error(`[milestone-service] Failed to get milestones: ${error.message}`)
+  }
+  
+  return data || []
+}
