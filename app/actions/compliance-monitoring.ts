@@ -721,7 +721,7 @@ export async function getComplianceViolations(agentId?: string, userId?: string)
     .from("compliance_flags")
     .select(`
       *,
-      agents (id, user_id(first_name, last_name, email))
+      users (id, first_name, last_name, email)
     `)
     .order("detected_at", { ascending: false })
 
