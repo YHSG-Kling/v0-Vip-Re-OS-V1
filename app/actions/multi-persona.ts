@@ -1108,11 +1108,12 @@ export async function calculateComplianceRiskScore(agentId: string) {
   const [{ data: violations }, { data: unapprovedContent }, { data: themFirstScores }] = await Promise.all([
     supabase.from("compliance_flags").select("*").eq("agent_id", agentId).gte("detected_at", thirtyDaysAgo.toISOString()),
     supabase
-      .from("content_approval_queue")
+      .from("activities")
       .select("*")
-      .eq("agent_id", agentId)
-      .eq("compliance_status", "needs_revision")
-      .gte("submitted_at", thirtyDaysAgo.toISOString()),
+      .eq("activity_type", "content.approval")
+      .eq("status", "needs_revision")
+      .gte("created_at", thirtyDaysAgo.toISOString())
+      .contains("metadata", { agent_id: agentId }),
     supabase.from("chat_sessions").select("them_first_score").eq("agent_id", agentId).gte("created_at", thirtyDaysAgo.toISOString()),
   ])
 

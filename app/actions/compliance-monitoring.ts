@@ -489,21 +489,26 @@ export async function submitContentForApproval(data: {
     agentState: data.agentState,
   })
 
-  // Create approval request
+  // Create approval request as activity
   const { data: approval, error } = await supabase
-    .from("content_approval_queue")
+    .from("activities")
     .insert({
-      user_id: data.userId,
-      agent_id: data.agentId,
-      content_type: data.contentType,
-      content_title: data.contentTitle,
-      content_body: data.contentBody,
-      content_metadata: data.contentMetadata,
-      target_audience: data.targetAudience,
-      distribution_channels: data.distributionChannels,
-      compliance_status: scanResults.passed ? "pending" : "needs_revision",
-      compliance_issues: scanResults.issues,
-      auto_scan_results: scanResults,
+      brokerage_id: data.userId, // TODO: Get actual brokerage_id
+      activity_type: "content.approval",
+      entity_type: "content",
+      entity_id: crypto.randomUUID(),
+      title: data.contentTitle,
+      description: data.contentBody,
+      status: scanResults.passed ? "pending" : "needs_revision",
+      metadata: {
+        content_type: data.contentType,
+        content_metadata: data.contentMetadata,
+        target_audience: data.targetAudience,
+        distribution_channels: data.distributionChannels,
+        compliance_issues: scanResults.issues,
+        auto_scan_results: scanResults,
+        agent_id: data.agentId,
+      },
     })
     .select()
     .single()
@@ -525,37 +530,59 @@ export async function reviewContentApproval(data: {
   const supabase = await createClient()
 
   const updateData: any = {
-    compliance_status: data.status,
-    reviewed_by: data.reviewerId,
-    reviewed_at: new Date().toISOString(),
-    review_notes: data.reviewNotes,
+    status: data.status,
+    completed_at: new Date().toISOString(),
+    metadata: {}
   }
 
-  if (data.status === "approved") {
-    updateData.approved_at = new Date().toISOString()
-    if (data.expiresInDays) {
-      const expiresAt = new Date()
-      expiresAt.setDate(expiresAt.getDate() + data.expiresInDays)
-      updateData.expires_at = expiresAt.toISOString()
+  // Get existing activity to preserve metadata
+  const { data: existingActivity } = await supabase
+    .from("activities")
+    .select("metadata")
+    .eq("id", data.approvalId)
+    .single()
+
+  if (existingActivity) {
+    updateData.metadata = {
+      ...existingActivity.metadata,
+      reviewed_by: data.reviewerId,
+      reviewed_at: new Date().toISOString(),
+      review_notes: data.reviewNotes,
+    }
+
+    if (data.status === "approved") {
+      updateData.metadata.approved_at = new Date().toISOString()
+      if (data.expiresInDays) {
+        const expiresAt = new Date()
+        expiresAt.setDate(expiresAt.getDate() + data.expiresInDays)
+        updateData.metadata.expires_at = expiresAt.toISOString()
+      }
     }
   }
 
-  const { error } = await supabase.from("content_approval_queue").update(updateData).eq("id", data.approvalId)
+  const { error } = await supabase
+    .from("activities")
+    .update(updateData)
+    .eq("id", data.approvalId)
 
   if (error) throw error
 
   // If approved, add to library
   if (data.status === "approved") {
-    const { data: approval } = await supabase.from("content_approval_queue").select("*").eq("id", data.approvalId).single()
+    const { data: approval } = await supabase
+      .from("activities")
+      .select("*")
+      .eq("id", data.approvalId)
+      .single()
 
-    if (approval) {
+    if (approval && approval.metadata) {
       await supabase.from("approved_content_library").insert({
         approval_id: approval.id,
-        content_category: approval.content_type,
-        content_template: approval.content_body,
-        allowed_channels: approval.distribution_channels,
-        allowed_lead_types: [approval.target_audience],
-        created_by: approval.user_id,
+        content_category: approval.metadata.content_type,
+        content_template: approval.description,
+        allowed_channels: approval.metadata.distribution_channels,
+        allowed_lead_types: [approval.metadata.target_audience],
+        created_by: approval.brokerage_id,
       })
     }
   }
@@ -596,8 +623,8 @@ export async function logCommunicationWithCompliance(data: {
     await supabase.from("compliance_flags").insert({
       user_id: data.userId,
       agent_id: data.agentId,
-      violation_type: "cold_lead_channel_violation",
-      violation_details: {
+      flag_type: "cold_lead_channel_violation",
+      flag_details: {
         channel_used: data.communicationType,
         lead_temperature: data.leadTemperature,
         allowed_channels: ["email", "print"],
@@ -643,7 +670,7 @@ export async function getApprovedContentLibrary(filters?: {
 }) {
   const supabase = await createClient()
 
-  let query = supabase.from("approved_content_library").select("*, content_approval_queue(*)").eq("is_active", true)
+  let query = supabase.from("approved_content_library").select("*, activities(*)").eq("is_active", true)
 
   if (filters?.category) {
     query = query.eq("content_category", filters.category)
