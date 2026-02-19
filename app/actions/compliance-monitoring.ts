@@ -699,10 +699,11 @@ export async function getPendingApprovals() {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("content_approval_queue")
-    .select("*, agents(id, user_id(first_name, last_name, email))")
-    .in("compliance_status", ["pending", "needs_revision"])
-    .order("submitted_at", { ascending: true })
+    .from("activities")
+    .select("*")
+    .eq("activity_type", "content.approval")
+    .in("status", ["pending", "needs_revision"])
+    .order("created_at", { ascending: true })
 
   if (error) {
     console.error("[v0] Error fetching pending approvals:", error)
@@ -717,7 +718,7 @@ export async function getComplianceViolations(agentId?: string, userId?: string)
   const supabase = await createClient()
 
   let query = supabase
-    .from("compliance_violations")  // ✅ CORRECT TABLE!
+    .from("compliance_flags")
     .select(`
       *,
       agents (id, user_id(first_name, last_name, email))
