@@ -2665,24 +2665,46 @@ export async function getAgentTransactionKanban() {
 }
 
 // Quick actions for agents
-export async function updateTransactionStage(transactionId: string, newStatus: string) {
+/**
+ * Update transaction status/stage through orchestrator
+ * Enforces stage progression rules and permission checks
+ */
+export async function updateTransactionStage(transactionId: string, targetStage: string, reason?: string) {
   const supabase = await createClient()
 
-  const { data } = await supabase
-    .from("transactions")
-    .update({
-      status: newStatus,
-      current_stage: newStatus,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", transactionId)
-    .select()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  const { data: profile } = await supabase
+    .from("profiles")
+    .select("brokerage_id, role")
+    .eq("id", user.id)
     .single()
 
-  // Auto-create milestone if stage changed
-  if (data) {
-    await autoProgressMilestone(transactionId, newStatus)
+  if (!profile?.brokerage_id) {
+    return { success: false, error: "User brokerage not found" }
   }
+
+  // Import orchestrator dynamically to avoid circular deps
+  const { TransactionOrchestrator } = await import("@/lib/transactions/transaction-orchestrator")
+  
+  const orchestrator = new TransactionOrchestrator({
+    transactionId,
+    brokerageId: profile.brokerage_id,
+    userId: user.id,
+    userRole: profile.role
+  })
+
+  const result = await orchestrator.advanceToStage(targetStage as any, reason)
+
+  if (result.success) {
+    revalidatePath("/transactions")
+  }
+
+  return result
+}
 
   return { success: true, transaction: data }
 }
