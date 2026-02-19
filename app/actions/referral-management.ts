@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // Create new referral
 export async function createReferral(params: {
@@ -46,11 +47,8 @@ export async function createReferral(params: {
 
 // Update referral status
 export async function updateReferralStatus(referralId: string, status: string) {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
   const updates: any = { status }
 
@@ -71,7 +69,7 @@ export async function updateReferralStatus(referralId: string, status: string) {
     updates.reward_tier = status
   }
 
-  const { error } = await supabase.from("referrals").update(updates).eq("id", referralId).eq("agent_id", user.id)
+  const { error } = await supabase.from("referrals").update(updates).eq("id", referralId).eq("agent_id", agentId).eq("brokerage_id", brokerageId)
 
   if (error) throw error
 
@@ -81,11 +79,8 @@ export async function updateReferralStatus(referralId: string, status: string) {
 
 // Send referral thank you
 export async function sendReferralThankYou(referralId: string, rewardType: string) {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
   const rewardDescriptions = {
     contacted: "$25 coffee gift card",
@@ -102,7 +97,8 @@ export async function sendReferralThankYou(referralId: string, rewardType: strin
       reward_description: rewardDescriptions[rewardType as keyof typeof rewardDescriptions],
     })
     .eq("id", referralId)
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
 
   if (error) throw error
 
@@ -112,16 +108,14 @@ export async function sendReferralThankYou(referralId: string, rewardType: strin
 
 // Get all referrals for the agent
 export async function getReferrals() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
   const { data, error } = await supabase
     .from("referrals")
     .select("*, contacts!referring_contact_id(first_name, last_name, email, phone)")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("referral_date", { ascending: false })
 
   if (error) throw error
@@ -130,13 +124,10 @@ export async function getReferrals() {
 
 // Get referral ROI stats
 export async function getReferralROI(dateRange?: { start: string; end: string }) {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
-  let query = supabase.from("referrals").select("*").eq("agent_id", user.id)
+  let query = supabase.from("referrals").select("*").eq("agent_id", agentId).eq("brokerage_id", brokerageId)
 
   if (dateRange) {
     query = query.gte("referral_date", dateRange.start).lte("referral_date", dateRange.end)
@@ -162,16 +153,14 @@ export async function getReferralROI(dateRange?: { start: string; end: string })
 
 // Get referral leaderboard (top referrers)
 export async function getReferralLeaderboard() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
   const { data, error } = await supabase
     .from("referrals")
     .select("referring_contact_id, contacts(first_name, last_name)")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
 
   if (error) throw error
 
@@ -230,16 +219,14 @@ export async function createReferralPartner(params: {
 
 // Get all referral partners
 export async function getReferralPartners() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
   const { data, error } = await supabase
     .from("referral_partners")
     .select("*")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("partner_name")
 
   if (error) throw error
