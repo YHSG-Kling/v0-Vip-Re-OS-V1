@@ -3,16 +3,13 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar, Heart, TrendingUp, Gift } from "lucide-react"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+export const dynamic = "force-dynamic"
 
 export default async function PastClientsPage() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return <div>Not authenticated</div>
-  }
 
   // Get past clients (contacts with closed transactions)
   const { data: pastClients } = await supabase
@@ -24,7 +21,8 @@ export default async function PastClientsPage() {
       client_engagement_scores(engagement_score, referral_potential_score, last_touchpoint_date)
     `,
     )
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .eq("transactions.status", "closed")
 
   // Get upcoming touchpoints
@@ -35,7 +33,8 @@ export default async function PastClientsPage() {
   const { data: upcomingTouchpoints } = await supabase
     .from("past_client_touchpoints")
     .select("*, contacts(first_name, last_name)")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .eq("status", "scheduled")
     .gte("scheduled_date", today.toISOString().split("T")[0])
     .lte("scheduled_date", nextWeek.toISOString().split("T")[0])
