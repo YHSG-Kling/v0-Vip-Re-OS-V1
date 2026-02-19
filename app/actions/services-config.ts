@@ -186,7 +186,7 @@ export async function togglePlaybook(playbookId: string, active: boolean) {
 export async function getStageRules() {
   const supabase = await createClient()
 
-  const { data, error } = await supabase.from("compliance_rules").select("*").order("entity_type", { ascending: true })
+  const { data, error } = await supabase.from("compliance_rules").select("*").order("rule_type", { ascending: true })
 
   if (error) {
     console.error("Error fetching stage rules:", error)
@@ -197,7 +197,7 @@ export async function getStageRules() {
 }
 
 export async function createStageRule(params: {
-  entity_type: string
+  rule_type: string
   from_stage: string
   to_stage: string
   required_conditions: any[]

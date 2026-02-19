@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { TransactionPipelineView } from "@/components/transactions/pipeline-view"
 
+export const dynamic = 'force-dynamic'
+
 export default async function TransactionPipelinePage() {
   const supabase = await createClient()
 

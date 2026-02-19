@@ -2,6 +2,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { LenderTransactionList } from "@/components/external-portal/lender-transaction-list"
 
+export const dynamic = 'force-dynamic'
+
 export default async function LenderTransactionsPage() {
   const supabase = await createClient()
 

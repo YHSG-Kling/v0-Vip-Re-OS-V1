@@ -4,6 +4,8 @@ import { ClientTransactionTimeline } from "@/components/client-portal/transactio
 import { ClientMilestones } from "@/components/client-portal/milestones"
 import { ClientPendingApprovals } from "@/components/client-portal/pending-approvals"
 
+export const dynamic = 'force-dynamic'
+
 export default async function ClientTransactionPage() {
   const supabase = await createClient()
 
