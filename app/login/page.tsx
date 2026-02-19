@@ -5,10 +5,30 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useState, useEffect, Suspense } from 'react'
 import { Mail, Lock, Loader2 } from 'lucide-react'
+import dynamic from 'next/dynamic'
+
+const SafeTabs = dynamic(
+  () => import('@/components/ui/tabs').then(mod => ({ default: mod.Tabs })),
+  { ssr: false }
+)
+
+const SafeTabsList = dynamic(
+  () => import('@/components/ui/tabs').then(mod => ({ default: mod.TabsList })),
+  { ssr: false }
+)
+
+const SafeTabsTrigger = dynamic(
+  () => import('@/components/ui/tabs').then(mod => ({ default: mod.TabsTrigger })),
+  { ssr: false }
+)
+
+const SafeTabsContent = dynamic(
+  () => import('@/components/ui/tabs').then(mod => ({ default: mod.TabsContent })),
+  { ssr: false }
+)
 
 function LoginContent() {
   const [email, setEmail] = useState('')
@@ -89,13 +109,13 @@ function LoginContent() {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <Tabs defaultValue="password" className="w-full" id="login-tabs">
-          <TabsList className="grid w-full grid-cols-2 mb-6">
-            <TabsTrigger value="password">Email &amp; Password</TabsTrigger>
-            <TabsTrigger value="magic">Magic Link</TabsTrigger>
-          </TabsList>
+        <SafeTabs defaultValue="password" className="w-full">
+          <SafeTabsList className="grid w-full grid-cols-2 mb-6">
+            <SafeTabsTrigger value="password">Email &amp; Password</SafeTabsTrigger>
+            <SafeTabsTrigger value="magic">Magic Link</SafeTabsTrigger>
+          </SafeTabsList>
 
-          <TabsContent value="password">
+          <SafeTabsContent value="password">
             <form onSubmit={handlePasswordLogin} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="email-password">Email</Label>
@@ -143,9 +163,9 @@ function LoginContent() {
                 )}
               </Button>
             </form>
-          </TabsContent>
+          </SafeTabsContent>
 
-          <TabsContent value="magic">
+          <SafeTabsContent value="magic">
             <form onSubmit={handleMagicLink} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="email-magic">Email</Label>
@@ -183,8 +203,8 @@ function LoginContent() {
                 )}
               </Button>
             </form>
-          </TabsContent>
-        </Tabs>
+          </SafeTabsContent>
+        </SafeTabs>
       </CardContent>
     </Card>
   )
