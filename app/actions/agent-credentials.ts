@@ -32,10 +32,19 @@ export async function getAgentCredentials() {
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
-  const { data, error } = await supabase
+  // Get agent_id from agents table
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .single()
+
+  if (!agent) throw new Error("Agent profile not found")
+
+  const { data, error} = await supabase
     .from("agent_api_credentials")
     .select("*")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agent.id)
     .order("service_name")
 
   if (error) throw error
@@ -51,10 +60,19 @@ export async function getServiceCredential(serviceName: ServiceName) {
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
+  // Get agent_id from agents table
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .single()
+
+  if (!agent) throw new Error("Agent profile not found")
+
   const { data, error } = await supabase
     .from("agent_api_credentials")
     .select("*")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agent.id)
     .eq("service_name", serviceName)
     .single()
 
@@ -194,10 +212,19 @@ export async function deleteServiceCredential(serviceName: ServiceName) {
   } = await supabase.auth.getUser()
   if (!user) throw new Error("Not authenticated")
 
+  // Get agent_id from agents table
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .single()
+
+  if (!agent) throw new Error("Agent profile not found")
+
   const { error } = await supabase
     .from("agent_api_credentials")
     .delete()
-    .eq("agent_id", user.id)
+    .eq("agent_id", agent.id)
     .eq("service_name", serviceName)
 
   if (error) throw error
