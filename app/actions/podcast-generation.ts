@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { put } from "@vercel/blob"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * AI Podcast Generation Actions
@@ -292,17 +293,11 @@ async function synthesizeVoice(text: string, voiceId: string, settings: any): Pr
 
 // Get all podcast episodes for agent
 export async function getPodcastEpisodes(filters?: { status?: string; category?: string }) {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return { success: false, error: "Not authenticated", episodes: [] }
-  }
 
   try {
-    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", user.id).order("created_at", { ascending: false })
+    let query = supabase.from("podcast_episodes").select("*").eq("agent_id", agentId).eq("brokerage_id", brokerageId).order("created_at", { ascending: false })
 
     if (filters?.status) {
       query = query.eq("status", filters.status)
@@ -325,14 +320,8 @@ export async function getPodcastEpisodes(filters?: { status?: string; category?:
 
 // Publish podcast episode
 export async function publishPodcastEpisode(episodeId: string, channels: string[]) {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return { success: false, error: "Not authenticated" }
-  }
 
   try {
     const { error } = await supabase
@@ -343,7 +332,8 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
         publish_channels: channels,
       })
       .eq("id", episodeId)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
 
     if (error) throw error
 
@@ -377,20 +367,15 @@ export async function trackPodcastEvent(episodeId: string, eventType: string, da
 
 // Get podcast templates
 export async function getPodcastTemplates() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return { success: false, error: "Not authenticated", templates: [] }
-  }
 
   try {
     const { data: templates, error } = await supabase
       .from("podcast_templates")
       .select("*")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
       .order("use_count", { ascending: false })
 

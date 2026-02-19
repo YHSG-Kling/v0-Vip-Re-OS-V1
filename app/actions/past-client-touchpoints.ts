@@ -158,11 +158,8 @@ export async function sendReferralRequest(contactId: string) {
 
 // Get past client contacts for agent
 export async function getPastClientContacts() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated", contacts: [] }
 
   // Get contacts that have closed transactions (past clients)
   const { data, error } = await supabase
@@ -176,7 +173,8 @@ export async function getPastClientContacts() {
         sale_price
       )
     `)
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .in("transactions.status", ["closed", "sold"])
     .order("transactions.close_date", { ascending: false })
 
@@ -190,11 +188,8 @@ export async function getPastClientContacts() {
 
 // Get touchpoint calendar for agent
 export async function getTouchpointCalendar(month: number, year: number) {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
   const startDate = new Date(year, month, 1)
   const endDate = new Date(year, month + 1, 0)
@@ -202,7 +197,8 @@ export async function getTouchpointCalendar(month: number, year: number) {
   const { data, error } = await supabase
     .from("past_client_touchpoints")
     .select("*, contacts(first_name, last_name)")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .gte("scheduled_date", startDate.toISOString().split("T")[0])
     .lte("scheduled_date", endDate.toISOString().split("T")[0])
     .order("scheduled_date")
