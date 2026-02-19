@@ -3,21 +3,19 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Building2, Phone, Mail, TrendingUp, UserPlus } from "lucide-react"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
+
+export const dynamic = "force-dynamic"
 
 export default async function ReferralPartnersPage() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return <div>Not authenticated</div>
-  }
 
   const { data: partners } = await supabase
     .from("referral_partners")
     .select("*")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("partner_name")
 
   const partnerTypeColors = {
