@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import Link from "next/link"
 import { 
   TRANSACTION_STAGES, 
-  STAGE_STATUS_MAP 
+  STAGE_TO_STATUS_MAP 
 } from "@/lib/transactions/transaction-stages"
 
 interface Transaction {

@@ -44,12 +44,15 @@ export const ALLOWED_TRANSITIONS: Record<TransactionStage, TransactionStage[]> =
 export const STAGE_TRANSITIONS = ALLOWED_TRANSITIONS
 
 // Critical milestones that block stage advancement if overdue
-export const CRITICAL_MILESTONES = [
-  'inspection_deadline',
-  'appraisal_deadline',
-  'financing_deadline',
-  'cda_delivered',
-] as const
+export const CRITICAL_MILESTONES: Record<TransactionStage, string[]> = {
+  UNDER_CONTRACT: [],
+  INSPECTION: ['inspection_deadline'],
+  APPRAISAL: ['appraisal_deadline'],
+  FINANCING_PENDING: ['financing_deadline'],
+  CLOSING_PREP: ['cda_delivered'],
+  CLOSED: [],
+  LOST: []
+}
 
 // Milestone names (supported by transaction_milestones table)
 export const MILESTONE_NAMES = {
