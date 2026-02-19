@@ -17,21 +17,10 @@ export async function getContacts(params?: {
       return { success: false, error: "Not authenticated", contacts: [] }
     }
 
-    // Get agent_id from agents table
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("id")
-      .eq("user_id", user.id)
-      .single()
-
-    if (!agent) {
-      return { success: false, error: "Agent profile not found", contacts: [] }
-    }
-
     let query = supabase
       .from("contacts")
       .select("*")
-      .eq("agent_id", agent.id)
+      .eq("agent_id", user.id)
       .order("created_at", { ascending: false })
 
     // Apply filters

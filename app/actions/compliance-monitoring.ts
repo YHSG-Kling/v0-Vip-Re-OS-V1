@@ -721,15 +721,14 @@ export async function getComplianceViolations(agentId?: string, userId?: string)
     .from("compliance_flags")
     .select(`
       *,
-      users:users!compliance_flags_user_id_fkey (
-        id,
-        first_name,
-        last_name,
-        email
-      )
+      agents (id, user_id(first_name, last_name, email))
     `)
     .order("detected_at", { ascending: false })
 
+  if (agentId) {
+    query = query.eq("agent_id", agentId)
+  }
+  
   if (userId) {
     query = query.eq("user_id", userId)
   }
