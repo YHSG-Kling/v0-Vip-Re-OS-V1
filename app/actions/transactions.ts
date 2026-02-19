@@ -2705,6 +2705,3 @@ export async function updateTransactionStage(transactionId: string, targetStage:
 
   return result
 }
-
-  return { success: true, transaction: data }
-}
