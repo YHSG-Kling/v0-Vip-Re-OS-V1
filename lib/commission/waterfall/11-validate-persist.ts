@@ -1,7 +1,16 @@
 import { createServiceClient } from '@/lib/supabase/service'
-import { validateWaterfall, centsToDollars, sumCents, dollarsToCents } from '../utils'
+import { centsToDollars, dollarsToCents } from '../utils'
 import { CURRENT_ENGINE_VERSION } from '../types'
 import type { WaterfallContext, CommissionCalculationResult } from '../types'
+
+// Helper functions
+const sumCents = (amounts: number[]): number => amounts.reduce((a, b) => a + b, 0)
+
+const validateWaterfall = (grossCents: number, distributedCents: number) => {
+  const difference = grossCents - distributedCents
+  const valid = Math.abs(difference) <= 1 // Allow 1 cent rounding difference
+  return { valid, difference }
+}
 
 /**
  * STEP 11: Validate & Persist
