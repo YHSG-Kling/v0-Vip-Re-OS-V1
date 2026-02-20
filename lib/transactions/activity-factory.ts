@@ -17,6 +17,7 @@ export class ActivityFactory {
       await this.supabase.from("activities").insert({
         transaction_id: params.transactionId,
         brokerage_id: params.brokerageId,
+        agent_id: params.agentId,
         assigned_to: activity.assignedTo || params.agentId,
         activity_type: activity.type,
         title: activity.title,
@@ -24,7 +25,6 @@ export class ActivityFactory {
         priority: activity.priority || "medium",
         due_date: activity.dueDate,
         status: "pending",
-        metadata: activity.metadata,
         created_at: new Date().toISOString()
       })
     }
@@ -42,6 +42,7 @@ export class ActivityFactory {
     await this.supabase.from("activities").insert({
       transaction_id: params.transactionId,
       brokerage_id: params.brokerageId,
+      agent_id: params.assignedTo,
       assigned_to: params.assignedTo,
       activity_type: activity.type,
       title: activity.title,

@@ -105,7 +105,9 @@ export async function ingestVoiceTranscript(
 export async function emitVoiceHandoffSignal(
   contactId: string,
   conversationId: string,
-  transcriptSummary: string
+  transcriptSummary: string,
+  agentId: string,
+  brokerageId: string
 ): Promise<boolean> {
   try {
     const supabase = await import('@/lib/supabase/service').then(m => m.createServiceClient())
@@ -117,6 +119,8 @@ export async function emitVoiceHandoffSignal(
       status: 'pending',
       priority: 'normal',
       contact_id: contactId,
+      agent_id: agentId,
+      brokerage_id: brokerageId,
       notes: JSON.stringify({
         conversationId,
         signal: 'ai_isa_review_requested',

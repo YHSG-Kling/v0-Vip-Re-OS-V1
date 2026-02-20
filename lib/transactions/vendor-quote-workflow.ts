@@ -128,6 +128,7 @@ export async function approveQuote(params: {
   await supabase.from("activities").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
+    agent_id: params.approvedBy,
     activity_type: "schedule_vendor",
     title: `Schedule ${params.quoteType}`,
     description: `Client approved ${params.vendorName}. Schedule the ${params.quoteType}.`,

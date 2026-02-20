@@ -87,13 +87,14 @@ export async function persistQualificationSignals(
     // Log qualification activity
     const { data: lead } = await supabase
       .from('leads')
-      .select('brokerage_id')
+      .select('brokerage_id, agent_id')
       .eq('id', leadId)
       .single()
     
     if (lead) {
       await supabase.from('activities').insert({
         contact_id: leadId,
+        agent_id: lead.agent_id,
         brokerage_id: lead.brokerage_id,
         activity_type: 'ai_isa_qualification',
         title: 'Lead Qualified by AI ISA',
