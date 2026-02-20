@@ -3,16 +3,18 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { isValidUUID } from "@/lib/validations";
 import { getOfferLifecycleState } from "./track-offer-lifecycle";
+import { validateAcceptanceEligibility } from "@/lib/buyer-offer/compliance-gate";
+import { createTransactionFromOffer } from "@/lib/transactions/offer-bridge";
 
 /**
  * System 7.1A Domain 4: Transition to Transaction
  * Module: Convert Offer to Transaction
  * 
- * Converts ACCEPTED offer to transaction and:
- * 1. Creates transaction record
- * 2. Emits buyer.under_contract event (FREEZES buyer lifecycle)
- * 3. Emits listing.under_contract event (FREEZES listing lifecycle)
- * 4. Links offer to transaction
+ * Converts ACCEPTED offer to transaction via offer-bridge.ts (single source of truth)
+ * Enforces:
+ * 1. Compliance gate validation
+ * 2. contract_date requirement
+ * 3. ACCEPTED state verification
  * 
  * Per JOURNEY_PROGRESS_CONTRACT: Journey stops at *_UNDER_CONTRACT
  */
@@ -23,7 +25,14 @@ import { getOfferLifecycleState } from "./track-offer-lifecycle";
 export async function convertOfferToTransaction(
   offerId: string,
   userId: string,
-  closingDate: string
+  closingDate: string,
+  contractDate: string,
+  contractTerms?: {
+    earnestMoneyDue?: string
+    inspectionDeadline?: string
+    appraisalDeadline?: string
+    financingDeadline?: string
+  }
 ): Promise<{ 
   success: boolean; 
   transaction_id?: string; 
@@ -34,7 +43,14 @@ export async function convertOfferToTransaction(
       return { success: false, error: "Invalid IDs" };
     }
 
-    // 1. Verify offer is ACCEPTED
+    // 1. Verify compliance gate passed
+    try {
+      await validateAcceptanceEligibility(offerId);
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+
+    // 2. Verify offer is ACCEPTED
     const stateResult = await getOfferLifecycleState(offerId);
     if (!stateResult.success || !stateResult.data) {
       return { success: false, error: stateResult.error || "Could not get offer state" };
@@ -47,12 +63,17 @@ export async function convertOfferToTransaction(
       };
     }
 
+    // 3. Validate contract_date provided
+    if (!contractDate) {
+      return { success: false, error: "contract_date required to create transaction" };
+    }
+
     const supabase = createServiceClient();
 
-    // 2. Get offer details
+    // 4. Get offer details for brokerage_id
     const { data: offer, error: offerError } = await supabase
-      .from("offers")
-      .select("contact_id, listing_id, offer_price, earnest_money_amount")
+      .from("buyer_offers")
+      .select("buyer_agents!inner(brokerage_id)")
       .eq("id", offerId)
       .single();
 
@@ -60,78 +81,45 @@ export async function convertOfferToTransaction(
       return { success: false, error: "Offer not found" };
     }
 
-    // 3. Create transaction record
-    const { data: transaction, error: transactionError } = await supabase
-      .from("transactions")
-      .insert({
-        contact_id: offer.contact_id,
-        listing_id: offer.listing_id,
-        transaction_type: "purchase",
-        status: "under_contract",
-        sale_price: offer.offer_price,
-        earnest_money: offer.earnest_money_amount,
-        closing_date: closingDate,
-        offer_id: offerId
-      })
-      .select()
-      .single();
-
-    if (transactionError || !transaction) {
-      return { success: false, error: "Failed to create transaction" };
+    const brokerageId = offer.buyer_agents[0]?.brokerage_id;
+    if (!brokerageId) {
+      return { success: false, error: "Brokerage ID not found for offer" };
     }
 
-    // 4. Emit buyer.under_contract event (FREEZES buyer lifecycle)
-    await supabase.from("activities").insert({
-      entity_type: "contact",
-      entity_id: offer.contact_id,
-      activity_type: "buyer_under_contract",
-      event_type: "buyer.under_contract",
-      user_id: userId,
-      event_metadata: {
-        transaction_id: transaction.id,
-        listing_id: offer.listing_id,
-        offer_id: offerId,
-        closing_date: closingDate,
-        sale_price: offer.offer_price,
-        lifecycle_freeze: true, // Signal to System 5.1C
-        timestamp: new Date().toISOString()
-      }
-    });
+    // 5. Get compliance passed timestamp
+    const { data: complianceEvent } = await supabase
+      .from("activities")
+      .select("created_at")
+      .eq("entity_type", "offer")
+      .eq("entity_id", offerId)
+      .eq("activity_type", "buyer.offer.compliance.passed")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
 
-    // 5. Emit listing.under_contract event (FREEZES listing lifecycle)
-    await supabase.from("activities").insert({
-      entity_type: "listing",
-      entity_id: offer.listing_id,
-      activity_type: "listing_under_contract",
-      event_type: "listing.under_contract",
-      user_id: userId,
-      event_metadata: {
-        transaction_id: transaction.id,
-        buyer_contact_id: offer.contact_id,
-        offer_id: offerId,
-        closing_date: closingDate,
-        sale_price: offer.offer_price,
-        lifecycle_freeze: true, // Signal to System 5.2
-        timestamp: new Date().toISOString()
-      }
-    });
+    if (!complianceEvent) {
+      return { success: false, error: "Compliance passed event not found" };
+    }
 
-    // 6. Emit offer-to-transaction conversion event
-    await supabase.from("activities").insert({
-      entity_type: "offer",
-      entity_id: offerId,
-      activity_type: "offer_to_transaction",
-      event_type: "buyer.offer.converted_to_transaction",
-      user_id: userId,
-      event_metadata: {
-        transaction_id: transaction.id,
-        conversion_timestamp: new Date().toISOString()
+    // 6. Call offer-bridge.ts (single source of truth for transaction creation)
+    const result = await createTransactionFromOffer({
+      offerId,
+      brokerageId,
+      contractDate,
+      compliancePassedAt: complianceEvent.created_at,
+      contractTerms: {
+        earnestMoneyDue: contractTerms?.earnestMoneyDue,
+        inspectionDeadline: contractTerms?.inspectionDeadline,
+        appraisalDeadline: contractTerms?.appraisalDeadline,
+        financingDeadline: contractTerms?.financingDeadline,
+        closingDate
       }
     });
 
     return { 
-      success: true, 
-      transaction_id: transaction.id 
+      success: result.success, 
+      transaction_id: result.transactionId,
+      error: result.success ? undefined : "Failed to create transaction via offer-bridge"
     };
   } catch (error: any) {
     console.error("[System 7.1A] Error converting offer to transaction:", error);
