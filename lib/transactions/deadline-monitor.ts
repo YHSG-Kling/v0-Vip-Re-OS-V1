@@ -28,6 +28,7 @@ export async function checkTransactionDeadlines() {
     .from("transactions")
     .select("id, brokerage_id, agent_id, stage")
     .not("status", "in", '("closed","lost")')
+    .order("created_at", { ascending: false })
   
   if (!transactions) return
   
@@ -39,6 +40,7 @@ export async function checkTransactionDeadlines() {
       .from("transaction_milestones")
       .select("*")
       .eq("transaction_id", txn.id)
+      .eq("brokerage_id", txn.brokerage_id)
       .eq("status", "pending")
       .not("milestone_date", "is", null)
     
@@ -74,6 +76,7 @@ async function handleOverdue(
     .from("transaction_milestones")
     .update({ status: "overdue" })
     .eq("id", milestone.id)
+    .eq("brokerage_id", txn.brokerage_id)
   
   // Log event
   await supabase.from("lifecycle_events").insert({
@@ -92,6 +95,7 @@ async function handleOverdue(
   await createActivity({
     transactionId: txn.id,
     brokerageId: txn.brokerage_id,
+    agentId: txn.agent_id,
     activityType: "milestone_overdue",
     title: `OVERDUE: ${milestone.milestone_name}`,
     description: `Milestone was due ${milestone.milestone_date}. Immediate action required.`,

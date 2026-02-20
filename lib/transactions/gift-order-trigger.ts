@@ -58,11 +58,13 @@ export async function checkAndTriggerGiftOrder(params: {
     .from("transactions")
     .select("agent_id")
     .eq("id", params.transactionId)
+    .eq("brokerage_id", params.brokerageId)
     .single()
 
   await supabase.from("activities").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
+    agent_id: transaction?.agent_id || params.userId,
     activity_type: 'tc.gift.order',
     title: 'Order Closing Gift',
     description: 'Financing conditional approval received. Order and coordinate closing gift for client.',

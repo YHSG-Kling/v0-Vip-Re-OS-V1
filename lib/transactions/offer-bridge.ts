@@ -89,6 +89,7 @@ export async function createTransactionFromOffer(params: {
   await supabase.from("activities").insert({
     transaction_id: transaction.id,
     brokerage_id: params.brokerageId,
+    agent_id: offer.buyer_agents[0]?.agent_id,
     activity_type: "transaction_started",
     title: "Transaction Created - Schedule Inspection",
     description: "Transaction is now under contract. Next step: schedule home inspection.",
