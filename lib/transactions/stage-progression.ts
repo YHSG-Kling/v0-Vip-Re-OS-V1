@@ -146,6 +146,33 @@ export async function advanceStage(params: {
     }
   })
 
+  // 5. Trigger commission calculations based on stage
+  if (params.targetStage === "CLOSING_PREP") {
+    // Trigger preview commission calculation
+    const { calculateCommission } = await import("@/lib/commission/engine")
+    await calculateCommission({
+      transactionId: params.transactionId,
+      brokerageId: params.brokerageId,
+      calculationMode: 'preview',
+      triggeredBy: params.userId
+    }).catch(error => {
+      console.error("[v0] Commission preview calculation failed:", error)
+      // Don't block stage advancement on commission calculation failure
+    })
+  } else if (params.targetStage === "CLOSED") {
+    // Trigger final commission calculation
+    const { calculateCommission } = await import("@/lib/commission/engine")
+    await calculateCommission({
+      transactionId: params.transactionId,
+      brokerageId: params.brokerageId,
+      calculationMode: 'final',
+      triggeredBy: params.userId
+    }).catch(error => {
+      console.error("[v0] Final commission calculation failed:", error)
+      // Don't block stage advancement on commission calculation failure
+    })
+  }
+
   return {
     success: true,
     newStage: params.targetStage
