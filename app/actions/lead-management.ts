@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export type LeadScore = 1 | 2 | 3 | 4 | 5
 export type LeadIntent = "buying" | "selling" | "distress" | "investor"
@@ -36,11 +37,8 @@ export async function getLeads(params?: {
   sortOrder?: "asc" | "desc"
 }) {
   try {
+    const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) throw new Error("Not authenticated")
 
     const page = params?.page || 1
     const limit = params?.limit || 10
@@ -49,7 +47,8 @@ export async function getLeads(params?: {
     let query = supabase
       .from("scraped_leads")
       .select("*", { count: "exact" })
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
 
     // Apply filters
     if (params?.search) {
@@ -111,17 +110,15 @@ export async function getLeads(params?: {
 // Get a single lead by ID
 export async function getLead(id: string) {
   try {
+    const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) throw new Error("Not authenticated")
 
     const { data, error } = await supabase
       .from("scraped_leads")
       .select("*")
       .eq("id", id)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .single()
 
     if (error) throw error
@@ -136,18 +133,16 @@ export async function getLead(id: string) {
 // Enrich a lead with AI
 export async function enrichLead(leadId: string) {
   try {
+    const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) throw new Error("Not authenticated")
 
     // Get lead
     const { data: lead, error: leadError } = await supabase
       .from("scraped_leads")
       .select("*")
       .eq("id", leadId)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .single()
 
     if (leadError) throw leadError
@@ -188,18 +183,16 @@ export async function enrichLead(leadId: string) {
 // Convert lead to contact
 export async function convertLeadToContact(leadId: string) {
   try {
+    const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) throw new Error("Not authenticated")
 
     // Get lead
     const { data: lead, error: leadError } = await supabase
       .from("scraped_leads")
       .select("*")
       .eq("id", leadId)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .single()
 
     if (leadError) throw leadError
@@ -245,11 +238,8 @@ export async function convertLeadToContact(leadId: string) {
 // Reject a lead
 export async function rejectLead(leadId: string, reason?: string) {
   try {
+    const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) throw new Error("Not authenticated")
 
     const { data, error } = await supabase
       .from("scraped_leads")
@@ -259,7 +249,8 @@ export async function rejectLead(leadId: string, reason?: string) {
         rejected_at: new Date().toISOString(),
       })
       .eq("id", leadId)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .select()
       .single()
 

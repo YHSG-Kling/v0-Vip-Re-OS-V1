@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function getContacts(params?: {
   status?: string
@@ -8,19 +9,14 @@ export async function getContacts(params?: {
   limit?: number
 }) {
   try {
+    const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
-      return { success: false, error: "Not authenticated", contacts: [] }
-    }
 
     let query = supabase
       .from("contacts")
       .select("*")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .order("created_at", { ascending: false })
 
     // Apply filters
@@ -52,20 +48,15 @@ export async function getContacts(params?: {
 
 export async function getContactById(contactId: string) {
   try {
+    const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
-      return { success: false, error: "Not authenticated", contact: null }
-    }
 
     const { data, error } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", contactId)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .single()
 
     if (error) {
@@ -121,20 +112,15 @@ export async function createContact(contactData: {
 
 export async function updateContact(contactId: string, updates: Partial<any>) {
   try {
+    const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
-      return { success: false, error: "Not authenticated" }
-    }
 
     const { data, error } = await supabase
       .from("contacts")
       .update(updates)
       .eq("id", contactId)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .select()
       .single()
 

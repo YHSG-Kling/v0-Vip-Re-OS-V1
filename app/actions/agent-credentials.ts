@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export type ServiceName = "idx_broker" | "ghl" | "meta" | "linkedin" | "twitter" | "tiktok"
 export type ServiceType = "listing_provider" | "crm_sync" | "social_media"
@@ -25,17 +26,14 @@ interface AgentCredential {
 
 // Get all credentials for current agent
 export async function getAgentCredentials() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
   const { data, error } = await supabase
     .from("agent_api_credentials")
     .select("*")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("service_name")
 
   if (error) throw error
@@ -44,17 +42,14 @@ export async function getAgentCredentials() {
 
 // Get specific service credential
 export async function getServiceCredential(serviceName: ServiceName) {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
   const { data, error } = await supabase
     .from("agent_api_credentials")
     .select("*")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .eq("service_name", serviceName)
     .single()
 
@@ -187,17 +182,14 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
 
 // Delete credential
 export async function deleteServiceCredential(serviceName: ServiceName) {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
 
   const { error } = await supabase
     .from("agent_api_credentials")
     .delete()
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .eq("service_name", serviceName)
 
   if (error) throw error

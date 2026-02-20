@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 // Get auto-response settings for the current user
 export async function getAutoResponseSettings() {
@@ -351,14 +352,8 @@ export async function getLeadScore(contactId: string) {
 
 // Get hot leads (priority scoring)
 export async function getHotLeads(limit = 50) {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return { success: false, error: "Not authenticated", leads: [] }
-  }
 
   const { data, error } = await supabase
     .from("lead_scores")
@@ -377,7 +372,8 @@ export async function getHotLeads(limit = 50) {
       )
     `
     )
-    .eq("contacts.agent_id", user.id)
+    .eq("contacts.agent_id", agentId)
+    .eq("contacts.brokerage_id", brokerageId)
     .eq("priority_tier", "hot")
     .order("total_score", { ascending: false })
     .limit(limit)

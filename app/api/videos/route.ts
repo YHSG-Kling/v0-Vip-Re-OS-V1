@@ -1,20 +1,16 @@
 import { NextResponse } from "next/server"
 import { createServerClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function GET() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createServerClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-  }
 
   const { data: videos, error } = await supabase
     .from("video_assets")
     .select("*, script:video_scripts(*)")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
 
   if (error) {

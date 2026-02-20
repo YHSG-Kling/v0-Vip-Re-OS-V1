@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { supabase } from "@/services/supabase"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function POST(request: NextRequest) {
   try {
@@ -9,19 +10,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Contact ID is required" }, { status: 400 })
     }
 
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
-    }
+    const { agentId, brokerageId } = await getAgentContext()
 
     // Get contact
     const { data: contact, error: fetchError } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", contactId)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .single()
 
     if (fetchError || !contact) {
