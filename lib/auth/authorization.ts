@@ -196,7 +196,7 @@ export async function getSubscriptionAdmin(
       .select("admin_user_id, tier_name, users:admin_user_id(email)")
       .or(orFilter)
       .eq("is_active", true)
-      .single()
+      .maybeSingle()
     
     if (error || !data || !data.admin_user_id) {
       return null
@@ -241,7 +241,7 @@ export async function getCurrentUserSubscriptionContext(): Promise<SubscriptionC
       .select("brokerage_id, team_id, agent_id")
       .eq("admin_user_id", user.id)
       .eq("is_active", true)
-      .single()
+      .maybeSingle()
     
     if (error || !data) {
       return null
