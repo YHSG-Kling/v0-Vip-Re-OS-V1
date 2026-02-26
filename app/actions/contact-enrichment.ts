@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { PeopleDataClient } from "@/lib/peopledata-client"
+import { PeopleDataClient } from "@/lib/external/peopledata-client"
 import { OSINTClient } from "@/lib/osint-client"
 import { validateEmail, validatePhone } from "@/lib/contact-validation"
 

@@ -1,3 +1,23 @@
+// ─── CLASS ALIAS (backward compat for callers using `new ZenrowsClient()`) ────
+export class ZenrowsClient {
+  async scrape(url: string, options: { js_render?: boolean; premium_proxy?: boolean } = {}) {
+    try {
+      const result = await scrapeWithZenRows(url, {
+        jsRender: options.js_render,
+        premiumProxy: options.premium_proxy,
+      })
+      return { success: true, html: result.body, cost: result.cost }
+    } catch (err) {
+      return { success: false, html: '', cost: 0 }
+    }
+  }
+  async googleSearch(query: string, options: { location?: string; num?: number } = {}) {
+    const url = `https://www.google.com/search?q=${encodeURIComponent(query)}${options.num ? `&num=${options.num}` : ''}`
+    const result = await scrapeWithZenRows(url, { jsRender: true, premiumProxy: true })
+    return result.body
+  }
+}
+
 const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY!
 const ZENROWS_API_URL = 'https://api.zenrows.com/v1/'
 

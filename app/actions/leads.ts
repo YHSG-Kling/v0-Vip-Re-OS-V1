@@ -2,9 +2,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { ZenrowsClient } from "@/lib/zenrows-client"
-import { BatchDataClient } from "@/lib/batchdata-client"
-import { PeopleDataClient } from "@/lib/peopledata-client"
+import { ZenrowsClient } from "@/lib/external/zenrows-client"
+import { BatchDataClient } from "@/lib/external/batchdata-client"
+import { PeopleDataClient } from "@/lib/external/peopledata-client"
 import { isValidUUID, validateEmail, validatePhone } from "@/lib/validations"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 import { calculateLeadScore } from "@/lib/services/lead-management.service"

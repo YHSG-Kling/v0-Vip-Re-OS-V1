@@ -1,3 +1,17 @@
+// ─── CLASS ALIAS (backward compat for callers using `new PeopleDataClient()`) ─
+export class PeopleDataClient {
+  async enrich(data: { email?: string; phone?: string; firstName?: string; lastName?: string }) {
+    return skipTraceWithPeopleData({
+      name: data.firstName && data.lastName ? `${data.firstName} ${data.lastName}` : undefined,
+      phone: data.phone,
+      email: data.email,
+    }).then(r => r.data)
+  }
+  async bulkEnrich(contacts: Array<{ email?: string; phone?: string }>) {
+    return Promise.all(contacts.map(c => this.enrich(c)))
+  }
+}
+
 const PEOPLEDATA_API_KEY = process.env.PEOPLEDATA_API_KEY!
 const PEOPLEDATA_API_URL = 'https://api.peopledatalabs.com/v5'
 

@@ -1,3 +1,26 @@
+// ─── CLASS ALIAS (backward compat for callers using `new ApifyClient()`) ──────
+export class ApifyClient {
+  async scrapeZillow(location: string, filters?: { minPrice?: number; maxPrice?: number }) {
+    return runApifyActor('compass~zillow-scraper', { location, ...filters }).then(r => r.data)
+  }
+  async scrapeRealtorDotCom(location: string, filters?: { minPrice?: number; maxPrice?: number }) {
+    return runApifyActor('compass~realtor-scraper', { location, ...filters }).then(r => r.data)
+  }
+  async scrapeRedfin(location: string, filters?: { minPrice?: number; maxPrice?: number }) {
+    return runApifyActor('compass~redfin-scraper', { location, ...filters }).then(r => r.data)
+  }
+  async scrapeSocialMedia(platform: 'facebook' | 'nextdoor' | 'reddit', searchQuery: string) {
+    const actorMap = { facebook: 'apify~facebook-posts-scraper', reddit: 'trudax~reddit-scraper', nextdoor: 'compass~nextdoor-scraper' }
+    return runApifyActor(actorMap[platform], { searchQuery, maxPosts: 50 }).then(r => r.data)
+  }
+  async scrapeGoogleMaps(location: string, searchQuery: string) {
+    return runApifyActor('compass~google-maps-scraper', { searchQuery, location, maxResults: 100 }).then(r => r.data)
+  }
+  async scrapeYelp(location: string, category: string) {
+    return runApifyActor('compass~yelp-scraper', { location, searchTerm: category, maxResults: 50 }).then(r => r.data)
+  }
+}
+
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN!
 const APIFY_API_URL = 'https://api.apify.com/v2'
 
