@@ -255,43 +255,5 @@ export async function generateAIObject<T extends z.ZodType>(
   }
 }
 
-// General purpose JSON generation using Vercel AI Gateway
-export async function generateAIJSON<T = Record<string, unknown>>(
-  prompt: string, 
-  options?: {
-    model?: string
-    maxTokens?: number
-    temperature?: number
-  }
-): Promise<{ data: T | null; error?: string }> {
-  try {
-    const jsonPrompt = `${prompt}
-
-IMPORTANT: Respond with ONLY valid JSON. No markdown, no code blocks, no explanation - just the raw JSON object.`
-
-    const text = await runPipelineSimple(jsonPrompt, {
-      maxTokens: options?.maxTokens,
-      temperature: options?.temperature ?? 0.3,
-      feature: "generate_json",
-    })
-    
-    // Clean up potential markdown formatting
-    let cleanedText = text.trim()
-    if (cleanedText.startsWith("```json")) {
-      cleanedText = cleanedText.slice(7)
-    }
-    if (cleanedText.startsWith("```")) {
-      cleanedText = cleanedText.slice(3)
-    }
-    if (cleanedText.endsWith("```")) {
-      cleanedText = cleanedText.slice(0, -3)
-    }
-    cleanedText = cleanedText.trim()
-    
-    const data = JSON.parse(cleanedText) as T
-    return { data }
-  } catch (error) {
-    console.error("AI JSON generation error:", error)
-    return { data: null, error: "Failed to generate AI JSON response" }
-  }
-}
+// Re-exported from lib/ai/generate — canonical home for AI generation helpers
+export { generateAIJSON, generateAIObject } from "@/lib/ai/generate"
