@@ -33,12 +33,26 @@ export {
 // ─── LEAD APPLICATION SERVICE ─────────────────────────────────────────────────
 export type { LeadScore, LeadIntent, LeadStatus, LeadSource, Lead } from "./lead-application-service"
 export {
+  // scraped_leads pipeline
   serviceGetLeads,
   serviceGetLead,
   serviceEnrichLead,
   serviceConvertLeadToContact,
   serviceRejectLead,
   serviceImportLeads,
+  // leads table (external scraped, not yet in system)
+  serviceCreateLead,
+  serviceGetLeadsFull,
+  serviceUpdateLead,
+  serviceAssignLead,
+  serviceConvertLeadToContactFull,
+  serviceScrapeZillowLeads,
+  serviceScrapeNextdoorLeads,
+  serviceScrapeBatchDataLeads,
+  serviceScrapeFacebookGroupLeads,
+  serviceScrapeCraigslistLeads,
+  serviceEnrichLeadFull,
+  serviceGetLeadsDashboardStats,
 } from "./lead-application-service"
 
 // ─── LISTING LIFECYCLE ────────────────────────────────────────────────────────
