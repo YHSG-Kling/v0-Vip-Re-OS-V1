@@ -10,7 +10,7 @@
  * without change.
  */
 
-import { UserRole } from "../types"
+import type { UserRole } from "@/app/types/roles"
 
 // ─── PERMISSION TYPE ──────────────────────────────────────────────────────────
 // Keep the broad UI-facing Permission type from the legacy service.
