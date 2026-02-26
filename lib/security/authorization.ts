@@ -3,8 +3,6 @@
 import { createClient } from "@/lib/supabase/server"
 import type { AuthorizedUser, SubscriptionContext } from "./types"
 
-export type { AuthorizedUser, SubscriptionContext }
-
 export async function requireSuperAdmin(): Promise<AuthorizedUser> {
   const supabase = await createClient()
   const { data: { user }, error: authError } = await supabase.auth.getUser()
