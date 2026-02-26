@@ -63,6 +63,122 @@ export async function sendSMS(params: SendSMSParams): Promise<SendSMSResult> {
   }
 }
 
+// ─── TWILIO CALLS ──────────────────────────────────────────────────────────────
+
+export interface PlaceCallParams {
+  /** Phone number to call (E.164 format recommended) */
+  to: string
+  /** TwiML URL that Twilio will request to control the call flow */
+  twimlUrl: string
+}
+
+export interface PlaceCallResult {
+  success: boolean
+  callSid?: string
+  status?: string
+  error?: string
+  mock?: boolean
+}
+
+export async function placeCall(params: PlaceCallParams): Promise<PlaceCallResult> {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID
+  const authToken = process.env.TWILIO_AUTH_TOKEN
+  const fromNumber = process.env.TWILIO_PHONE_NUMBER
+
+  if (!accountSid || !authToken || !fromNumber) {
+    return {
+      success: false,
+      error:
+        "Twilio not configured. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_PHONE_NUMBER to environment variables.",
+      mock: true,
+    }
+  }
+
+  const response = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        To: params.to,
+        From: fromNumber,
+        Url: params.twimlUrl,
+      }),
+    }
+  )
+
+  const data = await response.json()
+
+  if (!response.ok) {
+    throw new Error(data.message || "Twilio Calls API error")
+  }
+
+  return {
+    success: true,
+    callSid: data.sid,
+    status: data.status,
+  }
+}
+
+// ─── TWILIO LOOKUPS ────────────────────────────────────────────────────────────
+
+export interface LookupPhoneParams {
+  /** E.164 formatted phone number, e.g. +14155551234 */
+  phoneNumber: string
+}
+
+export interface LookupPhoneResult {
+  success: boolean
+  valid?: boolean
+  formattedNumber?: string
+  lineType?: string  // mobile, landline, voip, etc.
+  carrierName?: string
+  countryCode?: string
+  error?: string
+  mock?: boolean
+}
+
+export async function lookupPhone(params: LookupPhoneParams): Promise<LookupPhoneResult> {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID
+  const authToken = process.env.TWILIO_AUTH_TOKEN
+
+  if (!accountSid || !authToken) {
+    return {
+      success: false,
+      error:
+        "Twilio not configured. Add TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN to environment variables.",
+      mock: true,
+    }
+  }
+
+  const response = await fetch(
+    `https://lookups.twilio.com/v2/PhoneNumbers/${encodeURIComponent(params.phoneNumber)}?Fields=line_type_intelligence`,
+    {
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
+      },
+    }
+  )
+
+  const data = await response.json()
+
+  if (!response.ok) {
+    throw new Error(data.message || "Twilio Lookups API error")
+  }
+
+  return {
+    success: true,
+    valid: data.valid,
+    formattedNumber: data.phone_number,
+    lineType: data.line_type_intelligence?.type,
+    carrierName: data.line_type_intelligence?.carrier_name,
+    countryCode: data.country_code,
+  }
+}
+
 // ─── SENDGRID EMAIL ────────────────────────────────────────────────────────────
 
 export interface SendEmailParams {

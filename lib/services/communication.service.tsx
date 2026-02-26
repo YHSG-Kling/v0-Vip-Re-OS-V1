@@ -1,8 +1,11 @@
 
-
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import {
+  sendSMS as providerSendSMS,
+  sendEmail as providerSendEmail,
+} from "@/lib/providers/messaging"
 
 /**
  * Unified Communication Service
@@ -43,40 +46,30 @@ export interface LogCommunicationParams {
  */
 export async function sendEmail(params: SendEmailParams) {
   try {
-    console.log(`[v0] Sending email to ${params.to}: ${params.subject}`)
-
-    // TODO: Replace with actual email service integration
-    // Example providers: SendGrid, Resend, AWS SES, Postmark
-    
-    /*
-    // Example SendGrid integration:
-    const sgMail = require('@sendgrid/mail')
-    sgMail.setApiKey(process.env.SENDGRID_API_KEY)
-    
-    await sgMail.send({
+    // Delegate to lib/providers/messaging (SendGrid)
+    const result = await providerSendEmail({
       to: params.to,
-      from: params.from || process.env.FROM_EMAIL,
       subject: params.subject,
       html: params.htmlBody,
-      text: params.textBody || params.subject,
+      text: params.textBody,
+      from: params.from,
     })
-    */
 
-    // For now, log to communications table
+    // Log to communications table regardless of provider outcome
     const supabase = await createClient()
     await supabase.from("communications_log").insert({
       recipient: params.to,
       type: "email",
       subject: params.subject,
       content: params.htmlBody,
-      status: "sent",
+      status: result.success ? "sent" : "failed",
       sent_at: new Date().toISOString(),
       metadata: params.metadata,
     })
 
-    return { success: true, messageId: `email_${Date.now()}` }
+    return result
   } catch (error) {
-    console.error("[v0] Send email error:", error)
+    console.error("[CommunicationService] Send email error:", error)
     return handleError(error, "sendEmail")
   }
 }
@@ -87,37 +80,26 @@ export async function sendEmail(params: SendEmailParams) {
  */
 export async function sendSMS(params: SendSMSParams) {
   try {
-    console.log(`[v0] Sending SMS to ${params.to}: ${params.message.substring(0, 50)}...`)
-
-    // TODO: Replace with actual SMS service integration
-    // Example providers: Twilio, GoHighLevel, Plivo
-    
-    /*
-    // Example Twilio integration:
-    const twilio = require('twilio')
-    const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
-    
-    await client.messages.create({
-      body: params.message,
+    // Delegate to lib/providers/messaging (Twilio)
+    const result = await providerSendSMS({
       to: params.to,
-      from: params.from || process.env.TWILIO_PHONE_NUMBER,
+      message: params.message,
     })
-    */
 
-    // For now, log to communications table
+    // Log to communications table regardless of provider outcome
     const supabase = await createClient()
     await supabase.from("communications_log").insert({
       recipient: params.to,
       type: "sms",
       content: params.message,
-      status: "sent",
+      status: result.success ? "sent" : "failed",
       sent_at: new Date().toISOString(),
       metadata: params.metadata,
     })
 
-    return { success: true, messageId: `sms_${Date.now()}` }
+    return result
   } catch (error) {
-    console.error("[v0] Send SMS error:", error)
+    console.error("[CommunicationService] Send SMS error:", error)
     return handleError(error, "sendSMS")
   }
 }

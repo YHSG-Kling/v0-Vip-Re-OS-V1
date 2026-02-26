@@ -1,15 +1,12 @@
 // Email and Phone Validation Client
-// Uses ZeroBounce for email, Twilio Lookup for phone validation
+// Uses ZeroBounce for email, Twilio Lookup for phone validation (via lib/providers/messaging)
+import { lookupPhone as twilioLookupPhone } from "@/lib/providers/messaging"
 
 export class ContactValidationClient {
   private zeroBounceKey: string
-  private twilioSid: string
-  private twilioToken: string
 
   constructor() {
     this.zeroBounceKey = process.env.ZEROBOUNCE_API_KEY || ""
-    this.twilioSid = process.env.TWILIO_ACCOUNT_SID || ""
-    this.twilioToken = process.env.TWILIO_AUTH_TOKEN || ""
   }
 
   async validateEmail(email: string): Promise<{
@@ -73,30 +70,20 @@ export class ContactValidationClient {
     // Format US phone number
     const formatted = cleaned.length === 10 ? `+1${cleaned}` : cleaned.startsWith("1") ? `+${cleaned}` : `+1${cleaned}`
 
-    // If Twilio is configured, do carrier lookup
-    if (this.twilioSid && this.twilioToken) {
-      try {
-        const auth = Buffer.from(`${this.twilioSid}:${this.twilioToken}`).toString("base64")
-        const response = await fetch(
-          `https://lookups.twilio.com/v2/PhoneNumbers/${formatted}?Fields=line_type_intelligence`,
-          {
-            headers: { Authorization: `Basic ${auth}` },
-          },
-        )
-
-        if (response.ok) {
-          const result = await response.json()
-          return {
-            valid: result.valid,
-            formatted: result.phone_number,
-            type: result.line_type_intelligence?.type || "unknown",
-            carrier: result.line_type_intelligence?.carrier_name,
-            country: result.country_code,
-          }
+    // Carrier lookup via messaging provider (delegates to Twilio Lookups API)
+    try {
+      const result = await twilioLookupPhone({ phoneNumber: formatted })
+      if (result.success && !result.mock) {
+        return {
+          valid: result.valid ?? true,
+          formatted: result.formattedNumber ?? formatted,
+          type: result.lineType ?? "unknown",
+          carrier: result.carrierName,
+          country: result.countryCode,
         }
-      } catch (error) {
-        console.error("[ContactValidation] Twilio error:", error)
       }
+    } catch (error) {
+      console.error("[ContactValidation] Phone lookup error:", error)
     }
 
     // Fallback: basic validation

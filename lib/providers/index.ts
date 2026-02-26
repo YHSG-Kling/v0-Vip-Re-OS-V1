@@ -1,6 +1,15 @@
-// ─── MESSAGING (Twilio SMS / SendGrid Email) ──────────────────────────────────
-export type { SendSMSParams, SendSMSResult, SendEmailParams, SendEmailResult } from "./messaging"
-export { sendSMS, sendEmail } from "./messaging"
+// ─── MESSAGING (Twilio SMS / Calls / Lookups + SendGrid Email) ────────────────
+export type {
+  SendSMSParams,
+  SendSMSResult,
+  PlaceCallParams,
+  PlaceCallResult,
+  LookupPhoneParams,
+  LookupPhoneResult,
+  SendEmailParams,
+  SendEmailResult,
+} from "./messaging"
+export { sendSMS, placeCall, lookupPhone, sendEmail } from "./messaging"
 
 // ─── ESIGN (Dotloop) ──────────────────────────────────────────────────────────
 export { DotloopProvider } from "./esign"
