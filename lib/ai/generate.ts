@@ -64,6 +64,32 @@ export async function generateAIText(
   }
 }
 
+// ─── CHAT RESPONSE ───────────────────────────────────────────────────────────
+
+export async function generateChatResponse(
+  userMessage: string,
+  context: string
+): Promise<{ text: string; error?: string }> {
+  const prompt = `You are a real estate assistant chat bot following the THEM-FIRST philosophy.
+                    
+CONTEXT:
+- User is viewing property ${context}
+- User Question: "${userMessage}"
+
+THEM-FIRST PHILOSOPHY (CRITICAL):
+- Focus 80-90% on THEIR needs, not the agent/company
+- Use "you" and "your" extensively
+- Ask understanding questions about THEIR situation
+- Show empathy for THEIR concerns
+- Minimize "I", "me", "we", "our" language
+- Lead with what matters to THEM, not what you offer
+
+Provide a helpful, empathetic response that shows you understand their situation. Keep it under 2 sentences.
+If they ask a question, answer it from THEIR perspective, focusing on what they gain or how it helps them.`
+
+  return generateAIText(prompt)
+}
+
 // ─── STRUCTURED OBJECT GENERATION ────────────────────────────────────────────
 
 export async function generateAIObject<T extends z.ZodType>(

@@ -20,7 +20,7 @@ import {
   Globe,
   Send,
 } from "lucide-react"
-import { generateAIText } from "@/app/actions/ai-generate"
+import { generateAIText } from "@/lib/ai/generate"
 import { executeWorkflow } from "../../app/actions/workflows"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
 

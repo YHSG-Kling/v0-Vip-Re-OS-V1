@@ -17,7 +17,7 @@ import {
   Send,
   ShieldCheck,
 } from "lucide-react"
-import { generateAIText } from "@/app/actions/ai-generate"
+import { generateAIText } from "@/lib/ai/generate"
 import { executeWorkflow } from "../../app/actions/workflows"
 import type { AgentVideo, Agent } from "../../types"
 import { supabaseService } from "../../services/supabaseService"

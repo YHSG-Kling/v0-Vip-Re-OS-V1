@@ -3,7 +3,7 @@
 import type React from "react"
 import { useState, useEffect, useTransition } from "react"
 import { MessageCircle, X, Send, MapPin, Loader2 } from "lucide-react"
-import { generateChatResponse } from "@/app/actions/ai-generate"
+import { generateChatResponse } from "@/lib/ai/generate"
 
 const ChatWidget: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false)
