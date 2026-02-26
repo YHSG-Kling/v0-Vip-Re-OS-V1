@@ -1,9 +1,11 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { evaluatePromotionEligibility } from '@/lib/lead-promotion/eligibility-evaluator'
-import { promoteRawRecordToLead } from '@/lib/lead-promotion/lead-promoter'
-import { triggerInitialScoring } from '@/lib/lead-promotion/initial-scorer'
+import {
+  evaluatePromotionEligibility,
+  promoteRawRecordToLead,
+  triggerInitialScoring,
+} from '@/lib/lead-promotion'
 
 interface PromotionResponse {
   success: boolean

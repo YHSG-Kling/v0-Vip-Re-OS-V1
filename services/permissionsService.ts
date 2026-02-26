@@ -1,6 +1,4 @@
 // Compatibility shim — logic has moved to lib/security
-import { permissionsService } from '@/lib/security'
-
 export {
   permissionsService,
   ROLE_NAVIGATION,
@@ -10,4 +8,3 @@ export type {
   UserAccessContext,
   UserSubType,
 } from '@/lib/security'
-export default permissionsService

@@ -3,8 +3,8 @@
 import { createServiceClient } from "@/lib/supabase/service";
 import { isValidUUID } from "@/lib/validations";
 import { getOfferLifecycleState } from "./track-offer-lifecycle";
-import { validateAcceptanceEligibility } from "@/lib/buyer-offer/compliance-gate";
-import { createTransactionFromOffer } from "@/lib/transactions/offer-bridge";
+import { validateAcceptanceEligibility } from "@/lib/buyer-offer";
+import { createTransactionFromOffer } from "@/lib/transactions";
 
 /**
  * System 7.1A Domain 4: Transition to Transaction

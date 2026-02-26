@@ -1,9 +1,14 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { generatePersonalizedEmail, logEmailActivity } from '@/lib/ai-isa/email-generator'
-import { generateHeyGenVideo, embedVideoInEmail } from '@/lib/ai-isa/video-generator'
-import { shouldTriggerDirectMail, triggerDirectMailCampaign } from '@/lib/ai-isa/direct-mail-trigger'
+import {
+  generatePersonalizedEmail,
+  logEmailActivity,
+  generateHeyGenVideo,
+  embedVideoInEmail,
+  shouldTriggerDirectMail,
+  triggerDirectMailCampaign,
+} from '@/lib/ai-isa'
 
 export async function initiateAIISAEngagement(leadId: string) {
   console.log('[v0] Initiating AI ISA engagement for lead:', leadId)

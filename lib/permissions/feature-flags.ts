@@ -1,2 +1,2 @@
 // Compatibility shim — logic has moved to lib/security
-export { FeatureFlags } from '@/lib/security/feature-flags'
+export { FeatureFlags } from '@/lib/security'

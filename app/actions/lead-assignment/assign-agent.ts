@@ -1,7 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateAssignmentEligibility } from "@/lib/lead-assignment/assignment-eligibility"
+import { evaluateAssignmentEligibility } from "@/lib/lead-assignment"
 import { promoteLeadToContactService as promoteLeadToContact } from "@/lib/contact-promotion"
 
 export interface AssignmentResult {

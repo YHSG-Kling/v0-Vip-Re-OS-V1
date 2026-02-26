@@ -1,7 +1,11 @@
 'use server'
 
-import { handleInboundEmailReply, shouldStopAutoResponding } from '@/lib/ai-isa/conversation-handler'
-import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa/qualification-evaluator'
+import {
+  handleInboundEmailReply,
+  shouldStopAutoResponding,
+  evaluateLeadQualification,
+  persistQualificationSignals,
+} from '@/lib/ai-isa'
 
 export async function processInboundEmail(params: {
   leadId: string

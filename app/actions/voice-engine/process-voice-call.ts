@@ -42,10 +42,14 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { initiateVoiceCall, completeVoiceCall, CallMetadata } from '@/lib/voice-engine/call-executor'
-import { RawTranscript } from '@/lib/voice-engine/transcript-normalizer'
-import { ingestVoiceTranscript, emitVoiceHandoffSignal } from '@/lib/voice-engine/transcript-ingestion'
-import { trackVoiceCallUsage } from '@/lib/voice-engine/voice-usage-tracker'
+import {
+  initiateVoiceCall,
+  completeVoiceCall,
+  ingestVoiceTranscript,
+  emitVoiceHandoffSignal,
+  trackVoiceCallUsage,
+} from '@/lib/voice-engine'
+import type { CallMetadata, RawTranscript } from '@/lib/voice-engine'
 
 export interface ProcessVoiceCallParams {
   contactId: string

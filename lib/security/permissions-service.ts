@@ -436,4 +436,4 @@ export const permissionsService = {
   },
 }
 
-export default permissionsService
+

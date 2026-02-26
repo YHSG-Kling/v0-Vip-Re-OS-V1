@@ -5,10 +5,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
-import { 
-  TRANSACTION_STAGES, 
-  STAGE_TO_STATUS_MAP 
-} from "@/lib/transactions/transaction-stages"
+import { TRANSACTION_STAGES, STAGE_TO_STATUS_MAP } from "@/lib/transactions"
 
 interface Transaction {
   id: string

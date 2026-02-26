@@ -7,23 +7,19 @@
 
 import { isValidUUID } from "@/lib/validations"
 import {
-  ReadinessInput,
-  ReadinessOutput,
-  ExecutionChannel,
   evaluateCampaignReadiness,
   batchEvaluateCampaignReadiness,
   quickReadinessCheck,
   checkChannelReadiness,
   formatReadinessOutput,
-} from "@/lib/campaign-readiness/readiness-evaluator"
-import {
   logReadinessEvaluation,
   batchLogReadinessEvaluations,
   getReadinessHistory,
   getReadinessStatistics,
   logChannelReadinessCheck,
   getReadinessTrends,
-} from "@/lib/campaign-readiness/readiness-logger"
+} from "@/lib/campaign-readiness"
+import type { ReadinessInput, ReadinessOutput, ExecutionChannel } from "@/lib/campaign-readiness"
 import { type ComplianceVerdict } from "@/lib/compliance-rules"
 import { type ApprovalDecision } from "@/lib/approval-workflow"
 

@@ -1,7 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { detectStaleLeads } from "@/lib/lead-assignment/stale-lead-detector"
+import { detectStaleLeads } from "@/lib/lead-assignment"
 
 export interface EscalationResult {
   success: boolean

@@ -2,8 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
-import { checkCompliancePassed } from "@/lib/buyer-offer/compliance-gate"
-import { syncOfferStatus } from "@/lib/buyer-offer/status-sync"
+import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
 
 interface HandleOfferResponseParams {
   offerId: string

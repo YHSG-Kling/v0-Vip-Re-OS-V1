@@ -1,2 +1,2 @@
 // Compatibility shim — logic has moved to lib/security
-export { RoleManager } from '@/lib/security/role-manager'
+export { RoleManager } from '@/lib/security'
