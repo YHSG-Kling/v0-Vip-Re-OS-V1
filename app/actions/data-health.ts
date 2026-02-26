@@ -182,54 +182,38 @@ export async function runDataHygieneScan() {
 }
 
 // Helper function to validate a contact
+// Delegates to lib/contact-validation which routes phone lookups through lib/providers/messaging.
+import { validateContact as libValidateContact } from "@/lib/contact-validation"
+
 async function validateContact(contact: { email?: string; phone?: string; first_name?: string; last_name?: string }) {
-  // In production, integrate with Twilio Lookup API for phone and Abstract API for email
-  
   // Check for both email and phone missing
   if (!contact.email && !contact.phone) {
-    return { 
-      status: "Invalid", 
+    return {
+      status: "Invalid",
       reason: "Missing both email and phone",
       field: "email,phone",
-      value: "N/A"
+      value: "N/A",
     }
   }
-  
-  // Validate email if present
-  if (contact.email) {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!emailRegex.test(contact.email)) {
-      return { 
-        status: "Invalid", 
-        reason: "Invalid email format",
-        field: "email",
-        value: contact.email
-      }
-    }
-    
-    // Check for disposable domains
-    const disposableDomains = ["tempmail.com", "throwaway.com", "spam.ru", "fake.com", "mailinator.com"]
-    const domain = contact.email.split("@")[1]?.toLowerCase()
-    if (disposableDomains.some(d => domain?.includes(d))) {
-      return { 
-        status: "Invalid", 
-        reason: "Disposable email domain",
-        field: "email",
-        value: contact.email
-      }
+
+  // Run deep validation via lib/contact-validation (ZeroBounce + Twilio Lookups via provider)
+  const result = await libValidateContact({ email: contact.email, phone: contact.phone })
+
+  if (contact.email && !result.email_valid) {
+    return {
+      status: "Invalid",
+      reason: "Invalid or undeliverable email",
+      field: "email",
+      value: contact.email,
     }
   }
-  
-  // Validate phone if present
-  if (contact.phone) {
-    const phoneDigits = contact.phone.replace(/\D/g, "")
-    if (phoneDigits.length < 10) {
-      return { 
-        status: "Invalid", 
-        reason: "Invalid phone format (less than 10 digits)",
-        field: "phone",
-        value: contact.phone
-      }
+
+  if (contact.phone && !result.phone_valid) {
+    return {
+      status: "Invalid",
+      reason: "Invalid phone number",
+      field: "phone",
+      value: contact.phone,
     }
   }
   
