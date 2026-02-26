@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
-import { generateAIJSON } from "@/app/actions/ai-generate"
+import { runPipelineSimple } from "@/lib/ai/pipeline"
 
 // ============================================
 // TRANSACTION CRUD
@@ -1136,7 +1136,7 @@ Include:
 Tone: Professional, warm, confident, educational
 Length: 3-4 paragraphs`
 
-  const welcome = await generateAIJSON(welcomePrompt)
+    const welcome = JSON.parse(await runPipelineSimple(welcomePrompt, { feature: "transaction_welcome" }))
 
   await supabase.from("client_friendly_updates").insert({
     transaction_id: transaction.id,
@@ -1180,7 +1180,7 @@ Be realistic. Don't overpromise.
 
 Return JSON array of milestones.`
 
-  const timeline = await generateAIJSON(timelinePrompt)
+    const timeline = JSON.parse(await runPipelineSimple(timelinePrompt, { feature: "transaction_timeline" }))
 
   if (timeline.data?.milestones) {
     for (const milestone of timeline.data.milestones) {
@@ -1244,7 +1244,7 @@ Be 100% transparent. Explain each cost.
 
 Return JSON with detailed breakdown.`
 
-  const costs = await generateAIJSON(costPrompt)
+    const costs = JSON.parse(await runPipelineSimple(costPrompt, { feature: "transaction_costs" }))
 
   if (costs.data) {
     for (const [costType, costData] of Object.entries(costs.data.costs || {})) {
@@ -1291,7 +1291,7 @@ Write 2-3 sentences:
 
 Tone: Honest, reassuring, specific (no vague language)`
 
-  const update = await generateAIJSON(updatePrompt)
+    const update = JSON.parse(await runPipelineSimple(updatePrompt, { feature: "transaction_update" }))
 
   if (update.data?.update) {
     await supabase.from("client_friendly_updates").insert({
@@ -1331,7 +1331,7 @@ Each task:
 
 Return JSON array of tasks.`
 
-  const checklist = await generateAIJSON(checklistPrompt)
+    const checklist = JSON.parse(await runPipelineSimple(checklistPrompt, { feature: "transaction_checklist" }))
 
   if (checklist.data?.tasks) {
     const { data: checklistRecord } = await supabase
@@ -1407,7 +1407,7 @@ Return:
   "requires_intervention": false
 }`
 
-  const analysis = await generateAIJSON(issuePrompt)
+    const analysis = JSON.parse(await runPipelineSimple(issuePrompt, { feature: "transaction_issue_analysis" }))
 
   if (analysis.data) {
     await supabase.from("transaction_health_factors").insert({
@@ -1564,7 +1564,7 @@ Calculate health scores (0-100):
 }`
 
   try {
-    const health = await generateAIJSON(prompt)
+    const health = JSON.parse(await runPipelineSimple(prompt, { feature: "transaction_health" }))
     if (!health.data) throw new Error("Health analysis failed")
 
     await supabase
@@ -1644,7 +1644,7 @@ Current Delays: ${JSON.stringify(delays)}
   "action_items": []
 }`
 
-  const impact = await generateAIJSON(prompt)
+    const impact = JSON.parse(await runPipelineSimple(prompt, { feature: "transaction_impact" }))
 
   if (impact.data?.client_communication_needed) {
     await supabase.from("timeline_transparency").insert({

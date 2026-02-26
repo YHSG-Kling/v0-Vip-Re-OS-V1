@@ -1,7 +1,10 @@
 
 
 import { createServerClient } from "@/lib/supabase/server"
-import { orchestrateEvent, type EventInput, type Event } from "@/app/actions/orchestrator"
+// Dynamic import keeps lib/ free of static app/actions dependencies while
+// still allowing event-helpers to trigger orchestration at runtime.
+import type { EventInput, Event } from "@/lib/orchestrator/event-types"
+const loadOrchestrator = () => import("@/app/actions/orchestrator").then(m => m.orchestrateEvent)
 
 // =====================================================
 // MAIN HELPER - Log event and trigger orchestration
@@ -33,11 +36,12 @@ export async function logEventAndTrigger(eventInput: EventInput): Promise<Event>
     throw error
   }
 
-  // Trigger orchestration asynchronously
-  // In production, this should be a queue/background job
-  orchestrateEvent(event as Event).catch((err) => {
-    console.error("[v0] Orchestration error:", err)
-  })
+  // Trigger orchestration asynchronously via dynamic import (lib→app boundary)
+  loadOrchestrator().then(orchestrateEvent =>
+    orchestrateEvent(event as Event).catch((err) => {
+      console.error("[v0] Orchestration error:", err)
+    })
+  )
 
   return event as Event
 }

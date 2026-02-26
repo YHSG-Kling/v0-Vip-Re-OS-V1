@@ -1,6 +1,6 @@
 'use strict'
 
-import type { UserRole } from '@/app/types/roles'
+import type { UserRole } from './types'
 import type { Permission } from './types'
 import { AccessControl } from './access-control'
 

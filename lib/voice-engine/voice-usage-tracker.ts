@@ -5,7 +5,9 @@
  * Normalizes different billing models (per-minute, per-call, per-word).
  */
 
-import { trackVendorUsage } from '@/app/actions/vendor-governance/track-usage'
+import { logVendorUsage } from '@/lib/vendor-governance/usage-logger'
+import { normalizeVendorCost } from '@/lib/vendor-governance/cost-normalizer'
+import { validateAttribution } from '@/lib/vendor-governance/attribution'
 
 export interface VoiceUsageParams {
   vendor: 'twilio' | 'bland_ai' | 'retell_ai' | 'vapi' | string
@@ -33,19 +35,25 @@ export async function trackVoiceCallUsage(
       params.transcriptionWordCount
     )
 
-    // Track via System 2.4
-    const result = await trackVendorUsage({
-      vendor: params.vendor,
+    // Track via vendor-governance lib layer directly (no app/actions dependency)
+    const estimatedCost = normalizeVendorCost(params.vendor, unitCount)
+    const attribution = validateAttribution({ brokerageId: params.brokerageId, systemSource: 'voice_engine', agentId: params.agentId, contactId: params.contactId })
+    const result = await logVendorUsage({
+      vendorName: params.vendor,
+      usageType: 'per_minute',
       unitCount,
+      estimatedCost,
       systemSource: 'voice_engine',
       brokerageId: params.brokerageId,
       agentId: params.agentId,
-      contactId: params.contactId,
       metadata: {
         callDurationSeconds: params.callDurationSeconds,
         transcriptionWordCount: params.transcriptionWordCount,
         billingModel: inferBillingModel(params.vendor),
+        contactId: params.contactId,
+        attribution: attribution.valid,
       },
+      timestamp: new Date(),
     })
 
     if (!result.success) {

@@ -1,10 +1,42 @@
 
 import { createClient } from "@/lib/supabase/server"
-import { sendSMS, sendEmail } from "@/app/actions/communications"
-import { createTask } from "@/app/actions/tasks"
-import { advanceListingStage } from "@/app/actions/listing-lifecycle"
-import { generateVideoScript } from "@/app/actions/video-content"
-import { updateContactStage } from "@/app/actions/crm"
+import { sendSMS, sendEmail } from "@/lib/providers/messaging"
+import { advanceListingStageService as advanceListingStage } from "@/lib/application/listing-lifecycle"
+import { generateVideoScript } from "@/lib/content-generation/content-generator"
+
+// Lightweight task & contact helpers — direct Supabase writes, no app/actions dependency
+async function createTask(params: {
+  title: string
+  description?: string
+  dueDate?: string
+  assignedTo?: string
+  contactId?: string
+  listingId?: string
+  priority?: string
+}) {
+  const supabase = await createClient()
+  const { data } = await supabase.from("tasks").insert({
+    title: params.title,
+    description: params.description,
+    due_date: params.dueDate,
+    assigned_to: params.assignedTo,
+    contact_id: params.contactId,
+    listing_id: params.listingId,
+    priority: params.priority || "medium",
+    status: "pending",
+    created_at: new Date().toISOString(),
+  }).select().single()
+  return { success: true, task: data }
+}
+
+async function updateContactStage(params: { contactId: string; newStage: string; notes?: string }) {
+  const supabase = await createClient()
+  await supabase.from("contacts").update({
+    stage: params.newStage,
+    updated_at: new Date().toISOString(),
+  }).eq("id", params.contactId)
+  return { success: true }
+}
 
 type WorkflowStep = {
   id: string

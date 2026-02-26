@@ -1,6 +1,26 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import type { LeadScore, LeadIntent, LeadStatus, LeadSource, Lead } from "@/app/actions/lead-management"
+// Types inlined here — canonical home for lead domain types (no upward imports)
+export type LeadScore = 'hot' | 'warm' | 'cold' | 'unqualified'
+export type LeadIntent = 'buying' | 'selling' | 'both' | 'renting' | 'investing' | 'unknown'
+export type LeadStatus = 'new' | 'contacted' | 'qualified' | 'nurturing' | 'converted' | 'lost' | 'inactive'
+export type LeadSource = 'website' | 'referral' | 'social_media' | 'paid_ads' | 'open_house' | 'cold_call' | 'zillow' | 'realtor' | 'other'
+export type Lead = {
+  id: string
+  first_name?: string
+  last_name?: string
+  email?: string
+  phone?: string
+  score?: LeadScore
+  intent?: LeadIntent
+  status?: LeadStatus
+  source?: LeadSource
+  agent_id?: string
+  brokerage_id?: string
+  created_at?: string
+  updated_at?: string
+  [key: string]: any
+}
 
 export async function serviceGetLeads(
   agentId: string,

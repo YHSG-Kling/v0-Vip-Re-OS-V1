@@ -8,7 +8,7 @@
  * Import from @/lib/security or @/lib/security/permission-matrix.
  */
 
-import type { UserRole } from '@/app/types/roles'
+import type { UserRole } from './types'
 import type { RoleHierarchy, RolePermissions, Permission } from './types'
 
 // ─── ROLE HIERARCHY ───────────────────────────────────────────────────────────

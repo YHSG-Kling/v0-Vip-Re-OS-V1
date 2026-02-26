@@ -1,7 +1,28 @@
-'use strict'
+// ─── CANONICAL ROLE TYPES (source of truth — app/types/roles re-exports from here) ─
 
-// Re-export UserRole from the canonical source
-export type { UserRole, RoleConfig, UserContext } from '@/app/types/roles'
+export type UserRole =
+  | 'agent' | 'broker' | 'isa' | 'admin' | 'vendor' | 'contact'
+  | 'compliance_manager' | 'transaction_coordinator' | 'lender' | 'title_agent'
+
+export interface RoleConfig {
+  role: UserRole
+  label: string
+  description: string
+  icon: string
+  permissions: string[]
+}
+
+export interface UserContext {
+  id: string
+  email: string
+  firstName: string
+  lastName: string
+  roles: UserRole[]
+  brokerageId?: string
+  teamId?: string
+  agentId?: string
+  vendorId?: string
+}
 
 // Permission groups (functional areas)
 export type PermissionGroup =
@@ -87,14 +108,14 @@ export type Permission =
   | 'admin:system_health'
 
 export interface RoleHierarchy {
-  role: import('@/app/types/roles').UserRole
+  role: UserRole
   level: number
-  canManage: import('@/app/types/roles').UserRole[]
+  canManage: UserRole[]
   canViewData: 'own' | 'team' | 'brokerage' | 'all'
 }
 
 export interface RolePermissions {
-  role: import('@/app/types/roles').UserRole
+  role: UserRole
   permissions: Permission[]
   features: string[]
 }

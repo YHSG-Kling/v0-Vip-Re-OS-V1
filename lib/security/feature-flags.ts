@@ -1,6 +1,6 @@
 'use strict'
 
-import type { UserRole } from '@/app/types/roles'
+import type { UserRole } from './types'
 import { FEATURE_FLAGS } from './permission-matrix'
 import { RoleManager } from './role-manager'
 

@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { UserContext, UserRole } from '@/app/types/roles'
+import type { UserContext, UserRole } from '@/lib/security/types'
 
 interface UseAuthReturn {
   user: any | null
