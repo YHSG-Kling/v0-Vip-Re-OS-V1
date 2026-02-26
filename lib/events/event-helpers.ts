@@ -1,7 +1,7 @@
 
 
 import { createServerClient } from "@/lib/supabase/server"
-import type { EventInput, Event } from "@/lib/orchestrator/event-types"
+import type { EventInput, Event } from "@/lib/events/types"
 
 /**
  * Optional orchestration hook registered by the app/ layer at startup.
