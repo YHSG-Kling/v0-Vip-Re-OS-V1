@@ -1,6 +1,6 @@
 
 
-import { generateText } from "ai"
+import { runPipelineSimple } from "@/lib/ai/pipeline"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { CONTENT_TYPES, AI_MODELS } from "@/lib/constants"
@@ -142,9 +142,8 @@ async function gatherContextData(params: ContentGenerationParams) {
 async function generateContentWithAI(params: ContentGenerationParams, contextData: any) {
   const prompt = buildPrompt(params, contextData)
 
-  const { text } = await generateText({
-    model: AI_MODELS.CONTENT_GENERATION,
-    prompt,
+  const text = await runPipelineSimple(prompt, {
+    feature: `content_service_${params.contentType}`,
   })
 
   // Parse AI response

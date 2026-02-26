@@ -1,21 +1,23 @@
 "use server"
 
-import { generateText, streamText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { runPipelineSimple, type SimplePipelineOptions } from "@/lib/ai/pipeline"
 import { z } from "zod"
 
-// General purpose AI text generation using Vercel AI Gateway
+// General purpose AI text generation — routes through the central pipeline
 export async function generateAIText(prompt: string, options?: {
   model?: string
   maxTokens?: number
   temperature?: number
+  feature?: string
 }): Promise<{ text: string; error?: string }> {
   try {
-    const { text } = await generateText({
-      model: options?.model || "openai/gpt-4o-mini",
-      prompt,
+    const pipelineOpts: SimplePipelineOptions = {
       maxTokens: options?.maxTokens,
       temperature: options?.temperature,
-    })
+      feature: options?.feature || "generate_text",
+    }
+    const text = await runPipelineSimple(prompt, pipelineOpts)
     return { text }
   } catch (error) {
     console.error("AI generation error:", error)
@@ -112,11 +114,7 @@ Respond in JSON format:
 }`
 
   try {
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt,
-    })
-    
+    const text = await runPipelineSimple(prompt, { feature: "document_analysis" })
     const parsed = JSON.parse(text)
     return {
       summary: parsed.summary,
@@ -202,11 +200,7 @@ Respond in JSON format:
 The matchScore should be 0-100 based on how well the property matches.`
 
   try {
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt,
-    })
-    
+    const text = await runPipelineSimple(prompt, { feature: "property_match_explanation" })
     const parsed = JSON.parse(text)
     return {
       text: parsed.explanation,
@@ -275,11 +269,10 @@ export async function generateAIJSON<T = Record<string, unknown>>(
 
 IMPORTANT: Respond with ONLY valid JSON. No markdown, no code blocks, no explanation - just the raw JSON object.`
 
-    const { text } = await generateText({
-      model: options?.model || "openai/gpt-4o-mini",
-      prompt: jsonPrompt,
+    const text = await runPipelineSimple(jsonPrompt, {
       maxTokens: options?.maxTokens,
       temperature: options?.temperature ?? 0.3,
+      feature: "generate_json",
     })
     
     // Clean up potential markdown formatting

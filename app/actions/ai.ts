@@ -1,15 +1,15 @@
 "use server"
 
-import { generateText } from "ai"
+import { runPipelineSimple } from "@/lib/ai/pipeline"
 
 export async function generatePlaybookResponse(contactId: string, question: string): Promise<string> {
   try {
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt: `A real estate client (ID: ${contactId}) is asking: "${question}". 
-          Provide a helpful, expert, yet concise answer based on general real estate knowledge and the context of a home buying/selling journey. 
-          Tone: Professional and encouraging. Limit to 3 sentences.`,
-    })
+    const text = await runPipelineSimple(
+      `A real estate client (ID: ${contactId}) is asking: "${question}". 
+Provide a helpful, expert, yet concise answer based on general real estate knowledge and the context of a home buying/selling journey. 
+Tone: Professional and encouraging. Limit to 3 sentences.`,
+      { feature: "playbook_response" }
+    )
 
     return text || "I'm processing your request. Please hold."
   } catch (e) {

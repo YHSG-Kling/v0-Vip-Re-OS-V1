@@ -1,6 +1,6 @@
 "use server"
 
-import { generateText } from "ai"
+import { runPipelineSimple } from "@/lib/ai/pipeline"
 import { AI_MODELS } from "@/lib/constants"
 
 // ============================================
@@ -60,12 +60,9 @@ export interface ContentGenerationParams {
  */
 export async function generateTextContent(params: ContentGenerationParams): Promise<ContentGenerationOutput> {
   const prompt = buildTextPrompt(params)
-  
-  const { text } = await generateText({
-    model: params.content_type === "listing_description" || params.content_type === "blog" 
-      ? AI_MODELS.DEFAULT 
-      : AI_MODELS.FAST,
-    prompt,
+
+  const text = await runPipelineSimple(prompt, {
+    feature: `content_generation_${params.content_type}`,
   })
 
   const parsed = parseGeneratedText(text, params)
@@ -100,11 +97,8 @@ export async function generateTextContent(params: ContentGenerationParams): Prom
  */
 export async function generateAudioScript(params: ContentGenerationParams & { duration_minutes?: number }): Promise<ContentGenerationOutput> {
   const prompt = buildAudioPrompt(params)
-  
-  const { text } = await generateText({
-    model: AI_MODELS.DEFAULT,
-    prompt,
-  })
+
+  const text = await runPipelineSimple(prompt, { feature: "content_generation_audio" })
 
   return {
     content_type: params.content_type,
@@ -130,11 +124,8 @@ export async function generateAudioScript(params: ContentGenerationParams & { du
  */
 export async function generateVideoScript(params: ContentGenerationParams & { video_length_seconds?: number }): Promise<ContentGenerationOutput> {
   const prompt = buildVideoPrompt(params)
-  
-  const { text } = await generateText({
-    model: AI_MODELS.DEFAULT,
-    prompt,
-  })
+
+  const text = await runPipelineSimple(prompt, { feature: "content_generation_video" })
 
   const parsed = parseVideoScript(text)
 
@@ -162,11 +153,8 @@ export async function generateVideoScript(params: ContentGenerationParams & { vi
  */
 export async function generateImagePrompt(params: ContentGenerationParams): Promise<ContentGenerationOutput> {
   const prompt = buildImagePromptGenerator(params)
-  
-  const { text } = await generateText({
-    model: AI_MODELS.FAST,
-    prompt,
-  })
+
+  const text = await runPipelineSimple(prompt, { feature: "content_generation_image_prompt" })
 
   const parsed = parseImagePrompt(text)
 
