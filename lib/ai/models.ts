@@ -1,7 +1,7 @@
 import { generateText } from "ai"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateContentCompliance } from "@/lib/compliance-rules/compliance-engine"
-import { validateThemFirst } from "@/lib/them-first/validator"
+import { validateThemFirstContent } from "@/lib/them-first/validator"
 import { 
   logAIUsage, 
   calculateCost, 
@@ -162,7 +162,7 @@ async function checkCompliance(
     // 3. Them-First Check
     if (context.requiresThemFirstCheck) {
       try {
-        const themFirstResult = await validateThemFirst(content)
+        const themFirstResult = await validateThemFirstContent(content, "email")
         
         if (themFirstResult.score < 0.6) {
           const violation: ComplianceViolation = {
