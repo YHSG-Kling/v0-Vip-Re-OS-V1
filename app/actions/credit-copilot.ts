@@ -2,7 +2,7 @@
 
 import { createServerClient } from "@/lib/supabase/server"
 import { logCreditStatusUpdated } from "@/lib/events/event-helpers"
-import { sendSMS } from "@/app/actions/communications"
+import { sendSMS } from "@/lib/providers/messaging"
 
 // =====================================================
 // CREDIT COPILOT SERVER ACTIONS

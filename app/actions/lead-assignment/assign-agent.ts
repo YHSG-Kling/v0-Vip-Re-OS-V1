@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateAssignmentEligibility } from "@/lib/lead-assignment/assignment-eligibility"
-import { promoteLeadToContact } from "@/app/actions/contact-promotion/promote-lead-to-contact"
+import { promoteLeadToContactService as promoteLeadToContact } from "@/lib/contact-promotion/promote-lead-to-contact"
 
 export interface AssignmentResult {
   success: boolean

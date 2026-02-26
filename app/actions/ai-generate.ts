@@ -1,8 +1,6 @@
 "use server"
 
-import { generateObject } from "ai"
 import { runPipelineSimple, type SimplePipelineOptions } from "@/lib/ai/pipeline"
-import { z } from "zod"
 
 // General purpose AI text generation — routes through the central pipeline
 export async function generateAIText(prompt: string, options?: {
@@ -231,29 +229,6 @@ Provide a helpful suggestion for this event including timing, preparation tips, 
   return { suggestion: result.text, error: result.error }
 }
 
-// Structured object generation with Zod schema validation
-export async function generateAIObject<T extends z.ZodType>(
-  prompt: string,
-  schema: T,
-  options?: {
-    model?: string
-    temperature?: number
-  }
-): Promise<{ success: boolean; object?: z.infer<T>; error?: string }> {
-  try {
-    const { object } = await generateObject({
-      model: options?.model || "openai/gpt-4o",
-      prompt,
-      schema,
-      temperature: options?.temperature ?? 0.7,
-    })
-
-    return { success: true, object }
-  } catch (error: any) {
-    console.error("AI object generation error:", error)
-    return { success: false, error: error.message || "Failed to generate AI object" }
-  }
-}
-
-// Re-exported from lib/ai/generate — canonical home for AI generation helpers
+// generateAIJSON and generateAIObject live in lib/ai/generate (canonical home).
+// Re-exported here so "use server" callers can import from this action file.
 export { generateAIJSON, generateAIObject } from "@/lib/ai/generate"

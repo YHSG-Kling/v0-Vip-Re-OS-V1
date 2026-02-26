@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateAIJSON } from "@/app/actions/ai-generate"
+import { generateAIJSON } from "@/lib/ai/generate"
 import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
 
 // ============================================

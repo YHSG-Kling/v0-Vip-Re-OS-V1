@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { getListings, createListing } from "@/app/actions/listings"
+import { getListingsService as getListings, createListingService as createListing } from "@/lib/application/listings"
 import {
   scheduleListingAppointmentService,
   markListingSignedService,

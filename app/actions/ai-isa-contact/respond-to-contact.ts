@@ -29,8 +29,8 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { generateAIResponse, ResponseContext } from '@/lib/ai-isa-contact/response-generator'
 import { extractQualificationSignals, persistQualificationSignals } from '@/lib/ai-isa-contact/qualification-engine'
 import { evaluateHandoffReadiness, logHandoffSignal } from '@/lib/ai-isa-contact/handoff-detector'
-import { ingestMessage } from '@/app/actions/communication-spine/ingest-message'
-import { trackVendorUsage } from '@/app/actions/vendor-governance/track-usage'
+import { ingestMessageService as ingestMessage } from '@/lib/communication-spine/ingest-message-service'
+import { trackVendorUsageService as trackVendorUsage } from '@/lib/vendor-governance/track-vendor-usage'
 
 export interface RespondToContactParams {
   contactId: string
