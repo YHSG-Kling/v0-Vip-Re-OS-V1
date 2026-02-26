@@ -21,7 +21,7 @@ export interface NetSheetValidityInput {
   validityDays?: number
   
   // Override context
-  overrideByRole?: "agent" | "team_leader" | "broker" | "admin"
+  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
   overrideReason?: string
 }
 

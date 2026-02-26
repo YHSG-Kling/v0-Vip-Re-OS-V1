@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase/client"
  * For security-critical operations, always verify on the server
  */
 
-export type Role = "BrokerOwner" | "ManagingBroker" | "Agent" | "TC" | "Compliance"
+export type Role = "BrokerOwner" | "ManagingBroker" | "Agent" | "tc" | "compliance_officer"
 
 export interface UserRole {
   roleName: Role

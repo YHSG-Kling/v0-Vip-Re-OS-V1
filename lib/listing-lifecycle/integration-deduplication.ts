@@ -272,7 +272,7 @@ export const INTEGRATION_SOURCES = {
   PHOTO_VENDOR: "photo_vendor",
   VIDEO_VENDOR: "video_vendor",
   REPAIR_VENDOR: "repair_vendor",
-  TRANSACTION_COORDINATOR: "transaction_coordinator",
+  TRANSACTION_COORDINATOR: "tc",
   INTERNAL_SYSTEM: "internal_system",
 } as const
 

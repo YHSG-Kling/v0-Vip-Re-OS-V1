@@ -322,7 +322,7 @@ function fallbackMapContactType(externalType: string): StandardContactType {
   if (lower.includes("commercial") || lower.includes("business")) return "commercial"
   if (lower.includes("agent") || lower.includes("broker") || lower.includes("realtor")) return "agent"
   if (lower.includes("vendor") || lower.includes("service") || lower.includes("contractor")) return "vendor"
-  if (lower.includes("tc") || lower.includes("transaction") || lower.includes("coordinator")) return "TC"
+  if (lower.includes("tc") || lower.includes("transaction") || lower.includes("coordinator")) return "tc"
 
   return "other"
 }

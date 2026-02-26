@@ -94,7 +94,7 @@ export type ContactType =
   | "commercial"
   | "agent"
   | "vendor"
-  | "TC"
+  | "tc"
   | "other"
 
 export type ContactPersona =

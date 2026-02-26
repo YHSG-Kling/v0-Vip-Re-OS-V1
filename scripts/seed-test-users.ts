@@ -62,8 +62,8 @@ const TEST_USERS: TestUser[] = [
     password: "TestTC123!",
     first_name: "Transaction",
     last_name: "Coordinator",
-    user_type: "TC",
-    role: "TC",
+    user_type: "tc",
+    role: "tc",
   },
   {
     email: "vendor@nexus.local",

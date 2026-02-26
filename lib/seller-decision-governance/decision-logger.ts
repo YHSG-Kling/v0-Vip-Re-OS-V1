@@ -21,7 +21,7 @@ export interface DecisionTransitionEvent {
   listing_id: string
   from_state?: SellerDecisionState
   to_state: SellerDecisionState
-  authority_role: "agent" | "team_leader" | "broker" | "admin"
+  authority_role: "agent" | "team_lead" | "broker" | "admin"
   override_flag?: boolean
   override_reason?: string
   metadata?: Record<string, any>

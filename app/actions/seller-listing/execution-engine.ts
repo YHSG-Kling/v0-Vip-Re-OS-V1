@@ -411,13 +411,13 @@ export async function approveMedia(params: {
   listingId: string
   userId: string
   brokerageId: string
-  role: "agent" | "team_leader"
+  role: "agent" | "team_lead"
 }) {
   const supabase = await createClient()
   const { listingId, userId, brokerageId, role } = params
 
   // Authority check
-  if (role !== "agent" && role !== "team_leader") {
+  if (role !== "agent" && role !== "team_lead") {
     return { success: false, error: "Only agent or team leader can approve media" }
   }
 
@@ -483,13 +483,13 @@ export async function activateComingSoon(params: {
   listingId: string
   userId: string
   brokerageId: string
-  role: "agent" | "team_leader"
+  role: "agent" | "team_lead"
 }) {
   const supabase = await createClient()
   const { listingId, userId, brokerageId, role } = params
 
   // Authority check
-  if (role !== "agent" && role !== "team_leader") {
+  if (role !== "agent" && role !== "team_lead") {
     return { success: false, error: "Only agent or team leader can activate coming soon" }
   }
 
@@ -557,7 +557,7 @@ export async function approveOpenHouseMarketing(params: {
   listingId: string
   userId: string
   brokerageId: string
-  role: "agent" | "team_leader"
+  role: "agent" | "team_lead"
 }) {
   const supabase = await createClient()
   const { listingId, userId, brokerageId, role } = params
@@ -575,7 +575,7 @@ export async function approveOpenHouseMarketing(params: {
   }
 
   // Authority check
-  if (role !== "agent" && role !== "team_leader") {
+  if (role !== "agent" && role !== "team_lead") {
     return { success: false, error: "Only agent or team leader can approve open house marketing" }
   }
 

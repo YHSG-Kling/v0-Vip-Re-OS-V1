@@ -4,7 +4,7 @@ import { createServerClient } from "@supabase/ssr"
 import { cookies } from "next/headers"
 
 // Type definitions
-export type Role = "BrokerOwner" | "ManagingBroker" | "Agent" | "TC" | "Compliance"
+export type Role = "BrokerOwner" | "ManagingBroker" | "Agent" | "tc" | "compliance_officer"
 
 export interface UserWithRole {
   id: string
@@ -268,7 +268,7 @@ export async function canAccessResource(
   }
 
   // TC and Compliance can access all transactions
-  if (["TC", "Compliance"].includes(user.roleName)) {
+  if (["tc", "compliance_officer"].includes(user.roleName)) {
     return true
   }
 
