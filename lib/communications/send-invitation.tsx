@@ -73,7 +73,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams) {
       }
 
       // Log email send (integrate with your email service)
-      console.log("[v0] Sending invitation email:", emailContent.to)
+
       
       // Store communication record
       await supabase.from("interactions").insert({
@@ -92,7 +92,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams) {
         message: `Hi ${contact.first_name}! You're invited to our open house at ${property.address} on ${eventDate} from ${event.start_time} to ${event.end_time}. RSVP: ${process.env.NEXT_PUBLIC_APP_URL}/open-house/rsvp/${event.id}`,
       }
 
-      console.log("[v0] Sending invitation SMS:", smsContent.to)
+
 
       // Store communication record
       await supabase.from("interactions").insert({
@@ -147,7 +147,7 @@ export async function sendOpenHouseReminder(params: SendReminderParams) {
       message: `Reminder: Open house at ${property.address} is ${reminderText}! Time: ${event.start_time} - ${event.end_time}. See you there!`,
     }
 
-    console.log("[v0] Sending reminder SMS:", smsContent.to)
+
 
     await supabase.from("interactions").insert({
       contact_id: params.contactId,
@@ -200,15 +200,11 @@ export async function sendFeedbackRequest(params: SendFeedbackRequestParams) {
       }),
     }
 
-    console.log("[v0] Sending feedback request email:", emailContent.to)
-
     // Also send SMS with short link
     const smsContent = {
       to: contact.phone,
       message: `Hi ${contact.first_name}! Thanks for visiting ${property.address}. We'd love your feedback: ${params.feedbackUrl}`,
     }
-
-    console.log("[v0] Sending feedback request SMS:", smsContent.to)
 
     await supabase.from("interactions").insert({
       contact_id: params.contactId,
@@ -251,12 +247,7 @@ export async function sendWeatherAlertToAgent(params: { eventId: string; agentId
     const alertMessage = `Weather Alert: ${params.weatherData.condition} expected at your open house on ${event.event_date} at ${event.listings?.address}. Consider rescheduling or preparing indoor viewing areas.`
 
     // Send email alert
-    console.log("[v0] Sending weather alert to agent:", agent.email)
 
-    // Send SMS alert
-    if (agent.phone) {
-      console.log("[v0] Sending weather SMS alert to agent:", agent.phone)
-    }
 
     return { success: true }
   } catch (error) {

@@ -5,13 +5,13 @@ import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { ContentGenerationService } from "@/lib/services/content-generation.service"
-import { 
+import { ContentGenerationService } from "@/lib/services"
+import {
   sendOpenHouseInvitation,
   sendOpenHouseReminder,
   sendWeatherAlertToAgent,
-  sendFeedbackRequest
-} from "@/lib/communications/send-invitation"
+  sendFeedbackRequest,
+} from "@/lib/communications"
 
 function parseAIJsonResponse(text: string) {
   let cleanText = text.trim()

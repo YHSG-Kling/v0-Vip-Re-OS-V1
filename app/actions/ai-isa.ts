@@ -9,7 +9,7 @@ import {
   getAIISACallsService,
   retryFailedCallsService,
   updateCampaignStatusService,
-} from "@/lib/application/ai-isa"
+} from "@/lib/application"
 
 /**
  * AI Inside Sales Agent (ISA) System
