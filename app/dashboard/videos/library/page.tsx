@@ -35,7 +35,7 @@ import {
   RefreshCw,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useAuth } from "@/contexts/AuthContext"
+import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
 
 interface VideoItem {

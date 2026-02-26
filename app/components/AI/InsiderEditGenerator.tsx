@@ -26,7 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
 import type { InsiderEditInput, InsiderEditNewsletter, InsiderEditVibe, InsiderEditSection } from "@/types"
-import { useAuth } from "@/contexts/AuthContext"
+import { useAuth } from "@/lib/auth/client"
 
 interface SectionEditState {
   sectionType: InsiderEditSection["sectionType"]

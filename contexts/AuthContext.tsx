@@ -1,139 +1,49 @@
 "use client"
 
+/**
+ * contexts/AuthContext.tsx — BACKWARD-COMPAT SHIM.
+ *
+ * This file is a thin wrapper kept alive so that existing imports of
+ *   import { useAuth }      from "@/contexts/AuthContext"
+ *   import { AuthProvider } from "@/contexts/AuthContext"
+ * continue to work without changes during incremental migration.
+ *
+ * DO NOT add new logic here.
+ * Canonical auth lives in: lib/auth/useAuth.ts
+ * Canonical import path:   "@/lib/auth/client"
+ *
+ * Migration checklist (update each consumer and delete this file when done):
+ *   - app/components/providers.tsx          ✓ migrated to @/lib/auth/client
+ *   - app/components/AI/*                   → migrate to @/lib/auth/client
+ *   - app/components/features/ai/*          → migrate to @/lib/auth/client
+ *   - app/components/utilities/voice/*      → migrate to @/lib/auth/client
+ *   - app/components/shared/compliance/*    → migrate to @/lib/auth/client
+ *   - app/dashboard/**                      → migrate to @/lib/auth/client
+ *   - hooks/use-contact-dashboard.ts        → migrate to @/lib/auth/client
+ */
+
 import type React from "react"
-import { createContext, useContext, useEffect, useState } from "react"
-import { supabase, isSupabaseConfigured } from "../services/supabase"
-import { UserRole, type User } from "../types"
+import { createContext, useContext } from "react"
+// Import directly from the hook file to avoid a circular barrel reference.
+import { useAuth as useCanonicalAuth } from "../lib/auth/useAuth"
+import type { AuthState } from "../lib/auth/useAuth"
 
-interface AuthContextType {
-  user: User | null
-  role: UserRole
-  isLoading: boolean
-  userPersona: string | null
-  signIn: (email: string, role: UserRole) => Promise<void>
-  signOut: () => Promise<void>
-}
-
-const AuthContext = createContext<AuthContextType | undefined>(undefined)
+// ─── Context (thin pass-through) ─────────────────────────────────────────────
+// The context is kept solely to allow AuthProvider to wrap the tree and satisfy
+// any consumers that call useAuth() via context rather than the hook directly.
+// Its value is populated by the canonical hook.
+const AuthContext = createContext<AuthState | undefined>(undefined)
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null)
-  const [role, setRole] = useState<UserRole>(UserRole.AGENT)
-  const [isLoading, setIsLoading] = useState(true)
-  const [userPersona, setUserPersona] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!isSupabaseConfigured()) {
-      setIsLoading(false)
-      return
-    }
-
-    let mounted = true
-
-    supabase.auth
-      .getSession()
-      .then(({ data: { session } }) => {
-        if (!mounted) return
-
-        if (session?.user) {
-          const userType = session.user.user_metadata?.user_type
-          const persona = session.user.user_metadata?.contact_persona
-
-          // Set persona if this is a contact user
-          if (userType === "contact" && persona) {
-            setUserPersona(persona)
-            setRole(UserRole.CONTACT)
-          }
-
-          setUser({
-            id: session.user.id,
-            email: session.user.email,
-            name: session.user.user_metadata?.full_name || "User",
-            role: userType === "contact" ? UserRole.CONTACT : UserRole.AGENT,
-          })
-        }
-        setIsLoading(false)
-      })
-      .catch((error) => {
-        // Ignore abort errors during unmount
-        if (error.name === "AbortError" || !mounted) {
-          return
-        }
-        console.error("Auth session error:", error)
-        setIsLoading(false)
-      })
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!mounted) return
-
-      if (session?.user) {
-        const userType = session.user.user_metadata?.user_type
-        const persona = session.user.user_metadata?.contact_persona
-
-        if (userType === "contact" && persona) {
-          setUserPersona(persona)
-          setRole(UserRole.CONTACT)
-        }
-
-        setUser({
-          id: session.user.id,
-          email: session.user.email,
-          name: session.user.user_metadata?.full_name || "User",
-          role: userType === "contact" ? UserRole.CONTACT : UserRole.AGENT,
-        })
-      } else {
-        setUser(null)
-        setUserPersona(null)
-      }
-      setIsLoading(false)
-    })
-
-    return () => {
-      mounted = false
-      subscription.unsubscribe()
-    }
-  }, [])
-
-  const signIn = async (email: string, selectedRole: UserRole) => {
-    const ownsProperty = email.includes("investor") || email.includes("relo") || selectedRole === UserRole.SELLER
-
-    const demoUser: User = {
-      email,
-      id: "demo-user",
-      name: email.split("@")[0],
-      role: selectedRole,
-      ownsProperty: ownsProperty,
-    }
-
-    setUser(demoUser)
-    setRole(selectedRole)
-  }
-
-  const signOut = async () => {
-    if (isSupabaseConfigured()) {
-      try {
-        await supabase.auth.signOut()
-      } catch (error) {
-        // Ignore abort errors
-        if (error instanceof Error && error.name !== "AbortError") {
-          console.error("[v0] Sign out error:", error)
-        }
-      }
-    }
-    setUser(null)
-    setUserPersona(null)
-  }
-
-  return (
-    <AuthContext.Provider value={{ user, role, isLoading, userPersona, signIn, signOut }}>
-      {children}
-    </AuthContext.Provider>
-  )
+  const auth = useCanonicalAuth()
+  return <AuthContext.Provider value={auth}>{children}</AuthContext.Provider>
 }
 
-export const useAuth = () => {
+/**
+ * @deprecated Import from "@/lib/auth/client" instead.
+ * Kept for backward compatibility during incremental migration.
+ */
+export const useAuth = (): AuthState => {
   const context = useContext(AuthContext)
   if (context === undefined) {
     throw new Error("useAuth must be used within an AuthProvider")

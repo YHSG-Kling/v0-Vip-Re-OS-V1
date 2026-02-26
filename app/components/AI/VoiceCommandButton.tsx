@@ -4,7 +4,7 @@ import type React from "react"
 import { useState, useRef } from "react"
 import { Mic, Square, Loader2, CheckCircle2, AlertCircle } from "lucide-react"
 import { executeWorkflow } from "../../app/actions/workflows"
-import { useAuth } from "../../contexts/AuthContext"
+import { useAuth } from "@/lib/auth/client"
 
 interface VoiceCommandButtonProps {
   onNavigate?: (view: string) => void
