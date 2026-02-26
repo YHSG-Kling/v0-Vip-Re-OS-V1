@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { getAgentContext } from "@/lib/identity"
 
 export async function getContacts(params?: {
   status?: string

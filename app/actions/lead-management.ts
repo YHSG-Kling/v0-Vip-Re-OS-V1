@@ -1,6 +1,6 @@
 "use server"
 
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { getAgentContext } from "@/lib/identity"
 import {
   serviceGetLeads,
   serviceGetLead,

@@ -3,7 +3,7 @@ import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Calendar, Heart, TrendingUp, Gift } from "lucide-react"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { getAgentContext } from "@/lib/identity"
 
 export const dynamic = "force-dynamic"
 

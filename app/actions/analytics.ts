@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 // ============================================
 // VALUE METRICS AGGREGATION

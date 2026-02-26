@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 // ============================================
 // BROKERAGE ADMIN FUNCTIONS

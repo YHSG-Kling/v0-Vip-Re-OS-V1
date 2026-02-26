@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { getAgentContext } from "@/lib/identity"
 
 // Get auto-response settings for the current user
 export async function getAutoResponseSettings() {

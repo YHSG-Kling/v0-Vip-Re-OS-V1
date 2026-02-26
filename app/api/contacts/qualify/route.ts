@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { supabase } from "@/services/supabase"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { getAgentContext } from "@/lib/identity"
 
 export async function POST(request: NextRequest) {
   try {

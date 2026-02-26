@@ -25,7 +25,7 @@ import {
   getReadinessTrends,
 } from "@/lib/campaign-readiness/readiness-logger"
 import { type ComplianceVerdict } from "@/lib/compliance-rules"
-import { ApprovalDecision } from "@/lib/approval-workflow/approval-engine"
+import { type ApprovalDecision } from "@/lib/approval-workflow"
 
 /**
  * ACTION 1: Evaluate campaign readiness (main entry point)

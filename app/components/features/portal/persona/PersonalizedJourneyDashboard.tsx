@@ -9,8 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion"
 import { CheckCircle2, Clock, ChevronRight, FileText, Video, Calculator, BookOpen, Play, Download, ExternalLink, Lightbulb, Target, Type as type, type LucideIcon } from "lucide-react"
 import Link from "next/link"
-import { getPersonaConfig, getPersonaJourneyStages } from "@/lib/portal/persona-config"
-import { calculateJourneyProgress } from "@/lib/portal/journey-utils"
+import { getPersonaConfig, getPersonaJourneyStages, calculateJourneyProgress } from "@/lib/portal"
 import { cn } from "@/lib/utils"
 
 interface Contact {

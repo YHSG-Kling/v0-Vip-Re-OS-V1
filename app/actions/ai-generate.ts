@@ -14,4 +14,4 @@ export {
   generateAIJSON,
   generateAIObject,
   generateChatResponse,
-} from "@/lib/ai/generate"
+} from "@/lib/ai"

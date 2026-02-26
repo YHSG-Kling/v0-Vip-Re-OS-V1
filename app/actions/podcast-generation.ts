@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { put } from "@vercel/blob"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { getAgentContext } from "@/lib/identity"
 
 /**
  * AI Podcast Generation Actions

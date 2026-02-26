@@ -1,10 +1,10 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { scrapeFacebookGroupPosts, scrapeRedditPosts } from '@/lib/external/apify-client'
+import { scrapeFacebookGroupPosts, scrapeRedditPosts } from '@/lib/external'
 import { trackVendorUsage } from '@/lib/vendor-tracking'
 import { analyzeLead } from '@/lib/ai'
-import { processRawRecord } from '@/lib/lead-pipeline/pipeline-processor'
+import { processRawRecord } from '@/lib/lead-pipeline'
 
 const FACEBOOK_GROUP_TEMPLATES = [
   '{city} Homeowners',

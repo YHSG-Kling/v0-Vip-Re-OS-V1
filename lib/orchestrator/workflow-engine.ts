@@ -1,7 +1,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { sendSMS, sendEmail } from "@/lib/providers/messaging"
-import { generateVideoScript } from "@/lib/content-generation/content-generator"
+import { generateVideoScript } from "@/lib/content-generation"
 
 /**
  * Advance a listing to a new stage directly via Supabase.

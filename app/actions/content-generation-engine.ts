@@ -9,16 +9,15 @@ import {
   generateImagePrompt,
   generateOmnipresentContent,
   generateContentVariations,
-  ContentGenerationParams,
-  ContentGenerationOutput,
-} from "@/lib/content-generation/content-generator"
-import { gatherContext, enrichPromptWithContext } from "@/lib/content-generation/context-enricher"
-import {
+  gatherContext,
+  enrichPromptWithContext,
   logContentGeneration,
   logOmnipresentGeneration,
   getContentGenerationHistory,
   getContentGenerationStats,
-} from "@/lib/content-generation/generation-logger"
+  type ContentGenerationParams,
+  type ContentGenerationOutput,
+} from "@/lib/content-generation"
 import { v4 as uuidv4 } from "uuid"
 
 // ============================================

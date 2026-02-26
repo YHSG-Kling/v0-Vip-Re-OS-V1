@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { getAgentContext } from '@/lib/identity'
 
 export const dynamic = 'force-dynamic'
 

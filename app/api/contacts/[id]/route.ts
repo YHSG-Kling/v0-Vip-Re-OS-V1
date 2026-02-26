@@ -1,6 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { supabase } from "@/services/supabase"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { getAgentContext } from "@/lib/identity"
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   try {

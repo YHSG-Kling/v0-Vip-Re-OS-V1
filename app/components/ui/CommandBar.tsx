@@ -23,7 +23,7 @@ import {
   ShieldCheck,
   Activity,
 } from "lucide-react"
-import { generateAIJSON } from "@/lib/ai/generate"
+import { generateAIJSON } from "@/lib/ai"
 import { executeWorkflow } from "../../app/actions/workflows"
 import { supabaseService } from "../../services/supabaseService"
 

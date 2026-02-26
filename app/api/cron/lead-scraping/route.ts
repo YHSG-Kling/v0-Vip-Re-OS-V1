@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { ZenrowsClient } from "@/lib/external/zenrows-client"
-import { BatchDataClient } from "@/lib/external/batchdata-client"
-import { PeopleDataClient } from "@/lib/external/peopledata-client"
-import { ApifyClient } from "@/lib/external/apify-client"
-import { processRawRecord } from "@/lib/lead-pipeline/pipeline-processor"
+import { ZenrowsClient, BatchDataClient, PeopleDataClient, ApifyClient } from "@/lib/external"
+import { processRawRecord } from "@/lib/lead-pipeline"
 import { createLead } from "@/app/actions/leads"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
 

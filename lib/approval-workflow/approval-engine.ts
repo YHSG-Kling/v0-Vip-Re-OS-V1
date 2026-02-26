@@ -4,7 +4,7 @@
 // ============================================
 
 import { type ComplianceVerdict } from "@/lib/compliance-rules"
-import { ContentGenerationOutput } from "@/lib/content-generation/content-generator"
+import { type ContentGenerationOutput } from "@/lib/content-generation"
 
 /**
  * Content Origin Types

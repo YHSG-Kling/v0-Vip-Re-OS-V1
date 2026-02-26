@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import PersonaPropertiesDashboard from "@/components/portal/PersonaPropertiesDashboard"
-import { getPersonaConfig } from "@/lib/portal/persona-config"
+import { getPersonaConfig } from "@/lib/portal"
 
 export default async function PropertiesPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params

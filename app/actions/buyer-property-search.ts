@@ -8,12 +8,13 @@
 import {
   searchPropertiesCore,
   explainPropertyMatchCore,
+  parseNaturalLanguageQuery,
+  mergeIntentWithContext,
+  inferBuyerPersona,
   type BuyerSearchResult,
-} from '@/lib/buyer-search/search-engine'
+} from '@/lib/buyer-search'
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
-import { parseNaturalLanguageQuery, mergeIntentWithContext } from '@/lib/buyer-search/intent-parser'
-import { inferBuyerPersona } from '@/lib/buyer-search/persona-inference'
 import { createServiceClient } from '@/lib/supabase/service'
 
 export type { BuyerSearchResult }

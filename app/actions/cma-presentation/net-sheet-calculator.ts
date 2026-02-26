@@ -10,7 +10,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 export interface NetSheetInput {
   listingId: string
