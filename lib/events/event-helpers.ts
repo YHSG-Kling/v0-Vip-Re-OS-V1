@@ -1,10 +1,25 @@
 
 
 import { createServerClient } from "@/lib/supabase/server"
-// Dynamic import keeps lib/ free of static app/actions dependencies while
-// still allowing event-helpers to trigger orchestration at runtime.
 import type { EventInput, Event } from "@/lib/orchestrator/event-types"
-const loadOrchestrator = () => import("@/app/actions/orchestrator").then(m => m.orchestrateEvent)
+
+/**
+ * Optional orchestration hook registered by the app/ layer at startup.
+ * lib/events/ persists events and fires this callback if set.
+ * This avoids any lib→app import — the app/ layer owns the wiring.
+ *
+ * Register via: import { registerEventDispatcher } from "@/lib/events/event-helpers"
+ */
+type EventDispatcher = (event: Event) => Promise<void>
+let _dispatcher: EventDispatcher | null = null
+
+export function registerEventDispatcher(fn: EventDispatcher): void {
+  _dispatcher = fn
+}
+
+function getDispatcher(): EventDispatcher | null {
+  return _dispatcher
+}
 
 // =====================================================
 // MAIN HELPER - Log event and trigger orchestration
@@ -36,12 +51,14 @@ export async function logEventAndTrigger(eventInput: EventInput): Promise<Event>
     throw error
   }
 
-  // Trigger orchestration asynchronously via dynamic import (lib→app boundary)
-  loadOrchestrator().then(orchestrateEvent =>
-    orchestrateEvent(event as Event).catch((err) => {
+  // Fire the registered dispatcher asynchronously (registered by app/ layer).
+  // If no dispatcher is registered, event is persisted and processed later.
+  const dispatcher = getDispatcher()
+  if (dispatcher) {
+    dispatcher(event as Event).catch((err) => {
       console.error("[v0] Orchestration error:", err)
     })
-  )
+  }
 
   return event as Event
 }

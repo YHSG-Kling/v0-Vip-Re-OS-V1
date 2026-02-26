@@ -4,6 +4,7 @@ import { createServerClient } from "@/lib/supabase/server"
 import { generateSmartSuggestion } from "./assistant"
 import { sendNotificationToAgent } from "./communications"
 import { supabaseService } from "@/services/supabaseService"
+import { registerEventDispatcher } from "@/lib/events/event-helpers"
 
 // =====================================================
 // EVENT TYPES - Standardized event type constants
@@ -565,3 +566,8 @@ async function logProcessingResults(eventId: string, results: ProcessingResult[]
 
   await supabase.from("event_processing_log").insert(logs)
 }
+
+// Wire this module's orchestrateEvent as the lib/events dispatcher.
+// This runs once when app/actions/orchestrator is first imported by the app layer,
+// completing the inversion-of-control loop without any lib→app imports.
+registerEventDispatcher(orchestrateEvent)

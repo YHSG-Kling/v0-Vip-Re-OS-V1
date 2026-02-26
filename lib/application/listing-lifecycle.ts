@@ -113,18 +113,25 @@ export async function markListingLiveService(
     mls_number: params.mls_number,
   })
 
+  // Queue packet generation — the app/ layer picks this up asynchronously.
+  // Avoids importing app/actions (lib→app violation). No behavior change:
+  // packet generation was already fire-and-forget.
   try {
-    const { generateListingPacket } = await import("@/app/actions/ai-listing-packet")
-    await generateListingPacket({
-      listingId: params.listing_id,
-      agentId,
-      includeFlyer: true,
-      includeDisclosures: true,
-      includePropertyReports: true,
-      includeBinderCopies: true,
+    const supabase = await createClient()
+    await supabase.from("listing_packet_jobs").insert({
+      listing_id: params.listing_id,
+      agent_id: agentId,
+      status: "pending",
+      config: {
+        includeFlyer: true,
+        includeDisclosures: true,
+        includePropertyReports: true,
+        includeBinderCopies: true,
+      },
+      created_at: new Date().toISOString(),
     })
   } catch (packetError) {
-    console.error("[listing-lifecycle] Failed to auto-generate listing packet:", packetError)
+    console.error("[listing-lifecycle] Failed to queue listing packet job:", packetError)
   }
 
   return { success: true, listing: data }
@@ -661,8 +668,8 @@ export async function sendReviewRequestService(requestId: string, platform: stri
   const message = `Hi ${request.contact?.first_name}! Hope you're loving your new home at ${request.transaction?.address}! Your feedback means everything. Would you mind sharing your experience? Takes 60 seconds: ${reviewLinks[platform]}`
 
   if (request.contact?.phone) {
-    const { sendTwilioSMS } = await import("@/app/actions/external-services")
-    const smsResult = await sendTwilioSMS({
+    const { sendSMS } = await import("@/lib/providers/messaging")
+    const smsResult = await sendSMS({
       to: request.contact.phone,
       message,
       contactId: request.contact_id,

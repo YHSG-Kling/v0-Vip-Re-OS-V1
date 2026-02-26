@@ -1,8 +1,22 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { sendSMS, sendEmail } from "@/lib/providers/messaging"
-import { advanceListingStageService as advanceListingStage } from "@/lib/application/listing-lifecycle"
 import { generateVideoScript } from "@/lib/content-generation/content-generator"
+
+/**
+ * Advance a listing to a new stage directly via Supabase.
+ * Kept local to lib/orchestrator to avoid importing lib/application (upward dep).
+ * Full validation/lifecycle logic should be invoked at the app/ layer.
+ */
+async function advanceListingStage(listingId: string, stage: string): Promise<{ success: boolean }> {
+  if (!listingId) return { success: false }
+  const supabase = await createClient()
+  await supabase
+    .from("listings")
+    .update({ current_stage: stage, updated_at: new Date().toISOString() })
+    .eq("id", listingId)
+  return { success: true }
+}
 
 // Lightweight task & contact helpers — direct Supabase writes, no app/actions dependency
 async function createTask(params: {
