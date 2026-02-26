@@ -3,7 +3,7 @@
 // Determines if content is ready for execution
 // ============================================
 
-import { ComplianceVerdict } from "@/lib/compliance-rules/compliance-engine"
+import { type ComplianceVerdict } from "@/lib/compliance-rules"
 import { ApprovalDecision } from "@/lib/approval-workflow/approval-engine"
 import { BrandComplianceResult } from "@/lib/brand-template-registry/brand-requirements"
 

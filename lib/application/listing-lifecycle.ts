@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { logListingAppointmentSet, logListingSigned, logListingLive } from "@/lib/events/event-helpers"
+import { logListingAppointmentSet, logListingSigned, logListingLive } from "@/lib/events"
 import { revalidatePath } from "next/cache"
 
 // =====================================================

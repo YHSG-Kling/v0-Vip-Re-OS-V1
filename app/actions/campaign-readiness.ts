@@ -24,7 +24,7 @@ import {
   logChannelReadinessCheck,
   getReadinessTrends,
 } from "@/lib/campaign-readiness/readiness-logger"
-import { ComplianceVerdict } from "@/lib/compliance-rules/compliance-engine"
+import { type ComplianceVerdict } from "@/lib/compliance-rules"
 import { ApprovalDecision } from "@/lib/approval-workflow/approval-engine"
 
 /**

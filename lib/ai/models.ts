@@ -1,6 +1,6 @@
 import { generateText } from "ai"
 import { createClient } from "@/lib/supabase/server"
-import { evaluateContentCompliance } from "@/lib/compliance-rules/compliance-engine"
+import { evaluateContentCompliance } from "@/lib/compliance-rules"
 import { validateThemFirstContent } from "@/lib/them-first/validator"
 import { 
   logAIUsage, 

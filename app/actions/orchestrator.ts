@@ -4,14 +4,14 @@ import { createServerClient } from "@/lib/supabase/server"
 import { generateSmartSuggestion } from "./assistant"
 import { sendNotificationToAgent } from "./communications"
 import { supabaseService } from "@/services/supabaseService"
-import { registerEventDispatcher } from "@/lib/events/event-helpers"
+import { registerEventDispatcher } from "@/lib/events"
 
 // =====================================================
 // EVENT TYPES - Standardized event type constants
 // =====================================================
 
 // Re-export canonical types from lib/ so existing importers of this action keep working.
-export { EVENT_TYPES, type EventInput, type Event } from "@/lib/orchestrator/event-types"
+export { EVENT_TYPES, type EventInput, type Event } from "@/lib/orchestrator"
 
 interface ProcessingResult {
   success: boolean

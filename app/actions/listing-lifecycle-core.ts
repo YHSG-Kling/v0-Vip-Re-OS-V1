@@ -11,20 +11,15 @@ import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import {
   type ListingStage,
+  type TransitionValidationContext,
   getStageDefinition,
   getAllStages,
   getEnabledSystemGates,
   isSystemGateEnabled,
-} from "@/lib/listing-lifecycle/lifecycle-definitions"
-import {
   validateStageTransition,
   getNextAllowedStages,
   canSkipStages,
-  validateSkipStageTransition,
-  type TransitionValidationContext,
-} from "@/lib/listing-lifecycle/transition-validator"
-import { evaluateReadinessChecks } from "@/lib/listing-lifecycle/readiness-checker"
-import {
+  evaluateReadinessChecks,
   logStageTransition,
   logFailedTransition,
   logSystemGateEnabled,
@@ -32,7 +27,7 @@ import {
   getCurrentLifecycleStage,
   getLifecycleStatistics,
   getStageTimingMetrics,
-} from "@/lib/listing-lifecycle/lifecycle-logger"
+} from "@/lib/listing-lifecycle"
 
 // ============================================
 // LIFECYCLE VALIDATION ACTIONS

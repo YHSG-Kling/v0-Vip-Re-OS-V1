@@ -5,9 +5,7 @@
  * Normalizes different billing models (per-minute, per-call, per-word).
  */
 
-import { logVendorUsage } from '@/lib/vendor-governance/usage-logger'
-import { normalizeVendorCost } from '@/lib/vendor-governance/cost-normalizer'
-import { validateAttribution } from '@/lib/vendor-governance/attribution'
+import { logVendorUsage, normalizeVendorCost, validateAttribution } from '@/lib/vendor-governance'
 
 export interface VoiceUsageParams {
   vendor: 'twilio' | 'bland_ai' | 'retell_ai' | 'vapi' | string

@@ -8,9 +8,7 @@
  * We just normalize and pass through.
  */
 
-import { getOrCreateConversation } from '@/lib/communication-spine/conversation-manager'
-import { normalizeOutboundMessage } from '@/lib/communication-spine/message-normalizer'
-import { persistMessageWithContext } from '@/lib/communication-spine/message-persister'
+import { getOrCreateConversation, normalizeOutboundMessage, persistMessageWithContext } from '@/lib/communication-spine'
 import { normalizeVoiceTranscript, NormalizedTranscript, RawTranscript } from './transcript-normalizer'
 
 export interface IngestTranscriptParams {

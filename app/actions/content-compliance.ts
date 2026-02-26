@@ -2,20 +2,18 @@
 
 import { isValidUUID } from "@/lib/validations"
 import {
-  ComplianceContentInput,
+  type ComplianceContentInput,
+  type ComplianceVerdict,
   evaluateContentCompliance,
   evaluateSpecificCategory,
   quickComplianceCheck,
   batchEvaluateCompliance,
-  ComplianceVerdict,
   formatComplianceVerdict,
-} from "@/lib/compliance-rules/compliance-engine"
-import {
   logComplianceEvaluation,
   logBatchComplianceEvaluations,
   getComplianceEvaluationHistory,
   getComplianceStats,
-} from "@/lib/compliance-rules/compliance-logger"
+} from "@/lib/compliance-rules"
 
 // ============================================
 // SYSTEM 4.2 – COMPLIANCE RULES ENGINE

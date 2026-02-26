@@ -19,11 +19,14 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { calculateLeadScore } from '@/lib/lead-governance/multi-factor-scorer'
-import { evaluateRoutingEligibility } from '@/lib/lead-governance/routing-evaluator'
-import { selectAgentForLead } from '@/lib/lead-governance/agent-selector'
-import { evaluateSLA, logEscalation } from '@/lib/lead-governance/sla-monitor'
-import { evaluatePromotionReadiness } from '@/lib/lead-governance/promotion-readiness'
+import {
+  calculateLeadScore,
+  evaluateRoutingEligibility,
+  selectAgentForLead,
+  evaluateSLA,
+  logEscalation,
+  evaluatePromotionReadiness,
+} from '@/lib/lead-governance'
 
 export interface GovernanceResult {
   success: boolean

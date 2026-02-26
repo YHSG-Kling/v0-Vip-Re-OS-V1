@@ -9,4 +9,4 @@
 export {
   promoteLeadToContactService as promoteLeadToContact,
   type PromotionResult,
-} from "@/lib/contact-promotion/promote-lead-to-contact"
+} from "@/lib/contact-promotion"

@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { logEventAndTrigger } from "@/lib/events/event-helpers"
+import { logEventAndTrigger } from "@/lib/events"
 
 // =====================================================
 // ZAPIER WEBHOOK HANDLER

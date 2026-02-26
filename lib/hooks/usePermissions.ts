@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useMemo } from 'react'
-import { useAuth } from '@/lib/auth/useAuth'
+import { useAuth } from '@/lib/auth'
 import type { Permission } from '@/lib/security'
 import { RoleManager } from '@/lib/security'
 import { FeatureFlags } from '@/lib/security'

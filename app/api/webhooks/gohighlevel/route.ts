@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { logEventAndTrigger } from "@/lib/events/event-helpers"
+import { logEventAndTrigger } from "@/lib/events"
 import { createServerClient } from "@/lib/supabase/server"
 
 // =====================================================

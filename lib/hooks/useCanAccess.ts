@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback } from 'react'
-import { useAuth } from '@/lib/auth/useAuth'
+import { useAuth } from '@/lib/auth'
 import { RoleManager } from '@/lib/security'
 
 export function useCanAccess() {

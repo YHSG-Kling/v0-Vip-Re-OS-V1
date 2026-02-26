@@ -34,4 +34,4 @@ export {
   trackVendorUsageService as trackVendorUsage,
   type TrackUsageParams,
   type TrackUsageResult,
-} from '@/lib/vendor-governance/track-vendor-usage'
+} from '@/lib/vendor-governance'

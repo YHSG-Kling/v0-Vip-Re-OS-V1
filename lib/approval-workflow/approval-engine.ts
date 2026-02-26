@@ -3,7 +3,7 @@
 // Determines approval outcomes (decision logic only)
 // ============================================
 
-import { ComplianceVerdict } from "@/lib/compliance-rules/compliance-engine"
+import { type ComplianceVerdict } from "@/lib/compliance-rules"
 import { ContentGenerationOutput } from "@/lib/content-generation/content-generator"
 
 /**

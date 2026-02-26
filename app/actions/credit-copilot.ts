@@ -1,7 +1,7 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
-import { logCreditStatusUpdated } from "@/lib/events/event-helpers"
+import { logCreditStatusUpdated } from "@/lib/events"
 import { sendSMS } from "@/lib/providers/messaging"
 
 // =====================================================

@@ -1,7 +1,7 @@
 "use server"
 
 import { createServerClient, createClient } from "@/lib/supabase/server"
-import { logMilestoneOverdue } from "@/lib/events/event-helpers"
+import { logMilestoneOverdue } from "@/lib/events"
 import { generateText } from "ai"
 import { incrementUsage } from "@/lib/usage"
 

@@ -1,7 +1,7 @@
 "use server"
 
 import { ContentGenerationOutput } from "@/lib/content-generation/content-generator"
-import { ComplianceVerdict } from "@/lib/compliance-rules/compliance-engine"
+import { type ComplianceVerdict } from "@/lib/compliance-rules"
 import {
   ApprovalContext,
   ApprovalDecision,

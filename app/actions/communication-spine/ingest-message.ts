@@ -10,4 +10,4 @@ export {
   ingestMessageService as ingestMessage,
   type IngestMessageParams,
   type IngestMessageResult,
-} from '@/lib/communication-spine/ingest-message-service'
+} from '@/lib/communication-spine'

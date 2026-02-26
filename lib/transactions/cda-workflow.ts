@@ -1,5 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { calculateCommission } from "@/lib/commission/engine"
+import { calculateCommission } from "@/lib/commission"
 
 /**
  * CDA Workflow: Preview → Generate → Compare → Approve → Deliver
