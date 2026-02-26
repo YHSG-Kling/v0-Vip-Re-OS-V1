@@ -10,7 +10,26 @@
  * without change.
  */
 
-import type { UserRole } from "@/app/types/roles"
+// UserRole must be a runtime constant — app/types/roles.ts defines it as a
+// type alias only (no JS value). Define the runtime object here so computed
+// property keys like [UserRole.ADMIN] resolve correctly at module evaluation.
+export type UserRole =
+  | "agent" | "broker" | "isa" | "admin" | "vendor" | "contact"
+  | "compliance_manager" | "transaction_coordinator" | "lender" | "title_agent"
+
+// Runtime constant used for computed property keys in ROLE_PERMISSIONS /
+// ROLE_NAVIGATION maps below.
+const UserRole = {
+  ADMIN: "admin" as const,
+  BROKER: "broker" as const,
+  AGENT: "agent" as const,
+  TC: "transaction_coordinator" as const,
+  CONTACT: "contact" as const,
+  VENDOR: "vendor" as const,
+  LENDER: "lender" as const,
+  COMPLIANCE_OFFICER: "compliance_manager" as const,
+  TEAM_LEADER: "isa" as const,
+} as const
 
 // ─── PERMISSION TYPE ──────────────────────────────────────────────────────────
 // Keep the broad UI-facing Permission type from the legacy service.
