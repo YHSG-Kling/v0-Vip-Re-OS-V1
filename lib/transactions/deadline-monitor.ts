@@ -1,7 +1,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import type { TransactionStage } from "./transaction-stages"
-import { createActivity } from "./activity-factory"
-import { sendNotification } from "./notification-service"
+import { ActivityFactory } from "./activity-factory"
+import { NotificationService } from "./notification-service"
+
+const activityFactory = new ActivityFactory()
+const notificationService = new NotificationService()
 
 const CRITICAL_MILESTONES = [
   "inspection_deadline",
@@ -92,47 +95,25 @@ async function handleOverdue(
   })
   
   // Create urgent activity for agent + TC
-  await createActivity({
+  await activityFactory.createMilestoneActivity({
+    transactionId: txn.id,
+    brokerageId: txn.brokerage_id,
+    milestoneType: "overdue",
+    assignedTo: txn.agent_id,
+    priority: "high",
+  })
+
+  const isCritical = CRITICAL_MILESTONES.includes(milestone.milestone_name)
+
+  // Notify agent, TC, and broker if critical
+  await notificationService.notifyMilestoneOverdue({
     transactionId: txn.id,
     brokerageId: txn.brokerage_id,
     agentId: txn.agent_id,
-    activityType: "milestone_overdue",
-    title: `OVERDUE: ${milestone.milestone_name}`,
-    description: `Milestone was due ${milestone.milestone_date}. Immediate action required.`,
-    priority: "urgent",
-    assignedTo: txn.agent_id
+    milestoneName: milestone.milestone_name,
+    propertyAddress: txn.id, // address resolved downstream from transaction record
+    isCritical,
   })
-  
-  // Notify agent, TC, and broker if critical
-  await sendNotification({
-    recipientId: txn.agent_id,
-    type: "milestone_overdue",
-    title: "Milestone Overdue",
-    message: `${milestone.milestone_name} is overdue for transaction ${txn.id}`,
-    transactionId: txn.id,
-    urgency: "high"
-  })
-  
-  // Notify broker if critical milestone
-  if (CRITICAL_MILESTONES.includes(milestone.milestone_name)) {
-    const { data: brokerProfile } = await supabase
-      .from("profiles")
-      .select("id")
-      .eq("brokerage_id", txn.brokerage_id)
-      .eq("role", "broker")
-      .single()
-    
-    if (brokerProfile) {
-      await sendNotification({
-        recipientId: brokerProfile.id,
-        type: "critical_milestone_overdue",
-        title: "Critical Milestone Overdue",
-        message: `Critical milestone ${milestone.milestone_name} is overdue`,
-        transactionId: txn.id,
-        urgency: "critical"
-      })
-    }
-  }
 }
 
 async function sendWarning(
@@ -168,12 +149,13 @@ async function sendWarning(
   })
   
   // Notify agent + TC
-  await sendNotification({
-    recipientId: txn.agent_id,
-    type: "milestone_due_soon",
-    title: "Milestone Due Soon",
-    message: `${milestone.milestone_name} is due in ${Math.round(hoursUntil)} hours`,
+  await notificationService.notifyMilestoneWarning({
     transactionId: txn.id,
-    urgency: "medium"
+    brokerageId: txn.brokerage_id,
+    agentId: txn.agent_id,
+    milestoneName: milestone.milestone_name,
+    propertyAddress: txn.id,
+    dueDate: milestone.milestone_date,
+    hoursUntilDue: Math.round(hoursUntil),
   })
 }
