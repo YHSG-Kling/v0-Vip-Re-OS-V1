@@ -12,21 +12,29 @@
  * Canonical auth lives in: lib/auth/useAuth.ts
  * Canonical import path:   "@/lib/auth/client"
  *
- * Migration checklist (update each consumer and delete this file when done):
- *   - app/components/providers.tsx          ✓ migrated to @/lib/auth/client
- *   - app/components/AI/*                   → migrate to @/lib/auth/client
- *   - app/components/features/ai/*          → migrate to @/lib/auth/client
- *   - app/components/utilities/voice/*      → migrate to @/lib/auth/client
- *   - app/components/shared/compliance/*    → migrate to @/lib/auth/client
- *   - app/dashboard/**                      → migrate to @/lib/auth/client
- *   - hooks/use-contact-dashboard.ts        → migrate to @/lib/auth/client
+ * Migration status — all original consumers redirected to @/lib/auth/client:
+ *   ✓ app/components/providers.tsx
+ *   ✓ app/components/AI/* (AIToolModal, ComplianceCheckedTextArea, InsiderEditGenerator,
+ *                           SmartEngineAssistant, SmartGuide, VoiceCommandButton)
+ *   ✓ app/components/features/ai/* (same set in features/)
+ *   ✓ app/components/features/content-generation/InsiderEditGenerator
+ *   ✓ app/components/features/video/VideosDashboard
+ *   ✓ app/components/utilities/voice/* (VoiceAssistant, VoiceCommandButton)
+ *   ✓ app/components/shared/compliance/ComplianceCheckedTextArea
+ *   ✓ app/components/VideosDashboard, VoiceAssistant (root components/)
+ *   ✓ app/dashboard/page + videos/* (library, create, board, analytics)
+ *   ✓ hooks/use-contact-dashboard.ts
+ *   ✓ hooks/usePermissions.ts, hooks/useDataAccess.ts
+ *   ✓ app/crm/page.tsx
+ *
+ * This file can be deleted once lib/auth/client.ts inlines AuthProvider directly.
  */
 
 import type React from "react"
 import { createContext, useContext } from "react"
 // Import directly from the hook file to avoid a circular barrel reference.
-import { useAuth as useCanonicalAuth } from "../lib/auth/useAuth"
-import type { AuthState } from "../lib/auth/useAuth"
+import { useAuth as useCanonicalAuth } from "@/lib/auth/useAuth"
+import type { AuthState } from "@/lib/auth/useAuth"
 
 // ─── Context (thin pass-through) ─────────────────────────────────────────────
 // The context is kept solely to allow AuthProvider to wrap the tree and satisfy

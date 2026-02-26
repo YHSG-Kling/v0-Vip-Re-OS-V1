@@ -2,20 +2,15 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { useAuthStore } from '@/stores/authStore'
+import { useAuth } from '@/lib/auth/client'
 import Sidebar from '@/app/components/Sidebar'
 import LoadingSpinner from '@/app/components/LoadingSpinner'
 import { Users, Search, Plus, Filter, Mail, Phone, MapPin, Calendar } from 'lucide-react'
 
 export default function CRMPage() {
   const router = useRouter()
-  const { user, isLoading, logout, checkAuth } = useAuthStore()
+  const { user, isLoading, signOut } = useAuth()
   const [searchQuery, setSearchQuery] = useState('')
-
-  // Check auth on mount
-  useEffect(() => {
-    checkAuth()
-  }, [checkAuth])
 
   // Redirect to login if not authenticated
   useEffect(() => {
@@ -25,6 +20,7 @@ export default function CRMPage() {
   }, [user, isLoading, router])
 
   const handleLogout = async () => {
+    await signOut()
     await fetch('/api/auth/logout', {
       method: 'POST',
     })
