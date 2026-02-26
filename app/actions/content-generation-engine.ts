@@ -72,7 +72,7 @@ export async function generateText(params: {
 
     // Enrich prompt with context
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     // Generate content
@@ -135,7 +135,7 @@ export async function generateAudio(params: {
     })
 
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     const content = await generateAudioScript({
@@ -192,7 +192,7 @@ export async function generateVideo(params: {
     })
 
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     const content = await generateVideoScript({
@@ -246,7 +246,7 @@ export async function generateImage(params: {
     })
 
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     const content = await generateImagePrompt({
@@ -341,7 +341,7 @@ export async function generateVariations(params: {
     })
 
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     const variations = await generateContentVariations(
