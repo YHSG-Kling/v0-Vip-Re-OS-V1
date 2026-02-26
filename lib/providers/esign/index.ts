@@ -5,7 +5,7 @@
  * Re-exports DotloopProvider from lib/integrations for single source of truth.
  */
 
-export { DotloopProvider } from "@/lib/integrations/providers/dotloop-provider"
+export { DotloopProvider } from "@/lib/integrations"
 
 // ─── DOTLOOP DIRECT HELPERS ───────────────────────────────────────────────────
 // Thin functional wrappers around DotloopProvider for callers that don't want

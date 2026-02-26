@@ -4,9 +4,9 @@
  * app/actions/vendor-governance/track-usage.ts re-exports from here.
  */
 
-import { logVendorUsage, VendorUsageEvent } from '@/lib/vendor-governance/usage-logger'
-import { normalizeVendorCost } from '@/lib/vendor-governance/cost-normalizer'
-import { validateAttribution, inferAttribution, AttributionContext } from '@/lib/vendor-governance/attribution'
+import { logVendorUsage, VendorUsageEvent } from './usage-logger'
+import { normalizeVendorCost } from './cost-normalizer'
+import { validateAttribution, inferAttribution, AttributionContext } from './attribution'
 
 export interface TrackUsageParams {
   vendor: string

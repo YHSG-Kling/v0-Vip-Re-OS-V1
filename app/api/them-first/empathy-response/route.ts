@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { getEmpathyResponse, getAllEmpathyResponses, listAllPersonas } from "@/lib/them-first/empathy-library"
+import { getEmpathyResponse, getAllEmpathyResponses, listAllPersonas } from "@/lib/them-first"
 
 export async function POST(req: Request) {
   try {

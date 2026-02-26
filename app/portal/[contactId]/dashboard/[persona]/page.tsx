@@ -38,7 +38,7 @@ import {
 import Link from "next/link"
 import { PERSONA_LABELS } from "@/constants/crm-standards"
 import { OfferStatusWidget } from "@/components/portal/OfferStatusWidget"
-import { getAllEmpathyResponses } from "@/lib/them-first/empathy-library"
+import { getAllEmpathyResponses } from "@/lib/them-first"
 
 export default async function PersonaDashboardPage({
   params,

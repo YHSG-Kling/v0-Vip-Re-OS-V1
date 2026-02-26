@@ -10,8 +10,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { NormalizedMessage } from './message-normalizer'
-import { logVendorUsage } from '@/lib/vendor-governance/usage-logger'
-import { normalizeVendorCost } from '@/lib/vendor-governance/cost-normalizer'
+import { logVendorUsage, normalizeVendorCost } from '@/lib/vendor-governance'
 
 export interface MessagePersistContext {
   conversationId: string
