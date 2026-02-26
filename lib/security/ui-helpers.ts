@@ -15,32 +15,36 @@ export class UIHelpers {
 
   static shouldShowField(userRole: UserRole, field: string): boolean {
     const hiddenFields: Record<UserRole, string[]> = {
-      agent: ['commission_structure', 'all_brokerage_contacts'],
-      broker: [],
-      isa: ['pricing', 'commission_structure'],
+      superadmin: [],
       admin: [],
+      broker: [],
+      team_lead: ['commission_structure'],
+      agent: ['commission_structure', 'all_brokerage_contacts'],
+      isa: ['pricing', 'commission_structure'],
+      tc: [],
+      compliance_officer: [],
       vendor: ['pricing', 'commission_structure', 'team_members'],
-      contact: ['pricing', 'commission_structure', 'agent_metrics'],
-      compliance_manager: [],
-      transaction_coordinator: [],
       lender: [],
       title_agent: [],
+      contact: ['pricing', 'commission_structure', 'agent_metrics'],
     }
     return !hiddenFields[userRole]?.includes(field)
   }
 
   static shouldShowMenuItem(userRole: UserRole, menuItem: string): boolean {
     const hiddenMenuItems: Record<UserRole, string[]> = {
-      agent: ['admin', 'broker_settings', 'team_management'],
-      broker: [],
-      isa: ['crm', 'listings', 'seller_portal'],
+      superadmin: [],
       admin: [],
+      broker: [],
+      team_lead: [],
+      agent: ['admin', 'broker_settings', 'team_management'],
+      isa: ['crm', 'listings', 'seller_portal'],
+      tc: ['crm', 'listings'],
+      compliance_officer: ['crm', 'listings'],
       vendor: ['crm', 'listings', 'team'],
-      contact: ['crm', 'admin', 'analytics'],
-      compliance_manager: ['crm', 'listings'],
-      transaction_coordinator: ['crm', 'listings'],
       lender: ['crm', 'listings'],
       title_agent: ['crm', 'listings'],
+      contact: ['crm', 'admin', 'analytics'],
     }
     return !hiddenMenuItems[userRole]?.includes(menuItem)
   }

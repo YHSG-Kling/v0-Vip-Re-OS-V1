@@ -25,7 +25,7 @@ export type BuyerState =
   | "BUYER_CLOSED"
   | "BUYER_LIFETIME"
 
-export type RequiredRole = "agent" | "team_leader" | "broker" | "admin"
+export type RequiredRole = "agent" | "team_lead" | "broker" | "admin"
 
 export interface StateDefinition {
   state: BuyerState

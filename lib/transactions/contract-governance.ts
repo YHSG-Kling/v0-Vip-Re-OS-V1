@@ -12,7 +12,7 @@ export async function setContractDate(params: {
 
   const { transactionId, brokerageId, contractDate, userId, role, override } = params
 
-  const allowedRoles = ["admin", "broker", "compliance_officer", "TC"]
+  const allowedRoles = ["admin", "broker", "compliance_officer", "tc"]
 
   if (!allowedRoles.includes(role)) {
     throw new Error("Unauthorized to set contract date")

@@ -1,39 +1,52 @@
 "use client"
 
 /**
- * permissionsService — runtime permission checks using the UserRole enum
- * from services/permissionsService (compatibility layer).
+ * permissionsService — runtime permission checks used by Sidebar, hooks, and
+ * dataAccessService.  All role logic delegates to the canonical role type
+ * defined in lib/security/types.ts.
  *
- * The canonical permission matrix lives in lib/security/permission-matrix.ts.
- * This file re-implements the permissionsService API on top of that matrix
- * so existing consumers (Sidebar, hooks, dataAccessService) continue to work
- * without change.
+ * Legacy role strings (e.g. "transaction_coordinator", "compliance_manager")
+ * must be normalised via toCanonicalRole() before reaching this service.
  */
 
-// UserRole must be a runtime constant — app/types/roles.ts defines it as a
-// type alias only (no JS value). Define the runtime object here so computed
-// property keys like [UserRole.ADMIN] resolve correctly at module evaluation.
-export type UserRole =
-  | "agent" | "broker" | "isa" | "admin" | "vendor" | "contact"
-  | "compliance_manager" | "transaction_coordinator" | "lender" | "title_agent"
+import type { UserRole, Permission } from './types'
+import { toCanonicalRole } from './types'
 
-// Runtime constant used for computed property keys in ROLE_PERMISSIONS /
-// ROLE_NAVIGATION maps below.
-const UserRole = {
-  ADMIN: "admin" as const,
-  BROKER: "broker" as const,
-  AGENT: "agent" as const,
-  TC: "transaction_coordinator" as const,
-  CONTACT: "contact" as const,
-  VENDOR: "vendor" as const,
-  LENDER: "lender" as const,
-  COMPLIANCE_OFFICER: "compliance_manager" as const,
-  TEAM_LEADER: "isa" as const,
-} as const
+// ─── USER ACCESS CONTEXT ──────────────────────────────────────────────────────
 
-// ─── PERMISSION TYPE ──────────────────────────────────────────────────────────
-// Keep the broad UI-facing Permission type from the legacy service.
-export type Permission =
+export type UserSubType =
+  | 'agent'
+  | 'team_lead'
+  | 'buyer'
+  | 'seller'
+  | 'investor'
+  | 'vendor'
+  | 'lender'
+  | 'inspector'
+  | 'appraiser'
+  | 'title_officer'
+  | 'escrow_officer'
+  | 'tc'
+  | 'compliance_officer'
+  | 'marketing_coordinator'
+
+export interface UserAccessContext {
+  userId: string
+  role: UserRole
+  subType?: UserSubType
+  agentId?: string
+  contactId?: string
+  vendorId?: string
+  teamId?: string
+  teamIds?: string[]
+  brokerageId?: string
+  managedAgentIds?: string[]
+}
+
+// ─── UI PERMISSION TYPE ───────────────────────────────────────────────────────
+// Broad surface-level permissions used by Sidebar and component guards.
+
+export type UIPermission =
   | "view:admin_dashboard"
   | "view:broker_dashboard"
   | "view:agent_dashboard"
@@ -111,41 +124,10 @@ export type Permission =
   | "view:vendors"
   | "manage:vendors"
 
-// ─── USER ACCESS CONTEXT ──────────────────────────────────────────────────────
+// ─── ROLE → UI PERMISSION MAP ─────────────────────────────────────────────────
 
-export type UserSubType =
-  | "agent"
-  | "team_lead"
-  | "buyer"
-  | "seller"
-  | "investor"
-  | "vendor"
-  | "lender"
-  | "inspector"
-  | "appraiser"
-  | "title_officer"
-  | "escrow_officer"
-  | "transaction_coordinator"
-  | "compliance_manager"
-  | "marketing_coordinator"
-
-export interface UserAccessContext {
-  userId: string
-  role: UserRole
-  subType?: UserSubType
-  agentId?: string
-  contactId?: string
-  vendorId?: string
-  teamId?: string
-  teamIds?: string[]
-  brokerageId?: string
-  managedAgentIds?: string[]
-}
-
-// ─── ROLE → PERMISSION MAP ────────────────────────────────────────────────────
-
-const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
-  [UserRole.ADMIN]: [
+const ROLE_UI_PERMISSIONS: Record<UserRole, UIPermission[]> = {
+  superadmin: [
     "view:admin_dashboard", "view:broker_dashboard", "view:agent_dashboard",
     "view:lead_intelligence", "view:lead_insights", "view:lead_scraping_config", "manage:lead_scraping",
     "view:all_contacts", "edit:all_contacts", "delete:contacts",
@@ -164,7 +146,26 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     "view:crm", "use:ai_tools", "view:map_intelligence", "view:knowledge_base", "view:ai_chat", "use:ai_suggestions",
     "view:partners", "manage:partners", "view:vendors", "manage:vendors",
   ],
-  [UserRole.BROKER]: [
+  admin: [
+    "view:admin_dashboard", "view:broker_dashboard", "view:agent_dashboard",
+    "view:lead_intelligence", "view:lead_insights", "view:lead_scraping_config", "manage:lead_scraping",
+    "view:all_contacts", "edit:all_contacts", "delete:contacts",
+    "view:all_transactions", "edit:all_transactions",
+    "view:all_communications", "send:communications", "send:ai_chat_messages",
+    "view:all_documents", "upload:documents", "delete:documents",
+    "view:brokerage_financials", "view:team_financials", "view:own_financials",
+    "view:all_listings", "create:listings", "edit:all_listings", "approve:listings", "distribute:listings",
+    "view:all_users", "create:users", "edit:users", "delete:users", "manage:roles",
+    "view:system_health", "view:system_config", "edit:system_config",
+    "view:ai_audit", "view:compliance", "manage:compliance",
+    "view:marketing_studio", "view:social_scheduler", "post:social_media",
+    "view:all_badges", "award:badges",
+    "view:team_sphere", "edit:sphere",
+    "view:all_showings", "manage:showings", "view:all_open_houses", "manage:open_houses",
+    "view:crm", "use:ai_tools", "view:map_intelligence", "view:knowledge_base", "view:ai_chat", "use:ai_suggestions",
+    "view:partners", "manage:partners", "view:vendors", "manage:vendors",
+  ],
+  broker: [
     "view:broker_dashboard", "view:agent_dashboard",
     "view:lead_intelligence", "view:lead_insights", "view:lead_scraping_config", "manage:lead_scraping",
     "view:all_contacts", "edit:all_contacts", "delete:contacts",
@@ -183,46 +184,7 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     "view:crm", "use:ai_tools", "view:map_intelligence", "view:knowledge_base", "view:ai_chat", "use:ai_suggestions",
     "view:partners", "manage:partners", "view:vendors", "manage:vendors",
   ],
-  [UserRole.AGENT]: [
-    "view:agent_dashboard", "view:lead_intelligence", "view:lead_insights",
-    "view:team_contacts", "view:own_contacts", "edit:own_contacts",
-    "view:own_transactions", "edit:own_transactions",
-    "view:own_communications", "send:communications", "send:ai_chat_messages",
-    "view:own_documents", "upload:documents",
-    "view:own_financials",
-    "view:own_listings", "create:listings", "edit:own_listings",
-    "view:marketing_studio", "view:social_scheduler", "post:social_media",
-    "view:own_badges", "view:own_sphere", "edit:sphere",
-    "view:own_showings", "manage:showings", "view:own_open_houses", "manage:open_houses",
-    "view:crm", "use:ai_tools", "view:map_intelligence", "view:knowledge_base", "view:ai_chat", "use:ai_suggestions",
-    "view:partners", "view:vendors",
-  ],
-  [UserRole.TC]: [
-    "view:tc_dashboard",
-    "view:team_contacts", "edit:team_contacts",
-    "view:team_transactions", "edit:all_transactions",
-    "view:team_communications", "send:communications",
-    "view:all_documents", "upload:documents",
-    "view:compliance", "view:knowledge_base",
-  ],
-  [UserRole.CONTACT]: [
-    "view:contact_dashboard", "view:own_contacts",
-    "view:own_transactions", "view:own_communications",
-    "view:own_documents", "upload:documents", "view:own_listings",
-  ],
-  [UserRole.VENDOR]: [
-    "view:own_contacts", "view:own_transactions",
-    "view:own_communications", "view:own_documents", "upload:documents",
-  ],
-  [UserRole.LENDER]: [
-    "view:team_contacts", "view:team_transactions", "view:team_communications",
-    "send:communications", "view:own_documents", "upload:documents", "view:knowledge_base",
-  ],
-  [UserRole.COMPLIANCE_OFFICER]: [
-    "view:all_contacts", "view:all_transactions", "view:all_communications",
-    "view:all_documents", "view:compliance", "manage:compliance", "view:ai_audit",
-  ],
-  [UserRole.TEAM_LEADER]: [
+  team_lead: [
     "view:agent_dashboard", "view:lead_intelligence", "view:lead_insights",
     "view:team_contacts", "view:own_contacts", "edit:team_contacts", "edit:own_contacts",
     "view:team_transactions", "view:own_transactions", "edit:own_transactions",
@@ -236,12 +198,62 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     "view:crm", "use:ai_tools", "view:map_intelligence", "view:knowledge_base", "view:ai_chat", "use:ai_suggestions",
     "view:partners", "view:vendors", "view:compliance",
   ],
+  agent: [
+    "view:agent_dashboard", "view:lead_intelligence", "view:lead_insights",
+    "view:team_contacts", "view:own_contacts", "edit:own_contacts",
+    "view:own_transactions", "edit:own_transactions",
+    "view:own_communications", "send:communications", "send:ai_chat_messages",
+    "view:own_documents", "upload:documents",
+    "view:own_financials",
+    "view:own_listings", "create:listings", "edit:own_listings",
+    "view:marketing_studio", "view:social_scheduler", "post:social_media",
+    "view:own_badges", "view:own_sphere", "edit:sphere",
+    "view:own_showings", "manage:showings", "view:own_open_houses", "manage:open_houses",
+    "view:crm", "use:ai_tools", "view:map_intelligence", "view:knowledge_base", "view:ai_chat", "use:ai_suggestions",
+    "view:partners", "view:vendors",
+  ],
+  isa: [
+    "view:agent_dashboard", "view:lead_intelligence", "view:lead_insights",
+    "view:team_contacts", "view:own_contacts",
+    "view:own_communications", "send:communications", "send:ai_chat_messages",
+    "view:own_documents",
+    "view:crm", "use:ai_tools", "view:knowledge_base", "view:ai_chat", "use:ai_suggestions",
+  ],
+  tc: [
+    "view:tc_dashboard",
+    "view:team_contacts", "edit:team_contacts",
+    "view:team_transactions", "edit:all_transactions",
+    "view:team_communications", "send:communications",
+    "view:all_documents", "upload:documents",
+    "view:compliance", "view:knowledge_base",
+  ],
+  compliance_officer: [
+    "view:all_contacts", "view:all_transactions", "view:all_communications",
+    "view:all_documents", "view:compliance", "manage:compliance", "view:ai_audit",
+  ],
+  vendor: [
+    "view:own_contacts", "view:own_transactions",
+    "view:own_communications", "view:own_documents", "upload:documents",
+  ],
+  lender: [
+    "view:team_contacts", "view:team_transactions", "view:team_communications",
+    "send:communications", "view:own_documents", "upload:documents", "view:knowledge_base",
+  ],
+  title_agent: [
+    "view:team_contacts", "view:team_transactions", "view:team_communications",
+    "send:communications", "view:own_documents", "upload:documents", "view:knowledge_base",
+  ],
+  contact: [
+    "view:contact_dashboard", "view:own_contacts",
+    "view:own_transactions", "view:own_communications",
+    "view:own_documents", "upload:documents", "view:own_listings",
+  ],
 }
 
 // ─── NAVIGATION ───────────────────────────────────────────────────────────────
 
 export const ROLE_NAVIGATION: Record<UserRole, string[]> = {
-  [UserRole.ADMIN]: [
+  superadmin: [
     "broker-dashboard", "system-health", "ai-audit",
     "agent-roster", "recruiting-hub", "user-management",
     "crm", "lead-intelligence", "lead-scoring", "lead-distribution", "lead-scraping-config", "segmentation",
@@ -250,7 +262,16 @@ export const ROLE_NAVIGATION: Record<UserRole, string[]> = {
     "compliance", "risk-management", "vendor-compliance",
     "integrations", "settings", "partners",
   ],
-  [UserRole.BROKER]: [
+  admin: [
+    "broker-dashboard", "system-health", "ai-audit",
+    "agent-roster", "recruiting-hub", "user-management",
+    "crm", "lead-intelligence", "lead-scoring", "lead-distribution", "lead-scraping-config", "segmentation",
+    "listing-approvals", "listing-distribution",
+    "financials", "conversation-analytics", "data-health",
+    "compliance", "risk-management", "vendor-compliance",
+    "integrations", "settings", "partners",
+  ],
+  broker: [
     "broker-dashboard", "system-health", "ai-audit",
     "agent-roster", "recruiting-hub",
     "crm", "lead-intelligence", "lead-scoring", "lead-distribution", "lead-scraping-config", "segmentation",
@@ -259,7 +280,14 @@ export const ROLE_NAVIGATION: Record<UserRole, string[]> = {
     "compliance", "risk-management", "vendor-compliance",
     "partners",
   ],
-  [UserRole.AGENT]: [
+  team_lead: [
+    "agent-dashboard", "crm", "transactions", "lead-intelligence", "lead-insights", "agent-roster",
+    "inbox", "calendar", "financials", "content-studio", "social-planner", "shareable-assets",
+    "oh-manager", "showings", "buyer-tours", "feedback-log", "map-intelligence", "knowledge-base",
+    "ai-tools", "offer-lab", "documents", "events", "sphere", "listing-intake", "cma",
+    "closing-dashboard", "compliance", "notifications", "ai-chat",
+  ],
+  agent: [
     "agent-dashboard", "crm", "transactions", "calendar", "inbox",
     "listing-intake", "oh-manager", "showings", "buyer-tours", "feedback-log",
     "offer-lab", "cma", "closing-dashboard",
@@ -268,42 +296,40 @@ export const ROLE_NAVIGATION: Record<UserRole, string[]> = {
     "documents", "sphere", "map-intelligence", "knowledge-base", "events",
     "agent-onboarding", "financials",
   ],
-  [UserRole.TC]: [
+  isa: [
+    "agent-dashboard", "crm", "lead-intelligence", "lead-scoring", "ai-isa", "ai-chat",
+    "voice-call-bridge", "inbox", "calendar", "knowledge-base",
+  ],
+  tc: [
     "tc-dashboard", "transactions", "inbox", "calendar",
     "documents", "compliance", "closing-dashboard", "knowledge-base",
   ],
-  [UserRole.CONTACT]: ["playbook", "documents", "inbox", "calendar", "matches", "marketplace"],
-  [UserRole.VENDOR]: ["documents", "inbox", "calendar", "content-studio", "social-planner", "ai-chat"],
-  [UserRole.LENDER]: ["documents", "inbox", "calendar", "transactions", "knowledge-base", "content-studio", "social-planner"],
-  [UserRole.COMPLIANCE_OFFICER]: [
+  compliance_officer: [
     "compliance", "documents", "ai-audit", "transactions", "content-studio", "social-planner", "ai-chat",
   ],
-  [UserRole.TEAM_LEADER]: [
-    "agent-dashboard", "crm", "transactions", "lead-intelligence", "lead-insights", "agent-roster",
-    "inbox", "calendar", "financials", "content-studio", "social-planner", "shareable-assets",
-    "oh-manager", "showings", "buyer-tours", "feedback-log", "map-intelligence", "knowledge-base",
-    "ai-tools", "offer-lab", "documents", "events", "sphere", "listing-intake", "cma",
-    "closing-dashboard", "compliance", "notifications", "ai-chat",
-  ],
+  vendor: ["documents", "inbox", "calendar", "content-studio", "social-planner", "ai-chat"],
+  lender: ["documents", "inbox", "calendar", "transactions", "knowledge-base", "content-studio", "social-planner"],
+  title_agent: ["documents", "inbox", "calendar", "transactions", "knowledge-base"],
+  contact: ["playbook", "documents", "inbox", "calendar", "matches", "marketplace"],
 }
 
 // ─── SERVICE ──────────────────────────────────────────────────────────────────
 
 export const permissionsService = {
-  hasPermission(role: UserRole, permission: Permission): boolean {
-    return ROLE_PERMISSIONS[role]?.includes(permission) ?? false
+  hasPermission(role: UserRole, permission: UIPermission): boolean {
+    return ROLE_UI_PERMISSIONS[role]?.includes(permission) ?? false
   },
 
-  hasAnyPermission(role: UserRole, permissions: Permission[]): boolean {
+  hasAnyPermission(role: UserRole, permissions: UIPermission[]): boolean {
     return permissions.some((p) => this.hasPermission(role, p))
   },
 
-  hasAllPermissions(role: UserRole, permissions: Permission[]): boolean {
+  hasAllPermissions(role: UserRole, permissions: UIPermission[]): boolean {
     return permissions.every((p) => this.hasPermission(role, p))
   },
 
-  getPermissions(role: UserRole): Permission[] {
-    return ROLE_PERMISSIONS[role] || []
+  getPermissions(role: UserRole): UIPermission[] {
+    return ROLE_UI_PERMISSIONS[role] || []
   },
 
   getNavigationItems(role: UserRole): string[] {
@@ -314,37 +340,48 @@ export const permissionsService = {
     return ROLE_NAVIGATION[role]?.includes(view) ?? false
   },
 
-  getDataScope(role: UserRole): "all" | "team" | "own" {
-    if (role === UserRole.ADMIN || role === UserRole.BROKER) return "all"
-    if (role === UserRole.AGENT || role === UserRole.TC) return "team"
-    return "own"
+  getDataScope(role: UserRole): 'all' | 'team' | 'own' {
+    if (role === 'superadmin' || role === 'admin' || role === 'broker') return 'all'
+    if (role === 'team_lead' || role === 'agent' || role === 'tc') return 'team'
+    return 'own'
   },
 
   canViewContact(role: UserRole, contactAgentId: string, currentUserId: string, teamIds: string[] = []): boolean {
-    if (this.hasPermission(role, "view:all_contacts")) return true
-    if (this.hasPermission(role, "view:team_contacts") && teamIds.includes(contactAgentId)) return true
-    if (this.hasPermission(role, "view:own_contacts") && contactAgentId === currentUserId) return true
+    if (this.hasPermission(role, 'view:all_contacts')) return true
+    if (this.hasPermission(role, 'view:team_contacts') && teamIds.includes(contactAgentId)) return true
+    if (this.hasPermission(role, 'view:own_contacts') && contactAgentId === currentUserId) return true
     return false
   },
 
   canEditContact(role: UserRole, contactAgentId: string, currentUserId: string, teamIds: string[] = []): boolean {
-    if (this.hasPermission(role, "edit:all_contacts")) return true
-    if (this.hasPermission(role, "edit:team_contacts") && teamIds.includes(contactAgentId)) return true
-    if (this.hasPermission(role, "edit:own_contacts") && contactAgentId === currentUserId) return true
+    if (this.hasPermission(role, 'edit:all_contacts')) return true
+    if (this.hasPermission(role, 'edit:team_contacts') && teamIds.includes(contactAgentId)) return true
+    if (this.hasPermission(role, 'edit:own_contacts') && contactAgentId === currentUserId) return true
     return false
   },
 
   isAdminOrBroker(role: UserRole): boolean {
-    return role === UserRole.ADMIN || role === UserRole.BROKER
+    return role === 'superadmin' || role === 'admin' || role === 'broker'
   },
 
   isStaff(role: UserRole): boolean {
-    return [UserRole.ADMIN, UserRole.BROKER, UserRole.AGENT, UserRole.TC, UserRole.COMPLIANCE_OFFICER].includes(role)
+    return (['superadmin', 'admin', 'broker', 'team_lead', 'agent', 'tc', 'compliance_officer'] as UserRole[]).includes(role)
+  },
+
+  /**
+   * Normalise a raw DB/JWT role string to a canonical UserRole before
+   * calling any other service method.
+   *
+   * @example
+   * permissionsService.normalise('transaction_coordinator') // → 'tc'
+   */
+  normalise(raw: string): UserRole {
+    return toCanonicalRole(raw) ?? 'contact'
   },
 
   canAccessRecord(
     ctx: UserAccessContext,
-    recordType: "contact" | "transaction" | "listing" | "document" | "communication",
+    recordType: 'contact' | 'transaction' | 'listing' | 'document' | 'communication',
     record: {
       id: string
       agent_id?: string
@@ -367,21 +404,21 @@ export const permissionsService = {
 
     const isAssigned =
       record.assigned_to?.includes(ctx.userId) ||
-      record.assigned_to?.includes(ctx.agentId || "")
+      record.assigned_to?.includes(ctx.agentId || '')
 
     const isSharedWith =
       record.shared_with?.includes(ctx.userId) ||
-      record.shared_with?.includes(ctx.contactId || "")
+      record.shared_with?.includes(ctx.contactId || '')
 
-    if (ctx.role === UserRole.AGENT || ctx.role === UserRole.TC) {
+    if (ctx.role === 'agent' || ctx.role === 'team_lead' || ctx.role === 'tc') {
       const isTeamRecord =
-        ctx.teamIds?.includes(record.team_id || "") ||
-        ctx.teamIds?.includes(record.agent_id || "") ||
-        ctx.managedAgentIds?.includes(record.agent_id || "")
+        ctx.teamIds?.includes(record.team_id || '') ||
+        ctx.teamIds?.includes(record.agent_id || '') ||
+        ctx.managedAgentIds?.includes(record.agent_id || '')
       return isOwner || isAssigned || !!isTeamRecord || isSharedWith
     }
 
-    if (ctx.role === UserRole.CONTACT) {
+    if (ctx.role === 'contact') {
       return (
         record.contact_id === ctx.contactId ||
         record.buyer_id === ctx.contactId ||
@@ -390,35 +427,35 @@ export const permissionsService = {
       )
     }
 
-    if (ctx.role === UserRole.VENDOR) return record.vendor_id === ctx.vendorId || isAssigned || isSharedWith
-    if (ctx.role === UserRole.LENDER) return isAssigned || isSharedWith
+    if (ctx.role === 'vendor') return record.vendor_id === ctx.vendorId || isAssigned || isSharedWith
+    if (ctx.role === 'lender') return isAssigned || isSharedWith
 
     return false
   },
 
-  getQueryFilters(ctx: UserAccessContext): Record<string, any> {
+  getQueryFilters(ctx: UserAccessContext): Record<string, unknown> {
     if (this.isAdminOrBroker(ctx.role)) return ctx.brokerageId ? { brokerage_id: ctx.brokerageId } : {}
-    if (ctx.role === UserRole.AGENT) return { agent_id: ctx.agentId }
-    if (ctx.role === UserRole.TC) return { team_id: ctx.teamIds }
-    if (ctx.role === UserRole.CONTACT) return { contact_id: ctx.contactId }
-    if (ctx.role === UserRole.VENDOR) return { vendor_id: ctx.vendorId }
-    if (ctx.role === UserRole.LENDER) return { lender_id: ctx.userId }
+    if (ctx.role === 'agent') return { agent_id: ctx.agentId }
+    if (ctx.role === 'tc') return { team_id: ctx.teamIds }
+    if (ctx.role === 'contact') return { contact_id: ctx.contactId }
+    if (ctx.role === 'vendor') return { vendor_id: ctx.vendorId }
+    if (ctx.role === 'lender') return { lender_id: ctx.userId }
     return {}
   },
 
   canPerformAction(
     ctx: UserAccessContext,
-    action: "view" | "edit" | "delete" | "share",
+    action: 'view' | 'edit' | 'delete' | 'share',
     entityType: string,
     entityOwnerId?: string,
     entityTeamId?: string
   ): boolean {
-    const permissionMap: Record<string, Record<string, Permission>> = {
-      contact: { view: "view:own_contacts", edit: "edit:own_contacts", delete: "delete:contacts" },
-      transaction: { view: "view:own_transactions", edit: "edit:own_transactions" },
-      listing: { view: "view:own_listings", edit: "edit:own_listings" },
-      document: { view: "view:own_documents", delete: "delete:documents" },
-      ai_chat: { view: "view:ai_chat", send: "send:ai_chat_messages", use: "use:ai_suggestions" },
+    const permissionMap: Record<string, Record<string, UIPermission>> = {
+      contact: { view: 'view:own_contacts', edit: 'edit:own_contacts', delete: 'delete:contacts' },
+      transaction: { view: 'view:own_transactions', edit: 'edit:own_transactions' },
+      listing: { view: 'view:own_listings', edit: 'edit:own_listings' },
+      document: { view: 'view:own_documents', delete: 'delete:documents' },
+      ai_chat: { view: 'view:ai_chat', send: 'send:ai_chat_messages', use: 'use:ai_suggestions' },
     }
 
     const basePermission = permissionMap[entityType]?.[action]
@@ -435,5 +472,3 @@ export const permissionsService = {
     return false
   },
 }
-
-

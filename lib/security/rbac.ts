@@ -34,7 +34,7 @@ export async function requirePermission(
   // Full access for privileged roles
   if (['BrokerOwner', 'ManagingBroker'].includes(roleName)) return
   if (roleName === 'Compliance' && action === 'read' && ['document', 'contact', 'transaction'].includes(resourceType)) return
-  if (roleName === 'TC' && resourceType === 'transaction') return
+  if ((roleName === 'tc' || roleName === 'TC') && resourceType === 'transaction') return
 
   const hasAccess = await checkSpecificAccess(user.id, resourceType, resourceId)
   if (!hasAccess) {

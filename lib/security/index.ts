@@ -1,5 +1,11 @@
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 export type {
+  // Role types
+  UserRole,
+  CanonicalRole,
+  LegacyRole,
+  RawRole,
+  // Permission / structure types
   Permission,
   PermissionGroup,
   RoleHierarchy,
@@ -8,6 +14,18 @@ export type {
   AccessCheckResult,
   AuthorizedUser,
   SubscriptionContext,
+  // Config
+  RoleConfig,
+  UserContext,
+} from './types'
+
+// ─── MAPPING FUNCTIONS (canonical role resolution) ────────────────────────────
+export {
+  toCanonicalRole,
+  toCanonicalRoleOrDefault,
+  toCanonicalRoles,
+  isCanonicalRole,
+  CANONICAL_ROLE_CONFIG,
 } from './types'
 
 // ─── PERMISSION MATRIX (single source of truth) ───────────────────────────────

@@ -101,13 +101,17 @@ export const CLIENT_VISIBLE_MILESTONES: MilestoneName[] = [
 // Role-based permissions
 export const ROLES = {
   AGENT: 'agent',
-  TC: 'TC',
+  TC: 'tc',
   COMPLIANCE_OFFICER: 'compliance_officer',
   BROKER: 'broker',
   ADMIN: 'admin',
   LENDER: 'lender',
-  TITLE: 'title',
-  CLIENT: 'client',
+  TITLE_AGENT: 'title_agent',
+  /** @deprecated Use TITLE_AGENT. Kept for backward compatibility. */
+  TITLE: 'title_agent',
+  /** @deprecated Use TC. Kept for backward compatibility. */
+  TRANSACTION_COORDINATOR: 'tc',
+  CLIENT: 'contact',
 } as const
 
 export type Role = typeof ROLES[keyof typeof ROLES]

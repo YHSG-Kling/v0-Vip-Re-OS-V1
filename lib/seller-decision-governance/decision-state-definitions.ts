@@ -21,7 +21,7 @@ export type SellerDecisionState =
   | "SELLER_DECISION_DEFERRED"
   | "SELLER_DECISION_DECLINED"
 
-export type RequiredRole = "agent" | "team_leader" | "broker" | "admin"
+export type RequiredRole = "agent" | "team_lead" | "broker" | "admin"
 
 export interface DecisionStateDefinition {
   state: SellerDecisionState

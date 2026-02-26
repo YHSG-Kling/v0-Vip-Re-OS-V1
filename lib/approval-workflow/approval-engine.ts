@@ -19,7 +19,7 @@ export type AudienceScope = "private" | "public"
 /**
  * Approver Roles
  */
-export type ApproverRole = "agent" | "team_leader" | "broker_admin" | "compliance_manager"
+export type ApproverRole = "agent" | "team_lead" | "broker" | "compliance_officer"
 
 /**
  * Approval Status
@@ -194,42 +194,42 @@ export function determineRequiredApprovers(
 
   // High-severity requires compliance manager
   if (complianceVerdict.summary.highest_severity === "high") {
-    approvers.push("compliance_manager")
-    approvers.push("broker_admin")
+    approvers.push("compliance_officer")
+    approvers.push("broker")
     return approvers
   }
 
   // Medium-severity requires team leader or higher
   if (complianceVerdict.summary.highest_severity === "medium") {
-    approvers.push("team_leader")
+    approvers.push("team_lead")
   }
 
   // Public content requires broker/admin approval
   if (context.audience_scope === "public") {
-    if (!approvers.includes("broker_admin")) {
-      approvers.push("broker_admin")
+    if (!approvers.includes("broker")) {
+      approvers.push("broker")
     }
   }
 
   // High-value channels require team leader
   const highValueChannels = ["google_ads", "meta_ads", "email", "newsletter"]
   if (highValueChannels.includes(draft.channel_intent)) {
-    if (!approvers.includes("team_leader")) {
-      approvers.push("team_leader")
+    if (!approvers.includes("team_lead")) {
+      approvers.push("team_lead")
     }
   }
 
   // Strict policy level requires broker
   if (context.brokerage_policy_level === "strict") {
-    if (!approvers.includes("broker_admin")) {
-      approvers.push("broker_admin")
+    if (!approvers.includes("broker")) {
+      approvers.push("broker")
     }
   }
 
   // New campaigns require team leader
   if (context.is_new_campaign) {
-    if (!approvers.includes("team_leader")) {
-      approvers.push("team_leader")
+    if (!approvers.includes("team_lead")) {
+      approvers.push("team_lead")
     }
   }
 
@@ -251,9 +251,9 @@ export function hasApprovalAuthority(
   // Role hierarchy
   const roleHierarchy: Record<ApproverRole, number> = {
     agent: 1,
-    team_leader: 2,
-    broker_admin: 3,
-    compliance_manager: 4,
+  team_lead: 2,
+  broker: 3,
+  compliance_officer: 4,
   }
 
   const userLevel = roleHierarchy[userRole]
@@ -318,20 +318,20 @@ export function previewApprovalDecision(
   const likely_approvers: ApproverRole[] = []
 
   if (context.audience_scope === "public") {
-    likely_approvers.push("broker_admin")
+    likely_approvers.push("broker")
     reasoning.push("Public content requires broker/admin approval")
   }
 
   if (context.content_origin === "ai_generated") {
-    if (!likely_approvers.includes("team_leader")) {
-      likely_approvers.push("team_leader")
+    if (!likely_approvers.includes("team_lead")) {
+      likely_approvers.push("team_lead")
     }
     reasoning.push("AI-generated content requires human validation")
   }
 
   if (complianceStatus === "review_required") {
-    if (!likely_approvers.includes("team_leader")) {
-      likely_approvers.push("team_leader")
+    if (!likely_approvers.includes("team_lead")) {
+      likely_approvers.push("team_lead")
     }
     reasoning.push("Compliance review required")
   }

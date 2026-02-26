@@ -3,9 +3,12 @@
 /**
  * SINGLE SOURCE OF TRUTH — PERMISSION MATRIX
  *
- * All role permissions, hierarchy, and feature flags are defined here.
- * No other file should define role→permission mappings.
- * Import from @/lib/security or @/lib/security/permission-matrix.
+ * All role permissions, hierarchy, and feature flags are defined here using
+ * canonical role keys only.  Legacy strings (transaction_coordinator,
+ * compliance_manager, etc.) are resolved via toCanonicalRole() in types.ts
+ * before any lookup reaches this module.
+ *
+ * Import via @/lib/security or @/lib/security/permission-matrix.
  */
 
 import type { UserRole } from './types'
@@ -32,56 +35,63 @@ export const ROLE_HIERARCHY: Record<UserRole, RoleHierarchy> = {
     canManage: [],
     canViewData: 'own',
   },
-  agent: {
-    role: 'agent',
-    level: 3,
-    canManage: [],
-    canViewData: 'own',
-  },
-  transaction_coordinator: {
-    role: 'transaction_coordinator',
-    level: 4,
-    canManage: [],
-    canViewData: 'brokerage',
-  },
-  compliance_manager: {
-    role: 'compliance_manager',
-    level: 5,
-    canManage: [],
-    canViewData: 'brokerage',
-  },
   lender: {
     role: 'lender',
-    level: 6,
+    level: 3,
     canManage: [],
     canViewData: 'brokerage',
   },
   title_agent: {
     role: 'title_agent',
-    level: 7,
+    level: 4,
     canManage: [],
     canViewData: 'brokerage',
   },
+  tc: {
+    role: 'tc',
+    level: 5,
+    canManage: [],
+    canViewData: 'brokerage',
+  },
+  compliance_officer: {
+    role: 'compliance_officer',
+    level: 6,
+    canManage: [],
+    canViewData: 'brokerage',
+  },
+  agent: {
+    role: 'agent',
+    level: 7,
+    canManage: [],
+    canViewData: 'own',
+  },
+  team_lead: {
+    role: 'team_lead',
+    level: 8,
+    canManage: ['agent', 'isa'],
+    canViewData: 'team',
+  },
   broker: {
     role: 'broker',
-    level: 8,
-    canManage: ['agent', 'isa', 'vendor'],
+    level: 9,
+    canManage: ['team_lead', 'agent', 'isa', 'vendor', 'tc', 'compliance_officer', 'lender', 'title_agent'],
     canViewData: 'brokerage',
   },
   admin: {
     role: 'admin',
-    level: 9,
+    level: 10,
     canManage: [
-      'broker',
-      'agent',
-      'isa',
-      'admin',
-      'vendor',
-      'contact',
-      'compliance_manager',
-      'transaction_coordinator',
-      'lender',
-      'title_agent',
+      'broker', 'team_lead', 'agent', 'isa', 'vendor', 'contact',
+      'tc', 'compliance_officer', 'lender', 'title_agent',
+    ],
+    canViewData: 'all',
+  },
+  superadmin: {
+    role: 'superadmin',
+    level: 11,
+    canManage: [
+      'admin', 'broker', 'team_lead', 'agent', 'isa', 'vendor', 'contact',
+      'tc', 'compliance_officer', 'lender', 'title_agent',
     ],
     canViewData: 'all',
   },
@@ -118,77 +128,6 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
       'settings:manage_account',
     ],
     features: ['calling_center', 'lead_dialer', 'conversation_log', 'call_scripts'],
-  },
-
-  agent: {
-    role: 'agent',
-    permissions: [
-      'contacts:view',
-      'contacts:create',
-      'contacts:edit',
-      'leads:view',
-      'leads:claim',
-      'listings:create',
-      'listings:edit',
-      'listings:view_all',
-      'transactions:view',
-      'analytics:view_own',
-      'financials:view_own',
-      'settings:manage_account',
-    ],
-    features: [
-      'crm',
-      'lead_management',
-      'listing_creation',
-      'content_studio',
-      'campaigns',
-      'seller_portal',
-      'buyer_portal',
-    ],
-  },
-
-  transaction_coordinator: {
-    role: 'transaction_coordinator',
-    permissions: [
-      'contacts:view_all',
-      'leads:view_all',
-      'listings:view_all',
-      'transactions:view_all',
-      'transactions:edit',
-      'transactions:coordinate',
-      'team:view_all',
-      'analytics:view_all',
-      'compliance:view_logs',
-      'settings:manage_team',
-    ],
-    features: [
-      'transaction_dashboard',
-      'deal_checklist',
-      'vendor_coordination',
-      'document_management',
-      'closing_coordination',
-    ],
-  },
-
-  compliance_manager: {
-    role: 'compliance_manager',
-    permissions: [
-      'contacts:view_all',
-      'transactions:view_all',
-      'compliance:view_logs',
-      'compliance:flag_violations',
-      'compliance:manage_policies',
-      'compliance:generate_reports',
-      'team:view_all',
-      'analytics:view_all',
-    ],
-    features: [
-      'compliance_dashboard',
-      'audit_logs',
-      'violation_flagging',
-      'conversation_analysis',
-      'compliance_reports',
-    ],
   },
 
   lender: {
@@ -228,6 +167,117 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
       'closing_coordination',
       'title_search',
       'closing_schedule',
+    ],
+  },
+
+  tc: {
+    role: 'tc',
+    permissions: [
+      'contacts:view_all',
+      'leads:view_all',
+      'listings:view_all',
+      'transactions:view_all',
+      'transactions:edit',
+      'transactions:coordinate',
+      'team:view_all',
+      'analytics:view_all',
+      'compliance:view_logs',
+      'settings:manage_team',
+    ],
+    features: [
+      'transaction_dashboard',
+      'deal_checklist',
+      'vendor_coordination',
+      'document_management',
+      'closing_coordination',
+    ],
+  },
+
+  compliance_officer: {
+    role: 'compliance_officer',
+    permissions: [
+      'contacts:view_all',
+      'transactions:view_all',
+      'compliance:view_logs',
+      'compliance:flag_violations',
+      'compliance:manage_policies',
+      'compliance:generate_reports',
+      'team:view_all',
+      'analytics:view_all',
+    ],
+    features: [
+      'compliance_dashboard',
+      'audit_logs',
+      'violation_flagging',
+      'conversation_analysis',
+      'compliance_reports',
+    ],
+  },
+
+  agent: {
+    role: 'agent',
+    permissions: [
+      'contacts:view',
+      'contacts:create',
+      'contacts:edit',
+      'leads:view',
+      'leads:claim',
+      'listings:create',
+      'listings:edit',
+      'listings:view_all',
+      'transactions:view',
+      'analytics:view_own',
+      'financials:view_own',
+      'settings:manage_account',
+    ],
+    features: [
+      'crm',
+      'lead_management',
+      'listing_creation',
+      'content_studio',
+      'campaigns',
+      'seller_portal',
+      'buyer_portal',
+    ],
+  },
+
+  team_lead: {
+    role: 'team_lead',
+    permissions: [
+      'contacts:view_all',
+      'contacts:create',
+      'contacts:edit',
+      'leads:view',
+      'leads:view_all',
+      'leads:claim',
+      'leads:reassign',
+      'listings:create',
+      'listings:edit',
+      'listings:view_all',
+      'transactions:view',
+      'transactions:view_all',
+      'team:manage_agents',
+      'team:manage_isas',
+      'team:view_performance',
+      'team:view_all',
+      'analytics:view_own',
+      'analytics:view_team',
+      'financials:view_own',
+      'financials:view_team',
+      'settings:manage_account',
+      'settings:manage_team',
+      'compliance:view_logs',
+    ],
+    features: [
+      'crm',
+      'lead_management',
+      'team_management',
+      'listing_creation',
+      'content_studio',
+      'campaigns',
+      'seller_portal',
+      'buyer_portal',
+      'agent_analytics',
     ],
   },
 
@@ -280,6 +330,20 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
       'integration_management',
       'all_features',
     ],
+  },
+
+  superadmin: {
+    role: 'superadmin',
+    permissions: [
+      'admin:manage_users',
+      'admin:manage_brokerages',
+      'admin:view_all_data',
+      'admin:manage_integrations',
+      'admin:system_health',
+      'compliance:manage_policies',
+      'compliance:generate_reports',
+    ],
+    features: ['all_features'],
   },
 }
 
@@ -348,28 +412,23 @@ export const PERMISSION_DEFINITIONS: Record<Permission, string> = {
 // ─── FEATURE FLAGS ────────────────────────────────────────────────────────────
 
 export const FEATURE_FLAGS: Record<string, UserRole[]> = {
-  crm: ['agent', 'broker', 'admin'],
-  lead_management: ['agent', 'isa', 'broker', 'admin'],
-  calling_center: ['isa', 'broker', 'admin'],
-  listing_creation: ['agent', 'broker', 'admin'],
-  content_studio: ['agent', 'broker', 'admin'],
-  campaigns: ['agent', 'broker', 'admin'],
-  seller_portal: ['agent', 'broker', 'admin'],
-  buyer_portal: ['contact', 'agent', 'broker', 'admin'],
-  transaction_dashboard: ['transaction_coordinator', 'broker', 'admin'],
-  deal_checklist: ['transaction_coordinator', 'broker', 'admin'],
-  compliance_dashboard: ['compliance_manager', 'broker', 'admin'],
-  loan_pipeline: ['lender', 'broker', 'admin'],
-  title_orders: ['title_agent', 'broker', 'admin'],
-  admin_dashboard: ['admin'],
-  broker_dashboard: ['broker', 'admin'],
+  crm: ['agent', 'team_lead', 'broker', 'admin', 'superadmin'],
+  lead_management: ['agent', 'team_lead', 'isa', 'broker', 'admin', 'superadmin'],
+  calling_center: ['isa', 'broker', 'admin', 'superadmin'],
+  listing_creation: ['agent', 'team_lead', 'broker', 'admin', 'superadmin'],
+  content_studio: ['agent', 'team_lead', 'broker', 'admin', 'superadmin'],
+  campaigns: ['agent', 'team_lead', 'broker', 'admin', 'superadmin'],
+  seller_portal: ['agent', 'team_lead', 'broker', 'admin', 'superadmin'],
+  buyer_portal: ['contact', 'agent', 'team_lead', 'broker', 'admin', 'superadmin'],
+  transaction_dashboard: ['tc', 'team_lead', 'broker', 'admin', 'superadmin'],
+  deal_checklist: ['tc', 'team_lead', 'broker', 'admin', 'superadmin'],
+  compliance_dashboard: ['compliance_officer', 'broker', 'admin', 'superadmin'],
+  loan_pipeline: ['lender', 'broker', 'admin', 'superadmin'],
+  title_orders: ['title_agent', 'broker', 'admin', 'superadmin'],
+  admin_dashboard: ['admin', 'superadmin'],
+  broker_dashboard: ['broker', 'admin', 'superadmin'],
   analytics: [
-    'agent',
-    'broker',
-    'admin',
-    'transaction_coordinator',
-    'compliance_manager',
-    'lender',
-    'title_agent',
+    'agent', 'team_lead', 'broker', 'admin', 'superadmin',
+    'tc', 'compliance_officer', 'lender', 'title_agent',
   ],
 }

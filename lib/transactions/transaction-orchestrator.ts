@@ -29,7 +29,7 @@ export class TransactionOrchestrator {
     // Check role permission
     const hasPermission = await assertUserHasRole(
       this.params.userId,
-      ["admin", "broker", "TC", "agent"],
+      ["admin", "broker", "tc", "agent"],
       this.params.brokerageId
     )
 

@@ -50,16 +50,18 @@ export class RoleManager {
 
   static getRoleLabel(role: UserRole): string {
     const labels: Record<UserRole, string> = {
-      agent: 'Agent',
-      broker: 'Broker',
-      isa: 'ISA',
+      superadmin: 'Super Admin',
       admin: 'Administrator',
+      broker: 'Broker',
+      team_lead: 'Team Lead',
+      agent: 'Agent',
+      isa: 'ISA',
+      tc: 'Transaction Coordinator',
+      compliance_officer: 'Compliance Officer',
       vendor: 'Vendor',
-      contact: 'Contact',
-      compliance_manager: 'Compliance Manager',
-      transaction_coordinator: 'Transaction Coordinator',
       lender: 'Lender',
       title_agent: 'Title Agent',
+      contact: 'Contact',
     }
     return labels[role] ?? role
   }

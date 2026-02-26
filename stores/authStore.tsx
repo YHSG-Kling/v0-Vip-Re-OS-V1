@@ -27,7 +27,8 @@ interface User {
     beds?: number
     baths?: number
   }
-  // Sub-type for more granular roles
+  // Sub-type for more granular persona detail within a canonical role.
+  // Use canonical role strings — no legacy aliases here.
   subType?:
     | "agent"
     | "team_lead"
@@ -40,8 +41,8 @@ interface User {
     | "appraiser"
     | "title_officer"
     | "escrow_officer"
-    | "transaction_coordinator"
-    | "compliance_manager"
+    | "tc"
+    | "compliance_officer"
 }
 
 interface AuthState {
@@ -106,7 +107,7 @@ export const useAuthStore = create<AuthState>()(
               teamId: "team_1",
               teamIds: ["team_1"],
               brokerageId: "brokerage_1",
-              subType: "team_lead",
+              subType: "team_lead" as const,
               managedAgentIds: ["33333333-3333-3333-3333-333333333333"],
             },
             "tc@vipos.com": {
@@ -117,7 +118,7 @@ export const useAuthStore = create<AuthState>()(
               teamIds: ["team_1", "team_2"],
               brokerageId: "brokerage_1",
               managedAgentIds: ["33333333-3333-3333-3333-333333333333", "44444444-4444-4444-4444-444444444444"],
-              subType: "transaction_coordinator",
+              subType: "tc",
             },
             "lender@mortgage.com": {
               id: "55555555-5555-5555-5555-555555555555",
@@ -162,7 +163,7 @@ export const useAuthStore = create<AuthState>()(
               name: "Compliance Manager",
               role: UserRole.COMPLIANCE_OFFICER,
               brokerageId: "brokerage_1",
-              subType: "compliance_manager",
+              subType: "compliance_officer",
             },
           }
 

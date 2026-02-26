@@ -57,7 +57,7 @@ export type ReadinessCheckType =
   | "financing_approved"
   | "closing_docs_ready"
 
-export type RequiredRole = "agent" | "team_leader" | "broker" | "admin"
+export type RequiredRole = "agent" | "team_lead" | "broker" | "admin"
 
 export interface StageDefinition {
   stage: ListingStage
