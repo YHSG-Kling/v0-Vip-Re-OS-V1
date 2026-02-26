@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { requirePermission } from "@/lib/rbac-utils"
+import { requirePermission } from "@/lib/security"
 import { revalidatePath } from "next/cache"
 import { ZenrowsClient } from "@/lib/zenrows-client"
 import { BatchDataClient } from "@/lib/batchdata-client"

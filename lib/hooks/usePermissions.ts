@@ -2,9 +2,9 @@
 
 import { useCallback, useMemo } from 'react'
 import { useAuth } from '@/lib/auth/useAuth'
-import { Permission } from '@/app/types/permissions'
-import { RoleManager } from '@/lib/permissions/role-manager'
-import { FeatureFlags } from '@/lib/permissions/feature-flags'
+import type { Permission } from '@/lib/security'
+import { RoleManager } from '@/lib/security'
+import { FeatureFlags } from '@/lib/security'
 
 export function usePermissions() {
   const { userContext } = useAuth()

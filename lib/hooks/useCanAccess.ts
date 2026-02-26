@@ -2,7 +2,7 @@
 
 import { useCallback } from 'react'
 import { useAuth } from '@/lib/auth/useAuth'
-import { RoleManager } from '@/lib/permissions/role-manager'
+import { RoleManager } from '@/lib/security'
 
 export function useCanAccess() {
   const { userContext } = useAuth()

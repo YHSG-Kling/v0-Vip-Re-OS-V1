@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { requirePermission } from "@/lib/rbac-utils"
+import { requirePermission } from "@/lib/security"
 import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { isValidUUID } from "@/lib/validations"
