@@ -18,7 +18,7 @@ import {
   generateComplianceReportService,
   createTRIDTimelineService,
   updateTRIDMilestoneService,
-} from "@/lib/application/compliance-monitoring"
+} from "@/lib/application"
 import { isValidUUID } from "@/lib/validations"
 
 // Audit logging

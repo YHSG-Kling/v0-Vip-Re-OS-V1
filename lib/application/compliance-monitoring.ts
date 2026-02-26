@@ -1,5 +1,3 @@
-"use server"
-
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
@@ -32,7 +30,7 @@ export async function logAuditEventService(params: {
   })
 
   if (error) {
-    console.error("[v0] Error logging audit event:", error)
+    console.error("[ComplianceMonitoring] Error logging audit event:", error)
     throw new Error("Failed to log audit event")
   }
 
@@ -196,7 +194,7 @@ Focus on detecting:
     })
 
   if (error) {
-    console.error("[v0] Error logging fair housing analysis:", error)
+    console.error("[ComplianceMonitoring] Error logging fair housing analysis:", error)
   }
 
   if (aiAnalysis.risk_score >= 0.6) {
@@ -307,7 +305,7 @@ export async function createTRIDTimelineService(transactionId: string) {
     .single()
 
   if (error) {
-    console.error("[v0] Error creating TRID timeline:", error)
+    console.error("[ComplianceMonitoring] Error creating TRID timeline:", error)
     throw new Error("Failed to create TRID timeline")
   }
 
@@ -330,7 +328,7 @@ export async function updateTRIDMilestoneService(params: {
     .eq("transaction_id", params.transactionId)
 
   if (error) {
-    console.error("[v0] Error updating TRID milestone:", error)
+    console.error("[ComplianceMonitoring] Error updating TRID milestone:", error)
     throw new Error("Failed to update TRID milestone")
   }
 
@@ -692,7 +690,7 @@ export async function logCommunicationWithComplianceService(data: {
     .single()
 
   if (error) {
-    console.error("[v0] Error logging communication:", error)
+    console.error("[ComplianceMonitoring] Error logging communication:", error)
     throw error
   }
 
@@ -726,7 +724,7 @@ export async function getApprovedContentLibraryService(filters?: {
   const { data, error } = await query.order("created_at", { ascending: false })
 
   if (error) {
-    console.error("[v0] Error fetching approved content:", error)
+    console.error("[ComplianceMonitoring] Error fetching approved content:", error)
     return []
   }
 
@@ -744,7 +742,7 @@ export async function getPendingApprovalsService() {
     .order("created_at", { ascending: true })
 
   if (error) {
-    console.error("[v0] Error fetching pending approvals:", error)
+    console.error("[ComplianceMonitoring] Error fetching pending approvals:", error)
     return []
   }
 
@@ -770,7 +768,7 @@ export async function getComplianceViolationsService(agentId?: string, userId?: 
   const { data, error } = await query.limit(100)
 
   if (error) {
-    console.error("[v0] Error fetching compliance violations:", error)
+    console.error("[ComplianceMonitoring] Error fetching compliance violations:", error)
     return []
   }
 
