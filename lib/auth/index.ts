@@ -1,6 +1,12 @@
-// ─── CLIENT HOOK ──────────────────────────────────────────────────────────────
-// NOTE: Only import useAuth in Client Components ("use client").
-export { useAuth } from "./useAuth"
+/**
+ * lib/auth/index.ts — SERVER-ONLY barrel.
+ *
+ * Safe to import in Server Components, Route Handlers, and Server Actions.
+ * Do NOT import from this file in Client Components.
+ *
+ * For client-side auth utilities (useAuth, getClientUserRole, etc.)
+ * import from "@/lib/auth/client" instead.
+ */
 
 // ─── SERVER-SIDE PERMISSIONS ──────────────────────────────────────────────────
 export type { Role, UserWithRole, BrokerageContext } from "./permissions"
@@ -15,10 +21,6 @@ export {
   getCurrentBrokerageId,
   canAccessResource,
 } from "./permissions"
-
-// ─── CLIENT-SIDE PERMISSIONS ──────────────────────────────────────────────────
-export type { UserRole } from "./permissions-client"
-export { getClientUserRole, clientHasCapability, clientIsAdmin } from "./permissions-client"
 
 // ─── AUTHORIZATION (re-exports from lib/security for backwards compatibility) ─
 // Prefer importing directly from "@/lib/security" for new code.
