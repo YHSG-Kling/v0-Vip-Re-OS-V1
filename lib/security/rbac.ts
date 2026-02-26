@@ -33,8 +33,12 @@ export async function requirePermission(
 
   // Full access for privileged roles
   if (['BrokerOwner', 'ManagingBroker'].includes(roleName)) return
-  if (roleName === 'Compliance' && action === 'read' && ['document', 'contact', 'transaction'].includes(resourceType)) return
-  if ((roleName === 'tc' || roleName === 'TC') && resourceType === 'transaction') return
+  // Accept both canonical ('compliance_officer', 'tc') and legacy DB values
+  // ('Compliance', 'TC') to handle existing rows without a schema migration.
+  const isCompliance = roleName === 'compliance_officer' || roleName === 'Compliance'
+  const isTC = roleName === 'tc' || roleName === 'TC'
+  if (isCompliance && action === 'read' && ['document', 'contact', 'transaction'].includes(resourceType)) return
+  if (isTC && resourceType === 'transaction') return
 
   const hasAccess = await checkSpecificAccess(user.id, resourceType, resourceId)
   if (!hasAccess) {
