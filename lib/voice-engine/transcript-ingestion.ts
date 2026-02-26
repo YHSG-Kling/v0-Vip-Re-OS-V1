@@ -50,16 +50,26 @@ export async function ingestVoiceTranscript(
     const authorType = params.callMetadata.initiatorRole
 
     // STEP 3: Write transcript as message via Communication Spine
-    const result = await ingestMessage({
+    // 3a. Get or create conversation for this contact
+    const conversation = await getOrCreateConversation({
       contactId: params.contactId,
       transactionId: params.callMetadata.transactionId,
       listingId: params.callMetadata.listingId,
       agentId: params.callMetadata.agentId,
+      initialChannel: 'voice',
+    })
+
+    if (!conversation.success || !conversation.conversationId) {
+      return { success: false, error: conversation.error ?? 'Could not resolve conversation' }
+    }
+
+    // 3b. Normalize the transcript into the standard message format
+    const normalizedMsg = normalizeOutboundMessage(
+      'voice_transcript',
       authorType,
-      outboundMessage: {
-        channel: 'voice',
+      normalized.fullText,
+      {
         subject: `Voice Call Transcript (${Math.ceil(normalized.metadata.duration / 60)} min)`,
-        body: normalized.fullText,
         metadata: {
           callId: params.rawTranscript.callId,
           vendor: normalized.metadata.vendor,
@@ -68,7 +78,16 @@ export async function ingestVoiceTranscript(
           speakers: normalized.speakers.map(s => s.role),
           transcriptQuality: normalized.metadata.wasComplete ? 'complete' : 'partial',
         },
-      },
+      }
+    )
+
+    // 3c. Persist via Communication Spine
+    const result = await persistMessageWithContext(normalizedMsg, {
+      conversationId: conversation.conversationId,
+      contactId: params.contactId,
+      agentId: params.callMetadata.agentId,
+      transactionId: params.callMetadata.transactionId,
+      listingId: params.callMetadata.listingId,
     })
 
     if (!result.success) {
@@ -84,7 +103,7 @@ export async function ingestVoiceTranscript(
     return {
       success: true,
       messageId: result.messageId,
-      conversationId: result.conversationId,
+      conversationId: conversation.conversationId,
     }
   } catch (error: any) {
     console.error('[v0] [VOICE ENGINE] Error ingesting transcript:', error)

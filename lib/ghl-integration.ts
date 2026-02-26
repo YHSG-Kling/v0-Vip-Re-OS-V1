@@ -5,7 +5,25 @@
  */
 
 import { createServiceClient } from "./supabase/service"
-import { enrichContact } from "@/app/actions/contact-enrichment"
+
+/**
+ * Queue a contact for background enrichment via the database.
+ * Avoids importing from app/actions — the enrichment worker reads this queue.
+ */
+async function queueContactEnrichment(contactId: string, metadata: Record<string, any> = {}): Promise<void> {
+  try {
+    const supabase = createServiceClient()
+    await supabase.from('enrichment_queue').insert({
+      contact_id: contactId,
+      source: metadata.source ?? 'ghl_sync',
+      metadata: JSON.stringify(metadata),
+      status: 'pending',
+      created_at: new Date().toISOString(),
+    })
+  } catch (err) {
+    console.error('[GHL] Failed to queue enrichment:', err)
+  }
+}
 
 interface GHLContact {
   id?: string
@@ -58,11 +76,9 @@ export class GHLIntegration {
           })
           .eq("id", existingContact.id)
 
-        // Enrich if not already enriched
+        // Queue for enrichment if not already enriched
         if (!existingContact.enriched_at) {
-          enrichContact(existingContact.id, { source: "ghl_sync" }).catch((err) => {
-            console.error("[GHL] Enrichment error:", err)
-          })
+          queueContactEnrichment(existingContact.id, { source: "ghl_sync" })
         }
 
         return { success: true, contactId: existingContact.id }
@@ -88,10 +104,8 @@ export class GHLIntegration {
         return { success: false, error: error?.message || "Failed to create contact" }
       }
 
-      // Enrich new contact in background
-      enrichContact(newContact.id, { source: "ghl_sync" }).catch((err) => {
-        console.error("[GHL] Enrichment error:", err)
-      })
+      // Queue new contact for background enrichment
+      queueContactEnrichment(newContact.id, { source: "ghl_sync" })
 
       return { success: true, contactId: newContact.id }
     } catch (error) {
