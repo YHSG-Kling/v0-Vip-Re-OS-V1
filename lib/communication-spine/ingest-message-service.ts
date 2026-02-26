@@ -4,15 +4,15 @@
  * app/actions/communication-spine/ingest-message.ts re-exports from here.
  */
 
-import { getOrCreateConversation } from '@/lib/communication-spine/conversation-manager'
-import { validateMessageInitiationRules, AuthorType } from '@/lib/communication-spine/role-validator'
+import { getOrCreateConversation } from './conversation-manager'
+import { validateMessageInitiationRules, AuthorType } from './role-validator'
 import {
   normalizeInboundMessage,
   normalizeOutboundMessage,
   RawInboundMessage,
   MessageChannel,
-} from '@/lib/communication-spine/message-normalizer'
-import { persistMessageWithContext } from '@/lib/communication-spine/message-persister'
+} from './message-normalizer'
+import { persistMessageWithContext } from './message-persister'
 import { createServiceClient } from '@/lib/supabase/service'
 
 export interface IngestMessageParams {

@@ -1,0 +1,87 @@
+// ─── CONTACT MANAGEMENT ───────────────────────────────────────────────────────
+export type { CreateContactParams, UpdateContactParams } from "./contact-management.service"
+export {
+  createContact,
+  updateContact,
+  deleteContact,
+  getContact,
+  getContacts,
+  addContactTags,
+  removeContactTags,
+  mergeContacts,
+} from "./contact-management.service"
+
+// ─── CONTENT GENERATION ───────────────────────────────────────────────────────
+export type { ContentGenerationParams, ContentGenerationResult } from "./content-generation.service"
+export { generateContent, bulkGenerateContent } from "./content-generation.service"
+
+// ─── LEAD MANAGEMENT ──────────────────────────────────────────────────────────
+export type { LeadScoringParams, LeadScoringResult } from "./lead-management.service"
+export {
+  calculateLeadScore,
+  bulkRecalculateLeadScores,
+  bulkRecalculateScrapedLeadScores,
+  bulkRecalculateAllScores,
+  getTopLeads,
+  getLeadsNeedingAttention,
+} from "./lead-management.service"
+
+// ─── PLATFORM SYNC ────────────────────────────────────────────────────────────
+export {
+  syncDotloopLoop,
+  createDotloopLoop,
+  getDotloopDocuments,
+  syncGHLContact,
+  triggerGHLWorkflow,
+  syncQuickBooksExpense,
+  syncQuickBooksCommission,
+  syncGoogleCalendarEvent,
+  syncShowingTimeAppointments,
+  syncMLSListings,
+  savePlatformCredentials,
+  getPlatformStatus,
+} from "./platform-sync.service"
+
+// ─── SOCIAL PUBLISHING ────────────────────────────────────────────────────────
+export type { PublishPostParams, PublishResult } from "./social-publishing.service"
+export {
+  publishToSocialMedia,
+  schedulePost,
+  getPostAnalytics,
+  bulkPublishPosts,
+  cancelScheduledPost,
+} from "./social-publishing.service"
+
+// ─── TRANSACTION MANAGEMENT ───────────────────────────────────────────────────
+export type { CreateTransactionParams, UpdateTransactionParams } from "./transaction-management.service"
+export {
+  createTransaction,
+  updateTransaction,
+  getTransactionDetails,
+  getAgentTransactions,
+  archiveTransaction,
+  calculateTransactionCommission,
+} from "./transaction-management.service"
+
+// ─── VIDEO GENERATION ─────────────────────────────────────────────────────────
+export type { VideoProjectParams, VideoGenerationResult } from "./video-generation.service"
+export {
+  createVideoProject,
+  getVideoProjectStatus,
+  generateListingVideoPackage,
+  getListingVideos,
+  deleteVideoProject,
+} from "./video-generation.service"
+
+// ─── COMMUNICATION ────────────────────────────────────────────────────────────
+export type { SendEmailParams, SendSMSParams, LogCommunicationParams } from "./communication.service"
+export {
+  sendEmail,
+  sendSMS,
+  sendViaGHL,
+  logCommunication,
+  sendCalculatorResults,
+  sendCollaborativeSearchInvite,
+  sendAnniversaryMessage,
+  sendVendorBookingConfirmation,
+} from "./communication.service"

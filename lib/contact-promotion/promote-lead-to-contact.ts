@@ -5,10 +5,10 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { validatePromotionEligibility } from "@/lib/contact-promotion/promotion-eligibility"
-import { createContactFromLead } from "@/lib/contact-promotion/contact-creator"
-import { deactivateLead } from "@/lib/contact-promotion/lead-deactivator"
-import { logPromotionActivity } from "@/lib/contact-promotion/promotion-logger"
+import { validatePromotionEligibility } from "./promotion-eligibility"
+import { createContactFromLead } from "./contact-creator"
+import { deactivateLead } from "./lead-deactivator"
+import { logPromotionActivity } from "./promotion-logger"
 
 export interface PromotionResult {
   success: boolean
