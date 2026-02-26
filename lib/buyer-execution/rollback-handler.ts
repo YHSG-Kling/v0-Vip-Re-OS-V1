@@ -10,7 +10,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { type BuyerState } from '@/lib/buyer-lifecycle/lifecycle-definitions'
+import { type BuyerState } from '@/lib/buyer-lifecycle'
 
 export interface RollbackTrigger {
   contactId: string

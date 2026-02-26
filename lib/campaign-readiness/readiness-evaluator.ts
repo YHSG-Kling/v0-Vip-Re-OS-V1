@@ -4,8 +4,8 @@
 // ============================================
 
 import { type ComplianceVerdict } from "@/lib/compliance-rules"
-import { ApprovalDecision } from "@/lib/approval-workflow/approval-engine"
-import { BrandComplianceResult } from "@/lib/brand-template-registry/brand-requirements"
+import { type ApprovalDecision } from "@/lib/approval-workflow"
+import { type BrandRequirements as BrandComplianceResult } from "@/lib/brand-template-registry"
 
 /**
  * Channel Types (supported execution channels)

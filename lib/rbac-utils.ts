@@ -5,4 +5,4 @@ export {
   revokeAccess,
   batchGrantAccess,
   getResourceAccessList,
-} from '@/lib/security/rbac'
+} from '@/lib/security'

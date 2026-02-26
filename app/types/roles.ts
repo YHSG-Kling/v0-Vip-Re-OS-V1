@@ -1,11 +1,11 @@
 // app/types/roles.ts
 // Canonical definitions live in lib/security/types.ts — re-exported here for
 // backward compatibility with any app-layer code that imports from this path.
-export type { UserRole, RoleConfig, UserContext } from '@/lib/security/types'
+export type { UserRole, RoleConfig, UserContext } from '@/lib/security'
 
 // ROLE_CONFIG is a runtime value — kept here since app/types is allowed to
 // reference lib/security (app → domain is the correct direction).
-import type { UserRole, RoleConfig } from '@/lib/security/types'
+import type { UserRole, RoleConfig } from '@/lib/security'
 
 export const ROLE_CONFIG: Record<UserRole, RoleConfig> = {
   agent: {

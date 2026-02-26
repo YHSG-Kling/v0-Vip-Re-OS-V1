@@ -14,9 +14,13 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { checkFinancialVerification, type FinancialVerificationResult } from '@/lib/buyer-lifecycle/financial-verification'
+import {
+  checkFinancialVerification,
+  isSystemGateEnabled,
+  type FinancialVerificationResult,
+  type BuyerState,
+} from '@/lib/buyer-lifecycle'
 import { getCurrentState } from '@/lib/buyer-lifecycle/transition-validator'
-import { isSystemGateEnabled, type BuyerState } from '@/lib/buyer-lifecycle/lifecycle-definitions'
 
 export interface BuyerExecutionContext {
   contactId: string

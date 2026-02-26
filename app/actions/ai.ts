@@ -1,6 +1,6 @@
 "use server"
 
-import { runPipelineSimple } from "@/lib/ai/pipeline"
+import { runPipelineSimple } from "@/lib/ai"
 
 export async function generatePlaybookResponse(contactId: string, question: string): Promise<string> {
   try {

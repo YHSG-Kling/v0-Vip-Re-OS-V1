@@ -1,6 +1,6 @@
 
 
-import { runPipelineSimple } from "@/lib/ai/pipeline"
+import { runPipelineSimple } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { CONTENT_TYPES, AI_MODELS } from "@/lib/constants"

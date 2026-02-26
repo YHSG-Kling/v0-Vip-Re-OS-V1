@@ -1,6 +1,6 @@
 "use server"
 
-import { runPipelineSimple } from "@/lib/ai/pipeline"
+import { runPipelineSimple } from "@/lib/ai"
 import { AI_MODELS } from "@/lib/constants"
 
 // ============================================

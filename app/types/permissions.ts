@@ -6,4 +6,4 @@ export type {
   RolePermissions,
   ResourceAccess,
   AccessCheckResult,
-} from '@/lib/security/types'
+} from '@/lib/security'

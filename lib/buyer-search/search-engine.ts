@@ -16,8 +16,7 @@ import { parseNaturalLanguageQuery, mergeIntentWithContext, intentToFilters } fr
 import { inferBuyerPersona } from './persona-inference'
 import { generateMatchExplanation } from './explanation-generator'
 import { logBatchBuyerSearchMatches, appendBuyerSearchPreferences } from './search-logger'
-import { scoreBuyerForListing } from '@/lib/property-matching/match-scorer'
-import type { BuyerProfile, ListingProfile } from '@/lib/property-matching/match-scorer'
+import { scoreBuyerForListing, type BuyerProfile, type ListingProfile } from '@/lib/property-matching'
 import type { ParsedBuyerIntent } from './intent-parser'
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────

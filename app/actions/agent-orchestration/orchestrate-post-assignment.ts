@@ -1,8 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateAgentActionPlan } from "@/lib/agent-orchestration/action-plan-generator"
-import { monitorAgentActivity } from "@/lib/agent-orchestration/agent-activity-monitor"
+import { generateAgentActionPlan, monitorAgentActivity } from "@/lib/agent-orchestration"
 
 /**
  * AGENT ORCHESTRATION SYSTEM - POST-ASSIGNMENT COORDINATOR

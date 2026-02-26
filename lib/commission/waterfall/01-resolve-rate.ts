@@ -1,4 +1,4 @@
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dollarsToCents } from "../utils"
 import type { WaterfallContext } from "../types"

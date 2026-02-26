@@ -7,5 +7,5 @@ export {
   isSubscriptionAdmin,
   getSubscriptionAdmin,
   getCurrentUserSubscriptionContext,
-} from '@/lib/security/authorization'
-export type { AuthorizedUser, SubscriptionContext } from '@/lib/security/types'
+} from '@/lib/security'
+export type { AuthorizedUser, SubscriptionContext } from '@/lib/security'

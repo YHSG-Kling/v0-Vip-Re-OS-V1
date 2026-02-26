@@ -3,7 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { scrapeFacebookGroupPosts, scrapeRedditPosts } from '@/lib/external/apify-client'
 import { trackVendorUsage } from '@/lib/vendor-tracking'
-import { analyzeLead } from '@/lib/ai/lead-analyzer'
+import { analyzeLead } from '@/lib/ai'
 import { processRawRecord } from '@/lib/lead-pipeline/pipeline-processor'
 
 const FACEBOOK_GROUP_TEMPLATES = [

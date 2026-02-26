@@ -12,7 +12,7 @@
  */
 
 import { getBuyerJourneyStatus, enforceFinancialGate, getBuyerFriendlyMessage, logBuyerExecutionEvent, type BuyerExecutionContext } from './buyer-execution-engine'
-import { searchPropertiesCore as searchPropertiesWithNaturalLanguage } from '@/lib/buyer-search/search-engine'
+import { searchPropertiesCore as searchPropertiesWithNaturalLanguage } from '@/lib/buyer-search'
 
 export interface VoiceAssistantRequest {
   contactId: string

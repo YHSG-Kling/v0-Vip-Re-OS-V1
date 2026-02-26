@@ -3,8 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { runApifyActor } from '@/lib/external/apify-client'
 import { trackVendorUsage } from '@/lib/vendor-tracking'
-import { analyzeLead } from '@/lib/ai/lead-analyzer'
-import { analyzePropertyImages } from '@/lib/ai/vision-analyzer'
+import { analyzeLead, analyzePropertyImages } from '@/lib/ai'
 import { processRawRecord } from '@/lib/lead-pipeline/pipeline-processor'
 
 export async function scrapeCraigslist(params: {

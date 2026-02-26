@@ -10,7 +10,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { emitFinancialVerificationEvent } from '@/lib/buyer-lifecycle/financial-verification'
+import { emitFinancialVerificationEvent } from '@/lib/buyer-lifecycle'
 import { logBuyerExecutionEvent } from './buyer-execution-engine'
 
 export type ActorRole = 'agent' | 'lender' | 'admin' | 'broker'

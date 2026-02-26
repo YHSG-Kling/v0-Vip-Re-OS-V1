@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
-import { runPipelineSimple } from "@/lib/ai/pipeline"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { runPipelineSimple } from "@/lib/ai"
 
 // ============================================
 // TRANSACTION CRUD

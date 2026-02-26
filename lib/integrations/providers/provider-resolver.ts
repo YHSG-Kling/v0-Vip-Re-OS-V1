@@ -8,7 +8,7 @@
 import type { ITransactionProvider } from "./transaction-provider.interface"
 import { DotloopProvider } from "./dotloop-provider"
 import type { TransactionProvider } from "./transaction-provider.interface"
-import { getTransactionProvider as getProviderName } from "@/lib/brokerage/get-brokerage-settings"
+import { getTransactionProvider as getProviderName } from "@/lib/brokerage"
 
 /**
  * Resolve the correct provider based on brokerage configuration

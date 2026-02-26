@@ -10,9 +10,13 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { checkFinancialVerification, isVerificationExpired, type FinancialVerificationResult } from '@/lib/buyer-lifecycle/financial-verification'
+import {
+  checkFinancialVerification,
+  isVerificationExpired,
+  type FinancialVerificationResult,
+  type BuyerState,
+} from '@/lib/buyer-lifecycle'
 import { getCurrentState } from '@/lib/buyer-lifecycle/transition-validator'
-import { type BuyerState } from '@/lib/buyer-lifecycle/lifecycle-definitions'
 
 export interface GovernanceCheckResult {
   allowed: boolean
