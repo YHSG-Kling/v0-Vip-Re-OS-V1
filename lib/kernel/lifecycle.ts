@@ -1,0 +1,131 @@
+// lib/kernel/lifecycle.ts
+// LAYER 0 — lifecycle state machine for all entity types.
+// Only performs DB writes: one entity state UPDATE + one lifecycle_events INSERT.
+// No side effects (no notifications, no compliance events, no revalidation).
+// Import types from './types'; use createClient from '@/lib/supabase/server'.
+
+import { createClient } from "@/lib/supabase/server"
+import type { TransitionLifecycleParams } from "./types"
+
+// ─── ENTITY → TABLE + STATE COLUMN MAP ───────────────────────────────────────
+// Derived from live schema. Each EntityType maps to one table and its state column.
+
+const ENTITY_MAP: Record<
+  string,
+  { table: string; stateColumn: string }
+> = {
+  buyer:       { table: "contacts",       stateColumn: "status"        },
+  seller:      { table: "contacts",       stateColumn: "status"        },
+  listing:     { table: "listings",       stateColumn: "status"        },
+  transaction: { table: "transactions",   stateColumn: "stage"         },
+  document:    { table: "document_checklist", stateColumn: "status"   },
+  offer:       { table: "offers",         stateColumn: "status"        },
+  tour:        { table: "tours",          stateColumn: "status"        },
+  repair:      { table: "property_upgrades", stateColumn: "status"    },
+  financial:   { table: "commissions",    stateColumn: "status"        },
+  lead:        { table: "leads",          stateColumn: "lead_stage"    },
+  journey:     { table: "journey_states", stateColumn: "current_stage" },
+  showing:     { table: "showings",       stateColumn: "status"        },
+}
+
+// ─── MAIN FUNCTION ────────────────────────────────────────────────────────────
+
+export async function transitionLifecycle(
+  params: TransitionLifecycleParams
+): Promise<{ ok: true; activityId: string }> {
+  const {
+    brokerageId,
+    entityType,
+    entityId,
+    fromState,
+    toState,
+    actorUserId,
+    eventType,
+    metadata = {},
+  } = params
+
+  // 1. No-op guard — idempotent; caller doesn't need to special-case this.
+  if (fromState === toState) {
+    // Insert a no-op event so the caller has an activityId to reference,
+    // but do NOT update the entity row (avoids spurious updated_at bumps).
+    const supabase = await createClient()
+
+    const { data: noopEvent, error: noopError } = await supabase
+      .from("lifecycle_events")
+      .insert({
+        brokerage_id: brokerageId,
+        entity_type:  entityType,
+        entity_id:    entityId,
+        event_type:   `lifecycle.${eventType}.noop`,
+        actor_user_id: actorUserId,
+        metadata: {
+          from_state: fromState,
+          to_state:   toState,
+          noop:       true,
+          reason:     "fromState === toState",
+          ...metadata,
+        },
+      })
+      .select("id")
+      .single()
+
+    if (noopError) throw noopError
+    return { ok: true, activityId: noopEvent.id }
+  }
+
+  // 2. Resolve table + state column for the given entityType.
+  const entityDef = ENTITY_MAP[entityType.toLowerCase()]
+  if (!entityDef) {
+    throw new Error(
+      `[lifecycle] Unknown entityType "${entityType}". ` +
+      `Known types: ${Object.keys(ENTITY_MAP).join(", ")}`
+    )
+  }
+
+  const supabase = await createClient()
+
+  // 3. Atomically update the state column on the entity row.
+  //    Cast through `any` once — the table name is dynamic so we cannot use
+  //    the generated Supabase types directly here.
+  const { error: updateError } = await (supabase as any)
+    .from(entityDef.table)
+    .update({
+      [entityDef.stateColumn]: toState,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", entityId)
+
+  if (updateError) {
+    throw new Error(
+      `[lifecycle] Failed to update ${entityDef.table}.${entityDef.stateColumn} ` +
+      `for entity ${entityId}: ${updateError.message}`
+    )
+  }
+
+  // 4. Insert one lifecycle event — exact shape from the spec.
+  const { data: event, error: eventError } = await supabase
+    .from("lifecycle_events")
+    .insert({
+      brokerage_id:  brokerageId,
+      entity_type:   entityType,
+      entity_id:     entityId,
+      event_type:    `lifecycle.${eventType}`,
+      actor_user_id: actorUserId,
+      metadata: {
+        from_state: fromState,
+        to_state:   toState,
+        ...metadata,
+      },
+    })
+    .select("id")
+    .single()
+
+  if (eventError) {
+    throw new Error(
+      `[lifecycle] Entity state updated but event insert failed for ` +
+      `entity ${entityId}: ${eventError.message}`
+    )
+  }
+
+  return { ok: true, activityId: event.id }
+}
