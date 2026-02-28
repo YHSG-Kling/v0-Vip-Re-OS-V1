@@ -17,6 +17,7 @@ export type Persona =
   | "divorce"
   | "senior"
   | "expired"
+  | "foreclosure"
   | "other"
 
 // ─── MESSAGE CHANNEL ──────────────────────────────────────────────────────────
@@ -30,6 +31,7 @@ export type MessageType =
   | "phone"
   | "in_app"
   | "ai"
+  | "direct_mail"
 
 // ─── PROVIDER ─────────────────────────────────────────────────────────────────
 // Note: direct_mail and video are system providers only — no per-user overrides.
@@ -63,6 +65,7 @@ export type ActorRole =
   | "contact"
   | "system"
   | "isa"
+  | "super_admin"
 
 // ─── ENTITY TYPE ──────────────────────────────────────────────────────────────
 
