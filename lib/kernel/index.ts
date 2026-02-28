@@ -9,6 +9,13 @@ export { applyBrandVoice } from "./brand-voice"
 export { resolveProvider } from "./providers"
 export { getEducationDelivery, getEducationPlan } from "./education"
 export { getPortalMilestones, getLifetimeTrack } from "./portal"
+export {
+  canAccessFeature,
+  incrementFeatureUsage,
+  grantFeatureTrial,
+  disableFeatureFor,
+  mapUserTypeToTier,
+} from "./0.1-feature-access"
 
 export type {
   Persona,
@@ -20,6 +27,8 @@ export type {
   JourneyPhase,
   BuyerStage,
   SellerStage,
+  UserTier,
+  FeatureAccessCheck,
   TransitionLifecycleParams,
   EvaluateOutboundParams,
   ComplianceResult,
