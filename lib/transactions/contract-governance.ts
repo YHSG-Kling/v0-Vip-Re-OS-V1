@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 export async function setContractDate(params: {
   transactionId: string
@@ -43,19 +44,16 @@ export async function setContractDate(params: {
     .eq("id", transactionId)
     .eq("brokerage_id", brokerageId)
 
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: transactionId,
-    event_type: override
-      ? "transaction.contract_date.overridden"
-      : "transaction.contract_date.set",
-    brokerage_id: brokerageId,
-    actor_user_id: userId,
-    metadata: {
-      contract_date: contractDate,
-      previous_date: transaction.contract_date ?? null,
-      reason: params.reason ?? null,
-    }
+  await transitionLifecycle({
+    brokerageId: brokerageId,
+    entityType:  "transaction",
+    entityId:    transactionId,
+    fromState:   transaction.contract_date ? "contract_date_set" : "compliance_passed",
+    toState:     override ? "contract_date_overridden" : "contract_date_set",
+    actorUserId: userId,
+    actorRole:   role as any,
+    eventType:   override ? "contract_date.overridden" : "contract_date.set",
+    metadata:    { contract_date: contractDate, previous_date: transaction.contract_date ?? null, reason: params.reason ?? null },
   })
 }
 
@@ -89,16 +87,16 @@ export async function assertAdjustmentsUnlocked(params: {
       )
     }
 
-    await supabase.from("lifecycle_events").insert({
-      entity_type: "transaction",
-      entity_id: params.transactionId,
-      event_type: "transaction.commission.adjustment.lock_overridden",
-      brokerage_id: params.brokerageId,
-      actor_user_id: params.userId,
-      metadata: {
-        role: params.role,
-        contract_date: transaction.contract_date,
-      }
+    await transitionLifecycle({
+      brokerageId: params.brokerageId,
+      entityType:  "transaction",
+      entityId:    params.transactionId,
+      fromState:   "adjustments_locked",
+      toState:     "adjustments_unlocked",
+      actorUserId: params.userId,
+      actorRole:   params.role as any,
+      eventType:   "commission.adjustment.lock_overridden",
+      metadata:    { role: params.role, contract_date: transaction.contract_date },
     })
   }
 }

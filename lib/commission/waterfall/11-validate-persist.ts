@@ -1,4 +1,5 @@
 import { createServiceClient } from '@/lib/supabase/service'
+import { transitionLifecycle } from '@/lib/kernel/lifecycle'
 import { centsToDollars, dollarsToCents } from '../utils'
 import { CURRENT_ENGINE_VERSION } from '../types'
 import type { WaterfallContext, CommissionCalculationResult } from '../types'
@@ -189,21 +190,24 @@ export async function validateAndPersist(
     }
   }
 
-  // 4. Log lifecycle event
-  await supabase.from('lifecycle_events').insert({
-    entity_type: 'commission',
-    entity_id: commission.id,
-    event_type: 'commission.calculated',
-    brokerage_id: context.brokerageId,
-    actor_user_id: triggeredBy,
-    metadata: {
-      transaction_id: context.transactionId,
-      calculation_version: CURRENT_ENGINE_VERSION,
-      resolved_from: context.resolvedFrom,
-      gross_commission: centsToDollars(context.grossCommissionCents),
-      cap_applied: context.capApplied,
-      cap_status: context.capStatus
-    }
+  // 4. Log lifecycle event via kernel
+  await transitionLifecycle({
+    brokerageId: context.brokerageId,
+    entityType:  "financial",
+    entityId:    commission.id,
+    fromState:   "pending",
+    toState:     "calculated",
+    actorUserId: triggeredBy ?? undefined,
+    actorRole:   "agent",
+    eventType:   "commission.calculated",
+    metadata:    {
+      transaction_id:       context.transactionId,
+      calculation_version:  CURRENT_ENGINE_VERSION,
+      resolved_from:        context.resolvedFrom,
+      gross_commission:     centsToDollars(context.grossCommissionCents),
+      cap_applied:          context.capApplied,
+      cap_status:           context.capStatus,
+    },
   })
 
   return {

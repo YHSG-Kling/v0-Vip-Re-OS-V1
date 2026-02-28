@@ -1,6 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage } from "./transaction-stages"
 import { getMilestones } from "./milestone-service"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 export interface StageProgressionResult {
   success: boolean
@@ -132,18 +133,17 @@ export async function advanceStage(params: {
     return { success: false, error: updateError.message }
   }
 
-  // 4. Emit lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: params.transactionId,
-    event_type: "transaction.stage.advanced",
-    brokerage_id: params.brokerageId,
-    actor_user_id: params.userId,
-    metadata: {
-      previous_stage: currentStage,
-      new_stage: params.targetStage,
-      reason: params.reason || null
-    }
+  // 4. Emit lifecycle event via kernel
+  await transitionLifecycle({
+    brokerageId:  params.brokerageId,
+    entityType:   "transaction",
+    entityId:     params.transactionId,
+    fromState:    currentStage,
+    toState:      params.targetStage,
+    actorUserId:  params.userId,
+    actorRole:    "tc",
+    eventType:    "stage.advanced",
+    metadata:     { reason: params.reason ?? null },
   })
 
   // 5. Trigger commission calculations based on stage

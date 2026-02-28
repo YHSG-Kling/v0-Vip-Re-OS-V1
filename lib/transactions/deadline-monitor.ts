@@ -2,6 +2,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import type { TransactionStage } from "./transaction-stages"
 import { ActivityFactory } from "./activity-factory"
 import { NotificationService } from "./notification-service"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 const activityFactory = new ActivityFactory()
 const notificationService = new NotificationService()
@@ -81,17 +82,17 @@ async function handleOverdue(
     .eq("id", milestone.id)
     .eq("brokerage_id", txn.brokerage_id)
   
-  // Log event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: txn.id,
-    event_type: "transaction.milestone.overdue",
-    brokerage_id: txn.brokerage_id,
-    metadata: {
-      milestone_name: milestone.milestone_name,
-      milestone_date: milestone.milestone_date,
-      stage: txn.stage
-    }
+  // Log event via kernel
+  await transitionLifecycle({
+    brokerageId: txn.brokerage_id,
+    entityType:  "transaction",
+    entityId:    txn.id,
+    fromState:   "milestone_pending",
+    toState:     "milestone_overdue",
+    actorUserId: undefined,
+    actorRole:   "agent",
+    eventType:   "milestone.overdue",
+    metadata:    { milestone_name: milestone.milestone_name, milestone_date: milestone.milestone_date, stage: txn.stage },
   })
   
   // Create urgent activity for agent + TC
@@ -135,17 +136,17 @@ async function sendWarning(
   
   if (existingWarning) return // Already warned recently
   
-  // Log warning event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: txn.id,
-    event_type: "transaction.milestone.warning",
-    brokerage_id: txn.brokerage_id,
-    metadata: {
-      milestone_name: milestone.milestone_name,
-      milestone_date: milestone.milestone_date,
-      hours_until: Math.round(hoursUntil)
-    }
+  // Log warning event via kernel
+  await transitionLifecycle({
+    brokerageId: txn.brokerage_id,
+    entityType:  "transaction",
+    entityId:    txn.id,
+    fromState:   "milestone_pending",
+    toState:     "milestone_warning",
+    actorUserId: undefined,
+    actorRole:   "agent",
+    eventType:   "milestone.warning",
+    metadata:    { milestone_name: milestone.milestone_name, milestone_date: milestone.milestone_date, hours_until: Math.round(hoursUntil) },
   })
   
   // Notify agent + TC

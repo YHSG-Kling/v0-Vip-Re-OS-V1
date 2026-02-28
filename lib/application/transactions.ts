@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure } from "@/lib/brokerage"
 import { runPipelineSimple } from "@/lib/ai"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 // ============================================
 // TRANSACTION CRUD
@@ -109,16 +110,16 @@ export async function createTransaction(transactionData: {
         .single()
 
       if (profile?.brokerage_id) {
-        await supabase.from("lifecycle_events").insert({
-          entity_type: "transaction",
-          entity_id: data.id,
-          event_type: "transaction.commission.overridden",
-          brokerage_id: profile.brokerage_id,
-          actor_user_id: userData.user?.id,
-          metadata: {
-            commission_percentage: transactionData.commissionPercentage,
-            resolved_from: "deal_override",
-          },
+        await transitionLifecycle({
+          brokerageId: profile.brokerage_id,
+          entityType:  "transaction",
+          entityId:    data.id,
+          fromState:   "active",
+          toState:     "commission_overridden",
+          actorUserId: userData.user?.id,
+          actorRole:   "broker",
+          eventType:   "commission.overridden",
+          metadata:    { commission_percentage: transactionData.commissionPercentage, resolved_from: "deal_override" },
         })
       }
     }

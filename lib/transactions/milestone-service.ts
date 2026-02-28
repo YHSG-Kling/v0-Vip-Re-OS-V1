@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { CRITICAL_MILESTONES } from "./transaction-stages"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 export interface CreateMilestoneParams {
   transactionId: string
@@ -107,17 +108,17 @@ export async function completeMilestone(params: CompleteMilestoneParams): Promis
     throw new Error(`[milestone-service] Failed to complete milestone: ${updateError.message}`)
   }
   
-  // Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: transactionId,
-    event_type: "transaction.milestone.completed",
-    brokerage_id: brokerageId,
-    actor_user_id: completedBy,
-    metadata: {
-      milestone_name: milestoneName
-    },
-    created_at: new Date().toISOString()
+  // Log lifecycle event via kernel
+  await transitionLifecycle({
+    brokerageId: brokerageId,
+    entityType:  "transaction",
+    entityId:    transactionId,
+    fromState:   "milestone_pending",
+    toState:     "milestone_completed",
+    actorUserId: completedBy,
+    actorRole:   "tc",
+    eventType:   "milestone.completed",
+    metadata:    { milestone_name: milestoneName },
   })
 }
 
@@ -148,18 +149,17 @@ export async function overrideMilestone(params: OverrideMilestoneParams): Promis
     throw new Error(`[milestone-service] Failed to override milestone: ${updateError.message}`)
   }
   
-  // Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: transactionId,
-    event_type: "transaction.milestone.overridden",
-    brokerage_id: brokerageId,
-    actor_user_id: overrideBy,
-    metadata: {
-      milestone_name: milestoneName,
-      override_reason: overrideReason
-    },
-    created_at: new Date().toISOString()
+  // Log lifecycle event via kernel
+  await transitionLifecycle({
+    brokerageId: brokerageId,
+    entityType:  "transaction",
+    entityId:    transactionId,
+    fromState:   "milestone_pending",
+    toState:     "milestone_overridden",
+    actorUserId: overrideBy,
+    actorRole:   "broker",
+    eventType:   "milestone.overridden",
+    metadata:    { milestone_name: milestoneName, override_reason: overrideReason },
   })
 }
 
@@ -209,20 +209,17 @@ export async function setMilestoneDate(
     throw new Error(`[milestone-service] Failed to update milestone date: ${updateError.message}`)
   }
   
-  // Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: transactionId,
-    event_type: "transaction.milestone.date_changed",
-    brokerage_id: brokerageId,
-    actor_user_id: updatedBy,
-    metadata: {
-      milestone_name: milestoneName,
-      previous_date: milestone.milestone_date,
-      new_date: milestoneDate,
-      reason: reason || null
-    },
-    created_at: new Date().toISOString()
+  // Log lifecycle event via kernel
+  await transitionLifecycle({
+    brokerageId: brokerageId,
+    entityType:  "transaction",
+    entityId:    transactionId,
+    fromState:   "milestone_pending",
+    toState:     "milestone_date_changed",
+    actorUserId: updatedBy,
+    actorRole:   "tc",
+    eventType:   "milestone.date_changed",
+    metadata:    { milestone_name: milestoneName, previous_date: milestone.milestone_date, new_date: milestoneDate, reason: reason ?? null },
   })
 }
 

@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 /**
  * Commission Payment Tracker
@@ -73,19 +74,17 @@ export async function markCommissionPaid(
       return { success: false, error: distributionsError.message }
     }
 
-    // 3. Log payment event
-    await supabase.from('lifecycle_events').insert({
-      entity_type: 'commission',
-      entity_id: params.commissionId,
-      event_type: 'commission.paid',
-      brokerage_id: params.brokerageId,
-      actor_user_id: params.paidBy,
-      metadata: {
-        paid_at: paidAt,
-        payment_method: params.paymentMethod,
-        payment_reference: params.paymentReference,
-        notes: params.notes
-      }
+    // 3. Log payment event via kernel
+    await transitionLifecycle({
+      brokerageId: params.brokerageId,
+      entityType:  "financial",
+      entityId:    params.commissionId,
+      fromState:   "pending",
+      toState:     "paid",
+      actorUserId: params.paidBy,
+      actorRole:   "broker",
+      eventType:   "commission.paid",
+      metadata:    { paid_at: paidAt, payment_method: params.paymentMethod ?? null, payment_reference: params.paymentReference ?? null, notes: params.notes ?? null },
     })
 
     return { success: true }
@@ -133,19 +132,16 @@ export async function markDistributionPaid(
       .single()
 
     if (distribution) {
-      await supabase.from('lifecycle_events').insert({
-        entity_type: 'commission_distribution',
-        entity_id: params.distributionId,
-        event_type: 'distribution.paid',
-        brokerage_id: params.brokerageId,
-        actor_user_id: params.paidBy,
-        metadata: {
-          commission_id: distribution.commission_id,
-          paid_at: paidAt,
-          payment_method: params.paymentMethod,
-          payment_reference: params.paymentReference,
-          notes: params.notes
-        }
+      await transitionLifecycle({
+        brokerageId: params.brokerageId,
+        entityType:  "financial",
+        entityId:    params.distributionId,
+        fromState:   "pending",
+        toState:     "paid",
+        actorUserId: params.paidBy,
+        actorRole:   "broker",
+        eventType:   "distribution.paid",
+        metadata:    { commission_id: distribution.commission_id, paid_at: paidAt, payment_method: params.paymentMethod ?? null, payment_reference: params.paymentReference ?? null, notes: params.notes ?? null },
       })
     }
 

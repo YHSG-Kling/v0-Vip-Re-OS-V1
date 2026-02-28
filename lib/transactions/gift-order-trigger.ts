@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 /**
  * Gift Order Trigger
@@ -74,17 +75,17 @@ export async function checkAndTriggerGiftOrder(params: {
     status: 'pending'
   })
 
-  // Log lifecycle event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: 'transaction',
-    entity_id: params.transactionId,
-    event_type: 'transaction.gift.order_triggered',
-    brokerage_id: params.brokerageId,
-    actor_user_id: params.userId,
-    metadata: {
-      trigger_milestone: params.milestoneName,
-      gift_milestone_status: 'pending'
-    }
+  // Log lifecycle event via kernel
+  await transitionLifecycle({
+    brokerageId: params.brokerageId,
+    entityType:  "transaction",
+    entityId:    params.transactionId,
+    fromState:   "active",
+    toState:     "gift_order_triggered",
+    actorUserId: params.userId,
+    actorRole:   "tc",
+    eventType:   "gift.order_triggered",
+    metadata:    { trigger_milestone: params.milestoneName, gift_milestone_status: "pending" },
   })
 
   // Notify TC

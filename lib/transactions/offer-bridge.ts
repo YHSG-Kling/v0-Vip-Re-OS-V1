@@ -1,6 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import type { TransactionStage } from "./transaction-stages"
 import { ensureRequiredMilestones } from "./milestone-service"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 /**
  * Create transaction from accepted offer
@@ -64,17 +65,21 @@ export async function createTransactionFromOffer(params: {
     throw new Error(`[offer-bridge] Failed to create transaction: ${txnError?.message}`)
   }
   
-  // Log contract date set event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: transaction.id,
-    event_type: "transaction.contract_date.set",
-    brokerage_id: params.brokerageId,
-    metadata: {
-      contract_date: params.contractDate,
+  // Log contract date set event via kernel
+  await transitionLifecycle({
+    brokerageId: params.brokerageId,
+    entityType:  "transaction",
+    entityId:    transaction.id,
+    fromState:   "offer_accepted",
+    toState:     "UNDER_CONTRACT",
+    actorUserId: undefined,
+    actorRole:   "tc",
+    eventType:   "contract_date.set",
+    metadata:    {
+      contract_date:       params.contractDate,
       compliance_passed_at: params.compliancePassedAt,
-      created_from_offer: params.offerId
-    }
+      created_from_offer:  params.offerId,
+    },
   })
   
   // Generate required milestones

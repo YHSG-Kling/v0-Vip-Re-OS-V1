@@ -1,4 +1,5 @@
 import type { CalculateCommissionParams, CommissionCalculationResult } from "./types"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { resolveGrossRate } from "./waterfall/01-resolve-rate"
 import { calculateGrossCommission } from "./waterfall/02-calculate-gross"
 import { applyGrossAdjustments } from "./waterfall/03-apply-gross-adjustments"
@@ -60,17 +61,17 @@ export async function calculateCommission(
     const { createServiceClient } = await import("@/lib/supabase/service")
     const supabase = createServiceClient()
     
-    await supabase.from("lifecycle_events").insert({
-      entity_type: "transaction",
-      entity_id: transactionId,
-      event_type: "transaction.commission.calculation_failed",
-      brokerage_id: brokerageId,
-      actor_user_id: triggeredBy,
-      metadata: {
-        error: error.message,
-        stack: error.stack
-      }
-    })
+    await transitionLifecycle({
+      brokerageId: brokerageId,
+      entityType:  "transaction",
+      entityId:    transactionId,
+      fromState:   "active",
+      toState:     "commission_calculation_failed",
+      actorUserId: triggeredBy ?? undefined,
+      actorRole:   "agent",
+      eventType:   "commission.calculation_failed",
+      metadata:    { error: error.message },
+    }).catch(() => { /* best-effort — never mask original error */ })
     
     return {
       success: false,

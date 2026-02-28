@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { calculateCommission } from "@/lib/commission"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 /**
  * CDA Workflow: Preview → Generate → Compare → Approve → Deliver
@@ -49,15 +50,16 @@ export async function generateCDAPreview(params: {
   
   if (discrepancies.length > 0) {
     // Notify compliance officer + broker
-    await supabase.from("lifecycle_events").insert({
-      entity_type: "transaction",
-      entity_id: params.transactionId,
-      event_type: "transaction.cda.discrepancy_detected",
-      brokerage_id: params.brokerageId,
-      metadata: {
-        cda_id: cda.id,
-        discrepancies
-      }
+    await transitionLifecycle({
+      brokerageId: params.brokerageId,
+      entityType:  "transaction",
+      entityId:    params.transactionId,
+      fromState:   "cda_pending",
+      toState:     "cda_discrepancy_detected",
+      actorUserId: params.agentId,
+      actorRole:   "agent",
+      eventType:   "cda.discrepancy_detected",
+      metadata:    { cda_id: cda.id, discrepancies },
     })
     
     // Create activity for review
@@ -99,13 +101,16 @@ export async function submitCDA(cdaId: string, agentId: string) {
     .single()
   
   if (cda) {
-    await supabase.from("lifecycle_events").insert({
-      entity_type: "transaction",
-      entity_id: cda.transaction_id,
-      event_type: "transaction.cda.submitted",
-      brokerage_id: cda.brokerage_id,
-      actor_user_id: agentId,
-      metadata: { cda_id: cdaId }
+    await transitionLifecycle({
+      brokerageId: cda.brokerage_id,
+      entityType:  "transaction",
+      entityId:    cda.transaction_id,
+      fromState:   "cda_pending",
+      toState:     "cda_submitted",
+      actorUserId: agentId,
+      actorRole:   "agent",
+      eventType:   "cda.submitted",
+      metadata:    { cda_id: cdaId },
     })
   }
   
@@ -145,13 +150,16 @@ export async function approveCDA(params: {
       .eq("transaction_id", cda.transaction_id)
       .eq("milestone_name", "cda_delivered")
     
-    await supabase.from("lifecycle_events").insert({
-      entity_type: "transaction",
-      entity_id: cda.transaction_id,
-      event_type: "transaction.cda.approved",
-      brokerage_id: cda.brokerage_id,
-      actor_user_id: params.approverId,
-      metadata: { cda_id: params.cdaId, approver_role: params.approverRole }
+    await transitionLifecycle({
+      brokerageId: cda.brokerage_id,
+      entityType:  "transaction",
+      entityId:    cda.transaction_id,
+      fromState:   "cda_submitted",
+      toState:     "cda_approved",
+      actorUserId: params.approverId,
+      actorRole:   params.approverRole as any,
+      eventType:   "cda.approved",
+      metadata:    { cda_id: params.cdaId, approver_role: params.approverRole },
     })
   }
   

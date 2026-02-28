@@ -1,4 +1,5 @@
 import { createServiceClient } from "@/lib/supabase/service"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 /**
  * Vendor Quote Approval Workflow (INSPECTION phase)
@@ -39,18 +40,17 @@ export async function requestQuoteApproval(params: {
     .select()
     .single()
   
-  // Log event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: params.transactionId,
-    event_type: "transaction.quote.requested",
-    brokerage_id: params.brokerageId,
-    actor_user_id: params.requestedBy,
-    metadata: {
-      quote_type: params.quoteType,
-      vendor_name: params.vendorName,
-      quote_amount: params.quoteAmount
-    }
+  // Log event via kernel
+  await transitionLifecycle({
+    brokerageId: params.brokerageId,
+    entityType:  "transaction",
+    entityId:    params.transactionId,
+    fromState:   "pending",
+    toState:     "quote_requested",
+    actorUserId: params.requestedBy,
+    actorRole:   "tc",
+    eventType:   "quote.requested",
+    metadata:    { quote_type: params.quoteType, vendor_name: params.vendorName, quote_amount: params.quoteAmount },
   })
   
   // Create transparency update
@@ -110,18 +110,17 @@ export async function approveQuote(params: {
     .eq("transaction_id", params.transactionId)
     .eq("milestone_name", milestoneName)
   
-  // Log event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: params.transactionId,
-    event_type: "transaction.quote.approved",
-    brokerage_id: params.brokerageId,
-    actor_user_id: params.approvedBy,
-    metadata: {
-      quote_type: params.quoteType,
-      vendor_name: params.vendorName,
-      notes: params.notes
-    }
+  // Log event via kernel
+  await transitionLifecycle({
+    brokerageId: params.brokerageId,
+    entityType:  "transaction",
+    entityId:    params.transactionId,
+    fromState:   "quote_requested",
+    toState:     "quote_approved",
+    actorUserId: params.approvedBy,
+    actorRole:   "agent",
+    eventType:   "quote.approved",
+    metadata:    { quote_type: params.quoteType, vendor_name: params.vendorName, notes: params.notes ?? null },
   })
   
   // Create TC activity for next step
@@ -169,16 +168,17 @@ export async function declineQuote(params: {
     })
     .eq("id", params.activityId)
   
-  // Log event
-  await supabase.from("lifecycle_events").insert({
-    entity_type: "transaction",
-    entity_id: params.transactionId,
-    event_type: "transaction.quote.declined",
-    brokerage_id: params.brokerageId,
-    actor_user_id: params.declinedBy,
-    metadata: {
-      reason: params.reason
-    }
+  // Log event via kernel
+  await transitionLifecycle({
+    brokerageId: params.brokerageId,
+    entityType:  "transaction",
+    entityId:    params.transactionId,
+    fromState:   "quote_requested",
+    toState:     "quote_declined",
+    actorUserId: params.declinedBy,
+    actorRole:   "agent",
+    eventType:   "quote.declined",
+    metadata:    { reason: params.reason ?? null },
   })
   
   // Create TC activity to get alternative
