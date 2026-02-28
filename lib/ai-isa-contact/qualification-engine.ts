@@ -89,6 +89,7 @@ export async function persistQualificationSignals(
 ): Promise<boolean> {
   const supabase = createServiceClient()
 
+  // Agent task (correct location, no changes) — activity_type: ai_qualification_update
   const { error } = await supabase.from('activities').insert({
     activity_type: 'ai_qualification_update',
     title: 'AI ISA Qualification Update',
@@ -101,7 +102,7 @@ export async function persistQualificationSignals(
   })
 
   if (error) {
-    console.error('[v0] [AI ISA] Failed to persist qualification signals:', error)
+    console.error('[AI ISA Contact] Failed to persist qualification signals:', error)
     return false
   }
 

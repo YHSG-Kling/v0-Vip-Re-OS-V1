@@ -318,6 +318,7 @@ export async function logBuyerExecutionEvent(params: {
   const { contactId, eventType, userId, source, metadata } = params
   const supabase = createServiceClient()
   
+  // Agent task (correct location, no changes) — type: dynamic buyer lifecycle event
   const { error } = await supabase.from('activities').insert({
     type: eventType,
     entity_type: 'contact',

@@ -38,6 +38,7 @@ export interface LifecycleEventData {
 /**
  * Log lifecycle stage transition
  */
+// Agent task (correct location, no changes) — activity_type: listing_lifecycle_transition, listing_lifecycle_transition_failed, listing_lifecycle_gate_enabled
 export async function logStageTransition(
   supabase: SupabaseClient,
   event: LifecycleEventData

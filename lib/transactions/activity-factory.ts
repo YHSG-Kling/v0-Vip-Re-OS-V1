@@ -1,6 +1,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import type { TransactionStage } from "./transaction-stages"
 
+// Agent task (correct location, no changes) — activity_type: transaction.inspection.schedule, transaction.quotes.request, transaction.appraisal.monitor, transaction.walkthrough.schedule, transaction.cda.prepare, transaction.closing.coordinate, transaction.followup.client, commission.payment.track, milestone.overdue, milestone.warning, etc.
 export class ActivityFactory {
   private supabase = createServiceClient()
 

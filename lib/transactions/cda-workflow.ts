@@ -62,7 +62,7 @@ export async function generateCDAPreview(params: {
       metadata:    { cda_id: cda.id, discrepancies },
     })
     
-    // Create activity for review
+    // Create activity for review — Agent task (correct location, no changes) — activity_type: cda_review_required
     await supabase.from("activities").insert({
       transaction_id: params.transactionId,
       brokerage_id: params.brokerageId,

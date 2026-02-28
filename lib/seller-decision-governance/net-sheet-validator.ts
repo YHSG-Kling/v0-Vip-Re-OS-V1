@@ -158,6 +158,7 @@ export async function isNetSheetValid(listingId: string): Promise<boolean> {
   return result.isValid
 }
 
+// Agent task (correct location, no changes) — event_type: seller.net_sheet.expiration_warning
 /**
  * Emit net sheet expiration event (for monitoring only)
  */

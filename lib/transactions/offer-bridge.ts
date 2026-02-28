@@ -90,7 +90,7 @@ export async function createTransactionFromOffer(params: {
     params.contractTerms
   )
   
-  // Create first activity
+  // Create first activity — Agent task (correct location, no changes) — activity_type: transaction_started
   await supabase.from("activities").insert({
     transaction_id: transaction.id,
     brokerage_id: params.brokerageId,

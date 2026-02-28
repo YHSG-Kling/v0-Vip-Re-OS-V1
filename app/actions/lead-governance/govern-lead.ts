@@ -62,7 +62,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
 
     // STEP 2: CALCULATE AUTHORITATIVE SCORE
     const scoringResult = calculateLeadScore(lead)
-    console.log(`[v0] [LEAD GOVERNANCE] Score calculated: ${scoringResult.finalScore}/100`)
+    console.log(`[LeadGovernance] Score calculated: ${scoringResult.finalScore}/100`)
 
     // STEP 3: UPDATE LEAD WITH SCORE
     await supabase
@@ -73,7 +73,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
       })
       .eq('id', leadId)
 
-    // STEP 4: LOG SCORING EXPLANATION
+    // STEP 4: LOG SCORING EXPLANATION — Agent task (correct location, no changes) — activity_type: lead_scoring, agent_assignment, routing_decision, promotion_signal
     await supabase.from('activities').insert({
       activity_type: 'lead_scoring',
       title: `Lead Scored: ${scoringResult.finalScore}/100`,
@@ -93,7 +93,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
     )
 
     const routingDecision = routingEligibility.eligible ? 'assign_agent' : 'continue_ai_nurturing'
-    console.log(`[v0] [LEAD GOVERNANCE] Routing decision: ${routingDecision}`)
+    console.log(`[LeadGovernance] Routing decision: ${routingDecision}`)
 
     let agentAssigned: string | null = null
 
@@ -125,7 +125,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
           created_at: new Date().toISOString(),
         })
 
-        console.log(`[v0] [LEAD GOVERNANCE] Agent ${agentAssigned} assigned to lead ${leadId}`)
+        console.log(`[LeadGovernance] Agent ${agentAssigned} assigned to lead ${leadId}`)
       }
     } else {
       // Log reason for not assigning
@@ -145,7 +145,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
     
     if (slaStatus.escalationRequired) {
       await logEscalation(leadId, slaStatus, supabase)
-      console.log(`[v0] [LEAD GOVERNANCE] SLA breach detected and escalated for lead ${leadId}`)
+      console.log(`[LeadGovernance] SLA breach detected and escalated for lead ${leadId}`)
     }
 
     // STEP 8: EVALUATE PROMOTION READINESS
@@ -161,7 +161,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
         created_at: new Date().toISOString(),
       })
 
-      console.log(`[v0] [LEAD GOVERNANCE] Lead ${leadId} signaled as ready for promotion`)
+      console.log(`[LeadGovernance] Lead ${leadId} signaled as ready for promotion`)
     }
 
     return {

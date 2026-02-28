@@ -72,7 +72,7 @@ export async function persistQualificationSignals(
 ) {
   const supabase = createServiceClient()
   
-  console.log('[v0] Persisting qualification signals for lead:', leadId, signals)
+  console.log('[AI ISA] Persisting qualification signals for lead:', leadId, signals)
   
   // Update lead stage if ready for agent
   if (signals.readinessForAgent) {
@@ -84,7 +84,7 @@ export async function persistQualificationSignals(
       })
       .eq('id', leadId)
     
-    // Log qualification activity
+    // Log qualification activity — Agent task (correct location, no changes) — activity_type: ai_isa_qualification
     const { data: lead } = await supabase
       .from('leads')
       .select('brokerage_id, agent_id')

@@ -498,6 +498,7 @@ export async function submitForApproval(postId: string) {
     // Run compliance check
     const complianceResult = await checkSocialCompliance(post.post_text, post.platform)
 
+    // Agent task (correct location, no changes) — activity_type: content.approval
     await supabase.from("activities").insert({
       brokerage_id: post.agent_id, // TODO: Get actual brokerage_id
       activity_type: "content.approval",

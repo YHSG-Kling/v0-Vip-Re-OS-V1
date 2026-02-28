@@ -289,6 +289,7 @@ export async function emitRenewalReminderSignal(params: {
   const { contactId, daysUntilExpiration, expiresAt } = params
   const supabase = createServiceClient()
 
+  // Agent task (correct location, no changes) — type: buyer.lifecycle.renewal_reminder
   const { error } = await supabase.from("activities").insert({
     type: "buyer.lifecycle.renewal_reminder",
     entity_type: "contact",

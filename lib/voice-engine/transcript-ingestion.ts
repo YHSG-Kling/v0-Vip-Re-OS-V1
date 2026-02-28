@@ -39,7 +39,7 @@ export async function ingestVoiceTranscript(
   params: IngestTranscriptParams
 ): Promise<IngestTranscriptResult> {
   try {
-    console.log('[v0] [VOICE ENGINE] Ingesting transcript for call:', params.rawTranscript.callId)
+    console.log('[VOICE ENGINE] Ingesting transcript for call:', params.rawTranscript.callId)
 
     // STEP 1: Normalize transcript
     const normalized = normalizeVoiceTranscript(params.rawTranscript)
@@ -89,14 +89,14 @@ export async function ingestVoiceTranscript(
     })
 
     if (!result.success) {
-      console.error('[v0] [VOICE ENGINE] Failed to ingest transcript:', result.error)
+      console.error('[VOICE ENGINE] Failed to ingest transcript:', result.error)
       return {
         success: false,
         error: result.error,
       }
     }
 
-    console.log(`[v0] [VOICE ENGINE] Transcript ingested as message ${result.messageId}`)
+    console.log(`[VOICE ENGINE] Transcript ingested as message ${result.messageId}`)
 
     return {
       success: true,
@@ -104,7 +104,7 @@ export async function ingestVoiceTranscript(
       conversationId: conversation.conversationId,
     }
   } catch (error: any) {
-    console.error('[v0] [VOICE ENGINE] Error ingesting transcript:', error)
+    console.error('[VOICE ENGINE] Error ingesting transcript:', error)
     return {
       success: false,
       error: error.message,
@@ -131,6 +131,7 @@ export async function emitVoiceHandoffSignal(
   try {
     const supabase = await import('@/lib/supabase/service').then(m => m.createServiceClient())
 
+    // Agent task (correct location, no changes) — activity_type: voice_transcript_available
     await supabase.from('activities').insert({
       activity_type: 'voice_transcript_available',
       title: 'Voice Transcript Available for AI Review',
@@ -147,10 +148,10 @@ export async function emitVoiceHandoffSignal(
       created_at: new Date().toISOString(),
     })
 
-    console.log(`[v0] [VOICE ENGINE] AI ISA handoff signal emitted for contact ${contactId}`)
+    console.log(`[VOICE ENGINE] AI ISA handoff signal emitted for contact ${contactId}`)
     return true
   } catch (error) {
-    console.error('[v0] [VOICE ENGINE] Failed to emit handoff signal:', error)
+    console.error('[VOICE ENGINE] Failed to emit handoff signal:', error)
     return false
   }
 }

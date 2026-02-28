@@ -72,6 +72,7 @@ export function evaluateSLA(lead: any): SLAStatus {
   }
 }
 
+// Agent task (correct location, no changes) — activity_type: sla_escalation
 /**
  * Log escalation activity
  */
@@ -94,5 +95,5 @@ export async function logEscalation(
     created_at: new Date().toISOString(),
   })
 
-  console.log(`[v0] SLA escalation logged for lead ${leadId}: ${slaStatus.escalationReason}`)
+  console.log(`[SLAMonitor] Escalation logged for lead ${leadId}: ${slaStatus.escalationReason}`)
 }

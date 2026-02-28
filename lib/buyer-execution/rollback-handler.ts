@@ -45,6 +45,7 @@ export async function emitRollbackEvent(
 
   const supabase = createServiceClient()
 
+  // Agent task (correct location, no changes) — type: journey.rollback
   const { error } = await supabase.from('activities').insert({
     type: 'journey.rollback',
     entity_type: 'contact',

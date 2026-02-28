@@ -17,7 +17,7 @@ export async function requestQuoteApproval(params: {
 }) {
   const supabase = createServiceClient()
   
-  // Create activity for client approval
+  // Create activity for client approval — Agent task (correct location, no changes) — activity_type: client_quote_approval_needed, schedule_vendor, get_alternative_quote
   const { data: activity } = await supabase
     .from("activities")
     .insert({

@@ -158,10 +158,10 @@ export async function respondToContact(
     let escalationLogged = false
     if (handoffSignal.shouldEscalate) {
       escalationLogged = await logHandoffSignal(params.contactId, handoffSignal)
-      console.log(`[v0] [AI ISA CONTACT] Handoff signal logged for ${params.contactId}`)
+      console.log(`[AI ISA Contact] Handoff signal logged for ${params.contactId}`)
     }
 
-    // STEP 8: Log completion
+    // STEP 8: Log completion — Agent task (correct location, no changes) — activity_type: ai_isa_response
     await supabase.from('activities').insert({
       activity_type: 'ai_isa_response',
       title: 'AI ISA Contact Response',

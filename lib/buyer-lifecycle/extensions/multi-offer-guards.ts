@@ -255,6 +255,7 @@ export async function emitOfferTerminalEvent(params: {
   const { offerId, contactId, listingId, terminalStatus, userId, reason } = params
   const supabase = createServiceClient()
 
+  // Agent task (correct location, no changes) — type: buyer.offer.terminal
   const { error } = await supabase.from("activities").insert({
     type: "buyer.offer.terminal",
     entity_type: "contact",

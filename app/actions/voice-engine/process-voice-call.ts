@@ -181,7 +181,7 @@ export async function processVoiceCall(
       brokerageId: contact.brokerage_id,
     })
 
-    // STEP 7: Log completion
+    // STEP 7: Log completion — Agent task (correct location, no changes) — activity_type: voice_call_processed
     await supabase.from('activities').insert({
       activity_type: 'voice_call_processed',
       title: 'Voice Call Processed',

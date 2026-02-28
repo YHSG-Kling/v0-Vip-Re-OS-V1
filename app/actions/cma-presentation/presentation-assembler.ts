@@ -99,7 +99,7 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
 
     const presentationId = crypto.randomUUID()
 
-    // Emit presentation created event
+    // Emit presentation created event — Agent task (correct location, no changes) — type: seller.presentation.created, seller.decision.ready
     await supabase.from("activities").insert({
       type: "seller.presentation.created",
       listing_id: input.listingId,
@@ -321,7 +321,7 @@ async function generatePresentationVideo(params: {
     })
 
     if (videoResult.success && videoResult.projectId) {
-      // Emit video generation event
+      // Emit video generation event — Agent task (correct location, no changes) — type: seller.presentation.video_generated
       await supabase.from("activities").insert({
         type: "seller.presentation.video_generated",
         listing_id: params.listingId,

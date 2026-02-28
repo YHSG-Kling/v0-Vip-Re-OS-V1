@@ -58,6 +58,7 @@ export async function submitOffer(offerData: {
     .single()
 
   if (listing) {
+    // Agent task (correct location, no changes) — activity_type: offer_received, offer_accepted, offer_rejected, counter_offer_sent
     await supabase.from("activities").insert({
       user_id: listing.agent_id,
       activity_type: "offer_received",
@@ -364,7 +365,7 @@ export async function counterOffer(
   // Update offer status
   await supabase.from("offers").update({ status: "countered" }).eq("id", offerId)
 
-  // Notify buyer's agent
+  // Notify buyer's agent — Agent task (correct location, no changes) — activity_type: offer_countered
   if (offer.buyer.agent_id) {
     await supabase.from("activities").insert({
       user_id: offer.buyer.agent_id,
@@ -422,7 +423,7 @@ export async function acceptOffer(offerId: string, agentId: string) {
   // Reject all other offers
   await supabase.from("offers").update({ status: "rejected" }).eq("listing_id", offer.listing_id).neq("id", offerId)
 
-  // Notify buyer
+  // Notify buyer — Agent task (correct location, no changes) — activity_type: offer_accepted
   if (offer.buyer.agent_id) {
     await supabase.from("activities").insert({
       user_id: offer.buyer.agent_id,
@@ -457,7 +458,7 @@ export async function rejectOffer(offerId: string, reason?: string) {
     })
     .eq("id", offerId)
 
-  // Notify buyer
+  // Notify buyer — Agent task (correct location, no changes) — activity_type: offer_rejected
   if (offer?.buyer_id) {
     await supabase.from("activities").insert({
       user_id: offer.buyer_id,

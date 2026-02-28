@@ -16,6 +16,7 @@ export interface EmitAuditEventRequest {
   metadata: Record<string, any>
 }
 
+// Agent task (correct location, no changes) — activity_type: voice.command.executed, voice.command.failed, voice.command.clarification_needed
 /**
  * Emit voice command audit event to activities table
  */

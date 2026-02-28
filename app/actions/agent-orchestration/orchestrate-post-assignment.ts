@@ -32,7 +32,8 @@ export async function orchestratePostAssignment(
     // Step 1: Generate action plan for agent
     const actionPlan = await generateAgentActionPlan(leadId, agentId, brokerageId)
 
-    console.log(`[v0] Generated ${actionPlan.recommendedActions.length} recommended actions for agent`)
+    // Agent task (correct location, no changes) — activity_type: agent_action_plan, system_orchestration, broker_escalation
+    console.log(`[Orchestration] Generated ${actionPlan.recommendedActions.length} recommended actions for agent`)
 
     // Step 2: Log action plan as activity (so agent sees it)
     const planDescription = actionPlan.recommendedActions
@@ -51,7 +52,7 @@ export async function orchestratePostAssignment(
       created_at: new Date().toISOString()
     })
 
-    console.log(`[v0] Action plan logged to activities table`)
+    console.log(`[Orchestration] Action plan logged to activities table`)
 
     // Step 3: Log orchestration decision
     await supabase.from("activities").insert({
@@ -115,7 +116,7 @@ export async function checkAndEscalateInactivity(
   leadId: string,
   brokerageId: string
 ) {
-  console.log(`[v0] Checking agent inactivity for lead ${leadId}`)
+  console.log(`[Orchestration] Checking agent inactivity for lead ${leadId}`)
 
   const supabase = createServiceClient()
 
@@ -125,7 +126,7 @@ export async function checkAndEscalateInactivity(
 
     // If SLA breached or lead is stale, escalate
     if (status.slaStatus === "breached_sla" || status.isStale) {
-      console.log(`[v0] Escalating to broker - ${status.recommendedAction}`)
+      console.log(`[Orchestration] Escalating to broker - ${status.recommendedAction}`)
 
       // Log escalation
       await supabase.from("activities").insert({

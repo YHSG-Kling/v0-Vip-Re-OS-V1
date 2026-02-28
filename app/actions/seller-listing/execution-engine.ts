@@ -18,6 +18,7 @@
  * - Events to activities table ONLY
  * - STOPS at UNDER_CONTRACT
  */
+// Agent task (correct location, no changes) — activity_type: seller.appointment.scheduled, seller.cma.started, seller.presentation.*, seller.decision.*, and all seller lifecycle events
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"

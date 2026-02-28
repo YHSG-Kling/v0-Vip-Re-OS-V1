@@ -97,6 +97,7 @@ export async function emitContactLifecycleSync(params: {
   return { success: true, activityId: data?.id }
 }
 
+// Agent task (correct location, no changes) — type: buyer.engagement.signal, buyer.under_contract.signal, buyer.lifetime.signal
 /**
  * Emit buyer engagement signal (FINANCIALLY_VERIFIED reached)
  */

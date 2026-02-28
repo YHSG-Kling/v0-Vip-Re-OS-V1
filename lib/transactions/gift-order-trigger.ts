@@ -54,7 +54,7 @@ export async function checkAndTriggerGiftOrder(params: {
       })
   }
 
-  // Create TC activity
+  // Create TC activity — Agent task (correct location, no changes) — activity_type: tc.gift.order
   const { data: transaction } = await supabase
     .from("transactions")
     .select("agent_id")

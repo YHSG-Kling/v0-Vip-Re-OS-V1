@@ -1,3 +1,4 @@
+// Agent task (correct location, no changes) — activity_type: buyer_match_signal
 /**
  * SYSTEM 5.1A - MATCH SIGNAL LOGGER
  * Logs buyer match signals to activities table for audit trail
@@ -38,7 +39,7 @@ export async function logBuyerMatchSignal(
     generated_at: new Date().toISOString(),
   }
 
-  console.log('[v0] Logging buyer match signal:', listingId, match.contact_id, match.score)
+  console.log('[MatchLogger] Logging buyer match signal:', listingId, match.contact_id, match.score)
 
   const { error } = await supabase.from('activities').insert({
     entity_type: 'listing',
@@ -52,7 +53,7 @@ export async function logBuyerMatchSignal(
   })
 
   if (error) {
-    console.error('[v0] Failed to log match signal:', error)
+    console.error('[MatchLogger] Failed to log match signal:', error)
     return { success: false, error: error.message }
   }
 
@@ -88,12 +89,12 @@ export async function logBatchMatchSignals(
     created_at: new Date().toISOString(),
   }))
 
-  console.log('[v0] Logging batch match signals:', listingId, matches.length)
+  console.log('[MatchLogger] Logging batch match signals:', listingId, matches.length)
 
   const { error, count } = await supabase.from('activities').insert(records)
 
   if (error) {
-    console.error('[v0] Failed to log batch signals:', error)
+    console.error('[MatchLogger] Failed to log batch signals:', error)
     errors.push(error.message)
   } else {
     logged = count || records.length
@@ -112,7 +113,7 @@ export async function appendBuyerPreferenceInference(
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = createServiceClient()
 
-  console.log('[v0] Appending preference inference for contact:', contactId)
+  console.log('[MatchLogger] Appending preference inference for contact:', contactId)
 
   // Fetch existing notes
   const { data: contact, error: fetchError } = await supabase
@@ -122,7 +123,7 @@ export async function appendBuyerPreferenceInference(
     .single()
 
   if (fetchError) {
-    console.error('[v0] Failed to fetch contact notes:', fetchError)
+    console.error('[MatchLogger] Failed to fetch contact notes:', fetchError)
     return { success: false, error: fetchError.message }
   }
 
@@ -154,7 +155,7 @@ export async function appendBuyerPreferenceInference(
     .eq('id', contactId)
 
   if (updateError) {
-    console.error('[v0] Failed to update contact notes:', updateError)
+    console.error('[MatchLogger] Failed to update contact notes:', updateError)
     return { success: false, error: updateError.message }
   }
 

@@ -82,7 +82,7 @@ export async function initiateWhisperBridge(params: {
       console.error("[Whisper Bridge] Failed to log call:", logError)
     }
 
-    // Create activity log
+    // Create activity log — Agent task (correct location, no changes) — activity_type: whisper_bridge_initiated, call_made
     await supabase.from("activities").insert({
       user_id: agentId,
       activity_type: "whisper_bridge_initiated",
@@ -232,7 +232,7 @@ export async function triggerVapiVoiceBot(params: {
       console.error("[Vapi Voice] Failed to log call:", logError)
     }
 
-    // Create activity log
+    // Create activity log — Agent task (correct location, no changes) — activity_type: vapi_voice_initiated
     await supabase.from("activities").insert({
       user_id: contactId,
       activity_type: "vapi_voice_initiated",

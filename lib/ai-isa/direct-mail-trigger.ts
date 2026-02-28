@@ -46,10 +46,10 @@ export async function shouldTriggerDirectMail(leadId: string): Promise<boolean> 
 }
 
 export async function triggerDirectMailCampaign(context: DirectMailContext) {
-  console.log('[v0] Triggering direct mail for lead:', context.leadId)
+  console.log('[AI ISA] Triggering direct mail for lead:', context.leadId)
   
   if (!context.mailingAddress || !context.city || !context.state || !context.zip) {
-    console.log('[v0] Insufficient address data for direct mail')
+    console.log('[AI ISA] Insufficient address data for direct mail')
     return { success: false, error: 'Missing address data' }
   }
   
@@ -91,7 +91,7 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
     //   })
     // })
     
-    // Log activity
+    // Log activity — Agent task (correct location, no changes) — activity_type: ai_isa_direct_mail
     const { data: lead } = await supabase
       .from('leads')
       .select('brokerage_id')
@@ -115,7 +115,7 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
       campaignId: campaign?.id
     }
   } catch (error: any) {
-    console.error('[v0] Direct mail trigger error:', error)
+    console.error('[AI ISA] Direct mail trigger error:', error)
     
     await supabase.from('automation_errors').insert({
       workflow_name: 'ai_isa_direct_mail',

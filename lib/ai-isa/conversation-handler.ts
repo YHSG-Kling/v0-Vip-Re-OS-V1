@@ -11,7 +11,7 @@ export interface InboundEmailContext {
 }
 
 export async function handleInboundEmailReply(context: InboundEmailContext) {
-  console.log('[v0] Handling inbound email from lead:', context.leadId)
+  console.log('[AI ISA] Handling inbound email from lead:', context.leadId)
   
   const supabase = createServiceClient()
   
@@ -70,7 +70,7 @@ export async function handleInboundEmailReply(context: InboundEmailContext) {
     created_at: new Date().toISOString()
   })
   
-  // Log activity
+  // Log activity — Agent task (correct location, no changes) — activity_type: ai_isa_conversation
   await supabase.from('activities').insert({
     contact_id: context.leadId,
     brokerage_id: lead.brokerage_id,

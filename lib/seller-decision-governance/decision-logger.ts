@@ -59,6 +59,7 @@ export interface DecisionReversalEvent {
   metadata?: Record<string, any>
 }
 
+// Agent task (correct location, no changes) — event_type: seller.decision.transition, seller.cma.quality_verified, seller.net_sheet.*, seller.presentation.*
 /**
  * Log decision state transition
  */
