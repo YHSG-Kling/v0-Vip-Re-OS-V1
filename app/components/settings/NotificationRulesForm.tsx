@@ -1,22 +1,29 @@
 'use client';
 
 import React, { useState } from 'react';
+import type { NotificationRuleRow } from "@/lib/kernel";
 import { updateNotificationRules } from '@/app/actions/settings/update-notification-rules';
 import { SettingsCard } from './SettingsCard';
 
 interface NotificationRulesFormProps {
-  rules: any[];
+  rules: NotificationRuleRow[];
   onRefresh: () => void;
+}
+
+function formatNotificationType(type: "push" | "email" | "sms"): string {
+  if (type === "push") return "In-App"
+  if (type === "email") return "Email"
+  return "SMS"
 }
 
 export function NotificationRulesForm({ rules, onRefresh }: NotificationRulesFormProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedRule, setSelectedRule] = useState<string | null>(null);
-  const [formData, setFormData] = useState<any>({});
+  const [formData, setFormData] = useState<Record<string, { is_active?: boolean }>>({});
 
-  const handleChange = (ruleId: string, field: string, value: any) => {
-    setFormData((prev: any) => ({
+  const handleChange = (ruleId: string, field: "is_active", value: boolean) => {
+    setFormData((prev) => ({
       ...prev,
       [ruleId]: {
         ...prev[ruleId],
@@ -38,7 +45,7 @@ export function NotificationRulesForm({ rules, onRefresh }: NotificationRulesFor
         onRefresh();
         setSelectedRule(null);
       }
-    } catch (err) {
+    } catch {
       setError('An error occurred');
     } finally {
       setLoading(false);
@@ -60,7 +67,7 @@ export function NotificationRulesForm({ rules, onRefresh }: NotificationRulesFor
               <div>
                 <h4 className="font-medium text-gray-900">{rule.rule_name}</h4>
                 <p className="text-sm text-gray-600">Trigger: {rule.trigger_event}</p>
-                <p className="text-sm text-gray-600">Type: {rule.notification_type}</p>
+                <p className="text-sm text-gray-600">Type: {formatNotificationType(rule.notification_type)}</p>
               </div>
               <label className="flex items-center gap-2">
                 <input
