@@ -51,6 +51,7 @@ export enum KernelEvent {
 
   // ── Activities ────────────────────────────────────────────────────────────
   TASK_ASSIGNED             = 'task_assigned',
+  TASK_DUE                  = 'task_due',
   TASK_OVERDUE              = 'task_overdue',
   TASK_COMPLETED            = 'task_completed',
   DOCUMENT_REQUESTED        = 'document_requested',
