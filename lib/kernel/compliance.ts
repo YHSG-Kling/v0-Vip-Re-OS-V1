@@ -21,6 +21,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { applyBrandVoice } from "./brand-voice"
 import type { EvaluateOutboundParams, ComplianceResult } from "./types"
+import { KernelEvent } from "./events"
+import { processKernelEvent } from "./notification-engine"
 
 // ─── RE-USE EXISTING RULE SETS (do not duplicate) ────────────────────────────
 // Import the pure-function evaluators that already own these rule arrays.
@@ -140,7 +142,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
 
   // ══════════════════════════════════════════════════════════════════════════
   // GATE 3 — Authority Rule (ISA override allowed)
-  // ══════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════���═══════════════════════════════════
 
   const contactStatus: string = contact.status ?? ""
 
@@ -218,18 +220,38 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
   //         actor_user_id, message_type, created_at
   // ══════════════════════════════════════════════════════════════════════════
 
-  await supabase.from("compliance_events").insert({
-    brokerage_id: actorContext.brokerageId,
-    gate_name: "outbound_compliance",
-    allowed,
-    violations: violations,            // jsonb — array stored as JSON
-    blocked_reason: blockedReason ?? null,
-    actor_role: actorContext.role,
-    actor_user_id: actorContext.userId,
-    entity_type: "contact",
-    entity_id: contact.id ?? null,
-    message_type: messageType,
-  })
+  const { data: complianceEvent } = await supabase
+    .from("compliance_events")
+    .insert({
+      brokerage_id: actorContext.brokerageId,
+      gate_name: "outbound_compliance",
+      allowed,
+      violations: violations,            // jsonb — array stored as JSON
+      blocked_reason: blockedReason ?? null,
+      actor_role: actorContext.role,
+      actor_user_id: actorContext.userId,
+      entity_type: "contact",
+      entity_id: contact.id ?? null,
+      message_type: messageType,
+    })
+    .select("id")
+    .single()
+
+  if (complianceEvent && !allowed) {
+    // FAILURE ISOLATION: Notification processing is non-blocking
+    // If processKernelEvent fails, it is logged but does NOT prevent compliance checks from completing
+    // This ensures compliance evaluation ALWAYS succeeds even if notifications fail
+    await processKernelEvent({
+      event: KernelEvent.COMPLIANCE_VIOLATION,
+      brokerageId: actorContext.brokerageId,
+      entityType: "contact",
+      entityId: params.contact.id,
+      complianceEventId: complianceEvent.id,
+    }).catch(err => {
+      console.error("[Compliance] Notification processing failed (non-blocking):", err)
+      // INTENTIONAL: Do not rethrow. Compliance check must not be blocked by notification failure.
+    })
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // RETURN
