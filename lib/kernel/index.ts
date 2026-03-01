@@ -9,6 +9,12 @@ export type { CalendarEventMetadata, KernelCalendarEvent } from "./calendar-type
 export { emitCalendarEvent } from "./calendar-engine"
 export { checkUpcomingDeadlines } from "./calendar-deadline-watcher"
 export { processKernelEvent } from "./notification-engine"
+export {
+  listNotifications,
+  countUnreadNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+} from "./notification-center"
 export { transitionLifecycle } from "./lifecycle"
 export { evaluateOutbound } from "./compliance"
 export { applyBrandVoice } from "./brand-voice"
