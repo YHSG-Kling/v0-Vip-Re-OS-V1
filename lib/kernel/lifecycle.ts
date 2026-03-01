@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase/server"
 import type { TransitionLifecycleParams } from "./types"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
+import { createTransactionMilestoneCalendarEvents } from "./milestone-calendar-bridge"
 
 // ─── LIFECYCLE → KERNEL EVENT MAP ────────────────────────────────────────────
 // Map lifecycle transitions to kernel events (explicit, not derived)
@@ -166,6 +167,19 @@ export async function transitionLifecycle(
         console.error('[Lifecycle] Notification processing failed (non-blocking):', err)
         // INTENTIONAL: Do not rethrow. State transition must not be blocked by notification failure.
       })
+
+      if (kernelEvent === KernelEvent.CONTRACT_SIGNED) {
+        await createTransactionMilestoneCalendarEvents({
+          brokerageId: params.brokerageId,
+          transactionId: params.entityId,
+          inspectionDate: params.metadata?.inspectionDate,
+          appraisalDate: params.metadata?.appraisalDate,
+          financingDeadline: params.metadata?.financingDeadline,
+          closingDate: params.metadata?.closingDate,
+        }).catch(err => {
+          console.error('[Lifecycle] Calendar bridge failed (non-blocking):', err)
+        })
+      }
     }
   }
 
