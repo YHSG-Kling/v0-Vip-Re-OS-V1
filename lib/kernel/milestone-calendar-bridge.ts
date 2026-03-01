@@ -2,7 +2,7 @@
 // Converts transaction milestone dates into calendar_events rows via emitCalendarEvent.
 // Named exports only — no default exports.
 
-import { zonedTimeToUtc } from 'date-fns-tz'
+import { fromZonedTime } from 'date-fns-tz'
 import { emitCalendarEvent } from './calendar-engine'
 import { CalendarEventType, KernelCalendarEvent } from './calendar-types'
 import { getBrokerageSettings } from '@/lib/brokerage/get-brokerage-settings'
@@ -11,7 +11,7 @@ import { getBrokerageSettings } from '@/lib/brokerage/get-brokerage-settings'
 
 function convertDateToUTC(dateStr: string, timezone: string): Date {
   const localISO = `${dateStr}T09:00:00`
-  return zonedTimeToUtc(localISO, timezone)
+  return fromZonedTime(localISO, timezone)
 }
 
 // ─── MILESTONE DEFINITION ────────────────────────────────────────────────────
