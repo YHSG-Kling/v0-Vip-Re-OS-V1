@@ -21,7 +21,7 @@ const CALENDAR_TYPE_TO_KERNEL_EVENT: Record<CalendarEventType, KernelEvent> = {
   [CalendarEventType.FINANCING_DEADLINE]:  KernelEvent.FINANCING_DUE,
   [CalendarEventType.WALKTHROUGH]:         KernelEvent.WALKTHROUGH_DUE,
   [CalendarEventType.CLOSING]:             KernelEvent.CLOSING_SCHEDULED,
-  [CalendarEventType.TASK_DUE]:            KernelEvent.TASK_OVERDUE,
+  [CalendarEventType.TASK_DUE]:            KernelEvent.TASK_DUE,
 }
 
 // ─── SHAPE OF A CALENDAR_EVENTS ROW ──────────────────────────────────────────
