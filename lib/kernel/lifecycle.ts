@@ -6,6 +6,28 @@
 
 import { createClient } from "@/lib/supabase/server"
 import type { TransitionLifecycleParams } from "./types"
+import { KernelEvent } from "./events"
+import { processKernelEvent } from "./notification-engine"
+
+// ─── LIFECYCLE → KERNEL EVENT MAP ────────────────────────────────────────────
+// Map lifecycle transitions to kernel events (explicit, not derived)
+const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
+  'new':               KernelEvent.CONTACT_CREATED,
+  'verified':          KernelEvent.BUYER_VERIFIED,
+  'tour_eligible':     KernelEvent.TOUR_ELIGIBLE,
+  'tour_scheduled':    KernelEvent.TOUR_SCHEDULED,
+  'offer_eligible':    KernelEvent.OFFER_ELIGIBLE,
+  'offer_submitted':   KernelEvent.OFFER_SUBMITTED,
+  'decision_pending':  KernelEvent.DECISION_PENDING,
+  'price_determined':  KernelEvent.PRICE_DETERMINED,
+  'listing_published': KernelEvent.LISTING_PUBLISHED,
+  'offer_received':    KernelEvent.OFFER_RECEIVED,
+  'under_contract':    KernelEvent.CONTRACT_SIGNED,
+  'on_hold':           KernelEvent.DEAL_ON_HOLD,
+  'disengaged':        KernelEvent.BUYER_DISENGAGED,
+  'closed':            KernelEvent.DEAL_CLOSED,
+  'lifetime':          KernelEvent.LIFETIME_CUSTOMER,
+}
 
 // ─── ENTITY → TABLE + STATE COLUMN MAP ───────────────────────────────────────
 // Derived from live schema. Each EntityType maps to one table and its state column.
@@ -125,6 +147,26 @@ export async function transitionLifecycle(
       `[lifecycle] Entity state updated but event insert failed for ` +
       `entity ${entityId}: ${eventError.message}`
     )
+  }
+
+  if (event) {
+    const kernelEvent = LIFECYCLE_TO_KERNEL_EVENT[params.eventType]
+
+    if (kernelEvent) {
+      // FAILURE ISOLATION: Notification processing is non-blocking
+      // If processKernelEvent fails, it is logged but does NOT prevent state transition
+      // This ensures lifecycle state changes ALWAYS succeed even if notifications fail
+      await processKernelEvent({
+        event: kernelEvent,
+        brokerageId: params.brokerageId,
+        entityType: params.entityType,
+        entityId: params.entityId,
+        lifecycleEventId: event.id,
+      }).catch(err => {
+        console.error('[Lifecycle] Notification processing failed (non-blocking):', err)
+        // INTENTIONAL: Do not rethrow. State transition must not be blocked by notification failure.
+      })
+    }
   }
 
   return { ok: true, activityId: event.id }
