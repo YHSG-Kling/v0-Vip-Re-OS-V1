@@ -116,6 +116,14 @@ export interface BrokerageSettings {
    */
   primary_state: string | null
 
+  /**
+   * primary_timezone:
+   * IANA timezone string (e.g., 'America/New_York').
+   * Used by Kernel Calendar Spine for date conversion.
+   * Defaults to 'UTC' if not configured.
+   */
+  primary_timezone?: string
+
   /** Whether closing is handled by title company, escrow, or attorney */
   closing_entity_type: ClosingEntityType
 
@@ -143,6 +151,7 @@ const DEFAULT_SETTINGS: BrokerageSettings = {
 
   // ── No state fallback — null forces explicit setup ────────
   primary_state: null,
+  primary_timezone: 'UTC',
   closing_entity_type: "title_company",
 
   compliance_levels: {
@@ -219,6 +228,7 @@ export async function getBrokerageSettings(
   return {
     ...DEFAULT_SETTINGS,
     ...raw,
+    primary_timezone: raw.primary_timezone || 'UTC',
     compliance_levels: {
       ...DEFAULT_SETTINGS.compliance_levels,
       ...(raw.compliance_levels ?? {}),
