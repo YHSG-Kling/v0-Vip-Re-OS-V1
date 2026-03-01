@@ -45,3 +45,6 @@ export type {
   EvaluateOutboundParams,
   ComplianceResult,
 } from "./types"
+
+export { listNotificationRules, updateNotificationRule } from "./notification-rules"
+export type { NotificationRuleRow } from "./notification-rules"
