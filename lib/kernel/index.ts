@@ -3,6 +3,7 @@
 // Import from '@/lib/kernel' — never from individual kernel files outside this layer.
 // No default exports.
 
+export { KernelEvent } from "./events"
 export { transitionLifecycle } from "./lifecycle"
 export { evaluateOutbound } from "./compliance"
 export { applyBrandVoice } from "./brand-voice"
