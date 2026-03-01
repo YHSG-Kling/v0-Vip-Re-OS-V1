@@ -3,9 +3,10 @@
 import React, { useEffect, useState } from 'react';
 import { listNotificationRules } from '@/app/actions/settings/list-notification-rules';
 import { NotificationRulesForm } from '@/app/components/settings/NotificationRulesForm';
+import type { NotificationRuleRow } from "@/lib/kernel"
 
 export default function NotificationsPage() {
-  const [rules, setRules] = useState<any[]>([]);
+  const [rules, setRules] = useState<NotificationRuleRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
