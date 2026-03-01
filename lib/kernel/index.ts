@@ -6,6 +6,7 @@
 export { KernelEvent } from "./events"
 export { CalendarEventType } from "./calendar-types"
 export type { CalendarEventMetadata, KernelCalendarEvent } from "./calendar-types"
+export { emitCalendarEvent } from "./calendar-engine"
 export { processKernelEvent } from "./notification-engine"
 export { transitionLifecycle } from "./lifecycle"
 export { evaluateOutbound } from "./compliance"
