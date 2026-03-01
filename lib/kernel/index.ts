@@ -4,6 +4,7 @@
 // No default exports.
 
 export { KernelEvent } from "./events"
+export { processKernelEvent } from "./notification-engine"
 export { transitionLifecycle } from "./lifecycle"
 export { evaluateOutbound } from "./compliance"
 export { applyBrandVoice } from "./brand-voice"
