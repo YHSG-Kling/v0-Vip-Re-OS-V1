@@ -53,3 +53,6 @@ export {
   deleteNotificationRule,
 } from "./notification-rules"
 export type { NotificationRuleRow } from "./notification-rules"
+
+export { getGlobalSettings, updateGlobalSettings } from "./global-settings"
+export type { GlobalSettingsRow } from "./global-settings"
