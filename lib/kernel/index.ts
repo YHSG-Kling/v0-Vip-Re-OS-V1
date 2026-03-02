@@ -72,6 +72,16 @@ export type {
 } from "./calendar-sync"
 
 export {
+  listAutomationErrors,
+  listCalendarSyncLogs,
+  getObservabilityDashboard,
+} from "./observability"
+export type {
+  AutomationErrorRow,
+  ObservabilityFilterParams,
+} from "./observability"
+
+export {
   getAgentOnboardingDashboard,
   completeOnboardingStep,
   listOnboardingSteps,
