@@ -53,8 +53,8 @@ export async function fetchAutomationErrors(params: {
     status: parseStatus(params.status),
     startDate: params.startDate ? new Date(params.startDate) : undefined,
     endDate: params.endDate ? new Date(params.endDate) : undefined,
-    limit: params.limit ?? 100,
-    offset: params.offset ?? 0,
+    limit: params.limit || 100,
+    offset: params.offset || 0,
   })
 }
 
@@ -70,8 +70,8 @@ export async function fetchCalendarSyncLogs(params: {
   return await listCalendarSyncLogs({
     userId: user.id,
     brokerageId: params.brokerageId,
-    limit: params.limit ?? 50,
-    offset: params.offset ?? 0,
+    limit: params.limit || 50,
+    offset: params.offset || 0,
   })
 }
 
