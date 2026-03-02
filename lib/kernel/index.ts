@@ -64,6 +64,8 @@ export {
   createOnboardingStepForBrokerage,
   updateOnboardingStepForBrokerage,
   deleteOnboardingStepForBrokerage,
+  getQuizForStep,
+  submitQuizAttempt,
 } from "./agent-onboarding"
 export type {
   OnboardingStatus,

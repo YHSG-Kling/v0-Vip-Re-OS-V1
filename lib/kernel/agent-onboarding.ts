@@ -469,3 +469,134 @@ export async function listOnboardingSteps(params: {
     brokerageSteps: (brokerageSteps ?? []) as OnboardingStepRow[],
   })
 }
+
+// ─── QUIZ TYPES ────────────────────────────────────────────────────────────────
+
+type QuizQuestion = {
+  id: string
+  correctAnswer: unknown
+  [key: string]: unknown
+}
+
+type QuizRow = {
+  id: string
+  step_id: string
+  quiz_name: string
+  passing_score: number
+  questions: QuizQuestion[]
+}
+
+// ─── QUIZ FUNCTIONS ────────────────────────────────────────────────────────────
+
+export async function getQuizForStep(params: {
+  userId: string
+  agentId: string
+  stepId: string
+}): Promise<{
+  quizId: string
+  quizName: string
+  passingScore: number
+  questions: Record<string, unknown>[]
+} | null> {
+  await assertCanAccessAgent({
+    userId: params.userId,
+    agentId: params.agentId,
+  })
+
+  const supabase = await createClient()
+
+  const { data: quiz, error } = await supabase
+    .from("onboarding_quizzes")
+    .select("id, quiz_name, passing_score, questions")
+    .eq("step_id", params.stepId)
+    .maybeSingle()
+
+  if (error) throw new Error(`Failed to load quiz for step: ${error.message}`)
+  if (!quiz) return null
+
+  return {
+    quizId: quiz.id,
+    quizName: quiz.quiz_name,
+    passingScore: quiz.passing_score,
+    questions: (quiz.questions as Record<string, unknown>[]) ?? [],
+  }
+}
+
+export async function submitQuizAttempt(params: {
+  userId: string
+  agentId: string
+  quizId: string
+  answers: Record<string, unknown>
+}): Promise<{ score: number; passed: boolean }> {
+  const { brokerageId } = await assertCanAccessAgent({
+    userId: params.userId,
+    agentId: params.agentId,
+  })
+
+  const supabase = await createClient()
+
+  // Load full quiz (questions + passing_score + step_id)
+  const { data: quiz, error: quizError } = await supabase
+    .from("onboarding_quizzes")
+    .select("id, step_id, passing_score, questions")
+    .eq("id", params.quizId)
+    .single()
+
+  if (quizError || !quiz) {
+    throw new Error(`Quiz not found: ${quizError?.message ?? "no data"}`)
+  }
+
+  const questions = (quiz.questions as QuizQuestion[]) ?? []
+
+  // Score: count correct answers
+  let correctCount = 0
+  for (const question of questions) {
+    if (params.answers[question.id] === question.correctAnswer) {
+      correctCount++
+    }
+  }
+  const score = questions.length > 0
+    ? Math.round((correctCount / questions.length) * 100)
+    : 0
+  const passed = score >= quiz.passing_score
+
+  // Count existing attempts for attempt_number
+  const { count: prevAttempts } = await supabase
+    .from("agent_quiz_attempts")
+    .select("id", { count: "exact", head: true })
+    .eq("agent_id", params.agentId)
+    .eq("quiz_id", params.quizId)
+
+  const attemptNumber = (prevAttempts ?? 0) + 1
+
+  // Insert attempt record
+  const { error: insertError } = await supabase
+    .from("agent_quiz_attempts")
+    .insert({
+      brokerage_id: brokerageId,
+      agent_id: params.agentId,
+      quiz_id: params.quizId,
+      score,
+      answers: params.answers,
+      passed,
+      attempt_number: attemptNumber,
+    })
+
+  if (insertError) throw new Error(`Failed to record quiz attempt: ${insertError.message}`)
+
+  // If passed: update step_completion quiz_score
+  if (passed) {
+    const { error: completionError } = await supabase
+      .from("agent_step_completions")
+      .update({ quiz_score: score })
+      .eq("agent_id", params.agentId)
+      .eq("step_id", quiz.step_id)
+
+    if (completionError) {
+      // Non-fatal: attempt is already recorded; log but do not throw
+      console.error("[AgentOnboarding] Failed to update quiz_score on step_completion:", completionError.message)
+    }
+  }
+
+  return { score, passed }
+}
