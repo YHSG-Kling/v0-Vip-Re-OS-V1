@@ -61,6 +61,9 @@ export {
   getAgentOnboardingDashboard,
   completeOnboardingStep,
   listOnboardingSteps,
+  createOnboardingStepForBrokerage,
+  updateOnboardingStepForBrokerage,
+  deleteOnboardingStepForBrokerage,
 } from "./agent-onboarding"
 export type {
   OnboardingStatus,

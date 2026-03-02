@@ -308,6 +308,137 @@ export async function completeOnboardingStep(params: {
   }
 }
 
+export async function createOnboardingStepForBrokerage(params: {
+  userId: string
+  step: {
+    day_number: number
+    step_order: number
+    step_key: string
+    step_name: string
+    category: OnboardingStepRow["category"]
+    required: boolean
+    estimated_minutes?: number | null
+    video_url?: string | null
+    instructions?: string | null
+  }
+}): Promise<{ id: string }> {
+  const { brokerageId, userType } = await requireUserContext(params.userId)
+
+  if (!["admin", "broker", "superadmin"].includes(userType)) {
+    throw new Error("Forbidden: insufficient permissions to create onboarding steps")
+  }
+
+  const supabase = await createClient()
+
+  const { data: inserted, error } = await supabase
+    .from("onboarding_steps")
+    .insert({
+      brokerage_id: brokerageId,
+      day_number: params.step.day_number,
+      step_order: params.step.step_order,
+      step_key: params.step.step_key,
+      step_name: params.step.step_name,
+      category: params.step.category,
+      required: params.step.required,
+      estimated_minutes: params.step.estimated_minutes ?? null,
+      video_url: params.step.video_url ?? null,
+      instructions: params.step.instructions ?? null,
+    })
+    .select("id")
+    .single()
+
+  if (error) throw new Error(`Failed to create onboarding step: ${error.message}`)
+  if (!inserted) throw new Error("Failed to create onboarding step: no row returned")
+
+  return { id: inserted.id }
+}
+
+export async function updateOnboardingStepForBrokerage(params: {
+  userId: string
+  stepId: string
+  updates: Partial<
+    Pick<
+      OnboardingStepRow,
+      | "day_number"
+      | "step_order"
+      | "step_key"
+      | "step_name"
+      | "category"
+      | "required"
+      | "estimated_minutes"
+      | "video_url"
+      | "instructions"
+    >
+  >
+}): Promise<void> {
+  const { brokerageId, userType } = await requireUserContext(params.userId)
+
+  if (!["admin", "broker", "superadmin"].includes(userType)) {
+    throw new Error("Forbidden: insufficient permissions to update onboarding steps")
+  }
+
+  const supabase = await createClient()
+
+  // Verify the step belongs to this brokerage (never allow editing global steps where brokerage_id is null)
+  const { data: existing, error: fetchError } = await supabase
+    .from("onboarding_steps")
+    .select("id, brokerage_id")
+    .eq("id", params.stepId)
+    .single()
+
+  if (fetchError || !existing) throw new Error("Onboarding step not found")
+  if (existing.brokerage_id === null) {
+    throw new Error("Forbidden: cannot modify global onboarding steps")
+  }
+  if (existing.brokerage_id !== brokerageId) {
+    throw new Error("Forbidden: step does not belong to your brokerage")
+  }
+
+  const { error } = await supabase
+    .from("onboarding_steps")
+    .update(params.updates)
+    .eq("id", params.stepId)
+    .eq("brokerage_id", brokerageId)
+
+  if (error) throw new Error(`Failed to update onboarding step: ${error.message}`)
+}
+
+export async function deleteOnboardingStepForBrokerage(params: {
+  userId: string
+  stepId: string
+}): Promise<void> {
+  const { brokerageId, userType } = await requireUserContext(params.userId)
+
+  if (!["admin", "broker", "superadmin"].includes(userType)) {
+    throw new Error("Forbidden: insufficient permissions to delete onboarding steps")
+  }
+
+  const supabase = await createClient()
+
+  // Verify the step belongs to this brokerage (never allow deleting global steps)
+  const { data: existing, error: fetchError } = await supabase
+    .from("onboarding_steps")
+    .select("id, brokerage_id")
+    .eq("id", params.stepId)
+    .single()
+
+  if (fetchError || !existing) throw new Error("Onboarding step not found")
+  if (existing.brokerage_id === null) {
+    throw new Error("Forbidden: cannot delete global onboarding steps")
+  }
+  if (existing.brokerage_id !== brokerageId) {
+    throw new Error("Forbidden: step does not belong to your brokerage")
+  }
+
+  const { error } = await supabase
+    .from("onboarding_steps")
+    .delete()
+    .eq("id", params.stepId)
+    .eq("brokerage_id", brokerageId)
+
+  if (error) throw new Error(`Failed to delete onboarding step: ${error.message}`)
+}
+
 export async function listOnboardingSteps(params: {
   userId: string
 }): Promise<OnboardingStepRow[]> {
