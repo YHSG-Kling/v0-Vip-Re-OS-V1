@@ -58,6 +58,20 @@ export { getGlobalSettings, updateGlobalSettings } from "./global-settings"
 export type { GlobalSettingsRow } from "./global-settings"
 
 export {
+  linkCalendarProvider,
+  pushCalendarEventToProvider,
+  pullCalendarEventsFromProvider,
+  listProviderAccounts,
+  listSyncLogs,
+} from "./calendar-sync"
+export type {
+  CalendarProviderType,
+  CalendarProviderAccountRow,
+  CalendarSyncMappingRow,
+  CalendarSyncLogRow,
+} from "./calendar-sync"
+
+export {
   getAgentOnboardingDashboard,
   completeOnboardingStep,
   listOnboardingSteps,
