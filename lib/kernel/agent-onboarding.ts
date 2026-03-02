@@ -1,0 +1,340 @@
+// lib/kernel/agent-onboarding.ts
+// Kernel module for agent onboarding dashboard, step completion, and step management.
+// No UI code. No any types. No default exports.
+// Access gate: agents can only access their own onboarding;
+// admin/broker/superadmin can access any agent within their brokerage.
+
+import { createClient } from "@/lib/supabase/server"
+
+// ─── TYPES ────────────────────────────────────────────────────────────────────
+
+export type OnboardingStatus = "in_progress" | "completed" | "paused"
+
+export type OnboardingStepRow = {
+  id: string
+  brokerage_id: string | null
+  day_number: number
+  step_order: number
+  step_key: string
+  step_name: string
+  category: "system_setup" | "training" | "practice" | "compliance" | "certification"
+  required: boolean
+  estimated_minutes: number | null
+  video_url: string | null
+  instructions: string | null
+  success_criteria: Record<string, unknown> | null
+}
+
+export type AgentOnboardingRow = {
+  id: string
+  brokerage_id: string
+  agent_id: string
+  start_date: string
+  current_day: number
+  status: OnboardingStatus
+  completion_percentage: number
+  certification_achieved: boolean
+  certified_at: string | null
+}
+
+export type StepCompletionRow = {
+  id: string
+  brokerage_id: string
+  agent_id: string
+  step_id: string
+  completed: boolean
+  completed_at: string | null
+  time_spent_minutes: number | null
+  quiz_score: number | null
+  notes: string | null
+}
+
+// ─── INTERNAL HELPERS ─────────────────────────────────────────────────────────
+
+async function requireUserContext(
+  userId: string
+): Promise<{ brokerageId: string; userType: string }> {
+  const supabase = await createClient()
+  const { data: user, error } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", userId)
+    .single()
+
+  if (error || !user) throw new Error("User not found")
+  return { brokerageId: user.brokerage_id, userType: user.user_type }
+}
+
+async function assertCanAccessAgent(params: {
+  supabase: Awaited<ReturnType<typeof createClient>>
+  userType: string
+  userId: string
+  agentId: string
+}): Promise<void> {
+  if (params.userType === "agent") {
+    const { data: agent, error } = await params.supabase
+      .from("agents")
+      .select("user_id")
+      .eq("id", params.agentId)
+      .single()
+
+    if (error || !agent) throw new Error("Agent not found")
+    if (agent.user_id !== params.userId) {
+      throw new Error("Forbidden: cannot access other agents' onboarding")
+    }
+    return
+  }
+
+  if (!["admin", "broker", "superadmin"].includes(params.userType)) {
+    throw new Error("Forbidden: insufficient permissions")
+  }
+}
+
+function resolveSteps(params: {
+  globalSteps: OnboardingStepRow[]
+  brokerageSteps: OnboardingStepRow[]
+}): OnboardingStepRow[] {
+  const stepMap = new Map<string, OnboardingStepRow>()
+
+  for (const s of params.globalSteps) {
+    stepMap.set(`${s.day_number}-${s.step_order}-${s.step_key}`, s)
+  }
+  for (const s of params.brokerageSteps) {
+    stepMap.set(`${s.day_number}-${s.step_order}-${s.step_key}`, s)
+  }
+
+  return Array.from(stepMap.values()).sort((a, b) => {
+    if (a.day_number !== b.day_number) return a.day_number - b.day_number
+    return a.step_order - b.step_order
+  })
+}
+
+function computeProgress(params: {
+  steps: OnboardingStepRow[]
+  completions: StepCompletionRow[]
+}): { completionPercentage: number; nextCurrentDay: number } {
+  const requiredSteps = params.steps.filter(s => s.required)
+  const completedSet = new Set(
+    params.completions.filter(c => c.completed).map(c => c.step_id)
+  )
+
+  const completedRequired = requiredSteps.filter(s => completedSet.has(s.id)).length
+  const totalRequired = requiredSteps.length
+
+  const completionPercentage =
+    totalRequired > 0
+      ? Math.round((completedRequired / totalRequired) * 100)
+      : 0
+
+  // current_day = first day that still has an incomplete required step
+  for (let day = 1; day <= 7; day++) {
+    const requiredForDay = requiredSteps.filter(s => s.day_number === day)
+    const allDone = requiredForDay.every(s => completedSet.has(s.id))
+    if (!allDone) return { completionPercentage, nextCurrentDay: day }
+  }
+
+  return { completionPercentage, nextCurrentDay: 7 }
+}
+
+// ─── EXPORTS ──────────────────────────────────────────────────────────────────
+
+export async function getAgentOnboardingDashboard(params: {
+  userId: string
+  agentId: string
+}): Promise<{
+  onboarding: AgentOnboardingRow
+  steps: OnboardingStepRow[]
+  completions: StepCompletionRow[]
+}> {
+  const supabase = await createClient()
+  const { brokerageId, userType } = await requireUserContext(params.userId)
+
+  await assertCanAccessAgent({
+    supabase,
+    userType,
+    userId: params.userId,
+    agentId: params.agentId,
+  })
+
+  // Ensure onboarding row exists
+  let { data: onboarding, error: fetchError } = await supabase
+    .from("agent_onboarding")
+    .select("*")
+    .eq("agent_id", params.agentId)
+    .eq("brokerage_id", brokerageId)
+    .single()
+
+  if (fetchError || !onboarding) {
+    const { error: insertError } = await supabase.from("agent_onboarding").insert({
+      brokerage_id: brokerageId,
+      agent_id: params.agentId,
+      start_date: new Date().toISOString().split("T")[0],
+      current_day: 1,
+      status: "in_progress",
+      completion_percentage: 0,
+      certification_achieved: false,
+      certified_at: null,
+    })
+
+    if (insertError) {
+      throw new Error(`Failed to create onboarding record: ${insertError.message}`)
+    }
+
+    const { data: refetched, error: refetchError } = await supabase
+      .from("agent_onboarding")
+      .select("*")
+      .eq("agent_id", params.agentId)
+      .eq("brokerage_id", brokerageId)
+      .single()
+
+    if (refetchError || !refetched) {
+      throw new Error("Failed to load onboarding record after insert")
+    }
+
+    onboarding = refetched
+  }
+
+  // Load global steps (brokerage_id is null)
+  const { data: globalSteps, error: globalError } = await supabase
+    .from("onboarding_steps")
+    .select("*")
+    .is("brokerage_id", null)
+
+  if (globalError) throw new Error(`Failed to load global onboarding steps: ${globalError.message}`)
+
+  // Load brokerage-specific steps
+  const { data: brokerageSteps, error: brokerageError } = await supabase
+    .from("onboarding_steps")
+    .select("*")
+    .eq("brokerage_id", brokerageId)
+
+  if (brokerageError) throw new Error(`Failed to load brokerage onboarding steps: ${brokerageError.message}`)
+
+  const steps = resolveSteps({
+    globalSteps: (globalSteps ?? []) as OnboardingStepRow[],
+    brokerageSteps: (brokerageSteps ?? []) as OnboardingStepRow[],
+  })
+
+  // Load completions for this agent
+  const { data: completions, error: completionsError } = await supabase
+    .from("agent_step_completions")
+    .select("*")
+    .eq("agent_id", params.agentId)
+    .eq("brokerage_id", brokerageId)
+
+  if (completionsError) throw new Error(`Failed to load step completions: ${completionsError.message}`)
+
+  return {
+    onboarding: onboarding as AgentOnboardingRow,
+    steps,
+    completions: (completions ?? []) as StepCompletionRow[],
+  }
+}
+
+export async function completeOnboardingStep(params: {
+  userId: string
+  agentId: string
+  stepId: string
+  data?: {
+    timeSpentMinutes?: number
+    quizScore?: number
+    notes?: string
+  }
+}): Promise<void> {
+  const supabase = await createClient()
+  const { brokerageId, userType } = await requireUserContext(params.userId)
+
+  await assertCanAccessAgent({
+    supabase,
+    userType,
+    userId: params.userId,
+    agentId: params.agentId,
+  })
+
+  const now = new Date().toISOString()
+
+  const { error: upsertError } = await supabase
+    .from("agent_step_completions")
+    .upsert(
+      {
+        brokerage_id: brokerageId,
+        agent_id: params.agentId,
+        step_id: params.stepId,
+        completed: true,
+        completed_at: now,
+        updated_at: now,
+        ...(params.data?.timeSpentMinutes !== undefined && {
+          time_spent_minutes: params.data.timeSpentMinutes,
+        }),
+        ...(params.data?.quizScore !== undefined && {
+          quiz_score: params.data.quizScore,
+        }),
+        ...(params.data?.notes !== undefined && {
+          notes: params.data.notes,
+        }),
+      },
+      { onConflict: "agent_id,step_id" }
+    )
+
+  if (upsertError) {
+    throw new Error(`Failed to record step completion: ${upsertError.message}`)
+  }
+
+  // Recompute progress
+  const { onboarding, steps, completions } = await getAgentOnboardingDashboard({
+    userId: params.userId,
+    agentId: params.agentId,
+  })
+
+  const { completionPercentage, nextCurrentDay } = computeProgress({ steps, completions })
+
+  const isComplete = completionPercentage === 100
+
+  const { error: updateError } = await supabase
+    .from("agent_onboarding")
+    .update({
+      completion_percentage: completionPercentage,
+      current_day: nextCurrentDay,
+      status: isComplete ? "completed" : "in_progress",
+      certification_achieved: isComplete,
+      certified_at: isComplete ? now : null,
+      updated_at: now,
+    })
+    .eq("id", onboarding.id)
+    .eq("brokerage_id", brokerageId)
+
+  if (updateError) {
+    throw new Error(`Failed to update onboarding progress: ${updateError.message}`)
+  }
+}
+
+export async function listOnboardingSteps(params: {
+  userId: string
+}): Promise<OnboardingStepRow[]> {
+  const { brokerageId, userType } = await requireUserContext(params.userId)
+
+  if (!["admin", "broker", "superadmin"].includes(userType)) {
+    throw new Error("Forbidden: insufficient permissions to list onboarding steps")
+  }
+
+  const supabase = await createClient()
+
+  const { data: globalSteps, error: globalError } = await supabase
+    .from("onboarding_steps")
+    .select("*")
+    .is("brokerage_id", null)
+
+  if (globalError) throw new Error(`Failed to load global onboarding steps: ${globalError.message}`)
+
+  const { data: brokerageSteps, error: brokerageError } = await supabase
+    .from("onboarding_steps")
+    .select("*")
+    .eq("brokerage_id", brokerageId)
+
+  if (brokerageError) throw new Error(`Failed to load brokerage onboarding steps: ${brokerageError.message}`)
+
+  return resolveSteps({
+    globalSteps: (globalSteps ?? []) as OnboardingStepRow[],
+    brokerageSteps: (brokerageSteps ?? []) as OnboardingStepRow[],
+  })
+}

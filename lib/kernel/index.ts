@@ -56,3 +56,15 @@ export type { NotificationRuleRow } from "./notification-rules"
 
 export { getGlobalSettings, updateGlobalSettings } from "./global-settings"
 export type { GlobalSettingsRow } from "./global-settings"
+
+export {
+  getAgentOnboardingDashboard,
+  completeOnboardingStep,
+  listOnboardingSteps,
+} from "./agent-onboarding"
+export type {
+  OnboardingStatus,
+  OnboardingStepRow,
+  AgentOnboardingRow,
+  StepCompletionRow,
+} from "./agent-onboarding"
