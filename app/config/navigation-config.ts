@@ -35,6 +35,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       },
       { id: 'divider2', divider: true },
       { id: 'coaching', label: 'Training & Coaching', href: '/agent/coaching', icon: 'BookOpen' },
+      { id: 'onboarding', label: 'Onboarding', href: '/dashboard/onboarding', icon: 'BookOpen' },
       { id: 'settings', label: 'Settings', href: '/agent/settings', icon: 'Settings' },
     ],
     topNavItems: [
