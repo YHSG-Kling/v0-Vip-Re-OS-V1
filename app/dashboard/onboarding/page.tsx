@@ -1,5 +1,6 @@
 import { fetchMyOnboardingDashboard, completeMyOnboardingStep } from "@/app/actions/onboarding/agent-onboarding-actions"
 import type { OnboardingStepRow } from "@/lib/kernel"
+import { OnboardingQuizClient } from "./OnboardingQuizClient"
 
 export default async function OnboardingPage() {
   let dashboard
@@ -64,6 +65,7 @@ export default async function OnboardingPage() {
                   .map(step => {
                     const completion = completionMap.get(step.id)
                     const isCompleted = completion?.completed ?? false
+                    const hasQuiz = typeof step.success_criteria?.quiz_key === 'string'
 
                     return (
                       <div
@@ -79,6 +81,9 @@ export default async function OnboardingPage() {
                               )}
                               {isCompleted && (
                                 <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded">Complete</span>
+                              )}
+                              {hasQuiz && !isCompleted && (
+                                <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded">Has Quiz</span>
                               )}
                             </div>
                             <p className="text-sm text-gray-600 mt-1">{step.category}</p>
@@ -103,7 +108,17 @@ export default async function OnboardingPage() {
                           </a>
                         )}
 
-                        {!isCompleted && (
+                        {!isCompleted && hasQuiz && (
+                          <OnboardingQuizClient
+                            stepId={step.id}
+                            onPassAndComplete={async () => {
+                              "use server"
+                              await completeMyOnboardingStep(step.id)
+                            }}
+                          />
+                        )}
+
+                        {!isCompleted && !hasQuiz && (
                           <form
                             action={async () => {
                               "use server"
