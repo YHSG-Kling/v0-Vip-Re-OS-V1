@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getQuizForStep, submitQuizAttempt } from "@/lib/kernel"
-import { getAgentContext } from "@/lib/agent/get-agent-context"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function fetchQuiz(stepId: string): Promise<{
   quizId: string
