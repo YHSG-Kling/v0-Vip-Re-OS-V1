@@ -46,5 +46,10 @@ export type {
   ComplianceResult,
 } from "./types"
 
-export { listNotificationRules, updateNotificationRule } from "./notification-rules"
+export {
+  listNotificationRules,
+  updateNotificationRule,
+  createNotificationRule,
+  deleteNotificationRule,
+} from "./notification-rules"
 export type { NotificationRuleRow } from "./notification-rules"

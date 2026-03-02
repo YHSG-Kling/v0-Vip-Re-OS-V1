@@ -86,3 +86,58 @@ export async function updateNotificationRule(params: {
 
   if (error) throw error
 }
+
+export async function createNotificationRule(params: {
+  userId: string
+  rule: {
+    rule_name: string
+    trigger_event: string
+    notification_type: "push" | "email" | "sms"
+    recipient_role: string
+    is_active: boolean
+  }
+}): Promise<{ id: string }> {
+  const { brokerageId } = await requireBrokerAdmin(params.userId)
+  const supabase = await createClient()
+
+  const { data: insertedRow, error } = await supabase
+    .from("notification_rules")
+    .insert({
+      brokerage_id: brokerageId,
+      rule_name: params.rule.rule_name,
+      trigger_event: params.rule.trigger_event,
+      notification_type: params.rule.notification_type,
+      recipient_role: params.rule.recipient_role,
+      is_active: params.rule.is_active,
+    })
+    .select("id")
+    .single()
+
+  if (error) {
+    throw error
+  }
+
+  if (!insertedRow) {
+    throw new Error("Failed to insert notification rule")
+  }
+
+  return { id: insertedRow.id }
+}
+
+export async function deleteNotificationRule(params: {
+  userId: string
+  ruleId: string
+}): Promise<void> {
+  const { brokerageId } = await requireBrokerAdmin(params.userId)
+  const supabase = await createClient()
+
+  const { error } = await supabase
+    .from("notification_rules")
+    .delete()
+    .eq("id", params.ruleId)
+    .eq("brokerage_id", brokerageId)
+
+  if (error) {
+    throw error
+  }
+}
