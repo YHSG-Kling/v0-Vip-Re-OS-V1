@@ -37,6 +37,10 @@
     {
       "path": "/api/cron/calendar-sync",
       "schedule": "0 */2 * * *"
+    },
+    {
+      "path": "/api/cron/automation-error-monitor",
+      "schedule": "0 * * * *"
     }
   ]
 }
