@@ -66,4 +66,61 @@ export enum KernelEvent {
   // ── Compliance ────────────────────────────────────────────────────────────
   COMPLIANCE_VIOLATION      = 'compliance_violation',
   AUTHORITY_BLOCKED         = 'authority_blocked',
+
+  // ── Lead Acquisition (Track A — Lead-first) ───────────────────────────────
+  LEAD_CAPTURED                  = 'lead_captured',
+  LEAD_SCORED                    = 'lead_scored',
+  RAW_LEAD_VIABILITY_PASSED      = 'raw_lead_viability_passed',
+  RAW_LEAD_VIABILITY_FAILED      = 'raw_lead_viability_failed',
+
+  // ── Contact Acquisition (Track B — Contact-first) ────────────────────────
+  CONTACT_CAPTURED               = 'contact_captured',
+  CONTACT_DEDUP_MERGED           = 'contact_dedup_merged',
+  CONTACT_ENRICHMENT_QUEUED      = 'contact_enrichment_queued',
+  CONTACT_ENRICHMENT_COMPLETED   = 'contact_enrichment_completed',
+  CONTACT_ENRICHMENT_FAILED      = 'contact_enrichment_failed',
+  CONTACT_SCORED                 = 'contact_scored',
+
+  // ── ISA Pipeline ─────────────────────────────────────────────────────────
+  ISA_QUALIFICATION_STARTED      = 'isa_qualification_started',
+  ISA_OUTREACH_SENT              = 'isa_outreach_sent',
+  ISA_REPLY_RECEIVED             = 'isa_reply_received',
+  ISA_QUALIFIED_LEAD             = 'isa_qualified_lead',
+  ISA_MAX_TOUCHES_REACHED        = 'isa_max_touches_reached',
+  ISA_APPOINTMENT_SCHEDULED      = 'isa_appointment_scheduled',
+  ISA_OUTREACH_PAUSED            = 'isa_outreach_paused',
+
+  // ── Consent & TCPA ───────────────────────────────────────────────────────
+  CONSENT_RECEIVED               = 'consent_received',
+  LEAD_READY_FOR_ASSIGNMENT      = 'lead_ready_for_assignment',
+
+  // ── Assignment ───────────────────────────────────────────────────────────
+  LEAD_ASSIGNED                  = 'lead_assigned',
+  LEAD_ASSIGNMENT_FAILED         = 'lead_assignment_failed',
+  LEAD_CLAIMED                   = 'lead_claimed',
+
+  // ── Conversion ───────────────────────────────────────────────────────────
+  LEAD_CONVERTED_TO_CONTACT      = 'lead_converted_to_contact',
+
+  // ── Lead Capture Channels ────────────────────────────────────────────────
+  QR_SCAN_RECEIVED               = 'qr_scan_received',
+  FORM_SUBMISSION_RECEIVED       = 'form_submission_received',
+  BUSINESS_CARD_UPLOADED         = 'business_card_uploaded',
+  BUSINESS_CARD_APPROVED         = 'business_card_approved',
+  LEAD_IMPORT_COMPLETED          = 'lead_import_completed',
+  WEBSITE_VISITOR_IDENTIFIED     = 'website_visitor_identified',
+  REFERRAL_RECEIVED              = 'referral_received',
+
+  // ── Re-engagement ────────────────────────────────────────────────────────
+  GHOST_LEAD_DETECTED            = 'ghost_lead_detected',
+  REENGAGEMENT_STARTED           = 'reengagement_started',
+  REENGAGEMENT_COMPLETED         = 'reengagement_completed',
+
+  // ── SLA ──────────────────────────────────────────────────────────────────
+  LEAD_SLA_BREACHED              = 'lead_sla_breached',
+  STALE_LEAD_ALERT               = 'stale_lead_alert',
+
+  // ── Enrichment ───────────────────────────────────────────────────────────
+  ENRICHMENT_COMPLETED           = 'enrichment_completed',
+  ENRICHMENT_FAILED              = 'enrichment_failed',
 }
