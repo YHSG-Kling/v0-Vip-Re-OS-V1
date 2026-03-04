@@ -76,31 +76,17 @@ export async function persistQualificationSignals(
   
   // Update lead stage if ready for agent
   if (signals.readinessForAgent) {
-    await supabase
-      .from('leads')
-      .update({
-        lead_stage: 'qualified',
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', leadId)
-    
-    // Log qualification activity — Agent task (correct location, no changes) — activity_type: ai_isa_qualification
+    const { handleConsentReceived } = await import('@/lib/kernel/lead-acquisition-handlers')
     const { data: lead } = await supabase
       .from('leads')
-      .select('brokerage_id, agent_id')
+      .select('brokerage_id')
       .eq('id', leadId)
       .single()
-    
     if (lead) {
-      await supabase.from('activities').insert({
-        contact_id: leadId,
-        agent_id: lead.agent_id,
-        brokerage_id: lead.brokerage_id,
-        activity_type: 'ai_isa_qualification',
-        title: 'Lead Qualified by AI ISA',
-        description: `Lead qualified with ${signals.urgency} urgency and ${signals.engagementLevel} engagement`,
-        status: 'completed',
-        created_at: new Date().toISOString()
+      await handleConsentReceived({
+        leadId,
+        brokerageId: lead.brokerage_id,
+        consentSource: 'reply'
       })
     }
   }
