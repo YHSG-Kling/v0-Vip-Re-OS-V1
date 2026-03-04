@@ -46,7 +46,7 @@ const ENTITY_MAP: Record<
   tour:        { table: "tours",          stateColumn: "status"        },
   repair:      { table: "property_upgrades", stateColumn: "status"    },
   financial:   { table: "commissions",    stateColumn: "status"        },
-  lead:        { table: "leads",          stateColumn: "lead_stage"    },
+  lead:        { table: "leads",          stateColumn: "lifecycle_state" },
   journey:     { table: "journey_states", stateColumn: "current_stage" },
   showing:     { table: "showings",       stateColumn: "status"        },
 }
