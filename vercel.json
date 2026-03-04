@@ -41,6 +41,22 @@
     {
       "path": "/api/cron/automation-error-monitor",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/ghost-detection",
+      "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/cron/territory-metrics",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/stale-lead-monitor",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/enrichment-processor",
+      "schedule": "*/15 * * * *"
     }
   ]
 }
