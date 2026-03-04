@@ -15,6 +15,29 @@ export type EntityType =
   | "tour"
   | "repair"
   | "financial"
+  | "lead"
+  | "qr_scan"
+  | "business_card"
+  | "territory"
+  | "contact"
+
+// ── Lead Lifecycle States (Layer 2, Track A) ──────────────────────────────
+export type LeadLifecycleStage =
+  | 'raw'            // Just created, no processing
+  | 'unconsented'    // In pipeline, no digital consent
+  | 'isa_qualifying' // AI ISA outreach active
+  | 'consented'      // Digital opt-in received
+  | 'assigned'       // Agent assigned, contact auto-created
+  | 'appointment'    // ISA booked appointment
+  | 'representation' // Contract signed — all ISA blocked
+
+// ── Contact Pipeline Stages (Layer 2, Track B) ───────────────────────────
+export type ContactPipelineStage =
+  | 'captured'           // Contact row created/merged
+  | 'dedup_merged'       // Merged into existing contact
+  | 'enrichment_queued'  // Queued in lead_enrichment_queue
+  | 'enriched'           // PeopleData enrichment complete
+  | 'scored'             // Scored into lead_score_history
 
 // ─── BUYER LIFECYCLE STAGES ───────────────────────────────────────────────────
 
