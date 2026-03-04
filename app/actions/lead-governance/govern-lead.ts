@@ -43,7 +43,7 @@ export interface GovernanceResult {
 /**
  * Execute full governance cycle for a lead
  */
-export async function governLead(leadId: string): Promise<GovernanceResult> {
+export async function governLead(leadId: string, brokerageId?: string, actorAgentId?: string): Promise<GovernanceResult> {
   const supabase = createServiceClient()
 
   try {
@@ -81,6 +81,9 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
       status: 'completed',
       priority: 'normal',
       notes: JSON.stringify(scoringResult.factors),
+      brokerage_id: lead.brokerage_id || brokerageId,
+      agent_id: agentAssigned || actorAgentId || lead.agent_id,
+      entity_type: 'lead',
       created_at: new Date().toISOString(),
     })
 
@@ -121,7 +124,9 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
           description: agentSelection.reason,
           status: 'completed',
           priority: 'normal',
-          agent_id: agentSelection.selectedAgentId,
+          agent_id: agentAssigned || actorAgentId || lead.agent_id,
+          brokerage_id: lead.brokerage_id || brokerageId,
+          entity_type: 'lead',
           created_at: new Date().toISOString(),
         })
 
@@ -136,6 +141,9 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
         status: 'completed',
         priority: 'normal',
         notes: JSON.stringify(routingEligibility.thresholdsMet),
+        brokerage_id: lead.brokerage_id || brokerageId,
+        agent_id: agentAssigned || actorAgentId || lead.agent_id,
+        entity_type: 'lead',
         created_at: new Date().toISOString(),
       })
     }
@@ -158,6 +166,9 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
         description: promotionReadiness.reason,
         status: 'pending',
         priority: 'high',
+        brokerage_id: lead.brokerage_id || brokerageId,
+        agent_id: agentAssigned || actorAgentId || lead.agent_id,
+        entity_type: 'lead',
         created_at: new Date().toISOString(),
       })
 
@@ -185,7 +196,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
       error_message: error.message,
       context_json: JSON.stringify({ leadId }),
       severity: 'high',
-      status: 'unresolved',
+      status: 'open',
       created_at: new Date().toISOString(),
     })
 
