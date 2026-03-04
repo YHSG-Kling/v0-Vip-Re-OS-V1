@@ -1,5 +1,3 @@
-'use server'
-
 // TRACK B: Form submission → captureContact() → dedup → enrich queue → score
 // tcpa_consent = TRUE (form fill = digital opt-in)
 // No lead created. No lead_id set anywhere in this flow.
