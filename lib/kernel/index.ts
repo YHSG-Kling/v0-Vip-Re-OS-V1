@@ -82,6 +82,17 @@ export type {
 } from "./observability"
 
 export {
+  assertValidTransition,
+  handleLeadCaptured,
+  handleLeadScored,
+  handleISAQualificationStarted,
+  handleConsentReceived,
+  handleLeadReadyForAssignment,
+  handleLeadAssigned,
+  handleLeadConvertedToContact,
+} from "./lead-acquisition-handlers"
+
+export {
   getAgentOnboardingDashboard,
   completeOnboardingStep,
   listOnboardingSteps,
