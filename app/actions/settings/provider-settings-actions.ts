@@ -1,0 +1,146 @@
+'use server'
+
+import { createClient } from "@/lib/supabase/server"
+
+// ─── TYPES ────────────────────────────────────────────────────────────────────
+
+export type ProviderOverrideRow = {
+  id: string
+  provider_type: string
+  provider_key: string
+  scope_type: string
+  scope_id: string
+  config: Record<string, unknown>
+  enabled: boolean
+}
+
+export type ProviderSettingsPayload = {
+  provider_type: string
+  provider_key: string
+  config?: Record<string, unknown>
+  enabled: boolean
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+async function requireBrokerAdmin(userId: string) {
+  const supabase = await createClient()
+  const { data: user, error } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", userId)
+    .single()
+
+  if (error || !user) throw new Error("User not found")
+  if (!["admin", "broker", "superadmin"].includes(user.user_type)) {
+    throw new Error("Forbidden: insufficient permissions")
+  }
+  return { brokerageId: user.brokerage_id as string, userType: user.user_type as string }
+}
+
+// SYSTEM_ONLY_TYPES mirror kernel/providers.ts — brokerage cannot override these.
+const SYSTEM_ONLY_TYPES = new Set(["direct_mail", "video"])
+
+const SYSTEM_DEFAULTS: Record<string, string> = {
+  email:       "sendgrid",
+  sms:         "twilio",
+  phone:       "twilio",
+  social:      "buffer",
+  calendar:    "google",
+  payment:     "stripe",
+  esign:       "dotloop",
+  transaction: "dotloop",
+  ai:          "anthropic",
+  direct_mail: "lob",
+  video:       "heygen",
+}
+
+// ─── READ ─────────────────────────────────────────────────────────────────────
+
+export async function getProviderSettings(): Promise<{
+  overrides: ProviderOverrideRow[]
+  isSuperadmin: boolean
+  brokerageId: string
+}> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) throw new Error("Unauthorized")
+
+  const { brokerageId, userType } = await requireBrokerAdmin(user.id)
+  const isSuperadmin = userType === "superadmin"
+
+  const { data: rows, error } = await supabase
+    .from("provider_overrides")
+    .select("id, provider_type, provider_key, scope_type, scope_id, config, enabled")
+    .eq("scope_type", "brokerage")
+    .eq("scope_id", brokerageId)
+
+  if (error) throw new Error(`Failed to load provider settings: ${error.message}`)
+
+  return {
+    overrides: (rows ?? []) as ProviderOverrideRow[],
+    isSuperadmin,
+    brokerageId,
+  }
+}
+
+export async function getSystemProviderStatus(): Promise<{
+  directMailEnabled: boolean
+  videoEnabled: boolean
+}> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) throw new Error("Unauthorized")
+
+  // Check if superadmin has enabled direct_mail / video overrides
+  const { data: rows } = await supabase
+    .from("provider_overrides")
+    .select("provider_type, enabled")
+    .eq("scope_type", "superadmin")
+    .in("provider_type", ["direct_mail", "video"])
+
+  const directMailRow = rows?.find((r) => r.provider_type === "direct_mail")
+  const videoRow = rows?.find((r) => r.provider_type === "video")
+
+  return {
+    directMailEnabled: directMailRow?.enabled ?? false,
+    videoEnabled: videoRow?.enabled ?? false,
+  }
+}
+
+// ─── WRITE ────────────────────────────────────────────────────────────────────
+
+export async function saveProviderOverride(
+  payload: ProviderSettingsPayload
+): Promise<void> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) throw new Error("Unauthorized")
+
+  const { brokerageId, userType } = await requireBrokerAdmin(user.id)
+
+  // Brokerages cannot override system-only types
+  if (SYSTEM_ONLY_TYPES.has(payload.provider_type) && userType !== "superadmin") {
+    throw new Error(`Provider type "${payload.provider_type}" is superadmin-controlled and cannot be overridden by brokerage`)
+  }
+
+  const fallback = SYSTEM_DEFAULTS[payload.provider_type] ?? payload.provider_type
+
+  // Upsert on (scope_type, scope_id, provider_type)
+  const { error } = await supabase
+    .from("provider_overrides")
+    .upsert(
+      {
+        scope_type:    "brokerage",
+        scope_id:      brokerageId,
+        provider_type: payload.provider_type,
+        provider_key:  payload.provider_key || fallback,
+        config:        payload.config ?? {},
+        enabled:       payload.enabled,
+        updated_at:    new Date().toISOString(),
+      },
+      { onConflict: "scope_type,scope_id,provider_type" }
+    )
+
+  if (error) throw new Error(`Failed to save provider override: ${error.message}`)
+}
