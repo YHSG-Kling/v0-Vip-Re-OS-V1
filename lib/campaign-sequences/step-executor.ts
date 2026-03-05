@@ -308,17 +308,16 @@ export async function executeSequenceStep(
   }
 
   if (finalLeadId) {
+    // Only use columns confirmed in live schema — no sequence_id / sequence_step_id on this table
     const { data: outreachRow } = await supabase
       .from("isa_outreach_log")
       .insert({
-        lead_id: finalLeadId,
-        brokerage_id: brokerageId,
-        channel: step.channel,
-        sequence_id: enrollment.sequence_id,
-        sequence_step_id: step.id,
-        sent_at: dispatchResult.success ? now : null,
-        status: executionStatus,
-        provider_message_id: dispatchResult.messageId ?? null,
+        lead_id:          finalLeadId,
+        brokerage_id:     brokerageId,
+        channel:          step.channel,
+        status:           executionStatus,
+        sent_at:          dispatchResult.success ? now : null,
+        compliance_passed: true, // gate already passed before this point
       })
       .select("id")
       .single()
