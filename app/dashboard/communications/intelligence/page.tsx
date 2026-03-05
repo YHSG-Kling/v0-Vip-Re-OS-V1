@@ -40,6 +40,8 @@ export default async function IntelligencePage() {
     chartRawRes,
     insightsRes,
     auditFlagsRes,
+    agentInsightsRes,
+    voiceInsightsRes,
   ] = await Promise.all([
     // 1. avg health_score from conversation_insights (joined to conversations scoped by brokerage)
     service
@@ -87,6 +89,7 @@ export default async function IntelligencePage() {
         unanswered_questions_count,
         escalation_recommended,
         updated_at,
+        key_topics,
         conversations!inner(
           id,
           brokerage_id,
@@ -120,6 +123,49 @@ export default async function IntelligencePage() {
       `)
       .order("risk_score", { ascending: false })
       .limit(100),
+
+    // 8. coaching — per-agent aggregated insights
+    service
+      .from("conversation_insights")
+      .select(`
+        agent_id,
+        health_score,
+        overall_sentiment,
+        response_time_avg,
+        objections_raised,
+        buying_signals,
+        conversations!inner(
+          brokerage_id,
+          agents(id, users(first_name, last_name))
+        )
+      `)
+      .eq("conversations.brokerage_id", brokerageId)
+      .gte("updated_at", thirtyDaysAgo),
+
+    // 9. voice insights — is_voice_conversation = true
+    service
+      .from("conversation_insights")
+      .select(`
+        id,
+        health_score,
+        overall_sentiment,
+        voice_quality_score,
+        interruption_count,
+        silence_duration_seconds,
+        call_completion_status,
+        updated_at,
+        conversations!inner(
+          id,
+          brokerage_id,
+          contacts(id, first_name, last_name),
+          agents(id, users(first_name, last_name)),
+          voice_calls(recording_url, transcript)
+        )
+      `)
+      .eq("is_voice_conversation", true)
+      .eq("conversations.brokerage_id", brokerageId)
+      .order("updated_at", { ascending: false })
+      .limit(50),
   ])
 
   // ── Compute KPI values ──────────────────────────────────────────────────────
@@ -175,25 +221,87 @@ export default async function IntelligencePage() {
     }
   })
 
-  // ── Shape insight records tab ────────────────────────────────────────────────
-  const insightRecords = (insightsRes.data ?? []).map((row: any) => {
+  // ── Coaching: group by agent_id ──────────────────────────────────────────────
+  type AgentBucket = {
+    agent_id: string
+    agent_name: string
+    health_scores: number[]
+    sentiment_scores: number[]
+    response_times: number[]
+    objections: string[]
+    signals: string[]
+  }
+  const agentMap = new Map<string, AgentBucket>()
+
+  for (const row of (agentInsightsRes.data ?? []) as any[]) {
+    const conv = row.conversations
+    const agent = conv?.agents
+    const aid: string = row.agent_id ?? agent?.id ?? "unknown"
+    const aname: string = agent?.users
+      ? `${agent.users.first_name ?? ""} ${agent.users.last_name ?? ""}`.trim() || "Unknown Agent"
+      : "Unknown Agent"
+    if (!agentMap.has(aid)) {
+      agentMap.set(aid, { agent_id: aid, agent_name: aname, health_scores: [], sentiment_scores: [], response_times: [], objections: [], signals: [] })
+    }
+    const bucket = agentMap.get(aid)!
+    if (row.health_score != null) bucket.health_scores.push(row.health_score * 100)
+    if (row.response_time_avg != null) bucket.response_times.push(row.response_time_avg)
+    if (Array.isArray(row.objections_raised)) bucket.objections.push(...row.objections_raised)
+    if (Array.isArray(row.buying_signals)) bucket.signals.push(...row.buying_signals)
+    // Map sentiment string to 0-100 numeric score
+    const sentMap: Record<string, number> = { positive: 80, neutral: 50, negative: 20 }
+    bucket.sentiment_scores.push(sentMap[row.overall_sentiment ?? "neutral"] ?? 50)
+  }
+
+  const avgArr = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0
+
+  const agentInsights = Array.from(agentMap.values()).map(b => ({
+    agent_id:                 b.agent_id,
+    agent_name:               b.agent_name,
+    avg_sentiment_score:      Math.round(avgArr(b.sentiment_scores)),
+    avg_health_score:         Math.round(avgArr(b.health_scores)),
+    objections_raised:        b.objections,
+    buying_signals:           b.signals,
+    response_time_avg_seconds: b.response_times.length > 0 ? avgArr(b.response_times) : null,
+    conversation_count:       b.health_scores.length,
+  }))
+
+  const allResponseTimes = agentInsights.flatMap(a => a.response_time_avg_seconds != null ? [a.response_time_avg_seconds] : [])
+  const teamAvgResponseTime = allResponseTimes.length > 0 ? avgArr(allResponseTimes) : 0
+
+  // ── Topic frequency from key_topics jsonb[] ───────────────────────────────
+  const topicFreqMap: Record<string, number> = {}
+  for (const row of (insightsRes.data ?? []) as any[]) {
+    if (Array.isArray(row.key_topics)) {
+      for (const t of row.key_topics) {
+        if (typeof t === "string") topicFreqMap[t] = (topicFreqMap[t] ?? 0) + 1
+      }
+    }
+  }
+  const topicFrequency = Object.entries(topicFreqMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([topic, count]) => ({ topic, count }))
+
+  // ── Voice insights ────────────────────────────────────────────────────────
+  const voiceInsights = (voiceInsightsRes.data ?? []).map((row: any) => {
     const conv = row.conversations
     const contact = conv?.contacts
     const agent = conv?.agents
+    const voiceCall = Array.isArray(conv?.voice_calls) ? conv.voice_calls[0] : conv?.voice_calls
     return {
-      id: row.id,
-      conversation_id: row.conversations?.id ?? row.id,
-      contact_name: contact ? `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "Unknown" : "Unknown",
-      contact_email: contact?.email ?? null,
-      agent_name: agent?.users ? `${agent.users.first_name ?? ""} ${agent.users.last_name ?? ""}`.trim() || "—" : "—",
-      overall_sentiment: row.overall_sentiment ?? "neutral",
-      health_score: row.health_score ?? 0,
-      top_topics: row.top_topics ?? [],
-      key_questions: row.key_questions ?? [],
-      unanswered_questions_count: row.unanswered_questions_count ?? 0,
-      escalation_recommended: row.escalation_recommended ?? false,
-      next_best_action: row.next_best_action ?? null,
-      updated_at: row.updated_at,
+      id:                       row.id,
+      conversation_id:          conv?.id ?? row.id,
+      contact_name:             contact ? `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "Unknown" : "Unknown",
+      agent_name:               agent?.users ? `${agent.users.first_name ?? ""} ${agent.users.last_name ?? ""}`.trim() || "—" : "—",
+      voice_quality_score:      row.voice_quality_score ?? null,
+      interruption_count:       row.interruption_count ?? null,
+      silence_duration_seconds: row.silence_duration_seconds ?? null,
+      call_completion_status:   row.call_completion_status ?? null,
+      overall_sentiment:        row.overall_sentiment ?? null,
+      recording_url:            voiceCall?.recording_url ?? null,
+      transcript:               voiceCall?.transcript ?? null,
+      updated_at:               row.updated_at,
     }
   })
 
@@ -203,7 +311,10 @@ export default async function IntelligencePage() {
       chartData={chartData}
       healthInsights={healthInsights}
       auditFlags={(auditFlagsRes.data ?? []) as any}
-      insightRecords={insightRecords}
+      agentInsights={agentInsights}
+      teamAvgResponseTime={teamAvgResponseTime}
+      topicFrequency={topicFrequency}
+      voiceInsights={voiceInsights}
       userId={user.id}
     />
   )
