@@ -145,7 +145,8 @@ export async function createCampaignSequence(params: {
       trigger_event: params.trigger_event ?? null,
       is_active: false,
       is_ab_test: false,
-      compliance_gated: false,
+      // compliance_gated is ALWAYS true — the gate cannot be disabled
+      compliance_gated: true,
       enrollments_total: 0,
       completions_total: 0,
       conversions_total: 0,
