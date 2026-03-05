@@ -20,7 +20,7 @@ export async function getAgentSettings(userId: string) {
 
     const { data: user, error } = await supabase
       .from("users")
-      .select("heygen_avatar_id, heygen_voice_id")
+      .select("heygen_avatar_id, heygen_voice_id, assistant_wake_name")
       .eq("id", userId)
       .maybeSingle()
 
@@ -44,6 +44,7 @@ export async function getAgentSettings(userId: string) {
     return {
       avatarId: user.heygen_avatar_id,
       voiceId: user.heygen_voice_id,
+      assistantWakeName: (user.assistant_wake_name as string | null) ?? null,
       message: user.heygen_avatar_id && user.heygen_voice_id 
         ? "HeyGen video generation configured" 
         : "Configure your HeyGen avatar and voice in settings",
@@ -61,6 +62,7 @@ export async function getAgentSettings(userId: string) {
 export async function updateAgentSettings(userId: string, settings: {
   avatarId?: string
   voiceId?: string
+  assistantWakeName?: string
 }) {
   try {
     if (!isValidUUID(userId)) {
@@ -69,9 +71,14 @@ export async function updateAgentSettings(userId: string, settings: {
 
     const supabase = await createClient()
 
-    const updates: any = {}
+    const updates: Record<string, string> = {}
     if (settings.avatarId) updates.heygen_avatar_id = settings.avatarId
     if (settings.voiceId) updates.heygen_voice_id = settings.voiceId
+    if (settings.assistantWakeName !== undefined) {
+      // Sanitize: letters, numbers, spaces only, max 20 chars
+      const sanitized = settings.assistantWakeName.replace(/[^a-zA-Z0-9 ]/g, "").slice(0, 20).trim()
+      updates.assistant_wake_name = sanitized || "VIP"
+    }
 
     const { error } = await supabase
       .from("users")
