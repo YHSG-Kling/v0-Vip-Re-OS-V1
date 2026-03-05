@@ -13,7 +13,7 @@
 // - TypeScript strict mode throughout.
 
 import { KernelEvent } from "./events"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── PUBLIC API ───────────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ export async function processKernelEvent(params: {
   activityId?: string
 }): Promise<void> {
 
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // 1. Load rules from database.
   // Query uses trigger_event (string) which matches KernelEvent enum value exactly.
@@ -113,7 +113,7 @@ async function resolveRecipients(params: {
   entityId: string
 }): Promise<Array<{ user_id: string; role: string }>> {
 
-  const supabase = await createClient()
+  const supabase = createServiceClient()
   const recipients: Array<{ user_id: string; role: string }> = []
 
   // V0: Agent assigned to contact.

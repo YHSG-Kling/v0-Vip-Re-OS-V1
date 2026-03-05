@@ -257,17 +257,71 @@ export async function executeSequenceStep(
       break
     }
     case "in_app": {
-      // Insert directly into messages table
-      const { data: msgRow } = await supabase.from("messages").insert({
-        contact_id: contactId,
-        type: "in_app",
-        direction: "outbound",
-        body: step.body ?? "",
-        status: "sent",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }).select("id").single()
-      dispatchResult = { success: true, providerKey: "in_app", messageId: msgRow?.id }
+      // conversations.agent_id is NOT NULL + FK → agents(id), not users(id).
+      // Resolve the agents.id for this sequence's created_by user.
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("brokerage_id", brokerageId)
+        .maybeSingle()
+
+      if (!agentRow?.id) {
+        dispatchResult = {
+          success: false,
+          providerKey: "in_app",
+          error: "No agent record found for sequence owner — cannot send in_app message",
+        }
+        break
+      }
+
+      // Upsert conversation — unique on (contact_id, agent_id)
+      const { data: convRow } = await supabase
+        .from("conversations")
+        .upsert(
+          {
+            contact_id:   contactId,
+            agent_id:     agentRow.id,
+            brokerage_id: brokerageId,
+            status:       "active",
+            updated_at:   new Date().toISOString(),
+          },
+          { onConflict: "contact_id,agent_id" }
+        )
+        .select("id")
+        .single()
+
+      if (!convRow?.id) {
+        dispatchResult = {
+          success: false,
+          providerKey: "in_app",
+          error: "Could not resolve conversation for in_app message",
+        }
+        break
+      }
+
+      const { data: msgRow } = await supabase
+        .from("messages")
+        .insert({
+          conversation_id: convRow.id,   // NOT NULL — required
+          contact_id:      contactId,    // NOT NULL — required
+          agent_id:        agentRow.id,  // FK → agents(id)
+          type:            "in_app",
+          direction:       "outbound",
+          body:            step.body ?? "",
+          status:          "sent",
+          created_at:      new Date().toISOString(),
+          updated_at:      new Date().toISOString(),
+        })
+        .select("id")
+        .single()
+
+      dispatchResult = {
+        success: !!msgRow,
+        providerKey: "in_app",
+        messageId:   msgRow?.id,
+        error:       msgRow ? undefined : "messages insert failed",
+      }
       break
     }
     default:
