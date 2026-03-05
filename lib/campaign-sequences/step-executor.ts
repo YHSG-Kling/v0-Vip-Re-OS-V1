@@ -290,7 +290,42 @@ export async function executeSequenceStep(
     blocked_reason: dispatchResult.error ?? null,
   })
 
-  // ── Step 7: INSERT message_provider_logs (fire-and-forget) ──────────────────
+  // ── Step 7: INSERT isa_outreach_log + message_provider_logs ─────────────────
+  // isa_outreach_log.lead_id FK → leads.id.
+  // enrollment.lead_id is fetched in Step 1; fall back to leads lookup via contact_id.
+  let isaOutreachLogId: string | null = null
+
+  // Use enrollment.lead_id (already fetched in Step 1); fall back to leads lookup via contact_id
+  let finalLeadId: string | null = enrollment.lead_id ?? null
+  if (!finalLeadId && contactId) {
+    const { data: leadRow } = await supabase
+      .from("leads")
+      .select("id")
+      .eq("contact_id", contactId)
+      .eq("brokerage_id", brokerageId)
+      .maybeSingle()
+    finalLeadId = leadRow?.id ?? null
+  }
+
+  if (finalLeadId) {
+    const { data: outreachRow } = await supabase
+      .from("isa_outreach_log")
+      .insert({
+        lead_id: finalLeadId,
+        brokerage_id: brokerageId,
+        channel: step.channel,
+        sequence_id: enrollment.sequence_id,
+        sequence_step_id: step.id,
+        sent_at: dispatchResult.success ? now : null,
+        status: executionStatus,
+        provider_message_id: dispatchResult.messageId ?? null,
+      })
+      .select("id")
+      .single()
+    isaOutreachLogId = outreachRow?.id ?? null
+  }
+
+  // message_provider_logs — wire outreach_log_id to complete the audit trail
   supabase.from("message_provider_logs").insert({
     brokerage_id: brokerageId,
     channel: step.channel,
@@ -299,6 +334,8 @@ export async function executeSequenceStep(
     provider_message_id: dispatchResult.messageId ?? null,
     provider_status: dispatchResult.success ? "sent" : "failed",
     error_message: dispatchResult.error ?? null,
+    // FK → isa_outreach_log.id — audit trail now complete
+    outreach_log_id: isaOutreachLogId,
     created_at: now,
   }).then(() => {}).catch(() => {})
 
