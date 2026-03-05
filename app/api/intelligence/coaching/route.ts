@@ -1,6 +1,5 @@
-import { streamText } from "ai"
+import { generateText } from "ai"
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
 
 export const maxDuration = 30
 
@@ -31,7 +30,7 @@ Top Buying Signals: ${insightData.topBuyingSignals.join(", ") || "none"}
 Avg Response Time: ${insightData.avgResponseTime}s (Team avg: ${insightData.teamAvgResponseTime}s)
 Unanswered Questions: ${insightData.unansweredCount}`
 
-  const result = streamText({
+  const { text } = await generateText({
     model: "anthropic/claude-sonnet-4-20250514",
     system: `You are a real estate sales coach. Analyze this agent's conversation data and provide exactly 3 coaching points as JSON array:
 [{"type": "strength"|"improvement"|"action", "title": string, "detail": string}]
@@ -39,5 +38,15 @@ Output ONLY valid JSON, no markdown, no explanation.`,
     messages: [{ role: "user", content: prompt }],
   })
 
-  return result.toUIMessageStreamResponse()
+  // Parse and validate the JSON before returning
+  let points: { type: string; title: string; detail: string }[]
+  try {
+    const match = text.match(/\[[\s\S]*\]/)
+    points = JSON.parse(match ? match[0] : text)
+    if (!Array.isArray(points)) throw new Error("Not an array")
+  } catch {
+    return Response.json({ error: "Could not parse coaching response" }, { status: 500 })
+  }
+
+  return Response.json(points)
 }

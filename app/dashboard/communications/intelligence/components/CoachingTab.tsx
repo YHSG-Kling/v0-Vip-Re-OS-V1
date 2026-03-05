@@ -13,8 +13,6 @@ import {
   RadialBar,
   PolarAngleAxis,
 } from "recharts"
-import { useChat } from "@ai-sdk/react"
-import { DefaultChatTransport } from "ai"
 
 interface AgentInsight {
   agent_id: string
@@ -116,11 +114,9 @@ function AgentCard({
         }),
       })
       if (!res.ok) throw new Error("Failed to generate coaching")
-      const text = await res.text()
-      // Extract JSON from SSE stream text chunks
-      const jsonMatch = text.match(/\[[\s\S]*\]/)
-      if (!jsonMatch) throw new Error("Could not parse coaching response")
-      const points = JSON.parse(jsonMatch[0])
+      // Route returns plain JSON array — parse directly
+      const points = await res.json()
+      if (!Array.isArray(points)) throw new Error("Invalid coaching response")
       setCoachingPoints(points)
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown error")

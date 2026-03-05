@@ -146,10 +146,13 @@ export default async function IntelligencePage() {
       .gte("updated_at", thirtyDaysAgo),
 
     // 9. voice insights — is_voice_conversation = true
+    // NOTE: voice_calls FK is via vapi_call_id on conversation_insights, not a direct conversations FK.
+    // We fetch contact + agent from conversations, then join voice_calls separately below.
     service
       .from("conversation_insights")
       .select(`
         id,
+        conversation_id,
         health_score,
         overall_sentiment,
         voice_quality_score,
@@ -161,8 +164,7 @@ export default async function IntelligencePage() {
           id,
           brokerage_id,
           contacts(id, first_name, last_name),
-          agents(id, users(first_name, last_name)),
-          voice_calls(recording_url, transcription)
+          agents(id, users(first_name, last_name))
         )
       `)
       .eq("is_voice_conversation", true)
@@ -290,11 +292,38 @@ export default async function IntelligencePage() {
     .map(([topic, count]) => ({ topic, count }))
 
   // ── Voice insights ────────────────────────────────────────────────────────
-  const voiceInsights = (voiceInsightsRes.data ?? []).map((row: any) => {
+  // Fetch voice_calls separately — there is no direct FK from conversations to voice_calls.
+  // voice_calls links to conversation_insights via vapi_call_id (stored on voice_calls).
+  // We fetch by contact_id overlap for the same brokerage.
+  const voiceInsightRows = voiceInsightsRes.data ?? []
+  const voiceConversationIds = voiceInsightRows.map((r: any) => r.conversations?.id).filter(Boolean)
+
+  let voiceCallMap: Record<string, { recording_url: string | null; transcription: string | null }> = {}
+  if (voiceConversationIds.length > 0) {
+    // voice_calls does not have a direct conversation_id FK; join via agent_id + contact_id proximity.
+    // Best available match: fetch voice_calls for the brokerage, match by contact_id from the conversation.
+    const contactIds = voiceInsightRows
+      .map((r: any) => r.conversations?.contacts?.id)
+      .filter(Boolean)
+    if (contactIds.length > 0) {
+      const { data: vcRows } = await service
+        .from("voice_calls")
+        .select("id, contact_id, recording_url, transcription")
+        .eq("brokerage_id", brokerageId)
+        .in("contact_id", contactIds)
+      for (const vc of vcRows ?? []) {
+        if (!voiceCallMap[vc.contact_id]) {
+          voiceCallMap[vc.contact_id] = { recording_url: vc.recording_url ?? null, transcription: vc.transcription ?? null }
+        }
+      }
+    }
+  }
+
+  const voiceInsights = voiceInsightRows.map((row: any) => {
     const conv = row.conversations
     const contact = conv?.contacts
     const agent = conv?.agents
-    const voiceCall = Array.isArray(conv?.voice_calls) ? conv.voice_calls[0] : conv?.voice_calls
+    const vc = contact?.id ? (voiceCallMap[contact.id] ?? null) : null
     return {
       id:                       row.id,
       conversation_id:          conv?.id ?? row.id,
@@ -305,9 +334,9 @@ export default async function IntelligencePage() {
       silence_duration_seconds: row.silence_duration_seconds ?? null,
       call_completion_status:   row.call_completion_status ?? null,
       overall_sentiment:        row.overall_sentiment ?? null,
-      recording_url:            voiceCall?.recording_url ?? null,
-      // DB column: transcription (not transcript)
-      transcript:               voiceCall?.transcription ?? null,
+      recording_url:            vc?.recording_url ?? null,
+      // DB column is transcription (not transcript) — mapped here
+      transcript:               vc?.transcription ?? null,
       updated_at:               row.updated_at,
     }
   })

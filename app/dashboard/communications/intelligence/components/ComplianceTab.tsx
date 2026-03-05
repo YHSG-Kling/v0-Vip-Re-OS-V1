@@ -182,9 +182,9 @@ export default function ComplianceTab({ flags, reviewerId }: ComplianceTabProps)
 
   return (
     <div className="space-y-6">
-      {/* Always-visible compliance notice */}
+      {/* Always-visible compliance notice — cannot be dismissed */}
       <div className="rounded-lg border border-orange-400 bg-orange-50 px-4 py-3 text-sm text-orange-800">
-        <span className="font-semibold">Fair Housing Compliance: </span>
+        <span className="font-semibold">{"⚠️ Fair Housing Compliance: "}</span>
         All flagged conversations require review within 24 hours of flagging. Violations must be reported to the supervising broker.
       </div>
 
