@@ -89,19 +89,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // ── Step 6: Write lifecycle_events ─────────────────────────────────────────
+  // DB column is `metadata` (jsonb) — pass plain object, not JSON.stringify
   await supabase.from("lifecycle_events").insert({
     brokerage_id: inbound.brokerageId,
     entity_type: entityType,
     entity_id: entityId,
     event_type: KernelEvent.ISA_REPLY_RECEIVED,
-    context_json: JSON.stringify({
+    metadata: {
       provider: inbound.providerType,
       messageId: inbound.messageId,
       fromEmail: inbound.fromEmail,
       fromPhone: inbound.fromPhone,
       subject: inbound.subject,
       text: (inbound.text ?? "").slice(0, 500),
-    }),
+    },
   })
 
   // ── Step 7: Update last activity timestamps ─────────────────────────────────
