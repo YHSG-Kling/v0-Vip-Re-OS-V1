@@ -1,0 +1,57 @@
+import { redirect } from "next/navigation"
+import { createClient } from "@/lib/supabase/server"
+import { listISACampaigns, getChannelFeatureFlags } from "@/app/actions/ai-isa"
+import { ISACampaignsClient } from "./components/ISACampaignsClient"
+
+export const metadata = {
+  title: "ISA Campaigns | VIP Real Estate AI OS",
+  description: "Manage AI Inside Sales Agent outreach campaigns.",
+}
+
+export default async function ISACampaignsPage() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect("/auth/login")
+
+  // Resolve brokerage_id from user profile
+  const { data: profile } = await supabase
+    .from("user_profiles")
+    .select("brokerage_id")
+    .eq("user_id", user.id)
+    .single()
+
+  if (!profile?.brokerage_id) {
+    return (
+      <div className="flex min-h-[40vh] items-center justify-center text-muted-foreground text-sm">
+        No brokerage associated with your account.
+      </div>
+    )
+  }
+
+  const brokerageId = profile.brokerage_id
+
+  // Fetch campaigns + feature flags in parallel
+  const [campaignResult, flags] = await Promise.all([
+    listISACampaigns(brokerageId),
+    getChannelFeatureFlags(),
+  ])
+
+  return (
+    <main className="container mx-auto max-w-7xl px-4 py-8">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-foreground text-balance">ISA Campaigns</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Manage automated AI outreach campaigns across email, SMS, video, and direct mail channels.
+        </p>
+      </div>
+
+      <ISACampaignsClient
+        brokerageId={brokerageId}
+        initialCampaigns={campaignResult.campaigns}
+        initialStats={campaignResult.stats}
+        videoEnabled={flags.video_campaigns}
+        directMailEnabled={flags.direct_mail_campaigns}
+      />
+    </main>
+  )
+}
