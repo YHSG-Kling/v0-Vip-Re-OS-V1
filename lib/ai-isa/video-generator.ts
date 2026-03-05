@@ -1,73 +1,71 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { dispatchVideo } from '@/lib/providers/dispatch'
 
 export interface VideoGenerationContext {
   leadId: string
   firstName: string
+  brokerageId: string
+  agentUserId?: string
+  recipientEmail: string
+  templateId?: string
   motivation_type?: string
   property_interest?: string
   timeline?: string
 }
 
 export async function generateHeyGenVideo(context: VideoGenerationContext) {
-  console.log('[v0] Generating HeyGen video for lead:', context.leadId)
-  
-  // Create video script focused on the lead
-  const script = `Hi ${context.firstName},
-
-I'm reaching out because I saw you're interested in ${context.property_interest || 'real estate'} ${context.timeline ? `and looking to ${context.timeline}` : 'in the area'}.
-
-${context.motivation_type ? `I understand you're ${context.motivation_type}, and I want you to know that our platform is designed specifically to help people in your situation.` : 'Our platform is here to help you navigate your real estate journey with confidence.'}
-
-We don't push or pressure—we simply provide you with the tools, information, and support you need to make the best decision for yourself.
-
-When you're ready to take the next step, we'll be here. Until then, feel free to explore our resources at your own pace.
-
-Looking forward to helping you!`
-
   try {
-    // Call HeyGen API (stub for now - implement actual API call)
-    // const response = await fetch('https://api.heygen.com/v1/video.generate', {
-    //   method: 'POST',
-    //   headers: {
-    //     'X-Api-Key': process.env.HEYGEN_API_KEY || '',
-    //     'Content-Type': 'application/json'
-    //   },
-    //   body: JSON.stringify({
-    //     script,
-    //     avatar_id: 'default_avatar',
-    //     voice_id: 'default_voice'
-    //   })
-    // })
-    
-    // For now, return a placeholder
-    console.log('[v0] HeyGen API would be called here with script:', script)
-    
+    // Step 1: Dispatch through provider resolution layer
+    const result = await dispatchVideo({
+      brokerageId:    context.brokerageId,
+      userId:         context.agentUserId,
+      templateId:     context.templateId ?? process.env.HEYGEN_DEFAULT_TEMPLATE_ID ?? '',
+      recipientEmail: context.recipientEmail,
+      recipientName:  context.firstName,
+      scriptVars: {
+        first_name:        context.firstName,
+        motivation_type:   context.motivation_type ?? '',
+        property_interest: context.property_interest ?? '',
+        timeline:          context.timeline ?? '',
+      },
+      systemSource: 'ai_isa',
+      leadId:       context.leadId,
+    })
+
+    // Step 2: Fire-and-forget provider log
+    const supabase = createServiceClient()
+    supabase.from('message_provider_logs').insert({
+      brokerage_id:        context.brokerageId,
+      provider_key:        'heygen',
+      channel:             'video',
+      direction:           'outbound',
+      provider_message_id: result.messageId ?? null,
+      provider_status:     result.success ? 'sent' : 'failed',
+      error_message:       result.error ?? null,
+    }).then(() => {}).catch(() => {})
+
     return {
-      success: false,
-      videoUrl: null,
-      error: 'HeyGen integration pending - API key required'
+      success:  result.success,
+      videoId:  result.messageId,
+      error:    result.error,
     }
-  } catch (error: any) {
-    console.error('[v0] HeyGen video generation error:', error)
-    
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+
     // Log error but don't block email send
     const supabase = createServiceClient()
     await supabase.from('automation_errors').insert({
       workflow_name: 'ai_isa_video_generation',
-      error_message: error.message,
-      context_json: JSON.stringify({ leadId: context.leadId, script }),
-      severity: 'low',
-      status: 'new',
-      created_at: new Date().toISOString()
+      error_message: msg,
+      context_json:  JSON.stringify({ leadId: context.leadId }),
+      severity:      'low',
+      status:        'open',
+      created_at:    new Date().toISOString(),
     })
-    
-    return {
-      success: false,
-      videoUrl: null,
-      error: error.message
-    }
+
+    return { success: false, videoId: undefined, error: msg }
   }
 }
 
