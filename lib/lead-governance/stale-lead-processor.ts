@@ -62,10 +62,10 @@ export async function processStaleLeadsAndSLA(
           entity_type:  "lead",
           entity_id:    row.lead_id,
           event_type:   KernelEvent.LEAD_SLA_BREACHED,
-          context_json: JSON.stringify({
+          metadata: {
             sla_type:  row.sla_type,
             target_at: row.target_at,
-          }),
+          },
           created_at: new Date().toISOString(),
         })
 
@@ -133,11 +133,11 @@ export async function processStaleLeadsAndSLA(
             entity_type:  "lead",
             entity_id:    lead.id,
             event_type:   KernelEvent.STALE_LEAD_ALERT,
-            context_json: JSON.stringify({
+            metadata: {
               stale_reason:       lead.staleReason,
               days_stale:         lead.daysStale,
               last_activity_date: lead.lastActivityDate,
-            }),
+            },
             created_at: new Date().toISOString(),
           })
         }

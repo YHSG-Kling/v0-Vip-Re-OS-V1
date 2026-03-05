@@ -195,13 +195,13 @@ export async function createISACampaign(params: {
   if (error) return { success: false, error: error.message }
 
   await service.from("lifecycle_events").insert({
-    event_type:   KernelEvent.LEAD_IMPORT_COMPLETED,
-    entity_type:  "campaign",
-    entity_id:    data.id,
-    brokerage_id: params.brokerageId,
-    actor_id:     user.id,
-    context_json: JSON.stringify({ campaignType: params.campaignType, channels: params.channels }),
-    created_at:   new Date().toISOString(),
+  event_type:    KernelEvent.LEAD_IMPORT_COMPLETED,
+  entity_type:   "campaign",
+  entity_id:     data.id,
+  brokerage_id:  params.brokerageId,
+  actor_user_id: user.id,
+  metadata: { campaignType: params.campaignType, channels: params.channels },
+  created_at:    new Date().toISOString(),
   })
 
   return { success: true, campaignId: data.id }

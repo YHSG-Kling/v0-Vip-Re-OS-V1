@@ -85,7 +85,7 @@ export async function logISAOutreach(params: {
     entity_type: entityType,
     entity_id:   entityId,
     event_type:  KernelEvent.ISA_OUTREACH_SENT,
-    metadata:    JSON.stringify({ channel: params.channel, subject: params.subject }),
+    metadata:    { channel: params.channel, subject: params.subject },
     created_at:  now.toISOString(),
   })
 
@@ -141,7 +141,7 @@ export async function checkMaxTouches(
       entity_type: entityType,
       entity_id:   entityId,
       event_type:  KernelEvent.ISA_MAX_TOUCHES_REACHED,
-      metadata:    JSON.stringify({ touchCount, maxTouches }),
+      metadata:    { touchCount, maxTouches },
       created_at:  new Date().toISOString(),
     })
     await processKernelEvent({
@@ -177,7 +177,7 @@ export async function checkUnderContractPause(
       entity_type: entityType,
       entity_id:   entityId,
       event_type:  KernelEvent.ISA_OUTREACH_PAUSED,
-      metadata:    JSON.stringify({ reason: 'under_contract' }),
+      metadata:    { reason: 'under_contract' },
       created_at:  new Date().toISOString(),
     })
     await processKernelEvent({

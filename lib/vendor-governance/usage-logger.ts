@@ -104,8 +104,8 @@ export async function logVendorUsage(event: VendorUsageEvent): Promise<UsageLogR
         workflow_name: 'vendor_usage_logging',
         error_message: `Failed to log ${event.vendorName} usage: ${error.message}`,
         severity: 'medium',
-        status: 'unresolved',
-        context_json: JSON.stringify(event),
+        status: 'open',
+        metadata: { ...event },
       })
 
       return {
@@ -120,11 +120,8 @@ export async function logVendorUsage(event: VendorUsageEvent): Promise<UsageLogR
         workflow_name: 'vendor_usage_anomaly',
         error_message: `Anomaly detected: ${anomaly.reason}`,
         severity: 'low',
-        status: 'unresolved',
-        context_json: JSON.stringify({
-          usageId: data.id,
-          ...event,
-        }),
+        status: 'open',
+        metadata: { usageId: data.id, ...event },
       })
     }
 

@@ -120,17 +120,16 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
 
   // Step 4: INSERT lifecycle_events
   await db.from("lifecycle_events").insert({
-    entity_type: "contact",
-    entity_id: referredContactId ?? referral.id,
-    brokerage_id: brokerageId,
-    event_type: KernelEvent.REFERRAL_RECEIVED,
-    actor_type: "agent",
-    actor_id: agentId,
-    context_json: JSON.stringify({
+    entity_type:   "contact",
+    entity_id:     referredContactId ?? referral.id,
+    brokerage_id:  brokerageId,
+    event_type:    KernelEvent.REFERRAL_RECEIVED,
+    actor_user_id: agentId,
+    metadata: {
       referral_id: referral.id,
-      partner_id: params.partnerId,
-      source: params.referralSource,
-    }),
+      partner_id:  params.partnerId,
+      source:      params.referralSource,
+    },
   })
 
   return { id: referral.id }
