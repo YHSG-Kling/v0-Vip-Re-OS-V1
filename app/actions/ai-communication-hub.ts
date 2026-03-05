@@ -26,83 +26,87 @@ const SentimentSchema = z.object({
 
 // Get conversations/messages for inbox
 export async function getConversations(params: {
-  agentId?: string
+  brokerageId: string
   contactId?: string
   limit?: number
   unreadOnly?: boolean
+  channel?: string
 }) {
   try {
     const supabase = await createClient()
 
-    // Fetch messages without the foreign key join
     let query = supabase
-      .from("chat_messages")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(params.limit || 50)
+      .from("conversations")
+      .select(`
+        *,
+        contacts(id, first_name, last_name, email, phone, lifecycle_state, lead_score),
+        agents(id, user_id, users(first_name, last_name))
+      `)
+      .eq("brokerage_id", params.brokerageId)
+      .order("last_message_at", { ascending: false })
+      .limit(params.limit ?? 50)
 
-    if (params.agentId) {
-      query = query.eq("agent_id", params.agentId)
+    if (params.unreadOnly) {
+      query = query.gt("unread_count", 0)
     }
 
     if (params.contactId) {
       query = query.eq("contact_id", params.contactId)
     }
 
-    if (params.unreadOnly) {
-      query = query.eq("read", false)
+    if (params.channel) {
+      query = query.eq("type", params.channel)
     }
 
-    const { data: messages, error } = await query
+    const { data: conversations, error } = await query
 
     if (error) throw error
 
-    // Manually fetch related contacts
-    let contactsMap: Record<string, any> = {}
-    
-    if (messages && messages.length > 0) {
-      const contactIds = [...new Set(messages.map((m: any) => m.contact_id).filter(Boolean))]
-      
-      if (contactIds.length > 0) {
-        const { data: contacts } = await supabase
-          .from("contacts")
-          .select("*")
-          .in("id", contactIds)
-        
-        contactsMap = (contacts || []).reduce((acc: any, c: any) => {
-          acc[c.id] = c
-          return acc
-        }, {})
-      }
-    }
-
-    // Group messages by contact to create conversation threads
-    const conversations = new Map()
-    
-    messages?.forEach((msg: any) => {
-      const contactId = msg.contact_id
-      if (!conversations.has(contactId)) {
-        conversations.set(contactId, {
-          contactId,
-          contact: contactsMap[contactId] || null,
-          messages: [],
-          lastMessageAt: msg.created_at,
-          unreadCount: 0,
-        })
-      }
-      conversations.get(contactId).messages.push(msg)
-      if (!msg.read) {
-        conversations.get(contactId).unreadCount++
-      }
-    })
-
     return {
       success: true,
-      conversations: Array.from(conversations.values()),
-      totalMessages: messages?.length || 0,
+      conversations: conversations ?? [],
+      total: conversations?.length ?? 0,
     }
   } catch (error) {
     return handleError(error, "getConversations")
+  }
+}
+
+// Get all messages in a conversation thread
+export async function getMessageThread(conversationId: string) {
+  try {
+    const supabase = await createClient()
+
+    const { data: messages, error } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true })
+
+    if (error) throw error
+
+    return { success: true, messages: messages ?? [] }
+  } catch (error) {
+    return handleError(error, "getMessageThread")
+  }
+}
+
+// Mark a conversation as read
+export async function markConversationRead(conversationId: string) {
+  try {
+    const supabase = await createClient()
+
+    const { error } = await supabase
+      .from("conversations")
+      .update({ unread_count: 0, updated_at: new Date().toISOString() })
+      .eq("id", conversationId)
+
+    if (error) throw error
+
+    revalidatePath("/dashboard/communication")
+    return { success: true }
+  } catch (error) {
+    return handleError(error, "markConversationRead")
   }
 }
 
