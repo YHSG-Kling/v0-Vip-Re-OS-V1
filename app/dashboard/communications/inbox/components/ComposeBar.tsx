@@ -1,48 +1,84 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Send, Loader2, Sparkles, AlertTriangle } from "lucide-react"
+import { Send, Loader2, Sparkles, AlertTriangle, ChevronDown, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+
+type EmailTemplate = {
+  id: string
+  name: string
+  subject?: string
+  body?: string
+  channel?: string
+}
 
 interface ComposeBarProps {
   conversationId: string
-  senderId: string
-  channel: string
+  agentId: string
+  contactId: string
+  channel: "email" | "sms" | "in_app"
   lifecycleState?: string
-  onSend: (content: string) => Promise<{ success: boolean; error?: string }>
+  emailTemplates?: EmailTemplate[]
+  onSend: (body: string, subject?: string, channel?: string) => Promise<{ success: boolean; error?: string }>
   onDraft?: (content: string) => Promise<string>
   disabled?: boolean
 }
 
-const BLOCKED_STATES = ["representation", "active_transaction", "under_contract"]
-const WARNING_STATES = ["representation", "active_transaction", "under_contract"]
+/** These lifecycle states completely block AI ISA outreach — broker compliance rule */
+const AUTHORITY_BLOCKED_STATES = ["representation", "active_transaction", "under_contract"]
+/** These lifecycle states warn but still allow manual sends */
+const WARNING_STATES: string[] = []
+
+const CHANNEL_LABELS: Record<string, string> = {
+  email:  "Email",
+  sms:    "SMS",
+  in_app: "In-App",
+}
 
 export default function ComposeBar({
   conversationId,
-  senderId,
-  channel,
+  agentId,
+  contactId,
+  channel: defaultChannel,
   lifecycleState,
+  emailTemplates = [],
   onSend,
   onDraft,
   disabled,
 }: ComposeBarProps) {
-  const [text, setText] = useState("")
-  const [error, setError] = useState<string | null>(null)
+  const [body, setBody]           = useState("")
+  const [subject, setSubject]     = useState("")
+  const [channel, setChannel]     = useState<"email" | "sms" | "in_app">(defaultChannel)
+  const [error, setError]         = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   const [isDrafting, setIsDrafting] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
 
-  const isBlocked = BLOCKED_STATES.includes(lifecycleState ?? "")
-  const isWarning = WARNING_STATES.includes(lifecycleState ?? "") && !isBlocked
+  const isAuthorityBlocked = AUTHORITY_BLOCKED_STATES.includes(lifecycleState ?? "")
+  const isSMS = channel === "sms"
+
+  // Filter templates by channel
+  const availableTemplates = emailTemplates.filter(
+    t => !t.channel || t.channel === channel || t.channel === "all"
+  )
+
+  function applyTemplate(tpl: EmailTemplate) {
+    if (tpl.subject) setSubject(tpl.subject)
+    if (tpl.body)    setBody(tpl.body)
+    setShowTemplates(false)
+  }
 
   const handleSend = () => {
-    if (!text.trim() || isPending || isBlocked) return
+    if (!body.trim() || isPending || isAuthorityBlocked) return
     setError(null)
     startTransition(async () => {
-      const result = await onSend(text.trim())
+      const result = await onSend(body.trim(), subject.trim() || undefined, channel)
       if (result.success) {
-        setText("")
+        setBody("")
+        setSubject("")
       } else {
         setError(result.error ?? "Failed to send")
       }
@@ -53,8 +89,8 @@ export default function ComposeBar({
     if (!onDraft || isDrafting) return
     setIsDrafting(true)
     try {
-      const draft = await onDraft(text)
-      setText(draft)
+      const draft = await onDraft(body)
+      setBody(draft)
     } finally {
       setIsDrafting(false)
     }
@@ -69,65 +105,126 @@ export default function ComposeBar({
 
   return (
     <div className="border-t border-border bg-background px-4 py-3 space-y-2 shrink-0">
-      {/* Warning banner */}
-      {isWarning && (
-        <div className="flex items-center gap-2 text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-md px-3 py-2">
-          <AlertTriangle size={13} className="shrink-0" />
-          <span>This contact is in <strong>{lifecycleState?.replace(/_/g, " ")}</strong> — AI ISA outreach is blocked. Manual messages only.</span>
+
+      {/* Authority / compliance block banner */}
+      {isAuthorityBlocked && (
+        <div className="flex items-start gap-2 text-xs text-destructive bg-destructive/5 border border-destructive/20 rounded-md px-3 py-2">
+          <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+          <span>
+            AI ISA outreach is <strong>blocked</strong> for contacts in{" "}
+            <strong>{lifecycleState?.replace(/_/g, " ")}</strong>.
+            Manual messages only — verify authorization with supervising broker.
+          </span>
         </div>
       )}
 
-      {isBlocked ? (
-        <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/5 border border-destructive/20 rounded-md px-3 py-2">
-          <AlertTriangle size={13} className="shrink-0" />
-          <span>Sending is blocked for contacts in <strong>{lifecycleState?.replace(/_/g, " ")}</strong>.</span>
+      {/* SMS TCPA notice */}
+      {isSMS && (
+        <div className="flex items-center gap-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-1.5">
+          <AlertTriangle size={12} className="shrink-0" />
+          TCPA: Ensure opt-in consent is recorded before sending SMS.
         </div>
-      ) : (
-        <>
-          <Textarea
-            value={text}
-            onChange={e => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={`Reply via ${channel}… (⌘+Enter to send)`}
-            className="min-h-[72px] max-h-[180px] resize-none text-sm"
-            disabled={isPending || disabled}
-          />
+      )}
 
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              {onDraft && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleDraft}
-                  disabled={isDrafting || isPending}
-                  className="text-xs h-7 gap-1"
-                >
-                  {isDrafting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                  AI Draft
-                </Button>
-              )}
-              <span className={cn("text-[10px] text-muted-foreground", text.length > 1500 && "text-destructive")}>
-                {text.length} chars
-              </span>
-            </div>
+      {/* Channel selector + Template picker row */}
+      <div className="flex items-center gap-2">
+        {/* Channel selector */}
+        <select
+          value={channel}
+          onChange={e => setChannel(e.target.value as typeof channel)}
+          disabled={isPending || disabled}
+          className="text-xs border border-border rounded-md px-2 py-1 bg-background text-foreground h-7"
+        >
+          <option value="email">Email</option>
+          <option value="sms">SMS</option>
+          <option value="in_app">In-App</option>
+        </select>
 
+        {/* Template picker */}
+        {availableTemplates.length > 0 && (
+          <div className="relative">
             <Button
+              variant="outline"
               size="sm"
-              onClick={handleSend}
-              disabled={!text.trim() || isPending || isBlocked}
-              className="h-7 gap-1 text-xs"
+              className="h-7 text-xs gap-1"
+              onClick={() => setShowTemplates(!showTemplates)}
             >
-              {isPending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
-              Send
+              <FileText size={12} />
+              Templates
+              <ChevronDown size={11} className={cn("transition-transform", showTemplates && "rotate-180")} />
             </Button>
+            {showTemplates && (
+              <div className="absolute bottom-full left-0 mb-1 w-56 max-h-48 overflow-y-auto border border-border bg-background rounded-lg shadow-md z-10">
+                {availableTemplates.map(tpl => (
+                  <button
+                    key={tpl.id}
+                    className="w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors border-b border-border last:border-0"
+                    onClick={() => applyTemplate(tpl)}
+                  >
+                    <p className="font-medium text-foreground truncate">{tpl.name}</p>
+                    {tpl.subject && (
+                      <p className="text-muted-foreground truncate">{tpl.subject}</p>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
+        )}
+      </div>
 
-          {error && (
-            <p className="text-xs text-destructive">{error}</p>
-          )}
-        </>
+      {/* Subject line (email only) */}
+      {channel === "email" && (
+        <Input
+          value={subject}
+          onChange={e => setSubject(e.target.value)}
+          placeholder="Subject…"
+          className="h-8 text-sm"
+          disabled={isPending || disabled}
+        />
       )}
+
+      {/* Message body */}
+      <Textarea
+        value={body}
+        onChange={e => setBody(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder={`Reply via ${CHANNEL_LABELS[channel] ?? channel}… (⌘+Enter to send)`}
+        className="min-h-[72px] max-h-[180px] resize-none text-sm"
+        disabled={isPending || disabled || isAuthorityBlocked}
+      />
+
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          {onDraft && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDraft}
+              disabled={isDrafting || isPending || isAuthorityBlocked}
+              className="text-xs h-7 gap-1"
+            >
+              {isDrafting ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+              AI Draft
+            </Button>
+          )}
+          <span className={cn("text-[10px] text-muted-foreground", body.length > 1500 && "text-destructive")}>
+            {body.length} chars
+          </span>
+        </div>
+
+        <Button
+          size="sm"
+          onClick={handleSend}
+          disabled={!body.trim() || isPending || isAuthorityBlocked || disabled}
+          className="h-7 gap-1 text-xs"
+        >
+          {isPending ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
+          Send
+        </Button>
+      </div>
+
+      {error && <p className="text-xs text-destructive">{error}</p>}
     </div>
   )
 }

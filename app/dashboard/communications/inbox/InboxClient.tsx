@@ -1,8 +1,7 @@
 "use client"
 
-import { useState, useCallback, useTransition, useEffect } from "react"
+import { useState, useCallback, useTransition, useEffect, useRef } from "react"
 import { ChevronLeft } from "lucide-react"
-import { Button } from "@/components/ui/button"
 import ConversationList from "./components/ConversationList"
 import MessageThread from "./components/MessageThread"
 import ComposeBar from "./components/ComposeBar"
@@ -14,6 +13,7 @@ import {
   analyzeMessageSentiment,
   generateSmartResponse,
 } from "@/app/actions/ai-communication-hub"
+import { createClient } from "@/lib/supabase/client"
 
 type Conversation = {
   id: string
@@ -34,32 +34,91 @@ type Conversation = {
   last_message_preview?: string
 }
 
+type EmailTemplate = {
+  id: string
+  name: string
+  subject?: string
+  body?: string
+  channel?: string
+}
+
 interface InboxClientProps {
   conversations: Conversation[]
+  emailTemplates: EmailTemplate[]
   brokerageId: string
   agentId: string
   userId: string
+  role: string
   assistantName: string
 }
 
 export default function InboxClient({
-  conversations,
+  conversations: initialConversations,
+  emailTemplates,
   brokerageId,
   agentId,
   userId,
+  role,
   assistantName,
 }: InboxClientProps) {
+  const [conversations, setConversations] = useState<Conversation[]>(initialConversations)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [messages, setMessages] = useState<any[]>([])
   const [messagesLoading, setMessagesLoading] = useState(false)
   const [sentiment, setSentiment] = useState<any | null>(null)
-  // mobile: show list or thread
   const [mobileView, setMobileView] = useState<"list" | "thread">("list")
   const [, startTransition] = useTransition()
+  const realtimeRef = useRef<ReturnType<typeof createClient> | null>(null)
 
   const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count ?? 0), 0)
   const selectedConvo = conversations.find(c => c.id === selectedId) ?? null
   const contact = selectedConvo?.contacts ?? null
+
+  // ── Supabase Realtime — subscribe to new messages in selected conversation ──
+  useEffect(() => {
+    const supabase = createClient()
+    realtimeRef.current = supabase
+
+    const channel = supabase
+      .channel("inbox-messages")
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "messages",
+        },
+        (payload: any) => {
+          const newMsg = payload.new
+          // If it belongs to the currently selected conversation, append it
+          if (newMsg.conversation_id === selectedId) {
+            setMessages(prev => {
+              const already = prev.some(m => m.id === newMsg.id)
+              if (already) return prev
+              return [...prev, newMsg]
+            })
+          }
+          // Bump unread count on list row for other conversations
+          setConversations(prev =>
+            prev.map(c => {
+              if (c.id !== newMsg.conversation_id) return c
+              const isSelected = c.id === selectedId
+              return {
+                ...c,
+                last_message_at: newMsg.created_at ?? c.last_message_at,
+                last_message_preview: newMsg.body ?? newMsg.content ?? c.last_message_preview,
+                unread_count: isSelected ? 0 : (c.unread_count ?? 0) + 1,
+              }
+            })
+          )
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [selectedId])
 
   const loadThread = useCallback(async (convoId: string) => {
     setMessagesLoading(true)
@@ -68,11 +127,13 @@ export default function InboxClient({
       const result = await getMessageThread(convoId)
       if (result.success && result.messages) {
         setMessages(result.messages)
-        // Analyze last inbound message for sentiment
-        const lastInbound = [...result.messages].reverse().find(m => m.direction === "inbound")
-        if (lastInbound?.content || lastInbound?.message_content) {
+        const lastInbound = [...result.messages]
+          .reverse()
+          .find(m => m.direction === "inbound")
+        const msgText = lastInbound?.body ?? lastInbound?.content ?? lastInbound?.message_content ?? ""
+        if (msgText) {
           analyzeMessageSentiment({
-            message: lastInbound.content ?? lastInbound.message_content ?? "",
+            message: msgText,
             contactId: contact?.id,
             agentId,
           }).then(r => {
@@ -89,41 +150,53 @@ export default function InboxClient({
     setSelectedId(id)
     setMobileView("thread")
     loadThread(id)
-    // Mark read non-blocking
     startTransition(async () => {
       await markConversationRead(id)
+      setConversations(prev =>
+        prev.map(c => c.id === id ? { ...c, unread_count: 0 } : c)
+      )
     })
   }, [loadThread])
 
-  const handleSend = useCallback(async (content: string) => {
-    if (!selectedId) return { success: false, error: "No conversation selected" }
+  const handleSend = useCallback(async (
+    body: string,
+    subject?: string,
+    channel?: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!selectedId || !contact?.id) return { success: false, error: "No conversation or contact selected" }
+
+    const resolvedChannel = (channel ?? selectedConvo?.type ?? "email") as "email" | "sms" | "in_app"
+
     const result = await sendMessage({
       conversationId: selectedId,
-      content,
-      senderType: "agent",
-      senderId: userId,
-      channel: selectedConvo?.type ?? "email",
+      contactId:      contact.id,
+      agentId,
+      channel:        resolvedChannel,
+      body,
+      subject:        subject || undefined,
     })
+
     if (result.success) {
-      // Optimistically add message
       setMessages(prev => [...prev, {
         id: crypto.randomUUID(),
-        content,
-        direction: "outbound",
+        body,
+        content: body,
+        direction:   "outbound",
         sender_type: "agent",
-        created_at: new Date().toISOString(),
-        channel: selectedConvo?.type ?? "email",
+        created_at:  new Date().toISOString(),
+        type:        resolvedChannel,
+        channel:     resolvedChannel,
       }])
     }
     return result as { success: boolean; error?: string }
-  }, [selectedId, selectedConvo?.type, userId])
+  }, [selectedId, contact?.id, agentId, selectedConvo?.type])
 
-  const handleDraft = useCallback(async (currentText: string) => {
+  const handleDraft = useCallback(async (currentText: string): Promise<string> => {
     if (!contact) return currentText
     const lastInbound = [...messages].reverse().find(m => m.direction === "inbound")
     const result = await generateSmartResponse({
-      incomingMessage: lastInbound?.content ?? lastInbound?.message_content ?? currentText,
-      contactId: contact.id,
+      incomingMessage: lastInbound?.body ?? lastInbound?.content ?? lastInbound?.message_content ?? currentText,
+      contactId:  contact.id,
       agentId,
       channel: (selectedConvo?.type ?? "email") as "email" | "sms" | "chat",
       tone: "professional",
@@ -137,7 +210,7 @@ export default function InboxClient({
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden bg-background">
 
-      {/* PANEL 1 — Conversation List (hidden on mobile when thread open) */}
+      {/* PANEL 1 — Conversation List */}
       <div className={`
         flex-col border-r border-border
         md:flex md:w-[300px] lg:w-[340px] shrink-0
@@ -162,7 +235,6 @@ export default function InboxClient({
           <>
             {/* Thread header */}
             <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-background shrink-0">
-              {/* Mobile back */}
               <button
                 className="md:hidden -ml-1 text-muted-foreground"
                 onClick={() => setMobileView("list")}
@@ -176,21 +248,27 @@ export default function InboxClient({
                   {selectedConvo.type ?? "email"} · {contact?.lifecycle_state?.replace(/_/g, " ") ?? ""}
                 </p>
               </div>
+              {/* Role badge for broker/admin */}
+              {(role === "broker" || role === "admin") && (
+                <span className="hidden sm:inline-block text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-medium">
+                  Broker View
+                </span>
+              )}
             </div>
 
-            {/* Messages */}
             <MessageThread
               messages={messages}
               contactName={contactName}
               loading={messagesLoading}
             />
 
-            {/* Compose */}
             <ComposeBar
               conversationId={selectedId!}
-              senderId={userId}
-              channel={selectedConvo.type ?? "email"}
+              agentId={agentId}
+              contactId={contact?.id ?? ""}
+              channel={(selectedConvo.type ?? "email") as "email" | "sms" | "in_app"}
               lifecycleState={contact?.lifecycle_state}
+              emailTemplates={emailTemplates}
               onSend={handleSend}
               onDraft={handleDraft}
             />
@@ -198,7 +276,9 @@ export default function InboxClient({
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 text-muted-foreground text-sm">
             <p className="font-medium">Select a conversation to start</p>
-            <p className="text-xs">Your assistant: <span className="font-medium text-foreground">{assistantName}</span></p>
+            <p className="text-xs">
+              Your assistant: <span className="font-medium text-foreground">{assistantName}</span>
+            </p>
           </div>
         )}
       </div>
@@ -208,6 +288,7 @@ export default function InboxClient({
         <ContactDetailPane
           contact={contact}
           sentimentSummary={sentiment}
+          agentId={agentId}
         />
       </div>
     </div>

@@ -6,7 +6,7 @@ import InboxClient from "./InboxClient"
 
 export const metadata = {
   title: "Inbox | VIP Real Estate OS",
-  description: "Unified communications inbox",
+  description: "Unified communications inbox — email, SMS, in-app, voice",
 }
 
 export default async function InboxPage() {
@@ -18,39 +18,53 @@ export default async function InboxPage() {
 
   if (!user) redirect("/login")
 
-  // Resolve user profile → brokerageId, agentId, assistant_wake_name
+  // Resolve user profile → brokerageId, agentId, assistant_wake_name, role
   const service = createServiceClient()
 
-  const { data: profile } = await service
-    .from("users")
-    .select("id, brokerage_id, user_type, assistant_wake_name")
-    .eq("id", user.id)
-    .single()
+  const [profileRes, agentRes] = await Promise.all([
+    service
+      .from("users")
+      .select("id, brokerage_id, user_type, assistant_wake_name")
+      .eq("id", user.id)
+      .single(),
+    service
+      .from("agents")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle(),
+  ])
 
+  const profile = profileRes.data
   if (!profile?.brokerage_id) redirect("/onboarding")
 
-  const brokerageId: string = profile.brokerage_id
+  const brokerageId: string  = profile.brokerage_id
   const assistantName: string = profile.assistant_wake_name ?? "VIP"
+  const role: string          = profile.user_type ?? "agent"
+  const agentId: string       = agentRes.data?.id ?? user.id
 
-  // Resolve agentId (agents table keyed by user_id)
-  const { data: agentRow } = await service
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
+  // Fetch conversations + email_templates in parallel
+  const [conversationsResult, templatesRes] = await Promise.all([
+    getConversations({ brokerageId, limit: 100 }),
+    service
+      .from("email_templates")
+      .select("id, name, subject, body, channel")
+      .eq("brokerage_id", brokerageId)
+      .order("name"),
+  ])
 
-  const agentId: string = agentRow?.id ?? user.id
-
-  // Fetch conversations server-side
-  const result = await getConversations({ brokerageId, limit: 50 })
-  const conversations = result.success ? (result as any).conversations ?? [] : []
+  const conversations = conversationsResult.success
+    ? (conversationsResult as any).conversations ?? []
+    : []
+  const emailTemplates = templatesRes.data ?? []
 
   return (
     <InboxClient
       conversations={conversations}
+      emailTemplates={emailTemplates}
       brokerageId={brokerageId}
       agentId={agentId}
       userId={user.id}
+      role={role}
       assistantName={assistantName}
     />
   )
