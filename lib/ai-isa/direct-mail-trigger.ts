@@ -50,10 +50,7 @@ export async function shouldTriggerDirectMail(leadId: string): Promise<boolean> 
 }
 
 export async function triggerDirectMailCampaign(context: DirectMailContext) {
-  console.log('[AI ISA] Triggering direct mail for lead:', context.leadId)
-  
   if (!context.mailingAddress || !context.city || !context.state || !context.zip) {
-    console.log('[AI ISA] Insufficient address data for direct mail')
     return { success: false, error: 'Missing address data' }
   }
   
