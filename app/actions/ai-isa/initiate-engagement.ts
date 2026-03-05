@@ -19,8 +19,6 @@ import { evaluateOutbound } from '@/lib/kernel'
 import { dispatchEmail } from '@/lib/providers/dispatch'
 
 export async function initiateAIISAEngagement(leadId: string) {
-  console.log('[v0] Initiating AI ISA engagement for lead:', leadId)
-  
   const supabase = createServiceClient()
   
   try {
