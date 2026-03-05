@@ -1,11 +1,14 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateText, generateObject } from "ai"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+import { dispatchEmail } from "@/lib/providers/dispatch"
+import { dispatchSms } from "@/lib/providers/dispatch"
 
 /**
  * AI Communication Hub
@@ -27,35 +30,134 @@ const SentimentSchema = z.object({
 // Send a message in a conversation
 export async function sendMessage(params: {
   conversationId: string
-  content: string
-  senderType: "agent" | "ai_assistant"
-  senderId: string
-  channel?: string
+  contactId: string
+  agentId: string           // agents.id (NOT users.id)
+  channel: "email" | "sms" | "in_app"
+  body: string
+  subject?: string
+  attachmentUrls?: string[]
 }) {
   try {
     const supabase = await createClient()
+    const now = new Date().toISOString()
 
-    const { data: message, error } = await supabase
+    // Step 1: INSERT into messages
+    const { data: message, error: msgError } = await supabase
       .from("messages")
       .insert({
-        conversation_id: params.conversationId,
-        content:         params.content,
-        sender_type:     params.senderType,
-        sender_id:       params.senderId,
-        direction:       "outbound",
-        channel:         params.channel ?? "email",
-        created_at:      new Date().toISOString(),
+        conversation_id:  params.conversationId,
+        contact_id:       params.contactId,
+        agent_id:         params.agentId,
+        type:             params.channel,
+        direction:        "outbound",
+        body:             params.body,
+        subject:          params.subject ?? null,
+        status:           "sent",
+        attachment_urls:  params.attachmentUrls ?? [],
+        created_at:       now,
+        updated_at:       now,
       })
       .select()
       .single()
 
-    if (error) throw error
+    if (msgError) throw msgError
 
-    // Bump conversation last_message_at
+    // Step 2: UPDATE conversations — bump last_message_at + message_count
+    // Read current count first (RPC not required — simple read-increment-write)
+    const { data: convRow } = await supabase
+      .from("conversations")
+      .select("message_count")
+      .eq("id", params.conversationId)
+      .single()
+
     await supabase
       .from("conversations")
-      .update({ last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .update({
+        last_message_at: now,
+        updated_at:      now,
+        message_count:   (convRow?.message_count ?? 0) + 1,
+      })
       .eq("id", params.conversationId)
+
+    // Step 3: Dispatch via provider layer
+    let dispatchResult: { success: boolean; messageId?: string; error?: string; providerKey: string } = {
+      success: true,
+      providerKey: "in_app",
+    }
+
+    if (params.channel === "email") {
+      // Fetch contact email for dispatch
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("email, first_name, last_name")
+        .eq("id", params.contactId)
+        .single()
+
+      if (contact?.email) {
+        // Fetch agent brokerage_id for dispatch context
+        const { data: agent } = await supabase
+          .from("agents")
+          .select("brokerage_id")
+          .eq("id", params.agentId)
+          .single()
+
+        dispatchResult = await dispatchEmail({
+          brokerageId: agent?.brokerage_id ?? "",
+          agentId:     params.agentId,
+          from:        "noreply@platform.com",
+          to:          contact.email,
+          subject:     params.subject ?? "(No Subject)",
+          html:        `<p>${params.body}</p>`,
+          systemSource: "inbox",
+        })
+      }
+    } else if (params.channel === "sms") {
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("phone")
+        .eq("id", params.contactId)
+        .single()
+
+      if (contact?.phone) {
+        const { data: agent } = await supabase
+          .from("agents")
+          .select("brokerage_id")
+          .eq("id", params.agentId)
+          .single()
+
+        dispatchResult = await dispatchSms({
+          brokerageId: agent?.brokerage_id ?? "",
+          agentId:     params.agentId,
+          to:          contact.phone,
+          message:     params.body,
+          systemSource: "inbox",
+        })
+      }
+    }
+
+    // Step 4: Fire-and-forget message_provider_logs
+    const serviceClient = createServiceClient()
+    const { data: agentForLog } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("id", params.agentId)
+      .single()
+
+    serviceClient
+      .from("message_provider_logs")
+      .insert({
+        brokerage_id:        agentForLog?.brokerage_id ?? null,
+        message_id:          message.id,
+        provider_key:        dispatchResult.providerKey,
+        channel:             params.channel,
+        direction:           "outbound",
+        provider_message_id: dispatchResult.messageId ?? null,
+        provider_status:     dispatchResult.success ? "sent" : "failed",
+        error_message:       dispatchResult.error ?? null,
+        created_at:          now,
+      })
+      .then(() => {})
+      .catch(() => {})
 
     revalidatePath("/dashboard/communications/inbox")
     return { success: true, message }
