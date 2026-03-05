@@ -292,7 +292,7 @@ export const ROLE_NAVIGATION: Record<UserRole, string[]> = {
     "listing-intake", "oh-manager", "showings", "buyer-tours", "feedback-log",
     "offer-lab", "cma", "closing-dashboard",
     "content-studio", "social-planner", "shareable-assets",
-    "ai-tools", "lead-intelligence", "lead-scoring", "ai-isa", "ai-chat", "voice-call-bridge",
+    "ai-tools", "lead-intelligence", "lead-scoring", "ai-isa", "ai-chat", "voice-call-bridge", "dashboard-voice",
     "documents", "sphere", "map-intelligence", "knowledge-base", "events",
     "agent-onboarding", "financials",
   ],

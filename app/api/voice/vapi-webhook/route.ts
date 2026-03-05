@@ -10,8 +10,10 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
-import type { KernelContact } from "@/lib/kernel/types"
+// NOTE: evaluateOutbound uses createClient() internally (session-based).
+// Webhooks from VAPI carry no user session, so we perform the authority check
+// directly here using the service client rather than calling evaluateOutbound.
+// The compliance_events write is also done manually via service client.
 
 // Normalize a phone number to digits only (last 10 for US)
 function normalizePhone(phone: string): string {
@@ -76,42 +78,48 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           .maybeSingle()
 
         if (contact) {
-          const kernelContact: KernelContact = {
-            id: contact.id,
-            first_name: contact.first_name ?? "",
-            last_name: contact.last_name ?? "",
-            email: contact.email ?? undefined,
-            phone: contact.phone ?? undefined,
-            contact_type: contact.contact_type ?? "buyer",
-            tcpa_consent: contact.tcpa_consent ?? false,
-            tcpa_consent_date: contact.tcpa_consent_date ?? undefined,
-            isa_reengage_allowed: contact.isa_reengage_allowed ?? false,
-            dnc_status: contact.dnc_status ?? false,
-            status: contact.status ?? undefined,
-            brokerage_id: contact.brokerage_id ?? undefined,
-          }
+          // Authority check: kernel RESTRICTED_STATES (matches lib/kernel/compliance.ts logic)
+          // Done via service client since webhooks carry no user auth session.
+          const RESTRICTED = new Set(["representation", "active_transaction", "under_contract", "REPRESENTATION", "ACTIVE_TRANSACTION", "UNDER_CONTRACT"])
+          const tcpaConsent  = contact.tcpa_consent ?? false
+          const dncStatus    = contact.dnc_status ?? false
+          const inRestricted = RESTRICTED.has(contact.status ?? "")
+          const isaReengage  = contact.isa_reengage_allowed === true
 
-          const complianceResult = await evaluateOutbound({
-            actorContext: {
-              userId: "system",
-              role: "isa",
-              brokerageId: brokerageId,
-            },
-            journeyType: "buyer",
-            persona: "other",
-            messageType: "phone",
-            content: "",
-            contact: kernelContact,
-          })
+          const blocked =
+            dncStatus ||
+            !tcpaConsent ||
+            (inRestricted && !isaReengage)
 
-          if (!complianceResult.allowed) {
-            // Block the call — update the record and tell VAPI to play a message
+          // Always write compliance_events — mirrors evaluateOutbound contract
+          const violations: string[] = []
+          if (dncStatus) violations.push("TCPA: Contact on Do Not Contact list")
+          if (!tcpaConsent) violations.push("TCPA: No phone consent")
+          if (inRestricted && !isaReengage) violations.push("Authority: Contact in restricted state")
+
+          await supabase
+            .from("compliance_events")
+            .insert({
+              brokerage_id: brokerageId,
+              gate_name: "vapi_inbound_gate",
+              allowed: !blocked,
+              violations,
+              blocked_reason: violations[0] ?? null,
+              actor_role: "isa",
+              actor_user_id: "system",
+              entity_type: "contact",
+              entity_id: contact.id,
+              message_type: "phone",
+            })
+
+          if (blocked) {
+            // Update voice_calls record
             await supabase
               .from("voice_calls")
               .update({
                 outcome: "authority_blocked",
                 compliance_passed: false,
-                compliance_flags: ["authority_block"],
+                compliance_flags: violations,
               })
               .eq("vapi_call_id", callId)
 

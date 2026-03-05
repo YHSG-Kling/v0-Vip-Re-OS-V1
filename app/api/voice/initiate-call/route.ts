@@ -10,11 +10,22 @@
  */
 
 import { NextRequest, NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { KernelContact } from "@/lib/kernel/types"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // Auth guard — evaluateOutbound uses createClient() internally for TCPA re-check
+  const authSupabase = await createClient()
+  const {
+    data: { user: authUser },
+  } = await authSupabase.auth.getUser()
+
+  if (!authUser) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
   let body: {
     phoneNumber: string
     contactId?: string

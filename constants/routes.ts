@@ -32,6 +32,7 @@ export const ROUTE_MAP: Record<string, string> = {
   playbook: "/seed",
   "agent-onboarding": "/academy",
   "voice-call-bridge": "/seed",
+  "dashboard-voice": "/dashboard/voice",
   "ai-isa": "/seed",
   "content-studio": "/content-studio",
   "social-planner": "/social-planner",
