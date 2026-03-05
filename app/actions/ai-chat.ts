@@ -71,7 +71,7 @@ export async function createChatSession(data: {
   console.log("[v0] Chat session created successfully:", session.id)
 
   // Create welcome message
-  await supabase.from("chat_messages").insert({
+  await supabase.from("messages").insert({
     session_id: session.id,
     sender_type: "ai_assistant",
     message_content: data.leadId
@@ -120,7 +120,7 @@ export async function sendChatMessage(data: {
   const complianceCheck = await checkMessageCompliance(data.messageContent, data.sessionId)
 
   const { data: message, error } = await supabase
-    .from("chat_messages")
+    .from("messages")
     .insert({
       session_id: data.sessionId,
       sender_type: isClientMessage ? "client" : "agent",
@@ -155,7 +155,7 @@ export async function sendChatMessage(data: {
   if (data.requestAiResponse) {
     const aiResponse = await generateAiResponse(data.sessionId, data.messageContent)
 
-    await supabase.from("chat_messages").insert({
+    await supabase.from("messages").insert({
       session_id: data.sessionId,
       sender_type: "ai_assistant",
       message_content: aiResponse.message,
@@ -310,7 +310,7 @@ async function generateAiResponse(sessionId: string, userMessage: string): Promi
 
   // Get conversation history
   const { data: messages } = await supabase
-    .from("chat_messages")
+    .from("messages")
     .select("*")
     .eq("session_id", sessionId)
     .order("created_at", { ascending: true })
@@ -548,7 +548,7 @@ export async function getChatSession(sessionId: string) {
         lead_intelligence (*),
         lead_behavioral_data (*)
       ),
-      chat_messages (*),
+      messages (*),
       ai_suggestions (*)
     `)
     .eq("id", sessionId)
@@ -578,7 +578,7 @@ export async function getAgentChatSessions(agentId: string) {
         intent_score,
         source
       ),
-      chat_messages (id)
+      messages (id)
     `,
     )
     .eq("agent_id", agentId)
@@ -815,6 +815,6 @@ export type ChatSession = {
   last_activity_at: string
   context_data?: any
   contacts?: any
-  chat_messages?: any[]
+  messages?: any[]
   ai_suggestions?: any[]
 }

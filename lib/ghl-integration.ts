@@ -197,7 +197,7 @@ export class GHLIntegration {
 
       // Get message and session
       const { data: message, error: msgError } = await supabase
-        .from("chat_messages")
+        .from("messages")
         .select("*, chat_sessions(*)")
         .eq("id", messageId)
         .single()
@@ -244,7 +244,7 @@ export class GHLIntegration {
       }
 
       // Mark message as synced
-      await supabase.from("chat_messages").update({ ghl_synced: true }).eq("id", messageId)
+      await supabase.from("messages").update({ ghl_synced: true }).eq("id", messageId)
 
       return { success: true }
     } catch (error) {
@@ -299,7 +299,7 @@ export class GHLIntegration {
       }
 
       // Create message in database
-      await supabase.from("chat_messages").insert({
+      await supabase.from("messages").insert({
         session_id: sessionId,
         sender_type: "contact",
         message: webhookData.message,

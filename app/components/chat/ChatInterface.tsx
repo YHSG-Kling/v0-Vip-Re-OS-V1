@@ -50,7 +50,7 @@ export default function ChatInterface({ sessionId, agentId }: { sessionId?: stri
     try {
       const data = await getChatSession(sessionId!)
       setSession(data)
-      setMessages(data.chat_messages || [])
+      setMessages(data.messages || [])
       setThemFirstScore(data.them_first_score || 0)
 
       const sugs = await getAiSuggestions(sessionId!)
