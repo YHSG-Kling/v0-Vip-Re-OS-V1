@@ -1,6 +1,12 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { listISACampaigns, getChannelFeatureFlags } from "@/app/actions/ai-isa"
+import {
+  listISACampaigns,
+  getChannelFeatureFlags,
+  getEngagementFeed,
+  getQualificationOutcomes,
+  getGhostRecoveryQueue,
+} from "@/app/actions/ai-isa"
 import { ISACampaignsClient } from "./components/ISACampaignsClient"
 
 export const metadata = {
@@ -16,7 +22,7 @@ export default async function ISACampaignsPage() {
   // Resolve brokerage_id from user profile
   const { data: profile } = await supabase
     .from("user_profiles")
-    .select("brokerage_id")
+    .select("brokerage_id, role")
     .eq("user_id", user.id)
     .single()
 
@@ -30,10 +36,13 @@ export default async function ISACampaignsPage() {
 
   const brokerageId = profile.brokerage_id
 
-  // Fetch campaigns + feature flags in parallel
-  const [campaignResult, flags] = await Promise.all([
+  // Fetch all 4 tabs' data in parallel
+  const [campaignResult, flags, engagementResult, qualResult, ghostResult] = await Promise.all([
     listISACampaigns(brokerageId),
     getChannelFeatureFlags(),
+    getEngagementFeed({ brokerageId, limit: 100 }),
+    getQualificationOutcomes(brokerageId),
+    getGhostRecoveryQueue(brokerageId),
   ])
 
   return (
@@ -51,6 +60,11 @@ export default async function ISACampaignsPage() {
         initialStats={campaignResult.stats}
         videoEnabled={flags.video_campaigns}
         directMailEnabled={flags.direct_mail_campaigns}
+        initialEngagement={engagementResult.items}
+        initialOutcomes={qualResult.outcomes}
+        initialQualStats={qualResult.stats}
+        initialChartData={qualResult.chartData}
+        initialGhosts={ghostResult.ghosts}
       />
     </main>
   )
