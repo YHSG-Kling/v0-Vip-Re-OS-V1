@@ -45,17 +45,27 @@ export default async function InboxPage() {
   // Fetch conversations + email_templates in parallel
   const [conversationsResult, templatesRes] = await Promise.all([
     getConversations({ brokerageId, limit: 100 }),
+    // email_templates: DB column is template_type (not channel)
     service
       .from("email_templates")
-      .select("id, name, subject, body, channel")
+      .select("id, name, subject, body, template_type")
       .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
       .order("name"),
   ])
 
   const conversations = conversationsResult.success
     ? (conversationsResult as any).conversations ?? []
     : []
-  const emailTemplates = templatesRes.data ?? []
+  // Map template_type → channel so client components can filter by channel
+  const emailTemplates = (templatesRes.data ?? []).map((t: any) => ({
+    id:      t.id,
+    name:    t.name,
+    subject: t.subject ?? undefined,
+    body:    t.body ?? undefined,
+    // template_type values include "email", "sms", "all" — treat as channel
+    channel: t.template_type ?? "all",
+  }))
 
   return (
     <InboxClient

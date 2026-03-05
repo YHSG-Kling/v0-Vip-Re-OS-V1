@@ -194,15 +194,19 @@ export default function InboxClient({
   const handleDraft = useCallback(async (currentText: string): Promise<string> => {
     if (!contact) return currentText
     const lastInbound = [...messages].reverse().find(m => m.direction === "inbound")
+    // generateSmartResponse accepts "email" | "sms" | "chat" — map in_app → chat
+    const rawChannel  = selectedConvo?.type ?? "email"
+    const draftChannel: "email" | "sms" | "chat" =
+      rawChannel === "sms" ? "sms" : rawChannel === "email" ? "email" : "chat"
     const result = await generateSmartResponse({
       incomingMessage: lastInbound?.body ?? lastInbound?.content ?? lastInbound?.message_content ?? currentText,
       contactId:  contact.id,
       agentId,
-      channel: (selectedConvo?.type ?? "email") as "email" | "sms" | "chat",
+      channel: draftChannel,
       tone: "professional",
       includeNextSteps: true,
     })
-    return result.success ? result.draft ?? currentText : currentText
+    return result.success ? (result as any).draft ?? currentText : currentText
   }, [contact, messages, agentId, selectedConvo?.type])
 
   const contactName = `${contact?.first_name ?? ""} ${contact?.last_name ?? ""}`.trim() || "Contact"

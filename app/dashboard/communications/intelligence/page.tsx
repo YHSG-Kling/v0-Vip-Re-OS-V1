@@ -78,14 +78,16 @@ export default async function IntelligencePage() {
       .gte("updated_at", thirtyDaysAgo),
 
     // 6. health tab insights table
+    // NOTE: actual columns are sentiment_trajectory (not trajectory) and
+    //       response_time_avg_seconds (not response_time_avg)
     service
       .from("conversation_insights")
       .select(`
         id,
         health_score,
         overall_sentiment,
-        trajectory,
-        response_time_avg,
+        sentiment_trajectory,
+        response_time_avg_seconds,
         unanswered_questions_count,
         escalation_recommended,
         updated_at,
@@ -125,13 +127,14 @@ export default async function IntelligencePage() {
       .limit(100),
 
     // 8. coaching — per-agent aggregated insights
+    // NOTE: DB column is response_time_avg_seconds (not response_time_avg)
     service
       .from("conversation_insights")
       .select(`
         agent_id,
         health_score,
         overall_sentiment,
-        response_time_avg,
+        response_time_avg_seconds,
         objections_raised,
         buying_signals,
         conversations!inner(
@@ -159,7 +162,7 @@ export default async function IntelligencePage() {
           brokerage_id,
           contacts(id, first_name, last_name),
           agents(id, users(first_name, last_name)),
-          voice_calls(recording_url, transcript)
+          voice_calls(recording_url, transcription)
         )
       `)
       .eq("is_voice_conversation", true)
@@ -204,20 +207,22 @@ export default async function IntelligencePage() {
 
   // ── Shape health table rows ──────────────────────────────────────────────────
   const healthInsights = (insightsRes.data ?? []).map((row: any) => {
-    const conv = row.conversations
+    const conv    = row.conversations
     const contact = conv?.contacts
-    const agent = conv?.agents
+    const agent   = conv?.agents
     return {
-      id: row.id,
-      contact_name: contact ? `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "Unknown" : "Unknown",
-      agent_name: agent?.users ? `${agent.users.first_name ?? ""} ${agent.users.last_name ?? ""}`.trim() || "—" : "—",
-      overall_sentiment: row.overall_sentiment ?? "neutral",
-      trajectory: row.trajectory ?? "stable",
-      health_score: row.health_score ?? 0,
-      response_time_avg: row.response_time_avg,
-      unanswered_questions_count: row.unanswered_questions_count ?? 0,
-      escalation_recommended: row.escalation_recommended ?? false,
-      updated_at: row.updated_at,
+      id:                          row.id,
+      contact_name:                contact ? `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || "Unknown" : "Unknown",
+      agent_name:                  agent?.users ? `${agent.users.first_name ?? ""} ${agent.users.last_name ?? ""}`.trim() || "—" : "—",
+      overall_sentiment:           row.overall_sentiment ?? "neutral",
+      // DB column: sentiment_trajectory (not trajectory)
+      trajectory:                  row.sentiment_trajectory ?? "stable",
+      health_score:                row.health_score ?? 0,
+      // DB column: response_time_avg_seconds (not response_time_avg)
+      response_time_avg:           row.response_time_avg_seconds ?? null,
+      unanswered_questions_count:  row.unanswered_questions_count ?? 0,
+      escalation_recommended:      row.escalation_recommended ?? false,
+      updated_at:                  row.updated_at,
     }
   })
 
@@ -245,7 +250,8 @@ export default async function IntelligencePage() {
     }
     const bucket = agentMap.get(aid)!
     if (row.health_score != null) bucket.health_scores.push(row.health_score * 100)
-    if (row.response_time_avg != null) bucket.response_times.push(row.response_time_avg)
+    // DB column: response_time_avg_seconds
+    if (row.response_time_avg_seconds != null) bucket.response_times.push(row.response_time_avg_seconds)
     if (Array.isArray(row.objections_raised)) bucket.objections.push(...row.objections_raised)
     if (Array.isArray(row.buying_signals)) bucket.signals.push(...row.buying_signals)
     // Map sentiment string to 0-100 numeric score
@@ -300,7 +306,8 @@ export default async function IntelligencePage() {
       call_completion_status:   row.call_completion_status ?? null,
       overall_sentiment:        row.overall_sentiment ?? null,
       recording_url:            voiceCall?.recording_url ?? null,
-      transcript:               voiceCall?.transcript ?? null,
+      // DB column: transcription (not transcript)
+      transcript:               voiceCall?.transcription ?? null,
       updated_at:               row.updated_at,
     }
   })

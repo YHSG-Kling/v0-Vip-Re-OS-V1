@@ -38,18 +38,21 @@ export default async function SequencesPage({
 
   const agentId = agentRow?.id ?? user.id
 
-  // Fetch existing drip campaigns / sequences for this brokerage
+  // Fetch existing campaign sequences for this brokerage
+  // Table: campaign_sequences (NOT drip_campaigns — that table does not exist)
   const [campaignsRes, contactRes] = await Promise.all([
     service
-      .from("drip_campaigns")
+      .from("campaign_sequences")
       .select(`
         id,
         name,
-        status,
         trigger_event,
-        target_lifecycle_state,
-        total_steps,
-        enrolled_count,
+        sequence_type,
+        is_active,
+        enrollments_total,
+        completions_total,
+        conversions_total,
+        compliance_gated,
         created_at,
         updated_at
       `)
@@ -67,8 +70,19 @@ export default async function SequencesPage({
       : Promise.resolve({ data: null }),
   ])
 
-  const campaigns    = campaignsRes.data ?? []
-  const preContact   = contactRes.data ?? null
+  // Map campaign_sequences columns to Campaign shape for SequencesClient
+  const campaigns = (campaignsRes.data ?? []).map((row: any) => ({
+    id:                    row.id,
+    name:                  row.name,
+    status:                row.is_active ? "active" : "paused",
+    trigger_event:         row.trigger_event,
+    target_lifecycle_state: row.sequence_type,
+    total_steps:           row.completions_total ?? 0,
+    enrolled_count:        row.enrollments_total ?? 0,
+    created_at:            row.created_at,
+    updated_at:            row.updated_at,
+  }))
+  const preContact = contactRes.data ?? null
 
   return (
     <SequencesClient
