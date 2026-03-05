@@ -24,6 +24,46 @@ const SentimentSchema = z.object({
   suggestedResponse: z.string().optional(),
 })
 
+// Send a message in a conversation
+export async function sendMessage(params: {
+  conversationId: string
+  content: string
+  senderType: "agent" | "ai_assistant"
+  senderId: string
+  channel?: string
+}) {
+  try {
+    const supabase = await createClient()
+
+    const { data: message, error } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id: params.conversationId,
+        content:         params.content,
+        sender_type:     params.senderType,
+        sender_id:       params.senderId,
+        direction:       "outbound",
+        channel:         params.channel ?? "email",
+        created_at:      new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    // Bump conversation last_message_at
+    await supabase
+      .from("conversations")
+      .update({ last_message_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq("id", params.conversationId)
+
+    revalidatePath("/dashboard/communications/inbox")
+    return { success: true, message }
+  } catch (error) {
+    return handleError(error, "sendMessage")
+  }
+}
+
 // Get conversations/messages for inbox
 export async function getConversations(params: {
   brokerageId: string
