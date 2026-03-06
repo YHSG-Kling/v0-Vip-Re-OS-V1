@@ -17,6 +17,8 @@ export {
 } from "./notification-center"
 export { transitionLifecycle } from "./lifecycle"
 export { evaluateOutbound } from "./compliance"
+export { checkBrandCompliance } from "./brand-compliance"
+export type { CheckBrandComplianceParams, BrandComplianceResult } from "./brand-compliance"
 export { applyBrandVoice } from "./brand-voice"
 export { resolveProvider } from "./providers"
 export { getEducationDelivery, getEducationPlan } from "./education"
