@@ -93,7 +93,7 @@ export async function generateNetSheet(input: NetSheetInput): Promise<NetSheetRe
 
     // Get agent's brokerage for commission structure
     const { data: profile } = await supabase
-      .from("profiles")
+      .from("users")
       .select("brokerage_id")
       .eq("id", input.agentId)
       .single()

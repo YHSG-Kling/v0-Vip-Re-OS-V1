@@ -24,7 +24,7 @@ export async function submitOffer(offerData: {
   // Get user's brokerage ID for configuration
   const { data: userData } = await supabase.auth.getUser()
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", userData.user?.id)
     .single()
@@ -92,7 +92,7 @@ export async function analyzeOffer(offerId: string, userId: string) {
 
   // Get brokerage commission structure
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", userId)
     .single()
@@ -188,7 +188,7 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
   // Get brokerage commission structure
   const { data: userData } = await supabase.auth.getUser()
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", userId)
     .single()

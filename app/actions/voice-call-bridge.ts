@@ -33,7 +33,7 @@ export async function initiateWhisperBridge(params: {
       .single()
 
     const { data: agent } = await supabase
-      .from("profiles")
+      .from("users")
       .select("phone, first_name, last_name")
       .eq("id", agentId)
       .single()
