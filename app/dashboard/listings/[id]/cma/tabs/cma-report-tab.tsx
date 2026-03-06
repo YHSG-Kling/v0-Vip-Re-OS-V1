@@ -317,10 +317,3 @@ function CompRow({
     </>
   )
 }
-
-function scoreBadge(score: number | null) {
-  if (score === null) return <Badge variant="outline" className="text-muted-foreground">Unscored</Badge>
-  if (score >= 80) return <Badge className="bg-green-100 text-green-800 border-green-300">{score}</Badge>
-  if (score >= 60) return <Badge className="bg-amber-100 text-amber-800 border-amber-300">{score}</Badge>
-  return <Badge className="bg-red-100 text-red-800 border-red-300">{score}</Badge>
-}
