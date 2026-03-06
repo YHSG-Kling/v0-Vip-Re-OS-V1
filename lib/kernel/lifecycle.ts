@@ -32,6 +32,10 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'UNDER_CONTRACT':            KernelEvent.CONTRACT_SIGNED,      // milestone override
   'CLOSED':                    KernelEvent.DEAL_CLOSED,          // milestone override
   'LIFETIME_CUSTOMER':         KernelEvent.LIFETIME_CUSTOMER,    // milestone override
+  // Terminal exit stages
+  'SELLER_DECLINED':           KernelEvent.SELLER_DECLINED,
+  'LISTING_CANCELLED':         KernelEvent.LISTING_CANCELLED,
+  'LISTING_EXPIRED':           KernelEvent.LISTING_EXPIRED,
   'offer_received':    KernelEvent.OFFER_RECEIVED,
   'under_contract':    KernelEvent.CONTRACT_SIGNED,
   'on_hold':           KernelEvent.DEAL_ON_HOLD,

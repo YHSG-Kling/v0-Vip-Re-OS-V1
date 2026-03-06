@@ -42,6 +42,9 @@ export type ListingStage =
   | "CLOSING_PREP"
   | "CLOSED"
   | "LIFETIME_CUSTOMER"
+  | "SELLER_DECLINED"
+  | "LISTING_CANCELLED"
+  | "LISTING_EXPIRED"
 
 export type ReadinessCheckType =
   | "documents_verified"
@@ -371,6 +374,35 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["retention_system"],
     isMilestone: true,
+  },
+
+  // ── Terminal exit stages (cannot be advanced from) ──────────────────────────
+  {
+    stage: "SELLER_DECLINED",
+    label: "Seller Declined",
+    description: "Seller decided not to list — listing process terminated",
+    allowedFrom: ["SELLER_DECISION"],
+    readinessChecks: [],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
+    isMilestone: false,
+  },
+  {
+    stage: "LISTING_CANCELLED",
+    label: "Listing Cancelled",
+    description: "Active listing cancelled by agent, seller, or admin",
+    allowedFrom: [],  // can originate from any active stage — enforced at engine layer
+    readinessChecks: [],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
+    isMilestone: false,
+  },
+  {
+    stage: "LISTING_EXPIRED",
+    label: "Listing Expired",
+    description: "Listing agreement period elapsed without a contract",
+    allowedFrom: ["MLS_ACTIVE"],
+    readinessChecks: [],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
+    isMilestone: false,
   },
 ]
 
