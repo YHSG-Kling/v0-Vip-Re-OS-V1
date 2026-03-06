@@ -59,19 +59,38 @@ export async function scheduleListingAppointment(params: {
     }
   }
 
-  // Emit appointment scheduled event
-  const { error: eventError } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.appointment.scheduled",
-    status: "completed",
+  // Stage transition: LEAD → APPOINTMENT_SET
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "LEAD",
+    toState:     "APPOINTMENT_SET",
+    eventType:   KernelEvent.LISTING_STAGE_CHANGED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { appointment_date: appointmentDate },
   })
 
-  if (eventError) {
-    return { success: false, error: eventError.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_STAGE_CHANGED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  // Human-readable activity log
+  await supabase.from("activities").insert({
+    brokerage_id: brokerageId,
+    listing_id:   listingId,
+    user_id:      userId,
+    activity_type: "seller.appointment.scheduled",
+    status:        "completed",
+    metadata:      { appointment_date: appointmentDate },
+  })
 
   // Auto-trigger CMA generation
   await supabase.from("activities").insert({
@@ -132,27 +151,22 @@ export async function markDripCompleted(params: {
   const supabase = await createClient()
   const { listingId, userId, brokerageId } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.presentation.drip_completed",
-    status: "completed",
-  })
-
-  if (error) {
-    return { success: false, error: error.message }
-  }
-
-  // Sub-event: kernel event + lifecycle_events row
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type:  "listing_stage_machine",
-    entity_id:    listingId,
-    event_type:   KernelEvent.LISTING_DRIP_COMPLETED,
-    actor_user_id: userId,
+  // Stage transition: PRESENTATION_DRIP_PREP → SELLER_DECISION
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "PRESENTATION_DRIP_PREP",
+    toState:     "SELLER_DECISION",
+    eventType:   KernelEvent.LISTING_DRIP_COMPLETED,
+    actorUserId: userId,
+    brokerageId,
     metadata: {},
   })
+
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
+  }
+
   await processKernelEvent({
     event:      KernelEvent.LISTING_DRIP_COMPLETED,
     brokerageId,
@@ -160,13 +174,21 @@ export async function markDripCompleted(params: {
     entityId:   listingId,
   }).catch(() => {})
 
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.presentation.drip_completed",
+    status:        "completed",
+  })
+
   // Emit decision readiness (human timeline)
   await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
     activity_type: "seller.decision.ready",
-    status: "completed",
+    status:        "completed",
   })
 
   return { success: true }
@@ -185,23 +207,41 @@ export async function recordSellerDecision(params: {
   const supabase = await createClient()
   const { listingId, decision, userId, brokerageId, reason } = params
 
-  const eventType =
-    decision === "accepted"
-      ? "seller.decision.accepted"
-      : "seller.decision.declined"
+  // Stage transition varies by decision
+  const toState      = decision === "accepted" ? "LISTING_AGREEMENT_INITIATED" : "SELLER_DECLINED"
+  const kernelEvent  = decision === "accepted" ? KernelEvent.LISTING_STAGE_CHANGED : KernelEvent.SELLER_DECLINED
+  const activityType = decision === "accepted" ? "seller.decision.accepted" : "seller.decision.declined"
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: eventType,
-    status: "completed",
-    metadata: { decision, reason },
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "SELLER_DECISION",
+    toState,
+    eventType:   kernelEvent,
+    actorUserId: userId,
+    brokerageId,
+    metadata: { decision, reason: reason ?? null },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      kernelEvent,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: activityType,
+    status:        "completed",
+    metadata:      { decision, reason },
+  })
 
   return { success: true, decision }
 }
@@ -234,17 +274,34 @@ export async function initiateListingAgreement(params: {
     return { success: false, error: "Seller decision not accepted" }
   }
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.listing_agreement.initiated",
-    status: "in_progress",
+  // Sub-event: agreement paperwork started inside LISTING_AGREEMENT_INITIATED stage — no state change
+  const { error: leError } = await supabase.from("lifecycle_events").insert({
+    brokerage_id:  brokerageId,
+    entity_type:   "listing_stage_machine",
+    entity_id:     listingId,
+    event_type:    KernelEvent.LISTING_AGREEMENT_INITIATED,
+    actor_user_id: userId,
+    metadata:      { stage: "LISTING_AGREEMENT_INITIATED" },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (leError) {
+    return { success: false, error: leError.message }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_AGREEMENT_INITIATED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.listing_agreement.initiated",
+    status:        "in_progress",
+  })
 
   return { success: true }
 }
@@ -476,34 +533,37 @@ export async function recordPreListingRepair(params: {
   const supabase = await createClient()
   const { listingId, repairType, description, vendorId, userId, brokerageId } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.repair.required.pre_listing",
-    status: "in_progress",
-    metadata: { repair_type: repairType, description, vendor_id: vendorId },
-  })
-
-  if (error) {
-    return { success: false, error: error.message }
-  }
-
-  // Sub-event: kernel event + lifecycle_events row
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type:  "listing_stage_machine",
-    entity_id:    listingId,
-    event_type:   KernelEvent.LISTING_REPAIR_REQUIRED,
-    actor_user_id: userId,
+  // Stage transition: LISTING_AGREEMENT_SIGNED → REPAIRS_IN_PROGRESS
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "LISTING_AGREEMENT_SIGNED",
+    toState:     "REPAIRS_IN_PROGRESS",
+    eventType:   KernelEvent.LISTING_REPAIR_REQUIRED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { repair_type: repairType, description, vendor_id: vendorId ?? null },
   })
+
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
+  }
+
   await processKernelEvent({
     event:      KernelEvent.LISTING_REPAIR_REQUIRED,
     brokerageId,
     entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.repair.required.pre_listing",
+    status:        "in_progress",
+    metadata:      { repair_type: repairType, description, vendor_id: vendorId },
+  })
 
   return { success: true }
 }
@@ -520,34 +580,37 @@ export async function markRepairCompleted(params: {
   const supabase = await createClient()
   const { listingId, repairId, userId, brokerageId } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.repair.completed.pre_listing",
-    status: "completed",
+  // Stage transition: REPAIRS_IN_PROGRESS → COMING_SOON_PREP
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "REPAIRS_IN_PROGRESS",
+    toState:     "COMING_SOON_PREP",
+    eventType:   KernelEvent.LISTING_REPAIR_COMPLETED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { repair_id: repairId },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
 
-  // Sub-event: kernel event + lifecycle_events row
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type:  "listing_stage_machine",
-    entity_id:    listingId,
-    event_type:   KernelEvent.LISTING_REPAIR_COMPLETED,
-    actor_user_id: userId,
-    metadata: { repair_id: repairId },
-  })
   await processKernelEvent({
     event:      KernelEvent.LISTING_REPAIR_COMPLETED,
     brokerageId,
     entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.repair.completed.pre_listing",
+    status:        "completed",
+    metadata:      { repair_id: repairId },
+  })
 
   return { success: true }
 }
@@ -656,18 +719,37 @@ export async function markMediaCaptured(params: {
   const supabase = await createClient()
   const { listingId, photoCount, hasVideo, userId, brokerageId } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.media.captured",
-    status: "completed",
+  // Stage transition: COMING_SOON_PREP → MEDIA_CAPTURE
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "COMING_SOON_PREP",
+    toState:     "MEDIA_CAPTURE",
+    eventType:   KernelEvent.LISTING_STAGE_CHANGED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { photo_count: photoCount, has_video: hasVideo },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_STAGE_CHANGED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.media.captured",
+    status:        "completed",
+    metadata:      { photo_count: photoCount, has_video: hasVideo },
+  })
 
   return { success: true }
 }
@@ -689,18 +771,38 @@ export async function approveMedia(params: {
     return { success: false, error: "Only agent or team leader can approve media" }
   }
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.media.approved",
-    status: "completed",
+  // Stage transition: MEDIA_CAPTURE → MEDIA_APPROVED
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "MEDIA_CAPTURE",
+    toState:     "MEDIA_APPROVED",
+    eventType:   KernelEvent.LISTING_STAGE_CHANGED,
+    actorUserId: userId,
+    actorRole:   role,
+    brokerageId,
     metadata: { approved_by_role: role },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_STAGE_CHANGED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.media.approved",
+    status:        "completed",
+    metadata:      { approved_by_role: role },
+  })
 
   return { success: true }
 }
@@ -728,34 +830,37 @@ export async function prepareComingSoonAssets(params: {
     return { success: false, error: "Media not approved" }
   }
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.coming_soon.assets_prepared",
-    status: "completed",
+  // Stage transition: MEDIA_APPROVED → COMING_SOON_PREP
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "MEDIA_APPROVED",
+    toState:     "COMING_SOON_PREP",
+    eventType:   KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { includes_address: false },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
 
-  // Sub-event: kernel event + lifecycle_events row
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type:  "listing_stage_machine",
-    entity_id:    listingId,
-    event_type:   KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED,
-    actor_user_id: userId,
-    metadata: { includes_address: false },
-  })
   await processKernelEvent({
     event:      KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED,
     brokerageId,
     entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.coming_soon.assets_prepared",
+    status:        "completed",
+    metadata:      { includes_address: false },
+  })
 
   return { success: true }
 }
@@ -777,18 +882,38 @@ export async function activateComingSoon(params: {
     return { success: false, error: "Only agent or team leader can activate coming soon" }
   }
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.coming_soon.activated",
-    status: "completed",
+  // Stage transition: COMING_SOON_PREP → COMING_SOON_ACTIVE
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "COMING_SOON_PREP",
+    toState:     "COMING_SOON_ACTIVE",
+    eventType:   KernelEvent.COMING_SOON_SENT,
+    actorUserId: userId,
+    actorRole:   role,
+    brokerageId,
     metadata: { activated_by_role: role },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.COMING_SOON_SENT,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.coming_soon.activated",
+    status:        "completed",
+    metadata:      { activated_by_role: role },
+  })
 
   return { success: true }
 }
@@ -815,17 +940,36 @@ export async function markMLSReady(params: {
     return { success: false, error: "Media not approved or coming soon not activated" }
   }
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.mls.ready",
-    status: "completed",
+  // Stage transition: COMING_SOON_ACTIVE → MLS_READY
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "COMING_SOON_ACTIVE",
+    toState:     "MLS_READY",
+    eventType:   KernelEvent.LISTING_STAGE_CHANGED,
+    actorUserId: userId,
+    brokerageId,
+    metadata: {},
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_STAGE_CHANGED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.mls.ready",
+    status:        "completed",
+  })
 
   return { success: true }
 }
@@ -863,18 +1007,38 @@ export async function approveOpenHouseMarketing(params: {
     return { success: false, error: "Only agent or team leader can approve open house marketing" }
   }
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.open_house_marketing.approved",
-    status: "completed",
+  // Stage transition: MLS_READY → OPEN_HOUSE_MARKETING
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "MLS_READY",
+    toState:     "OPEN_HOUSE_MARKETING",
+    eventType:   KernelEvent.OPEN_HOUSE_MARKETING_STARTED,
+    actorUserId: userId,
+    actorRole:   role,
+    brokerageId,
     metadata: { approved_by_role: role },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.OPEN_HOUSE_MARKETING_STARTED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.open_house_marketing.approved",
+    status:        "completed",
+    metadata:      { approved_by_role: role },
+  })
 
   return { success: true }
 }
@@ -951,26 +1115,46 @@ export async function activateMLS(params: {
     return { success: false, error: "Only admin can activate MLS" }
   }
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.mls.activated",
-    status: "completed",
+  // Stage transition: MLS_READY → MLS_ACTIVE
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "MLS_READY",
+    toState:     "MLS_ACTIVE",
+    eventType:   KernelEvent.LISTING_PUBLISHED,
+    actorUserId: userId,
+    actorRole:   role,
+    brokerageId,
     metadata: { mls_number: mlsNumber },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_PUBLISHED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.mls.activated",
+    status:        "completed",
+    metadata:      { mls_number: mlsNumber },
+  })
 
   // Auto-emit syndication event
   await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
     activity_type: "seller.listing.syndicated",
-    status: "in_progress",
+    status:        "in_progress",
   })
 
   return { success: true }
@@ -988,18 +1172,37 @@ export async function scheduleOpenHouse(params: {
   const supabase = await createClient()
   const { listingId, eventDate, userId, brokerageId } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.open_house.scheduled",
-    status: "scheduled",
+  // Stage transition: MLS_ACTIVE → OPEN_HOUSE_EVENT
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "MLS_ACTIVE",
+    toState:     "OPEN_HOUSE_EVENT",
+    eventType:   KernelEvent.OPEN_HOUSE_SCHEDULED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { event_date: eventDate },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.OPEN_HOUSE_SCHEDULED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.open_house.scheduled",
+    status:        "scheduled",
+    metadata:      { event_date: eventDate },
+  })
 
   return { success: true }
 }
@@ -1016,34 +1219,37 @@ export async function markOpenHouseCompleted(params: {
   const supabase = await createClient()
   const { listingId, attendeeCount, userId, brokerageId } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.open_house.completed",
-    status: "completed",
+  // Stage transition: OPEN_HOUSE_EVENT → SHOWINGS_ACTIVE
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "OPEN_HOUSE_EVENT",
+    toState:     "SHOWINGS_ACTIVE",
+    eventType:   KernelEvent.LISTING_OPEN_HOUSE_COMPLETED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { attendee_count: attendeeCount },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
 
-  // Sub-event: kernel event + lifecycle_events row
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type:  "listing_stage_machine",
-    entity_id:    listingId,
-    event_type:   KernelEvent.LISTING_OPEN_HOUSE_COMPLETED,
-    actor_user_id: userId,
-    metadata: { attendee_count: attendeeCount },
-  })
   await processKernelEvent({
     event:      KernelEvent.LISTING_OPEN_HOUSE_COMPLETED,
     brokerageId,
     entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.open_house.completed",
+    status:        "completed",
+    metadata:      { attendee_count: attendeeCount },
+  })
 
   return { success: true }
 }
@@ -1108,18 +1314,37 @@ export async function markUnderContract(params: {
   const supabase = await createClient()
   const { listingId, userId, brokerageId } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.under_contract",
-    status: "completed",
+  // Stage transition: OFFERS_RECEIVED → UNDER_CONTRACT (terminal — stops System 5.2)
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "OFFERS_RECEIVED",
+    toState:     "UNDER_CONTRACT",
+    eventType:   KernelEvent.CONTRACT_SIGNED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { terminal: true, handoff_to: "transaction_system" },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.CONTRACT_SIGNED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.under_contract",
+    status:        "completed",
+    metadata:      { terminal: true, handoff_to: "transaction_system" },
+  })
 
   return { success: true, terminal: true }
 }
@@ -1136,18 +1361,46 @@ export async function cancelListing(params: {
   const supabase = await createClient()
   const { listingId, reason, userId, brokerageId } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.listing.cancelled",
-    status: "completed",
+  // Fetch current stage to use as fromState
+  const { data: listingRow } = await supabase
+    .from("listings")
+    .select("lifecycle_stage")
+    .eq("id", listingId)
+    .single()
+
+  const currentStage = listingRow?.lifecycle_stage ?? "UNKNOWN"
+
+  // Stage transition: [current] → LISTING_CANCELLED (terminal)
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   currentStage,
+    toState:     "LISTING_CANCELLED",
+    eventType:   KernelEvent.LISTING_CANCELLED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { reason, terminal: true },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_CANCELLED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.listing.cancelled",
+    status:        "completed",
+    metadata:      { reason, terminal: true },
+  })
 
   return { success: true, terminal: true }
 }
@@ -1163,18 +1416,37 @@ export async function markListingExpired(params: {
   const supabase = await createClient()
   const { listingId, userId, brokerageId } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.listing.expired",
-    status: "completed",
+  // Stage transition: MLS_ACTIVE → LISTING_EXPIRED (terminal)
+  const transitionResult = await transitionLifecycle({
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "MLS_ACTIVE",
+    toState:     "LISTING_EXPIRED",
+    eventType:   KernelEvent.LISTING_EXPIRED,
+    actorUserId: userId,
+    brokerageId,
     metadata: { terminal: true },
   })
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (!transitionResult.success) {
+    return { success: false, error: transitionResult.error ?? "Stage transition failed" }
   }
+
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_EXPIRED,
+    brokerageId,
+    entityType: "listing_stage_machine",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  await supabase.from("activities").insert({
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
+    activity_type: "seller.listing.expired",
+    status:        "completed",
+    metadata:      { terminal: true },
+  })
 
   return { success: true, terminal: true }
 }

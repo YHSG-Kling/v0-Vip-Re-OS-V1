@@ -28,8 +28,12 @@ export enum KernelEvent {
   // ── Seller Journey ────────────────────────────────────────────────────────
   DECISION_PENDING          = 'decision_pending',
   PRICE_DETERMINED          = 'price_determined',
-  LISTING_AGREEMENT_SIGNED  = 'listing_agreement_signed',
+  LISTING_AGREEMENT_SIGNED                  = 'listing_agreement_signed',
+  LISTING_AGREEMENT_INITIATED               = 'listing_agreement_initiated',
+  SELLER_DECLINED                           = 'seller_declined',
   LISTING_STAGE_CHANGED                     = 'listing_stage_changed',
+  LISTING_CANCELLED                         = 'listing_cancelled',
+  LISTING_EXPIRED                           = 'listing_expired',
   COMING_SOON_SENT                          = 'coming_soon_sent',
   OPEN_HOUSE_MARKETING_STARTED              = 'open_house_marketing_started',
   OPEN_HOUSE_ATTENDEE_CAPTURED              = 'open_house_attendee_captured',
