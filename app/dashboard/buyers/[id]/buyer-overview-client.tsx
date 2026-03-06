@@ -7,6 +7,7 @@ import { BuyerStageProgress }                 from "./components/buyer-stage-pro
 import { FinancialVerificationPanel }         from "./components/financial-verification-panel"
 import { BuyerCoachingCard }                  from "./components/buyer-coaching-card"
 import { ConversationCoachingPanel }          from "./components/conversation-coaching-panel"
+import BuyerInsightsPanel                     from "./components/buyer-insights-panel"
 import { isTourAllowed }                      from "@/lib/buyer-lifecycle/gating-helpers"
 import { isOfferAllowed }                     from "@/lib/buyer-lifecycle/gating-helpers"
 
@@ -239,7 +240,10 @@ export function BuyerOverviewClient({
             {/* 2. Buyer Coaching Card */}
             <BuyerCoachingCard contactId={buyerId} brokerageId={brokerageId} />
 
-            {/* 3. Next Steps Panel */}
+            {/* 3. AI Buyer Insights */}
+            <BuyerInsightsPanel contactId={buyerId} />
+
+            {/* 5. Next Steps Panel */}
             <div className="rounded-lg border border-border bg-card p-5">
               <h3 className="text-sm font-semibold mb-3">Next Steps</h3>
               {nextSteps.length === 0 ? (
@@ -256,7 +260,7 @@ export function BuyerOverviewClient({
               )}
             </div>
 
-            {/* 4. Key Info Strip */}
+            {/* 6. Key Info Strip */}
             <div className="rounded-lg border border-border bg-card p-5 space-y-4">
               <h3 className="text-sm font-semibold">Key Information</h3>
               <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
