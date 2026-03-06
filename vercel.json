@@ -65,6 +65,22 @@
     {
       "path": "/api/fatigue/calculate",
       "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/property-alerts/run?frequency=instant",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/property-alerts/run?frequency=twice_daily",
+      "schedule": "0 8,17 * * *"
+    },
+    {
+      "path": "/api/property-alerts/run?frequency=daily",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/property-alerts/run?frequency=weekly",
+      "schedule": "0 8 * * 1"
     }
   ]
 }
