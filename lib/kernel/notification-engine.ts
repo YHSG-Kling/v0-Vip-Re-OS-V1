@@ -152,6 +152,68 @@ async function resolveRecipients(params: {
     }
   }
 
+  // Listing stage machine — resolve assigned agent + TC via listings table.
+  // Metadata-aware routing: TC, seller channel, and escalation per event spec.
+  if (params.entityType === "listing_stage_machine") {
+    const { data: listing } = await supabase
+      .from("listings")
+      .select("assigned_agent_id, assigned_tc_id, brokerage_id")
+      .eq("id", params.entityId)
+      .single()
+
+    // Agent always receives listing sub-event notifications
+    if (listing?.assigned_agent_id) {
+      recipients.push({ user_id: listing.assigned_agent_id, role: "agent" })
+    }
+
+    // TC routing — required for repair events and admin submission
+    const tcEvents: KernelEvent[] = [
+      KernelEvent.LISTING_REPAIR_REQUIRED,
+      KernelEvent.LISTING_REPAIR_COMPLETED,
+      KernelEvent.LISTING_REPAIR_FAILED,
+      KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
+    ]
+    if (listing?.assigned_tc_id && tcEvents.includes(params.event)) {
+      recipients.push({ user_id: listing.assigned_tc_id, role: "TC" })
+    }
+
+    // Seller channel — only if brokerage policy allows it
+    // Read from brokerage_settings.seller_notification_policy
+    if ([
+      KernelEvent.LISTING_REPAIR_REQUIRED,
+      KernelEvent.LISTING_REPAIR_COMPLETED,
+      KernelEvent.LISTING_REPAIR_FAILED,
+    ].includes(params.event)) {
+      const { data: policy } = await supabase
+        .from("brokerage_settings")
+        .select("seller_notification_enabled")
+        .eq("brokerage_id", params.brokerageId)
+        .maybeSingle()
+
+      if (policy?.seller_notification_enabled) {
+        // Resolve seller user_id via listing → contacts → user
+        const { data: listingContact } = await supabase
+          .from("listing_contacts")
+          .select("contact_id")
+          .eq("listing_id", params.entityId)
+          .eq("role", "seller")
+          .maybeSingle()
+
+        if (listingContact?.contact_id) {
+          const { data: contact } = await supabase
+            .from("contacts")
+            .select("user_id")
+            .eq("id", listingContact.contact_id)
+            .maybeSingle()
+
+          if (contact?.user_id) {
+            recipients.push({ user_id: contact.user_id, role: "seller" })
+          }
+        }
+      }
+    }
+  }
+
   // Brokerage-level roles (always included).
   // TODO: Cache optimization — this query runs on every event.
   const { data: brokerageUsers } = await supabase
@@ -189,11 +251,41 @@ function generateTitle(event: KernelEvent): string {
     [KernelEvent.TASK_OVERDUE]:       "Task Overdue",
     [KernelEvent.COMPLIANCE_VIOLATION]: "Compliance Alert",
     [KernelEvent.MESSAGE_FROM_CONTACT]: "New Message from Contact",
+    // ── Listing Stage Machine — Sub-Events ────────────────────────────────
+    [KernelEvent.LISTING_MEDIA_SCHEDULED]:             "Media Capture Scheduled",
+    [KernelEvent.LISTING_REPAIR_REQUIRED]:             "Pre-Listing Repair Required",
+    [KernelEvent.LISTING_REPAIR_COMPLETED]:            "Pre-Listing Repair Completed",
+    [KernelEvent.LISTING_REPAIR_FAILED]:               "Pre-Listing Repair Failed — Stage Blocked",
+    [KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED]: "Coming Soon Assets Ready for Review",
+    [KernelEvent.LISTING_DRIP_COMPLETED]:              "Seller Presentation Drip Complete",
+    [KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN]:      "Listing Submitted to Admin for MLS Activation",
+    [KernelEvent.LISTING_OPEN_HOUSE_COMPLETED]:        "Open House Completed",
+    [KernelEvent.LISTING_SHOWING_COMPLETED]:           "Showing Completed",
   }
 
   return titles[event] ?? event
 }
 
 function generateBody(event: KernelEvent, entityType: string): string {
-  return `${entityType}: ${event}`
+  const bodies: Partial<Record<KernelEvent, string>> = {
+    [KernelEvent.LISTING_MEDIA_SCHEDULED]:
+      "Media capture has been scheduled. Approval may be required before publishing.",
+    [KernelEvent.LISTING_REPAIR_REQUIRED]:
+      "A pre-listing repair has been recorded and requires attention before going live.",
+    [KernelEvent.LISTING_REPAIR_COMPLETED]:
+      "A pre-listing repair has been marked complete. Review and advance the listing stage.",
+    [KernelEvent.LISTING_REPAIR_FAILED]:
+      "A pre-listing repair failed. The listing stage is blocked until resolved.",
+    [KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED]:
+      "Coming soon marketing assets are prepared and awaiting approval.",
+    [KernelEvent.LISTING_DRIP_COMPLETED]:
+      "Seller presentation drip sequence is complete. Seller is ready for a decision.",
+    [KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN]:
+      "Listing has been submitted to admin for MLS activation review.",
+    [KernelEvent.LISTING_OPEN_HOUSE_COMPLETED]:
+      "Open house event has been completed. Review attendee notes and follow up.",
+    [KernelEvent.LISTING_SHOWING_COMPLETED]:
+      "A showing has been completed. Feedback token created — follow up with buyer's agent.",
+  }
+  return bodies[event] ?? `${entityType}: ${event}`
 }

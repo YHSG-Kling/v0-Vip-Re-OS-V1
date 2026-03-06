@@ -147,7 +147,7 @@ export async function markDripCompleted(params: {
   // Sub-event: kernel event + lifecycle_events row
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
-    entity_type:  "listing",
+    entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_DRIP_COMPLETED,
     actor_user_id: userId,
@@ -156,7 +156,7 @@ export async function markDripCompleted(params: {
   await processKernelEvent({
     event:      KernelEvent.LISTING_DRIP_COMPLETED,
     brokerageId,
-    entityType: "listing",
+    entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
 
@@ -410,10 +410,10 @@ export async function markAgreementSigned(params: {
   // ── 7. transitionLifecycle + processKernelEvent ───────────────────────────
   await transitionLifecycle({
     brokerageId,
-    entityType:    "listing",
-    entityId:      listingId,
-    fromState:     "new",
-    toState:       "active",
+  entityType:    "listing_stage_machine",
+  entityId:      listingId,
+  fromState:     "new",
+  toState:       "active",
     actorUserId:   userId,
     actorRole:     "agent",
     eventType:     "listing_agreement_signed",
@@ -429,10 +429,10 @@ export async function markAgreementSigned(params: {
   await processKernelEvent({
     event:            KernelEvent.LISTING_AGREEMENT_SIGNED,
     brokerageId,
-    entityType:       "listing",
-    entityId:         listingId,
+  entityType:       "listing_stage_machine",
+  entityId:         listingId,
   }).catch(() => {
-    // Non-blocking — notification failure must not fail the agreement signing
+  // Non-blocking — notification failure must not fail the agreement signing
   })
 
   return { success: true, agreementId: agreement.id }
@@ -492,7 +492,7 @@ export async function recordPreListingRepair(params: {
   // Sub-event: kernel event + lifecycle_events row
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
-    entity_type:  "listing",
+    entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_REPAIR_REQUIRED,
     actor_user_id: userId,
@@ -501,7 +501,7 @@ export async function recordPreListingRepair(params: {
   await processKernelEvent({
     event:      KernelEvent.LISTING_REPAIR_REQUIRED,
     brokerageId,
-    entityType: "listing",
+    entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
 
@@ -536,7 +536,7 @@ export async function markRepairCompleted(params: {
   // Sub-event: kernel event + lifecycle_events row
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
-    entity_type:  "listing",
+    entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_REPAIR_COMPLETED,
     actor_user_id: userId,
@@ -545,7 +545,7 @@ export async function markRepairCompleted(params: {
   await processKernelEvent({
     event:      KernelEvent.LISTING_REPAIR_COMPLETED,
     brokerageId,
-    entityType: "listing",
+    entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
 
@@ -581,7 +581,7 @@ export async function markRepairFailed(params: {
   // Sub-event: kernel event + lifecycle_events row
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
-    entity_type:  "listing",
+    entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_REPAIR_FAILED,
     actor_user_id: userId,
@@ -590,7 +590,7 @@ export async function markRepairFailed(params: {
   await processKernelEvent({
     event:      KernelEvent.LISTING_REPAIR_FAILED,
     brokerageId,
-    entityType: "listing",
+    entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
 
@@ -627,7 +627,7 @@ export async function scheduleMediaCapture(params: {
   // Sub-event: kernel event + lifecycle_events row
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
-    entity_type:  "listing",
+    entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_MEDIA_SCHEDULED,
     actor_user_id: userId,
@@ -636,7 +636,7 @@ export async function scheduleMediaCapture(params: {
   await processKernelEvent({
     event:      KernelEvent.LISTING_MEDIA_SCHEDULED,
     brokerageId,
-    entityType: "listing",
+    entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
 
@@ -744,7 +744,7 @@ export async function prepareComingSoonAssets(params: {
   // Sub-event: kernel event + lifecycle_events row
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
-    entity_type:  "listing",
+    entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED,
     actor_user_id: userId,
@@ -753,7 +753,7 @@ export async function prepareComingSoonAssets(params: {
   await processKernelEvent({
     event:      KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED,
     brokerageId,
-    entityType: "listing",
+    entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
 
@@ -917,7 +917,7 @@ export async function submitToMLSAdmin(params: {
   // Sub-event: kernel event + lifecycle_events row
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
-    entity_type:  "listing",
+    entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
     actor_user_id: userId,
@@ -926,7 +926,7 @@ export async function submitToMLSAdmin(params: {
   await processKernelEvent({
     event:      KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
     brokerageId,
-    entityType: "listing",
+    entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
 
@@ -1032,7 +1032,7 @@ export async function markOpenHouseCompleted(params: {
   // Sub-event: kernel event + lifecycle_events row
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
-    entity_type:  "listing",
+    entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_OPEN_HOUSE_COMPLETED,
     actor_user_id: userId,
@@ -1041,7 +1041,7 @@ export async function markOpenHouseCompleted(params: {
   await processKernelEvent({
     event:      KernelEvent.LISTING_OPEN_HOUSE_COMPLETED,
     brokerageId,
-    entityType: "listing",
+    entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
 
@@ -1077,7 +1077,7 @@ export async function recordShowingCompleted(params: {
   // Sub-event: kernel event + lifecycle_events row
   await supabase.from("lifecycle_events").insert({
     brokerage_id: brokerageId,
-    entity_type:  "listing",
+    entity_type:  "listing_stage_machine",
     entity_id:    listingId,
     event_type:   KernelEvent.LISTING_SHOWING_COMPLETED,
     actor_user_id: userId,
@@ -1086,7 +1086,7 @@ export async function recordShowingCompleted(params: {
   await processKernelEvent({
     event:      KernelEvent.LISTING_SHOWING_COMPLETED,
     brokerageId,
-    entityType: "listing",
+    entityType: "listing_stage_machine",
     entityId:   listingId,
   }).catch(() => {})
 
