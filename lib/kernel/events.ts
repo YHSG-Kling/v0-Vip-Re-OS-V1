@@ -29,6 +29,7 @@ export enum KernelEvent {
   DECISION_PENDING          = 'decision_pending',
   PRICE_DETERMINED          = 'price_determined',
   LISTING_AGREEMENT_SIGNED  = 'listing_agreement_signed',
+  LISTING_STAGE_CHANGED     = 'listing_stage_changed',
   LISTING_PUBLISHED         = 'listing_published',
 
   // ── Offer / Contract ──────────────────────────────────────────────────────
@@ -117,7 +118,7 @@ export enum KernelEvent {
   REENGAGEMENT_STARTED           = 'reengagement_started',
   REENGAGEMENT_COMPLETED         = 'reengagement_completed',
 
-  // ── SLA ──────────────────────────────────────────────────────────────────
+  // ── SLA ──────────────────��───────────────────────────────────────────────
   LEAD_SLA_BREACHED              = 'lead_sla_breached',
   STALE_LEAD_ALERT               = 'stale_lead_alert',
 

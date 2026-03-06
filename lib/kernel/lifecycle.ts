@@ -23,6 +23,15 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'price_determined':          KernelEvent.PRICE_DETERMINED,
   'listing_agreement_signed':  KernelEvent.LISTING_AGREEMENT_SIGNED,
   'listing_published':         KernelEvent.LISTING_PUBLISHED,
+
+  // ── Listing Stage Machine — uppercase keys (lifecycle_stage values) ────────
+  // Generic stage change (catch-all for stages not listed below)
+  'LISTING_STAGE_CHANGED':     KernelEvent.LISTING_STAGE_CHANGED,
+  // Milestone overrides — specific stages emit higher-signal events
+  'MLS_ACTIVE':                KernelEvent.LISTING_PUBLISHED,   // milestone override
+  'UNDER_CONTRACT':            KernelEvent.CONTRACT_SIGNED,      // milestone override
+  'CLOSED':                    KernelEvent.DEAL_CLOSED,          // milestone override
+  'LIFETIME_CUSTOMER':         KernelEvent.LIFETIME_CUSTOMER,    // milestone override
   'offer_received':    KernelEvent.OFFER_RECEIVED,
   'under_contract':    KernelEvent.CONTRACT_SIGNED,
   'on_hold':           KernelEvent.DEAL_ON_HOLD,
@@ -40,7 +49,9 @@ const ENTITY_MAP: Record<
 > = {
   buyer:       { table: "contacts",       stateColumn: "status"        },
   seller:      { table: "contacts",       stateColumn: "status"        },
-  listing:     { table: "listings",       stateColumn: "status"        },
+  listing:               { table: "listings",  stateColumn: "status"         },
+  // Separate entry for the listing stage machine — do NOT merge with 'listing' (MLS status only)
+  listing_stage_machine: { table: "listings",  stateColumn: "lifecycle_stage" },
   transaction: { table: "transactions",   stateColumn: "stage"         },
   document:    { table: "document_checklist", stateColumn: "status"   },
   offer:       { table: "offers",         stateColumn: "status"        },
