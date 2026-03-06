@@ -1,5 +1,3 @@
-"use server"
-
 import { generateText } from "ai"
 import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
