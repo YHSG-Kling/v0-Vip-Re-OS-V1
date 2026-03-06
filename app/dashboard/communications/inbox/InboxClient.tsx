@@ -14,6 +14,7 @@ import {
   generateSmartResponse,
 } from "@/app/actions/ai-communication-hub"
 import { createClient } from "@/lib/supabase/client"
+import AIReplyCoachPanel from "./components/AIReplyCoachPanel"
 
 type Conversation = {
   id: string
@@ -50,6 +51,8 @@ interface InboxClientProps {
   userId: string
   role: string
   assistantName: string
+  /** Optional: show AI Reply Coach panel. Defaults to true. */
+  showReplyCoach?: boolean
 }
 
 export default function InboxClient({
@@ -60,6 +63,7 @@ export default function InboxClient({
   userId,
   role,
   assistantName,
+  showReplyCoach = true,
 }: InboxClientProps) {
   const [conversations, setConversations] = useState<Conversation[]>(initialConversations)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -69,6 +73,11 @@ export default function InboxClient({
   const [mobileView, setMobileView] = useState<"list" | "thread">("list")
   const [, startTransition] = useTransition()
   const realtimeRef = useRef<ReturnType<typeof createClient> | null>(null)
+  // AI Reply Coach — track latest inbound message
+  const [lastInboundId, setLastInboundId]     = useState<string | undefined>(undefined)
+  const [lastInboundBody, setLastInboundBody] = useState<string | undefined>(undefined)
+  // ComposeBar controlled body — lets AIReplyCoachPanel inject accepted drafts
+  const [composePrefill, setComposePrefill]   = useState<{ body: string; subject?: string } | null>(null)
 
   const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count ?? 0), 0)
   const selectedConvo = conversations.find(c => c.id === selectedId) ?? null
@@ -97,6 +106,11 @@ export default function InboxClient({
               if (already) return prev
               return [...prev, newMsg]
             })
+            // Update AI Reply Coach trigger if new inbound message arrives
+            if (newMsg.direction === "inbound" && newMsg.id && (newMsg.body || newMsg.content)) {
+              setLastInboundId(newMsg.id)
+              setLastInboundBody(newMsg.body ?? newMsg.content ?? "")
+            }
           }
           // Bump unread count on list row for other conversations
           setConversations(prev =>
@@ -123,6 +137,8 @@ export default function InboxClient({
   const loadThread = useCallback(async (convoId: string) => {
     setMessagesLoading(true)
     setSentiment(null)
+    setLastInboundId(undefined)
+    setLastInboundBody(undefined)
     try {
       const result = await getMessageThread(convoId)
       if (result.success && result.messages) {
@@ -131,6 +147,11 @@ export default function InboxClient({
           .reverse()
           .find(m => m.direction === "inbound")
         const msgText = lastInbound?.body ?? lastInbound?.content ?? lastInbound?.message_content ?? ""
+        // Populate AI Reply Coach trigger
+        if (lastInbound?.id && msgText) {
+          setLastInboundId(lastInbound.id)
+          setLastInboundBody(msgText)
+        }
         if (msgText) {
           analyzeMessageSentiment({
             message: msgText,
@@ -192,6 +213,12 @@ export default function InboxClient({
   }, [selectedId, contact?.id, agentId, selectedConvo?.type])
 
   const handleDraft = useCallback(async (currentText: string): Promise<string> => {
+    // If the AI Reply Coach has injected an accepted draft, consume it first
+    if (composePrefill) {
+      const body = composePrefill.body
+      setComposePrefill(null)
+      return body
+    }
     if (!contact) return currentText
     const lastInbound = [...messages].reverse().find(m => m.direction === "inbound")
     // generateSmartResponse accepts "email" | "sms" | "chat" — map in_app → chat
@@ -207,7 +234,7 @@ export default function InboxClient({
       includeNextSteps: true,
     })
     return result.success ? (result as any).draft ?? currentText : currentText
-  }, [contact, messages, agentId, selectedConvo?.type])
+  }, [contact, messages, agentId, selectedConvo?.type, composePrefill])
 
   const contactName = `${contact?.first_name ?? ""} ${contact?.last_name ?? ""}`.trim() || "Contact"
 
@@ -295,6 +322,22 @@ export default function InboxClient({
           agentId={agentId}
         />
       </div>
+
+      {/* PANEL 4 — AI Reply Coach (desktop only, toggled via showReplyCoach) */}
+      {showReplyCoach && (
+        <div className="hidden xl:flex">
+          <AIReplyCoachPanel
+            brokerageId={brokerageId}
+            agentUserId={agentId}
+            conversationId={selectedId}
+            contactId={contact?.id ?? null}
+            lastInboundId={lastInboundId}
+            lastInboundBody={lastInboundBody}
+            channel={(selectedConvo?.type ?? "email") as "email" | "sms" | "in_app"}
+            onAccepted={(body, subject) => setComposePrefill({ body, subject })}
+          />
+        </div>
+      )}
     </div>
   )
 }
