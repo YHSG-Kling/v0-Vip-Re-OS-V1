@@ -9,8 +9,7 @@ import { BuyerCoachingCard }                  from "./components/buyer-coaching-
 import { ConversationCoachingPanel }          from "./components/conversation-coaching-panel"
 import BuyerInsightsPanel                     from "./components/buyer-insights-panel"
 import { FatiguePanel }                       from "./components/fatigue-panel"
-import { isTourAllowed }                      from "@/lib/buyer-lifecycle/gating-helpers"
-import { isOfferAllowed }                     from "@/lib/buyer-lifecycle/gating-helpers"
+import { isTourAllowed, isOfferAllowed }      from "@/lib/buyer-lifecycle/gating-helpers"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
 
@@ -208,6 +207,30 @@ export function BuyerOverviewClient({
       {activeTab === "Fatigue" ? (
         <div className="flex-1 overflow-y-auto px-6 py-5">
           <FatiguePanel contactId={buyerId} brokerageId={brokerageId} />
+        </div>
+      ) : activeTab === "Offers" ? (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {isOfferAllowed(currentStage as any) ? (
+            <Link
+              href={`/dashboard/buyers/${buyerId}/offers`}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+            >
+              Open Offer Builder
+            </Link>
+          ) : (
+            <div className="rounded-lg border border-border bg-card p-5 space-y-2">
+              <p className="text-sm font-medium">Offer phase not yet unlocked</p>
+              <p className="text-xs text-muted-foreground">
+                Complete at least one tour before creating an offer.
+              </p>
+              <button
+                onClick={openOfferGate}
+                className="mt-2 rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted/50 transition-colors"
+              >
+                What&apos;s required?
+              </button>
+            </div>
+          )}
         </div>
       ) : activeTab !== "Overview" ? (
         <div className="flex items-center justify-center h-64">
