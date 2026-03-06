@@ -38,6 +38,21 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'disengaged':        KernelEvent.BUYER_DISENGAGED,
   'closed':            KernelEvent.DEAL_CLOSED,
   'lifetime':          KernelEvent.LIFETIME_CUSTOMER,
+
+  // ── Buyer lifecycle — buyer_stage column (13-state journey) ──────────────
+  'prospect':              KernelEvent.BUYER_STATE_CHANGED,
+  'pre_approval_pending':  KernelEvent.BUYER_STATE_CHANGED,
+  'financially_verified':  KernelEvent.BUYER_FINANCIALLY_VERIFIED,
+  'search_configured':     KernelEvent.BUYER_SEARCH_CONFIGURED,
+  'searching':             KernelEvent.BUYER_SEARCH_EXECUTED,
+  'touring':               KernelEvent.TOUR_PLANNED,
+  'tour_completed':        KernelEvent.TOUR_COMPLETED,
+  'offer_strategy':        KernelEvent.OFFER_STRATEGY_RECOMMENDED,
+  'offer_submitted':       KernelEvent.OFFER_SUBMITTED,
+  'buyer_under_contract':  KernelEvent.CONTRACT_SIGNED,
+  'buyer_closed':          KernelEvent.DEAL_CLOSED,
+  'buyer_disengaged':      KernelEvent.BUYER_DISENGAGED,
+  'buyer_lifetime':        KernelEvent.LIFETIME_CUSTOMER,
 }
 
 // ─── ENTITY → TABLE + STATE COLUMN MAP ───────────────────────────────────────
@@ -47,7 +62,8 @@ const ENTITY_MAP: Record<
   string,
   { table: string; stateColumn: string }
 > = {
-  buyer:       { table: "contacts",       stateColumn: "status"        },
+  buyer:          { table: "contacts", stateColumn: "status"      },  // raw CRM lead/contact state
+  buyer_lifecycle: { table: "contacts", stateColumn: "buyer_stage" }, // 13-state buyer journey
   seller:      { table: "contacts",       stateColumn: "status"        },
   listing:               { table: "listings",  stateColumn: "status"         },
   // Separate entry for the listing stage machine — do NOT merge with 'listing' (MLS status only)
