@@ -29,16 +29,16 @@ export {
 } from "./transition-validator"
 
 // ─── FINANCIAL VERIFICATION ───────────────────────────────────────────────────
+// Note: FinancialVerificationStatus, emitFinancialVerificationEvent, and
+// isVerificationExpired are exported from ./extensions/financial-verification-schema
+// (the canonical extended version). Only non-overlapping names are re-exported here.
 export type {
   FinancialVerificationContext,
   FinancialVerificationResult,
   FinancialVerificationSignal,
-  FinancialVerificationStatus,
 } from "./financial-verification"
 export {
   checkFinancialVerification,
-  emitFinancialVerificationEvent,
-  isVerificationExpired,
   getFinancialVerificationStatus,
   batchCheckFinancialVerification,
 } from "./financial-verification"
