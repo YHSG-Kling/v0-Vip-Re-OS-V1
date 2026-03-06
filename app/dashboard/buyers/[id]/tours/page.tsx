@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createServiceClient } from '@/lib/supabase/service'
-import { getServerUser } from '@/lib/supabase/server'
+import { createClient } from '@/lib/supabase/server'
 import { ToursClient } from './tours-client'
 import { getSavedPropertiesForTour, getBuyerTours } from '@/app/actions/tour-planner'
 import { Card, CardContent } from '@/components/ui/card'
@@ -26,7 +26,8 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
   const { id: contactId }  = await params
   const { tab }            = await searchParams
 
-  const user = await getServerUser()
+  const serverClient = await createClient()
+  const { data: { user } } = await serverClient.auth.getUser()
   if (!user) redirect('/login')
 
   const supabase = createServiceClient()
