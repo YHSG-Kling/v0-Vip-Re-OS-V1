@@ -117,7 +117,7 @@ export enum KernelEvent {
   ISA_APPOINTMENT_SCHEDULED      = 'isa_appointment_scheduled',
   ISA_OUTREACH_PAUSED            = 'isa_outreach_paused',
 
-  // ── Consent & TCPA ───────────────────────────────────────────────────────
+  // ── Consent & TCPA ──────────────────────────���────────────────────────────
   CONSENT_RECEIVED               = 'consent_received',
   LEAD_READY_FOR_ASSIGNMENT      = 'lead_ready_for_assignment',
 
@@ -137,6 +137,25 @@ export enum KernelEvent {
   LEAD_IMPORT_COMPLETED          = 'lead_import_completed',
   WEBSITE_VISITOR_IDENTIFIED     = 'website_visitor_identified',
   REFERRAL_RECEIVED              = 'referral_received',
+
+  // ── BUYER LIFECYCLE (Layer 5) ────────────────────────────────────────────
+  BUYER_STATE_CHANGED            = 'buyer_state_changed',
+  BUYER_FINANCIALLY_VERIFIED     = 'buyer_financially_verified',
+  BUYER_SEARCH_CONFIGURED        = 'buyer_search_configured',
+  PROPERTY_MATCH_FOUND           = 'property_match_found',
+  BUYER_SEARCH_EXECUTED          = 'buyer_search_executed',
+  PROPERTY_RECOMMENDED           = 'property_recommended',
+  SEARCH_ALERT_TRIGGERED         = 'search_alert_triggered',
+  TOUR_PLANNED                   = 'tour_planned',
+  TOUR_COMPLETED                 = 'tour_completed',
+  BUYER_FATIGUE_DETECTED         = 'buyer_fatigue_detected',
+  BUYER_FATIGUE_ALERT            = 'buyer_fatigue_alert',
+  OFFER_STRATEGY_RECOMMENDED     = 'offer_strategy_recommended',
+
+  // ── PROPERTY ALERTS (Layer 5 - B06) ──────────────────────────────────────
+  PROPERTY_ALERT_CREATED         = 'property_alert_created',
+  PROPERTY_ALERT_MATCHED         = 'property_alert_matched',
+  PROPERTY_ALERT_PAUSED          = 'property_alert_paused',
 
   // ── Re-engagement ────────────────────────────────────────────────────────
   GHOST_LEAD_DETECTED            = 'ghost_lead_detected',
