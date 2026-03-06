@@ -2,9 +2,10 @@ import { createClient } from "@/lib/supabase/server"
 import { notFound, redirect } from "next/navigation"
 import { getAllStages, getStageDefinition, getEnabledSystemGates } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import type { ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
-import { StagePipeline } from "./components/stage-pipeline"
-import { TasksPanel } from "./components/tasks-panel"
-import { StageTimeline } from "./components/stage-timeline"
+import { StagePipeline }       from "./components/stage-pipeline"
+import { TasksPanel }           from "./components/tasks-panel"
+import { StageTimeline }        from "./components/stage-timeline"
+import { SellerCoachingCard }   from "./components/seller-coaching-card"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -102,6 +103,11 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
             Stage: <span className="font-medium text-foreground">{currentStageDef?.label ?? currentStage}</span>
           </p>
         </div>
+        <SellerCoachingCard
+          listingId={listingId}
+          listingStage={currentStage}
+          agentUserId={user.id}
+        />
         <TasksPanel tasks={tasks ?? []} listingId={listingId} />
       </main>
 
