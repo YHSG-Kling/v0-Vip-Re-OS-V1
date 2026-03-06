@@ -7,11 +7,14 @@
  * This is GOVERNANCE ONLY - only logs events, does not execute transitions
  */
 
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { KernelEvent }         from "@/lib/kernel/events"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { BuyerState } from "./lifecycle-definitions"
 
 export interface LifecycleTransitionEvent {
   contactId: string
+  brokerageId: string
   fromState: BuyerState | null
   toState: BuyerState
   triggeredBy: "agent" | "system" | "ai_isa" | "voice"
@@ -23,51 +26,61 @@ export interface LifecycleTransitionEvent {
 }
 
 /**
- * Emit a lifecycle transition event to activities table
+ * Emit a lifecycle transition event — routes through transitionLifecycle()
+ * which writes lifecycle_events + updates contacts.buyer_stage atomically,
+ * then fires the kernel event for downstream automation.
  */
 export async function emitLifecycleTransition(
   event: LifecycleTransitionEvent
-): Promise<{ success: boolean; error?: string; activityId?: string }> {
-  const {
-    contactId,
-    fromState,
-    toState,
-    triggeredBy,
-    authorityRole,
-    userId,
-    sourceSystem,
-    overrideReason,
-    metadata,
-  } = event
-  
-  const supabase = createServiceClient()
-  
-  const { data, error } = await supabase
-    .from("activities")
-    .insert({
-      type: "buyer.lifecycle.transition",
-      entity_type: "contact",
-      entity_id: contactId,
-      user_id: userId,
+): Promise<{ success: boolean; error?: string }> {
+  const { contactId, brokerageId, fromState, toState, userId, metadata } = event
+
+  // Map buyer state transition to the correct kernel event
+  const eventType = resolveBuyerKernelEvent(toState)
+
+  try {
+    const result = await transitionLifecycle({
+      entityType:  "buyer_lifecycle",
+      entityId:    contactId,
+      fromState:   fromState ?? "prospect",
+      toState,
+      eventType,
+      actorUserId: userId,
+      brokerageId,
       metadata: {
-        from_state: fromState,
-        to_state: toState,
-        triggered_by: triggeredBy,
-        authority_role: authorityRole,
-        source_system: sourceSystem,
-        override_reason: overrideReason,
+        triggered_by:   event.triggeredBy,
+        authority_role: event.authorityRole,
+        source_system:  event.sourceSystem,
+        override_reason: event.overrideReason,
         ...metadata,
       },
     })
-    .select("id")
-    .single()
-  
-  if (error) {
-    console.error("[buyer-lifecycle] Error emitting lifecycle transition:", error)
-    return { success: false, error: error.message }
+    if (!result.success) {
+      return { success: false, error: result.error }
+    }
+    return { success: true }
+  } catch (err: any) {
+    console.error("[buyer-lifecycle] emitLifecycleTransition failed:", err)
+    return { success: false, error: err.message }
   }
-  
-  return { success: true, activityId: data?.id }
+}
+
+function resolveBuyerKernelEvent(toState: BuyerState): KernelEvent {
+  const map: Partial<Record<BuyerState, KernelEvent>> = {
+    BUYER_FINANCIALLY_VERIFIED: KernelEvent.BUYER_FINANCIALLY_VERIFIED,
+    BUYER_SEARCH_CONFIGURED:    KernelEvent.BUYER_SEARCH_CONFIGURED,
+    BUYER_SEARCHING:            KernelEvent.BUYER_SEARCH_EXECUTED,
+    BUYER_TOUR_ELIGIBLE:        KernelEvent.TOUR_ELIGIBLE,
+    BUYER_TOURING:              KernelEvent.TOUR_PLANNED,
+    BUYER_OFFER_ELIGIBLE:       KernelEvent.OFFER_ELIGIBLE,
+    BUYER_OFFER_SUBMITTED:      KernelEvent.OFFER_SUBMITTED,
+    BUYER_UNDER_CONTRACT:       KernelEvent.CONTRACT_SIGNED,
+    BUYER_ON_HOLD:              KernelEvent.DEAL_ON_HOLD,
+    BUYER_DISENGAGED:           KernelEvent.BUYER_DISENGAGED,
+    BUYER_CLOSED:               KernelEvent.DEAL_CLOSED,
+    BUYER_LIFETIME:             KernelEvent.LIFETIME_CUSTOMER,
+  }
+  return map[toState] ?? KernelEvent.BUYER_STATE_CHANGED
 }
 
 /**
