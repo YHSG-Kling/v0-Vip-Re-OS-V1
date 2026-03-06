@@ -28,6 +28,7 @@ export enum KernelEvent {
   // ── Seller Journey ────────────────────────────────────────────────────────
   DECISION_PENDING          = 'decision_pending',
   PRICE_DETERMINED          = 'price_determined',
+  LISTING_AGREEMENT_SIGNED  = 'listing_agreement_signed',
   LISTING_PUBLISHED         = 'listing_published',
 
   // ── Offer / Contract ──────────────────────────────────────────────────────

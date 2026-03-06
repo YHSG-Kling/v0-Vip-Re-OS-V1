@@ -22,6 +22,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
+import { resolveProvider } from "@/lib/kernel/providers"
+import { transitionLifecycle, processKernelEvent } from "@/lib/kernel"
+import { KernelEvent } from "@/lib/kernel/events"
 
 // ============================================================================
 // DOMAIN 1: Seller Decision & Commitment
@@ -195,7 +198,7 @@ export async function recordSellerDecision(params: {
  * A. Legal / Agreement Track
  * Initiate listing agreement via Dotloop
  */
-export async function initiateListing Agreement(params: {
+export async function initiateListingAgreement(params: {
   listingId: string
   userId: string
   brokerageId: string
@@ -231,31 +234,215 @@ export async function initiateListing Agreement(params: {
 }
 
 /**
- * Mark listing agreement as signed (Dotloop signatures verified)
+ * Mark listing agreement as signed — provider-routed.
+ *
+ * Steps (per spec):
+ * 1. Resolve esign + transaction provider via provider_overrides cascade.
+ * 2. Load integration_credentials for resolved provider_key.
+ * 3. If manual_upload: store documentUrl to listing_agreements.
+ *    If provider_pull: store providerRef to listing_agreements.
+ * 4. INSERT listing_agreements (commission terms + document refs).
+ * 5. If has commission adjustment: INSERT commission_adjustments.
+ * 6. Set go_live_date on listings + calculate open house dates.
+ * 7. Call transitionLifecycle() → lifecycle_events + processKernelEvent().
  */
 export async function markAgreementSigned(params: {
   listingId: string
   userId: string
   brokerageId: string
-  dotloopLoopId: string
+  uploadMode: "manual_upload" | "provider_pull"
+  documentUrl?: string
+  providerRef?: string
+  commissionTerms?: {
+    listingRate?: number
+    buyerRate?: number
+    isFlatFee?: boolean
+    flatAmount?: number
+    adjustmentType?: string
+    adjustmentValue?: number
+    adjustmentValueType?: "percent" | "flat"
+    adjustmentNotes?: string
+  }
 }) {
   const supabase = await createClient()
-  const { listingId, userId, brokerageId, dotloopLoopId } = params
+  const { listingId, userId, brokerageId, uploadMode, documentUrl, providerRef, commissionTerms } = params
 
-  const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.listing_agreement.signed",
-    status: "completed",
-    metadata: { dotloop_loop_id: dotloopLoopId },
-  })
-
-  if (error) {
-    return { success: false, error: error.message }
+  if (!isValidUUID(listingId)) {
+    return { success: false, error: "Invalid listing ID" }
   }
 
-  return { success: true }
+  // ── 1. Resolve providers via kernel cascade ───────────────────────────────
+  const actorContext = { userId, brokerageId }
+
+  const [esignResolved, transactionResolved] = await Promise.all([
+    resolveProvider({ providerType: "esign",       actorContext }),
+    resolveProvider({ providerType: "transaction",  actorContext }),
+  ])
+
+  const activeProviderKey = esignResolved.providerKey
+
+  // ── 2. Load integration_credentials for the resolved provider_key ─────────
+  const { data: creds } = await supabase
+    .from("integration_credentials")
+    .select("id, provider_name, api_key, api_secret, webhook_url")
+    .eq("brokerage_id", brokerageId)
+    .eq("provider_name", activeProviderKey)
+    .eq("is_active", true)
+    .maybeSingle()
+
+  // Credentials optional — provider may not require them (manual_upload path)
+
+  // ── 3+4. INSERT listing_agreements ───────────────────────────────────────
+  const hasAdjustment = !!(commissionTerms?.adjustmentType && commissionTerms?.adjustmentValue !== undefined)
+
+  const { data: agreement, error: agreementError } = await supabase
+    .from("listing_agreements")
+    .insert({
+      listing_id:                  listingId,
+      brokerage_id:                brokerageId,
+      agent_user_id:               userId,
+      upload_mode:                 uploadMode,
+      provider_name:               activeProviderKey,
+      document_url:                uploadMode === "manual_upload" ? (documentUrl ?? null) : null,
+      provider_ref:                uploadMode === "provider_pull" ? (providerRef ?? null) : null,
+      esign_status:                "executed",
+      agreement_type:              "listing",
+      seller_signed_at:            new Date().toISOString(),
+      agent_signed_at:             new Date().toISOString(),
+      fully_executed_at:           new Date().toISOString(),
+      listing_commission_rate:     commissionTerms?.listingRate ?? null,
+      buyer_commission_rate:       commissionTerms?.buyerRate ?? null,
+      commission_is_flat_fee:      commissionTerms?.isFlatFee ?? false,
+      commission_flat_amount:      commissionTerms?.flatAmount ?? null,
+      has_commission_adjustment:   hasAdjustment,
+      adjustment_type:             commissionTerms?.adjustmentType ?? null,
+      adjustment_value:            commissionTerms?.adjustmentValue ?? null,
+      adjustment_value_type:       commissionTerms?.adjustmentValueType ?? null,
+      adjustment_notes:            commissionTerms?.adjustmentNotes ?? null,
+      compliance_passed:           true,
+    })
+    .select("id")
+    .single()
+
+  if (agreementError) {
+    return { success: false, error: agreementError.message }
+  }
+
+  // ── 5. INSERT commission_adjustments if applicable ────────────────────────
+  if (hasAdjustment && commissionTerms) {
+    await supabase.from("commission_adjustments").insert({
+      brokerage_id:          brokerageId,
+      created_by_agent_id:   userId,
+      adjustment_type:       commissionTerms.adjustmentType!,
+      value:                 commissionTerms.adjustmentValue!,
+      value_type:            commissionTerms.adjustmentValueType ?? "percent",
+      notes:                 commissionTerms.adjustmentNotes ?? null,
+      applies_to:            "listing",
+      direction:             "reduction",
+      is_active:             true,
+      effective_date:        new Date().toISOString().slice(0, 10),
+    })
+  }
+
+  // ── 6. Set go_live_date + calculate open house dates ──────────────────────
+  const goLiveDate = new Date()
+  const { marketingDate, eventDate } = calculateOpenHouseDates(goLiveDate)
+
+  const { error: listingError } = await supabase
+    .from("listings")
+    .update({
+      go_live_date:              goLiveDate.toISOString().slice(0, 10),
+      open_house_marketing_date: marketingDate.toISOString().slice(0, 10),
+      open_house_event_date:     eventDate.toISOString().slice(0, 10),
+      updated_at:                new Date().toISOString(),
+    })
+    .eq("id", listingId)
+
+  if (listingError) {
+    return { success: false, error: listingError.message }
+  }
+
+  // Auto-schedule social_posts for open_house_marketing_date
+  await supabase.from("social_posts").insert({
+    brokerage_id:      brokerageId,
+    listing_id:        listingId,
+    user_id:           userId,
+    agent_id:          userId,
+    post_type:         "open_house_announcement",
+    platform:          "all",
+    status:            "scheduled",
+    approval_status:   "pending",
+    scheduled_for:     new Date(marketingDate.getTime()).toISOString(),
+    content:           `Open house event coming up! Stay tuned for details.`,
+    created_at:        new Date().toISOString(),
+    updated_at:        new Date().toISOString(),
+  })
+
+  // INSERT open_house_events for open_house_event_date
+  await supabase.from("open_house_events").insert({
+    brokerage_id:          brokerageId,
+    listing_id:            listingId,
+    agent_id:              userId,
+    created_by:            userId,
+    event_date:            eventDate.toISOString(),
+    event_type:            "open_house",
+    status:                "scheduled",
+    registration_required: false,
+    created_at:            new Date().toISOString(),
+  })
+
+  // ── 7. transitionLifecycle + processKernelEvent ───────────────────────────
+  await transitionLifecycle({
+    brokerageId,
+    entityType:    "listing",
+    entityId:      listingId,
+    fromState:     "new",
+    toState:       "active",
+    actorUserId:   userId,
+    actorRole:     "agent",
+    eventType:     "listing_agreement_signed",
+    metadata: {
+      agreement_id:       agreement.id,
+      provider_key:       activeProviderKey,
+      upload_mode:        uploadMode,
+      has_adjustment:     hasAdjustment,
+      go_live_date:       goLiveDate.toISOString().slice(0, 10),
+    },
+  })
+
+  await processKernelEvent({
+    event:            KernelEvent.LISTING_AGREEMENT_SIGNED,
+    brokerageId,
+    entityType:       "listing",
+    entityId:         listingId,
+  }).catch(() => {
+    // Non-blocking — notification failure must not fail the agreement signing
+  })
+
+  return { success: true, agreementId: agreement.id }
+}
+
+// ─── OPEN HOUSE DATE CALCULATOR ───────────────────────────────────────────────
+// Spec: marketing_date = last Friday before go_live_date
+//       event_date     = next Saturday after go_live_date
+
+function calculateOpenHouseDates(goLiveDate: Date): {
+  marketingDate: Date
+  eventDate: Date
+} {
+  const dow = goLiveDate.getDay() // 0=Sun … 6=Sat
+
+  // Last Friday: if today IS Friday (5), go back 7 days; otherwise go back (dow+2)%7+1 days
+  const daysToLastFriday = dow === 5 ? 7 : ((dow + 2) % 7) + 1
+  const marketingDate = new Date(goLiveDate)
+  marketingDate.setDate(goLiveDate.getDate() - daysToLastFriday)
+
+  // Next Saturday: 0 if already Saturday is replaced by 7 (always future)
+  const daysToNextSaturday = ((6 - dow + 7) % 7) || 7
+  const eventDate = new Date(goLiveDate)
+  eventDate.setDate(goLiveDate.getDate() + daysToNextSaturday)
+
+  return { marketingDate, eventDate }
 }
 
 /**
