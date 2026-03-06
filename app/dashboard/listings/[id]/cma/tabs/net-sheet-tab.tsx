@@ -1,0 +1,308 @@
+"use client"
+
+import { useState, useTransition } from "react"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import { Separator } from "@/components/ui/separator"
+import { saveNetSheet } from "@/app/actions/seller-cma"
+import type { NetSheetPageData } from "@/app/actions/seller-cma"
+
+interface Listing {
+  id: string
+  address: string | null
+  list_price: number | null
+}
+
+interface Props {
+  listing: Listing
+  data: NetSheetPageData
+}
+
+const fmt = (n: number) => `$${Math.round(n).toLocaleString()}`
+
+export function NetSheetTab({ listing, data }: Props) {
+  const { latestNetSheet, agreement, recommendedPrice } = data
+
+  const prefillPrice =
+    recommendedPrice ??
+    latestNetSheet?.sale_price ??
+    listing.list_price ??
+    0
+
+  const [salePrice, setSalePrice] = useState(String(prefillPrice))
+  const [listingRate, setListingRate] = useState(
+    String(agreement?.listing_commission_rate ?? latestNetSheet?.listing_commission_rate ?? 3)
+  )
+  const [buyerRate, setBuyerRate] = useState(
+    String(agreement?.buyer_commission_rate ?? latestNetSheet?.buyer_commission_rate ?? 3)
+  )
+  const [closingCosts, setClosingCosts] = useState(
+    String(latestNetSheet?.closing_costs ?? "")
+  )
+  const [mortgagePayoff, setMortgagePayoff] = useState(
+    String(latestNetSheet?.mortgage_payoff_amount ?? latestNetSheet?.mortgage_balance ?? 0)
+  )
+  const [propertyTaxes, setPropertyTaxes] = useState(
+    String(latestNetSheet?.property_taxes ?? 0)
+  )
+  const [hoaFees, setHoaFees] = useState(String(latestNetSheet?.hoa_fees ?? 0))
+  const [repairCredits, setRepairCredits] = useState(
+    String(latestNetSheet?.repair_credits ?? 0)
+  )
+  const [sellerConcessions, setSellerConcessions] = useState(
+    String(latestNetSheet?.seller_concessions ?? 0)
+  )
+
+  const [activeScenario, setActiveScenario] = useState<"recommended" | "quick" | "premium">("recommended")
+  const [savedMsg, setSavedMsg] = useState<string | null>(null)
+  const [isPending, startTransition] = useTransition()
+
+  function scenarioMultiplier() {
+    if (activeScenario === "quick") return 0.95
+    if (activeScenario === "premium") return 1.05
+    return 1
+  }
+
+  const price = Number(salePrice) * scenarioMultiplier() || 0
+  const listComm = price * (Number(listingRate) / 100)
+  const buyerComm = price * (Number(buyerRate) / 100)
+  const closing = Number(closingCosts) || price * 0.02
+  const payoff = Number(mortgagePayoff) || 0
+  const taxes = Number(propertyTaxes) || 0
+  const hoa = Number(hoaFees) || 0
+  const repairs = Number(repairCredits) || 0
+  const concessions = Number(sellerConcessions) || 0
+  const totalCosts = listComm + buyerComm + closing + payoff + taxes + hoa + repairs + concessions
+  const netProceeds = price - totalCosts
+
+  const isExpired =
+    latestNetSheet?.expires_at
+      ? new Date(latestNetSheet.expires_at) < new Date()
+      : false
+
+  function handleSave() {
+    startTransition(async () => {
+      setSavedMsg(null)
+      const result = await saveNetSheet({
+        listingId: listing.id,
+        contactId: "",   // no contact context at this level
+        salePrice: Number(salePrice),
+        listingCommissionRate: Number(listingRate),
+        buyerCommissionRate: Number(buyerRate),
+        closingCosts: Number(closingCosts) || undefined,
+        mortgagePayoff: Number(mortgagePayoff) || undefined,
+        mortgagePayoffAmount: Number(mortgagePayoff) || undefined,
+        propertyTaxes: Number(propertyTaxes) || undefined,
+        hoaFees: Number(hoaFees) || undefined,
+        repairCredits: Number(repairCredits) || undefined,
+        sellerConcessions: Number(sellerConcessions) || undefined,
+      })
+      setSavedMsg(result.success ? "Net sheet saved." : result.error ?? "Save failed.")
+    })
+  }
+
+  return (
+    <div className="p-6 space-y-6 pb-20">
+      {/* Scenario selector */}
+      <div className="flex gap-2">
+        {(["recommended", "quick", "premium"] as const).map((s) => (
+          <button
+            key={s}
+            onClick={() => setActiveScenario(s)}
+            className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors ${
+              activeScenario === s
+                ? "bg-primary text-primary-foreground border-primary"
+                : "bg-background text-muted-foreground border-border hover:border-primary"
+            }`}
+          >
+            {s === "recommended" ? "Recommended" : s === "quick" ? "Quick Sale (-5%)" : "Premium (+5%)"}
+          </button>
+        ))}
+      </div>
+
+      {/* Commission pre-fill notice */}
+      {agreement?.listing_commission_rate && (
+        <div className="flex items-center gap-2 text-xs text-blue-700 bg-blue-50 rounded px-3 py-2 border border-blue-200">
+          Rates pre-filled from Listing Agreement
+          {agreement.has_commission_adjustment && (
+            <Badge className="bg-amber-100 text-amber-800 border-amber-300 ml-1">
+              Adjustment applies
+            </Badge>
+          )}
+        </div>
+      )}
+
+      {isExpired && (
+        <div className="text-xs text-red-700 bg-red-50 rounded px-3 py-2 border border-red-200">
+          This net sheet expired on {new Date(latestNetSheet!.expires_at!).toLocaleDateString()}. 
+          Update values and save to renew.
+        </div>
+      )}
+
+      <div className="grid lg:grid-cols-2 gap-6">
+        {/* Input form */}
+        <Card>
+          <CardHeader className="py-3 px-4">
+            <CardTitle className="text-sm font-medium">Inputs</CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs text-muted-foreground">Sale Price</Label>
+                <Input
+                  type="number"
+                  value={salePrice}
+                  onChange={(e) => setSalePrice(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Mortgage Payoff</Label>
+                <Input
+                  type="number"
+                  value={mortgagePayoff}
+                  onChange={(e) => setMortgagePayoff(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Listing Commission %</Label>
+                <Input
+                  type="number"
+                  step="0.1"
+                  value={listingRate}
+                  onChange={(e) => setListingRate(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Buyer Commission %</Label>
+                <Input
+                  type="number"
+                  step="0.1"
+                  value={buyerRate}
+                  onChange={(e) => setBuyerRate(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Closing Costs</Label>
+                <Input
+                  type="number"
+                  placeholder="Default: 2%"
+                  value={closingCosts}
+                  onChange={(e) => setClosingCosts(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Property Taxes</Label>
+                <Input
+                  type="number"
+                  value={propertyTaxes}
+                  onChange={(e) => setPropertyTaxes(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">HOA Fees</Label>
+                <Input
+                  type="number"
+                  value={hoaFees}
+                  onChange={(e) => setHoaFees(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Repair Credits</Label>
+                <Input
+                  type="number"
+                  value={repairCredits}
+                  onChange={(e) => setRepairCredits(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-muted-foreground">Seller Concessions</Label>
+                <Input
+                  type="number"
+                  value={sellerConcessions}
+                  onChange={(e) => setSellerConcessions(e.target.value)}
+                  className="mt-1 h-8 text-sm"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <Button size="sm" onClick={handleSave} disabled={isPending}>
+                {isPending ? "Saving..." : "Save Net Sheet"}
+              </Button>
+              {savedMsg && (
+                <span className="text-xs text-muted-foreground self-center">{savedMsg}</span>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Results breakdown */}
+        <Card>
+          <CardHeader className="py-3 px-4">
+            <CardTitle className="text-sm font-medium">
+              Breakdown
+              {activeScenario !== "recommended" && (
+                <span className="ml-2 text-xs text-muted-foreground font-normal">
+                  {activeScenario === "quick" ? "Quick Sale (-5%)" : "Premium (+5%)"}
+                </span>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4 space-y-2 text-sm">
+            <Row label="Sale Price" value={fmt(price)} highlight />
+            <Separator />
+            <Row label={`Listing Commission (${listingRate}%)`} value={`-${fmt(listComm)}`} negative />
+            <Row label={`Buyer Commission (${buyerRate}%)`} value={`-${fmt(buyerComm)}`} negative />
+            <Row label="Closing Costs" value={`-${fmt(closing)}`} negative />
+            {payoff > 0 && <Row label="Mortgage Payoff" value={`-${fmt(payoff)}`} negative />}
+            {taxes > 0 && <Row label="Property Taxes" value={`-${fmt(taxes)}`} negative />}
+            {hoa > 0 && <Row label="HOA Fees" value={`-${fmt(hoa)}`} negative />}
+            {repairs > 0 && <Row label="Repair Credits" value={`-${fmt(repairs)}`} negative />}
+            {concessions > 0 && <Row label="Seller Concessions" value={`-${fmt(concessions)}`} negative />}
+            <Separator />
+            <div className="flex justify-between font-semibold text-base pt-1">
+              <span>Net Proceeds</span>
+              <span className={netProceeds >= 0 ? "text-green-700" : "text-red-700"}>
+                {fmt(netProceeds)}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function Row({
+  label,
+  value,
+  highlight,
+  negative,
+}: {
+  label: string
+  value: string
+  highlight?: boolean
+  negative?: boolean
+}) {
+  return (
+    <div className="flex justify-between">
+      <span className={highlight ? "font-medium text-foreground" : "text-muted-foreground"}>
+        {label}
+      </span>
+      <span className={negative ? "text-red-600" : highlight ? "font-medium text-foreground" : "text-foreground"}>
+        {value}
+      </span>
+    </div>
+  )
+}
