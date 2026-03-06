@@ -1,0 +1,437 @@
+'use client'
+
+import { useState, useTransition, useEffect } from 'react'
+import { ChevronLeft, ChevronRight, Phone, MapPin, Key } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
+import { toast } from '@/hooks/use-toast'
+import { rateTourStop, completeTour } from '@/app/actions/tour-planner'
+
+interface TourStop {
+  id: string
+  tour_id: string
+  order_index: number
+  property_address: string
+  city: string | null
+  state: string | null
+  zip: string | null
+  list_price: number | null
+  listing_id: string | null
+  primary_photo_url: string | null
+  listing_agent_name: string | null
+  listing_agent_phone: string | null
+  listing_agent_company: string | null
+  access_method: string | null
+  access_code: string | null
+  access_instructions: string | null
+  confirmed_time: string | null
+  buyer_interest_level: string | null
+  buyer_note: string | null
+  showing_id: string | null
+}
+
+interface Tour {
+  id: string
+  tour_date: string
+  status: string
+  tour_stops: TourStop[]
+}
+
+interface TourDayOfTabProps {
+  tours: Tour[]
+  contactId: string
+  brokerageId: string
+  agentUserId: string
+  buyerName: string
+  buyerPhone?: string
+  onRefresh: () => void
+}
+
+type InterestLevel = 'love_it' | 'like_it' | 'maybe' | 'not_for_us'
+
+const INTEREST_LABELS: Record<InterestLevel, { label: string; color: string }> = {
+  love_it:    { label: 'Love It',     color: 'bg-rose-100 text-rose-700 border-rose-200 hover:bg-rose-200' },
+  like_it:    { label: 'Like It',     color: 'bg-green-100 text-green-700 border-green-200 hover:bg-green-200' },
+  maybe:      { label: 'Maybe',       color: 'bg-yellow-100 text-yellow-700 border-yellow-200 hover:bg-yellow-200' },
+  not_for_us: { label: 'Not For Us',  color: 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200' },
+}
+
+function formatTime(ts: string | null): string {
+  if (!ts) return 'TBD'
+  return new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}
+
+function formatPrice(p: number | null): string {
+  if (!p) return ''
+  return '$' + p.toLocaleString()
+}
+
+export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyerName, buyerPhone, onRefresh }: TourDayOfTabProps) {
+  const today = new Date().toISOString().slice(0, 10)
+  const todayTour = tours.find(t => t.tour_date === today && ['planned','confirmed','active'].includes(t.status))
+  const upcomingTour = todayTour ?? tours.find(t => ['planned','confirmed'].includes(t.status))
+
+  const [isOffline, setIsOffline]           = useState(false)
+  const [offlineCached, setOfflineCached]   = useState(false)
+  const [currentIdx, setCurrentIdx]         = useState(0)
+  const [ratings, setRatings]               = useState<Record<string, InterestLevel>>({})
+  const [notes, setNotes]                   = useState<Record<string, string>>({})
+  const [showRating, setShowRating]         = useState(false)
+  const [tourComplete, setTourComplete]     = useState(false)
+  const [agentNote, setAgentNote]           = useState('')
+  const [isPending, startTransition]        = useTransition()
+
+  const activeTour = upcomingTour
+  const sortedStops = activeTour
+    ? [...activeTour.tour_stops].sort((a, b) => a.order_index - b.order_index)
+    : []
+  const stop = sortedStops[currentIdx]
+  const nextStop = sortedStops[currentIdx + 1] ?? null
+
+  function handleToggleOffline() {
+    if (!isOffline) {
+      // Cache tour data to sessionStorage as fallback
+      if (activeTour) {
+        try {
+          sessionStorage.setItem('vip_offline_tour', JSON.stringify(activeTour))
+          setOfflineCached(true)
+        } catch {}
+      }
+      setIsOffline(true)
+    } else {
+      setIsOffline(false)
+      setOfflineCached(false)
+    }
+  }
+
+  function handleRating(level: InterestLevel) {
+    if (!stop) return
+    setRatings(r => ({ ...r, [stop.id]: level }))
+  }
+
+  function handleSaveAndContinue() {
+    if (!stop) return
+    const level = ratings[stop.id]
+    if (!level) { toast({ title: 'Select a rating before continuing', variant: 'destructive' }); return }
+
+    startTransition(async () => {
+      const saveStop = async () => {
+        return await rateTourStop({
+          tourStopId:      stop.id,
+          showingId:       stop.showing_id ?? '',
+          contactId,
+          brokerageId,
+          agentUserId,
+          listingId:       stop.listing_id ?? undefined,
+          propertyAddress: stop.property_address,
+          listPrice:       stop.list_price ?? undefined,
+          city:            stop.city ?? undefined,
+          zip:             stop.zip ?? undefined,
+          interestLevel:   level,
+          note:            notes[stop.id],
+        })
+      }
+
+      if (!isOffline) {
+        await saveStop()
+      }
+      // If offline: will batch-save on tour completion
+
+      setShowRating(false)
+      if (currentIdx < sortedStops.length - 1) {
+        setCurrentIdx(i => i + 1)
+      } else {
+        setTourComplete(true)
+      }
+    })
+  }
+
+  function handleFinishTour() {
+    startTransition(async () => {
+      const stopRatings = sortedStops.map(s => ({
+        tourStopId:      s.id,
+        showingId:       s.showing_id ?? '',
+        interestLevel:   (ratings[s.id] ?? 'maybe') as InterestLevel,
+        note:            notes[s.id],
+        listingId:       s.listing_id ?? undefined,
+        propertyAddress: s.property_address,
+        listPrice:       s.list_price ?? undefined,
+        city:            s.city ?? undefined,
+      }))
+      const res = await completeTour({
+        tourId:       activeTour!.id,
+        contactId,
+        brokerageId,
+        agentUserId,
+        agentNote,
+        stopRatings,
+      })
+      if (res.success) {
+        toast({ title: `Tour complete! ${res.lovedCount} loved, ${res.likedCount} liked` })
+        onRefresh()
+      } else {
+        toast({ title: 'Failed to complete tour', variant: 'destructive' })
+      }
+    })
+  }
+
+  if (!activeTour || sortedStops.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-48">
+        <p className="text-sm text-muted-foreground">No active tour found. Create and confirm a tour first.</p>
+      </div>
+    )
+  }
+
+  const lovedCount   = Object.values(ratings).filter(r => r === 'love_it').length
+  const likedCount   = Object.values(ratings).filter(r => r === 'like_it').length
+  const maybeCount   = Object.values(ratings).filter(r => r === 'maybe').length
+  const noCount      = Object.values(ratings).filter(r => r === 'not_for_us').length
+
+  // ── Tour complete screen ────────────────────────────────────────────────────
+  if (tourComplete) {
+    const lovedStops = sortedStops.filter(s => ratings[s.id] === 'love_it')
+    return (
+      <div className="space-y-6 max-w-lg mx-auto">
+        <div className="text-center">
+          <p className="text-2xl font-bold">Tour Complete</p>
+          <p className="text-muted-foreground mt-1">
+            {sortedStops.length} stops · {lovedCount} loved · {likedCount} liked · {maybeCount} maybe · {noCount} no
+          </p>
+        </div>
+
+        {lovedStops.length > 0 && (
+          <div>
+            <p className="text-sm font-semibold mb-2">Properties they loved:</p>
+            <div className="space-y-2">
+              {lovedStops.map(s => (
+                <div key={s.id} className="flex items-center gap-3 p-2 rounded-md border bg-rose-50/40">
+                  {s.primary_photo_url && (
+                    <img src={s.primary_photo_url} alt="" className="w-12 h-12 object-cover rounded-md" />
+                  )}
+                  <div>
+                    <p className="text-sm font-medium">{s.property_address}</p>
+                    {s.city && <p className="text-xs text-muted-foreground">{s.city}, {s.state}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {lovedStops.length > 0 && (
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-md">
+            <p className="text-sm font-medium text-amber-900">
+              {buyerName} loved {lovedStops[0].property_address}. Ready to discuss an offer?
+            </p>
+          </div>
+        )}
+
+        <div>
+          <label className="text-xs font-medium">Agent note (optional)</label>
+          <Input
+            value={agentNote}
+            onChange={e => setAgentNote(e.target.value)}
+            placeholder="Overall tour observations..."
+            className="mt-1 text-sm"
+          />
+        </div>
+
+        <Button onClick={handleFinishTour} disabled={isPending} className="w-full">
+          {isPending ? 'Finishing...' : 'Finish Tour'}
+        </Button>
+      </div>
+    )
+  }
+
+  // ── Main day-of navigator ───────────────────────────────────────────────────
+  return (
+    <div className="space-y-4 max-w-lg mx-auto">
+      {/* Offline toggle */}
+      <div className={`flex items-center justify-between p-3 rounded-lg border-2 transition-colors ${isOffline ? 'border-green-500 bg-green-50' : 'border-border'}`}>
+        <div>
+          <p className="text-sm font-semibold">{isOffline ? 'Offline Mode Active' : 'Go Offline'}</p>
+          <p className="text-xs text-muted-foreground">
+            {isOffline ? 'Showing data saved to device' : 'Cache tour data for field use'}
+          </p>
+        </div>
+        <button
+          onClick={handleToggleOffline}
+          className={`relative w-12 h-6 rounded-full transition-colors ${isOffline ? 'bg-green-500' : 'bg-muted'}`}
+          aria-label="Toggle offline mode"
+        >
+          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${isOffline ? 'translate-x-6' : 'translate-x-0.5'}`} />
+        </button>
+      </div>
+
+      {/* Stop navigator */}
+      <div className="flex items-center justify-between">
+        <Button variant="outline" size="icon" onClick={() => { setCurrentIdx(i => Math.max(0, i-1)); setShowRating(false) }} disabled={currentIdx === 0}>
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
+        <p className="text-sm font-semibold">SHOWING {currentIdx + 1} of {sortedStops.length}</p>
+        <Button variant="outline" size="icon" onClick={() => { setShowRating(true) }} disabled={showRating}>
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+      </div>
+
+      {/* Current stop card */}
+      {!showRating && stop && (
+        <Card className="overflow-hidden">
+          {/* Time header */}
+          <div className="flex items-center justify-between px-4 py-2 bg-muted/60 border-b">
+            <span className="text-sm font-mono font-semibold">{formatTime(stop.confirmed_time)}</span>
+            <span className="text-xs text-muted-foreground">STOP {currentIdx + 1} of {sortedStops.length}</span>
+          </div>
+
+          {/* Photo */}
+          {stop.primary_photo_url && (
+            <div className="h-48 overflow-hidden">
+              <img src={stop.primary_photo_url} alt={stop.property_address} className="w-full h-full object-cover" />
+            </div>
+          )}
+
+          <CardContent className="p-4 space-y-4">
+            {/* Address */}
+            <div>
+              <div className="flex items-start gap-2">
+                <MapPin className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+                <div>
+                  <p className="font-semibold text-base leading-tight">{stop.property_address}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {[stop.city, stop.state, stop.zip].filter(Boolean).join(', ')}
+                  </p>
+                  {stop.list_price && (
+                    <p className="text-sm text-muted-foreground">{formatPrice(stop.list_price)}</p>
+                  )}
+                </div>
+              </div>
+              <a
+                href={`https://maps.apple.com/?q=${encodeURIComponent(stop.property_address + ' ' + (stop.city ?? ''))}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-primary underline mt-1 block"
+              >
+                Open in Maps
+              </a>
+            </div>
+
+            <div className="h-px bg-border" />
+
+            {/* Buyer */}
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Buyer</p>
+              <p className="font-medium">{buyerName}</p>
+              {buyerPhone && (
+                <div className="flex items-center gap-2 mt-1">
+                  <Phone className="h-3 w-3 text-muted-foreground" />
+                  <span className="text-sm">{buyerPhone}</span>
+                  <a
+                    href={`tel:${buyerPhone}`}
+                    className="ml-auto px-3 py-1 bg-primary text-primary-foreground text-xs rounded-md font-medium"
+                  >
+                    Tap to Call
+                  </a>
+                </div>
+              )}
+            </div>
+
+            {(stop.listing_agent_name || stop.listing_agent_phone) && (
+              <>
+                <div className="h-px bg-border" />
+                <div>
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Listing Agent</p>
+                  {stop.listing_agent_name && <p className="font-medium">{stop.listing_agent_name}</p>}
+                  {stop.listing_agent_company && <p className="text-xs text-muted-foreground">{stop.listing_agent_company}</p>}
+                  {stop.listing_agent_phone && (
+                    <div className="flex items-center gap-2 mt-1">
+                      <Phone className="h-3 w-3 text-muted-foreground" />
+                      <span className="text-sm">{stop.listing_agent_phone}</span>
+                      <a
+                        href={`tel:${stop.listing_agent_phone}`}
+                        className="ml-auto px-3 py-1 bg-secondary text-secondary-foreground text-xs rounded-md font-medium"
+                      >
+                        Tap to Call
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {(stop.access_method || stop.access_code) && (
+              <>
+                <div className="h-px bg-border" />
+                <div>
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Access</p>
+                  <div className="flex items-center gap-2">
+                    <Key className="h-4 w-4 text-muted-foreground" />
+                    <span className="text-sm capitalize">{stop.access_method?.replace(/_/g, ' ')}</span>
+                  </div>
+                  {stop.access_code && (
+                    <p className="text-4xl font-mono font-bold tracking-widest mt-1 text-foreground">
+                      {stop.access_code}
+                    </p>
+                  )}
+                  {stop.access_instructions && (
+                    <p className="text-sm text-muted-foreground mt-1 leading-relaxed">{stop.access_instructions}</p>
+                  )}
+                </div>
+              </>
+            )}
+
+            {nextStop && (
+              <>
+                <div className="h-px bg-border" />
+                <p className="text-xs text-muted-foreground">
+                  Next stop: {nextStop.property_address}
+                </p>
+              </>
+            )}
+
+            <Button className="w-full" onClick={() => setShowRating(true)}>
+              {currentIdx < sortedStops.length - 1 ? 'Next Stop' : 'Finish Tour'}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Post-showing rating panel */}
+      {showRating && stop && (
+        <Card>
+          <CardContent className="pt-4 pb-4 space-y-4">
+            <p className="text-sm font-semibold">
+              How did {buyerName} respond to {stop.property_address}?
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {(Object.entries(INTEREST_LABELS) as [InterestLevel, { label: string; color: string }][]).map(([level, meta]) => (
+                <button
+                  key={level}
+                  onClick={() => handleRating(level)}
+                  className={`px-4 py-3 rounded-lg border-2 font-medium text-sm transition-colors ${meta.color} ${ratings[stop.id] === level ? 'ring-2 ring-offset-1 ring-primary' : ''}`}
+                >
+                  {meta.label}
+                </button>
+              ))}
+            </div>
+            <Input
+              placeholder="Optional note..."
+              value={notes[stop.id] ?? ''}
+              onChange={e => setNotes(n => ({ ...n, [stop.id]: e.target.value }))}
+              className="text-sm"
+            />
+            <Button
+              onClick={handleSaveAndContinue}
+              disabled={isPending || !ratings[stop.id]}
+              className="w-full"
+            >
+              {isPending ? 'Saving...' : 'Save & Continue'}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
+}
