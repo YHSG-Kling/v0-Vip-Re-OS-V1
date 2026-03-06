@@ -8,6 +8,7 @@ import { FinancialVerificationPanel }         from "./components/financial-verif
 import { BuyerCoachingCard }                  from "./components/buyer-coaching-card"
 import { ConversationCoachingPanel }          from "./components/conversation-coaching-panel"
 import BuyerInsightsPanel                     from "./components/buyer-insights-panel"
+import { FatiguePanel }                       from "./components/fatigue-panel"
 import { isTourAllowed }                      from "@/lib/buyer-lifecycle/gating-helpers"
 import { isOfferAllowed }                     from "@/lib/buyer-lifecycle/gating-helpers"
 
@@ -204,7 +205,11 @@ export function BuyerOverviewClient({
       </div>
 
       {/* Tab content */}
-      {activeTab !== "Overview" ? (
+      {activeTab === "Fatigue" ? (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <FatiguePanel contactId={buyerId} brokerageId={brokerageId} />
+        </div>
+      ) : activeTab !== "Overview" ? (
         <div className="flex items-center justify-center h-64">
           <div className="text-center space-y-2">
             <p className="text-sm font-medium text-muted-foreground">{activeTab}</p>
