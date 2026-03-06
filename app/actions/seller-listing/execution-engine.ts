@@ -144,7 +144,23 @@ export async function markDripCompleted(params: {
     return { success: false, error: error.message }
   }
 
-  // Emit decision readiness
+  // Sub-event: kernel event + lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: brokerageId,
+    entity_type:  "listing",
+    entity_id:    listingId,
+    event_type:   KernelEvent.LISTING_DRIP_COMPLETED,
+    actor_user_id: userId,
+    metadata: {},
+  })
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_DRIP_COMPLETED,
+    brokerageId,
+    entityType: "listing",
+    entityId:   listingId,
+  }).catch(() => {})
+
+  // Emit decision readiness (human timeline)
   await supabase.from("activities").insert({
     brokerage_id: brokerageId,
     listing_id: listingId,
@@ -473,6 +489,22 @@ export async function recordPreListingRepair(params: {
     return { success: false, error: error.message }
   }
 
+  // Sub-event: kernel event + lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: brokerageId,
+    entity_type:  "listing",
+    entity_id:    listingId,
+    event_type:   KernelEvent.LISTING_REPAIR_REQUIRED,
+    actor_user_id: userId,
+    metadata: { repair_type: repairType, description, vendor_id: vendorId ?? null },
+  })
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_REPAIR_REQUIRED,
+    brokerageId,
+    entityType: "listing",
+    entityId:   listingId,
+  }).catch(() => {})
+
   return { success: true }
 }
 
@@ -500,6 +532,22 @@ export async function markRepairCompleted(params: {
   if (error) {
     return { success: false, error: error.message }
   }
+
+  // Sub-event: kernel event + lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: brokerageId,
+    entity_type:  "listing",
+    entity_id:    listingId,
+    event_type:   KernelEvent.LISTING_REPAIR_COMPLETED,
+    actor_user_id: userId,
+    metadata: { repair_id: repairId },
+  })
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_REPAIR_COMPLETED,
+    brokerageId,
+    entityType: "listing",
+    entityId:   listingId,
+  }).catch(() => {})
 
   return { success: true }
 }
@@ -530,6 +578,22 @@ export async function markRepairFailed(params: {
     return { success: false, error: error.message }
   }
 
+  // Sub-event: kernel event + lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: brokerageId,
+    entity_type:  "listing",
+    entity_id:    listingId,
+    event_type:   KernelEvent.LISTING_REPAIR_FAILED,
+    actor_user_id: userId,
+    metadata: { repair_id: repairId, reason },
+  })
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_REPAIR_FAILED,
+    brokerageId,
+    entityType: "listing",
+    entityId:   listingId,
+  }).catch(() => {})
+
   return { success: true, blocked: true }
 }
 
@@ -559,6 +623,22 @@ export async function scheduleMediaCapture(params: {
   if (error) {
     return { success: false, error: error.message }
   }
+
+  // Sub-event: kernel event + lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: brokerageId,
+    entity_type:  "listing",
+    entity_id:    listingId,
+    event_type:   KernelEvent.LISTING_MEDIA_SCHEDULED,
+    actor_user_id: userId,
+    metadata: { scheduled_date: scheduledDate, vendor_id: vendorId ?? null },
+  })
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_MEDIA_SCHEDULED,
+    brokerageId,
+    entityType: "listing",
+    entityId:   listingId,
+  }).catch(() => {})
 
   return { success: true }
 }
@@ -660,6 +740,22 @@ export async function prepareComingSoonAssets(params: {
   if (error) {
     return { success: false, error: error.message }
   }
+
+  // Sub-event: kernel event + lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: brokerageId,
+    entity_type:  "listing",
+    entity_id:    listingId,
+    event_type:   KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED,
+    actor_user_id: userId,
+    metadata: { includes_address: false },
+  })
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_COMING_SOON_ASSETS_PREPARED,
+    brokerageId,
+    entityType: "listing",
+    entityId:   listingId,
+  }).catch(() => {})
 
   return { success: true }
 }
@@ -818,6 +914,22 @@ export async function submitToMLSAdmin(params: {
     return { success: false, error: error.message }
   }
 
+  // Sub-event: kernel event + lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: brokerageId,
+    entity_type:  "listing",
+    entity_id:    listingId,
+    event_type:   KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
+    actor_user_id: userId,
+    metadata: {},
+  })
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_MLS_SUBMITTED_TO_ADMIN,
+    brokerageId,
+    entityType: "listing",
+    entityId:   listingId,
+  }).catch(() => {})
+
   return { success: true }
 }
 
@@ -917,6 +1029,22 @@ export async function markOpenHouseCompleted(params: {
     return { success: false, error: error.message }
   }
 
+  // Sub-event: kernel event + lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: brokerageId,
+    entity_type:  "listing",
+    entity_id:    listingId,
+    event_type:   KernelEvent.LISTING_OPEN_HOUSE_COMPLETED,
+    actor_user_id: userId,
+    metadata: { attendee_count: attendeeCount },
+  })
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_OPEN_HOUSE_COMPLETED,
+    brokerageId,
+    entityType: "listing",
+    entityId:   listingId,
+  }).catch(() => {})
+
   return { success: true }
 }
 
@@ -945,6 +1073,22 @@ export async function recordShowingCompleted(params: {
   if (error) {
     return { success: false, error: error.message }
   }
+
+  // Sub-event: kernel event + lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: brokerageId,
+    entity_type:  "listing",
+    entity_id:    listingId,
+    event_type:   KernelEvent.LISTING_SHOWING_COMPLETED,
+    actor_user_id: userId,
+    metadata: { showing_id: showingId, feedback: feedback ?? null },
+  })
+  await processKernelEvent({
+    event:      KernelEvent.LISTING_SHOWING_COMPLETED,
+    brokerageId,
+    entityType: "listing",
+    entityId:   listingId,
+  }).catch(() => {})
 
   return { success: true }
 }
