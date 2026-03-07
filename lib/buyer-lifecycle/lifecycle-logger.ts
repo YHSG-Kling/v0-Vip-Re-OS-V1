@@ -1,10 +1,11 @@
 /**
  * System 5.1C: Buyer Lifecycle Governance Core - Lifecycle Logger
- * 
- * Emits lifecycle transition events to activities table.
- * Every state transition MUST be logged for auditability.
- * 
- * This is GOVERNANCE ONLY - only logs events, does not execute transitions
+ *
+ * Routes buyer state transitions through the kernel (Law 1).
+ * Every state transition calls transitionLifecycle() → lifecycle_events.
+ *
+ * CHANGED: No longer writes to activities table.
+ * The kernel's transitionLifecycle() handles all persistence.
  */
 
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
@@ -14,73 +15,79 @@ import type { BuyerState } from "./lifecycle-definitions"
 
 export interface LifecycleTransitionEvent {
   contactId: string
-  brokerageId: string
   fromState: BuyerState | null
   toState: BuyerState
   triggeredBy: "agent" | "system" | "ai_isa" | "voice"
   authorityRole: string
   userId: string
   sourceSystem: string
+  brokerageId: string
   overrideReason?: string
   metadata?: Record<string, unknown>
 }
 
 /**
- * Emit a lifecycle transition event — routes through transitionLifecycle()
- * which writes lifecycle_events + updates contacts.buyer_stage atomically,
- * then fires the kernel event for downstream automation.
+ * Maps buyer lifecycle toState values to the canonical KernelEvent string.
+ * Prevents loose string interpolation that won't match the kernel event map.
+ * Unmapped states fall back to BUYER_STATE_CHANGED (catch-all added in B00 Edit 1).
+ */
+function resolveBuyerKernelEvent(toState: BuyerState): string {
+  const milestones: Record<string, string> = {
+    BUYER_FINANCIALLY_VERIFIED: "BUYER_FINANCIALLY_VERIFIED",
+    BUYER_SEARCH_CONFIGURED:    "BUYER_SEARCH_CONFIGURED",
+    BUYER_TOUR_ELIGIBLE:        "TOUR_ELIGIBLE",
+    BUYER_OFFER_ELIGIBLE:       "OFFER_ELIGIBLE",
+    BUYER_UNDER_CONTRACT:       "CONTRACT_SIGNED",
+    BUYER_CLOSED:               "DEAL_CLOSED",
+    BUYER_LIFETIME:             "LIFETIME_CUSTOMER",
+    BUYER_DISENGAGED:           "BUYER_DISENGAGED",
+  }
+  return milestones[toState] ?? "BUYER_STATE_CHANGED"
+}
+
+/**
+ * Emit a buyer lifecycle transition through the kernel.
+ * Routes to lifecycle_events table via transitionLifecycle().
  */
 export async function emitLifecycleTransition(
   event: LifecycleTransitionEvent
-): Promise<{ success: boolean; error?: string }> {
-  const { contactId, brokerageId, fromState, toState, userId, metadata } = event
-
-  // Map buyer state transition to the correct kernel event
-  const eventType = resolveBuyerKernelEvent(toState)
+): Promise<{ success: boolean; error?: string; activityId?: string }> {
+  const {
+    contactId,
+    fromState,
+    toState,
+    triggeredBy,
+    authorityRole,
+    userId,
+    sourceSystem,
+    brokerageId,
+    overrideReason,
+    metadata,
+  } = event
 
   try {
     const result = await transitionLifecycle({
+      brokerageId,
       entityType:  "buyer_lifecycle",
       entityId:    contactId,
-      fromState:   fromState ?? "prospect",
+      fromState:   fromState ?? null,   // null = unknown prior state; never fake with toState
       toState,
-      eventType,
       actorUserId: userId,
-      brokerageId,
+      actorRole:   authorityRole,
+      eventType:   resolveBuyerKernelEvent(toState),
       metadata: {
-        triggered_by:   event.triggeredBy,
-        authority_role: event.authorityRole,
-        source_system:  event.sourceSystem,
-        override_reason: event.overrideReason,
+        triggered_by:    triggeredBy,
+        source_system:   sourceSystem,
+        override_reason: overrideReason,
         ...metadata,
       },
     })
-    if (!result.success) {
-      return { success: false, error: result.error }
-    }
-    return { success: true }
-  } catch (err: any) {
-    console.error("[buyer-lifecycle] emitLifecycleTransition failed:", err)
-    return { success: false, error: err.message }
+    return { success: true, activityId: result.activityId }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error("[buyer-lifecycle] emitLifecycleTransition failed:", message)
+    return { success: false, error: message }
   }
-}
-
-function resolveBuyerKernelEvent(toState: BuyerState): KernelEvent {
-  const map: Partial<Record<BuyerState, KernelEvent>> = {
-    BUYER_FINANCIALLY_VERIFIED: KernelEvent.BUYER_FINANCIALLY_VERIFIED,
-    BUYER_SEARCH_CONFIGURED:    KernelEvent.BUYER_SEARCH_CONFIGURED,
-    BUYER_SEARCHING:            KernelEvent.BUYER_SEARCH_EXECUTED,
-    BUYER_TOUR_ELIGIBLE:        KernelEvent.TOUR_ELIGIBLE,
-    BUYER_TOURING:              KernelEvent.TOUR_PLANNED,
-    BUYER_OFFER_ELIGIBLE:       KernelEvent.OFFER_ELIGIBLE,
-    BUYER_OFFER_SUBMITTED:      KernelEvent.OFFER_SUBMITTED,
-    BUYER_UNDER_CONTRACT:       KernelEvent.CONTRACT_SIGNED,
-    BUYER_ON_HOLD:              KernelEvent.DEAL_ON_HOLD,
-    BUYER_DISENGAGED:           KernelEvent.BUYER_DISENGAGED,
-    BUYER_CLOSED:               KernelEvent.DEAL_CLOSED,
-    BUYER_LIFETIME:             KernelEvent.LIFETIME_CUSTOMER,
-  }
-  return map[toState] ?? KernelEvent.BUYER_STATE_CHANGED
 }
 
 /**
