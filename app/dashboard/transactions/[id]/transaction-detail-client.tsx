@@ -530,7 +530,7 @@ export function TransactionDetailClient({
     })
   }
 
-  // ─── RENDER ──────────────────────────────────────────────────────────────────
+  // ─── RENDER ──────────────────────────────���───────────────────────────────────
 
   return (
     <div className="min-h-screen bg-background">
@@ -725,15 +725,17 @@ export function TransactionDetailClient({
                         style={{ width: `${healthScore.overall_score}%` }}
                       />
                     </div>
-{healthScore.flags && healthScore.flags.length > 0 && (
-                <div className="space-y-1">
-                  {healthScore.flags.slice(0, 3).map((issue, i) => (
-                          <li key={i} className="flex items-start gap-1">
-                            <CircleDot className="h-3 w-3 mt-0.5 shrink-0" />
-                            {issue}
-                          </li>
-                        ))}
-                      </ul>
+                    {healthScore.flags && healthScore.flags.length > 0 && (
+                      <div className="space-y-1">
+                        <ul className="space-y-1">
+                          {healthScore.flags.slice(0, 3).map((issue, i) => (
+                            <li key={i} className="flex items-start gap-1">
+                              <CircleDot className="h-3 w-3 mt-0.5 shrink-0" />
+                              {issue}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
                   </div>
                 ) : (
