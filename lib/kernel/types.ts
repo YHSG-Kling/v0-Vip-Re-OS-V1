@@ -7,8 +7,10 @@
 
 export type EntityType =
   | "buyer"
+  | "buyer_lifecycle"          // 13-state buyer journey → contacts.buyer_stage
   | "seller"
   | "listing"
+  | "listing_stage_machine"    // listing lifecycle_stage column
   | "transaction"
   | "document"
   | "offer"
@@ -16,6 +18,8 @@ export type EntityType =
   | "repair"
   | "financial"
   | "lead"
+  | "journey"
+  | "showing"
   | "qr_scan"
   | "business_card"
   | "territory"
@@ -228,7 +232,7 @@ export interface TransitionLifecycleParams {
   fromState: string         // State values vary per entity (BuyerStage, SellerStage, etc.)
   toState: string
   actorUserId: string
-  actorRole: ActorRole      // STRICT: ActorRole union
+  actorRole?: ActorRole     // Optional — system-triggered transitions may not have a role
   eventType: string         // e.g. 'buyer.financial_verification_submitted'
   metadata?: Record<string, any>
 }

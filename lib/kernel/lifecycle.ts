@@ -43,7 +43,7 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'closed':            KernelEvent.DEAL_CLOSED,
   'lifetime':          KernelEvent.LIFETIME_CUSTOMER,
 
-  // ── Buyer lifecycle — buyer_stage column (13-state journey) ──────────────
+  // ── Buyer lifecycle — buyer_stage column (13-state journey, lowercase DB values) ──
   'prospect':              KernelEvent.BUYER_STATE_CHANGED,
   'pre_approval_pending':  KernelEvent.BUYER_STATE_CHANGED,
   'financially_verified':  KernelEvent.BUYER_FINANCIALLY_VERIFIED,
@@ -57,6 +57,19 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'buyer_closed':          KernelEvent.DEAL_CLOSED,
   'buyer_disengaged':      KernelEvent.BUYER_DISENGAGED,
   'buyer_lifetime':        KernelEvent.LIFETIME_CUSTOMER,
+  // ── Buyer lifecycle — BuyerState values (uppercase, from lifecycle-definitions.ts) ──
+  'BUYER_FINANCIALLY_VERIFIED':  KernelEvent.BUYER_FINANCIALLY_VERIFIED,
+  'BUYER_SEARCH_CONFIGURED':     KernelEvent.BUYER_SEARCH_CONFIGURED,
+  'BUYER_SEARCHING':             KernelEvent.BUYER_SEARCH_EXECUTED,
+  'BUYER_TOUR_ELIGIBLE':         KernelEvent.TOUR_ELIGIBLE,
+  'BUYER_TOURING':               KernelEvent.TOUR_PLANNED,
+  'BUYER_OFFER_ELIGIBLE':        KernelEvent.OFFER_ELIGIBLE,
+  'BUYER_OFFER_SUBMITTED':       KernelEvent.OFFER_SUBMITTED,
+  'BUYER_UNDER_CONTRACT':        KernelEvent.CONTRACT_SIGNED,
+  'BUYER_ON_HOLD':               KernelEvent.DEAL_ON_HOLD,
+  'BUYER_DISENGAGED':            KernelEvent.BUYER_DISENGAGED,
+  'BUYER_CLOSED':                KernelEvent.DEAL_CLOSED,
+  'BUYER_LIFETIME':              KernelEvent.LIFETIME_CUSTOMER,
 }
 
 // ─── ENTITY → TABLE + STATE COLUMN MAP ───────────────────────────────────────
@@ -87,7 +100,7 @@ const ENTITY_MAP: Record<
 
 export async function transitionLifecycle(
   params: TransitionLifecycleParams
-): Promise<{ ok: true; activityId: string }> {
+): Promise<{ ok: boolean; success: boolean; activityId: string; error?: string }> {
   const {
     brokerageId,
     entityType,
@@ -125,23 +138,20 @@ export async function transitionLifecycle(
       .single()
 
     if (noopError) throw noopError
-    return { ok: true, activityId: noopEvent.id }
+    return { ok: true, success: true, activityId: noopEvent.id }
   }
 
   // 2. Resolve table + state column for the given entityType.
   const entityDef = ENTITY_MAP[entityType.toLowerCase()]
   if (!entityDef) {
-    throw new Error(
-      `[lifecycle] Unknown entityType "${entityType}". ` +
-      `Known types: ${Object.keys(ENTITY_MAP).join(", ")}`
-    )
+    const msg = `[lifecycle] Unknown entityType "${entityType}". Known types: ${Object.keys(ENTITY_MAP).join(", ")}`
+    console.error(msg)
+    return { ok: false, success: false, activityId: "", error: msg }
   }
 
   const supabase = await createClient()
 
   // 3. Atomically update the state column on the entity row.
-  //    Cast through `any` once — the table name is dynamic so we cannot use
-  //    the generated Supabase types directly here.
   const { error: updateError } = await (supabase as any)
     .from(entityDef.table)
     .update({
@@ -151,10 +161,9 @@ export async function transitionLifecycle(
     .eq("id", entityId)
 
   if (updateError) {
-    throw new Error(
-      `[lifecycle] Failed to update ${entityDef.table}.${entityDef.stateColumn} ` +
-      `for entity ${entityId}: ${updateError.message}`
-    )
+    const msg = `[lifecycle] Failed to update ${entityDef.table}.${entityDef.stateColumn} for entity ${entityId}: ${updateError.message}`
+    console.error(msg)
+    return { ok: false, success: false, activityId: "", error: updateError.message }
   }
 
   // 4. Insert one lifecycle event — exact shape from the spec.
@@ -176,10 +185,9 @@ export async function transitionLifecycle(
     .single()
 
   if (eventError) {
-    throw new Error(
-      `[lifecycle] Entity state updated but event insert failed for ` +
-      `entity ${entityId}: ${eventError.message}`
-    )
+    const msg = `[lifecycle] Entity state updated but event insert failed for entity ${entityId}: ${eventError.message}`
+    console.error(msg)
+    return { ok: false, success: false, activityId: "", error: eventError.message }
   }
 
   if (event) {
@@ -215,5 +223,5 @@ export async function transitionLifecycle(
     }
   }
 
-  return { ok: true, activityId: event.id }
+  return { ok: true, success: true, activityId: event.id }
 }
