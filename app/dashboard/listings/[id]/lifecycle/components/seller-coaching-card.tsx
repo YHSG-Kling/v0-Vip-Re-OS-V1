@@ -1,23 +1,22 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
-import { getListingCoaching, dismissCoachingCard } from "@/app/actions/seller-coaching"
+import { Component, type ReactNode, useEffect, useState } from "react"
+import { getListingCoaching, refreshSellerCoaching } from "@/app/actions/seller-coaching"
 import type { SellerCoachingContent, SellerPersona } from "@/lib/seller-coaching"
-import { Badge }   from "@/components/ui/badge"
-import { Button }  from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { cn } from "@/lib/utils"
+import { Button }   from "@/components/ui/button"
+import { cn }       from "@/lib/utils"
 import {
   ChevronDown,
   ChevronUp,
-  ChevronRight,
+  RefreshCw,
   Target,
-  CheckCircle2,
   AlertTriangle,
-  X,
+  Heart,
 } from "lucide-react"
 
-// ── Persona badge colours ────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
 const PERSONA_STYLES: Record<string, string> = {
   motivated:  "bg-green-100  text-green-800  border-green-300",
   skeptical:  "bg-orange-100 text-orange-800 border-orange-300",
@@ -25,146 +24,158 @@ const PERSONA_STYLES: Record<string, string> = {
   investor:   "bg-blue-100   text-blue-800   border-blue-300",
   indecisive: "bg-yellow-100 text-yellow-800 border-yellow-300",
   analytical: "bg-slate-100  text-slate-700  border-slate-300",
+  standard:   "bg-gray-100   text-gray-600   border-gray-300",
 }
 
-function PersonaBadge({ persona }: { persona: SellerPersona }) {
-  const label  = persona ? persona.charAt(0).toUpperCase() + persona.slice(1) : "Unknown Persona"
-  const styles = persona ? (PERSONA_STYLES[persona] ?? "") : "bg-gray-100 text-gray-600 border-gray-300"
-  return (
-    <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium", styles)}>
-      {label}
-    </span>
-  )
+function stageDisplayName(stage: string): string {
+  return stage.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())
 }
 
-// ── Card skeleton ────────────────────────────────────────────────────────────
+function timeAgo(isoString?: string): string {
+  if (!isoString) return "just now"
+  const diff = Date.now() - new Date(isoString).getTime()
+  const mins  = Math.floor(diff / 60_000)
+  if (mins < 1)   return "just now"
+  if (mins < 60)  return `${mins}m ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24)   return `${hrs}h ago`
+  return `${Math.floor(hrs / 24)}d ago`
+}
+
+// ── Error Boundary ────────────────────────────────────────────────────────────
+interface EBState { hasError: boolean }
+class CoachingErrorBoundary extends Component<{ children: ReactNode }, EBState> {
+  state: EBState = { hasError: false }
+  static getDerivedStateFromError(): EBState { return { hasError: true } }
+  render() {
+    if (this.state.hasError) return null  // fail silently — page must not break
+    return this.props.children
+  }
+}
+
+// ── Skeleton ──────────────────────────────────────────────────────────────────
 function CoachingCardSkeleton() {
   return (
-    <div className="mb-4 rounded-xl border border-border bg-card p-5 space-y-3">
-      <Skeleton className="h-5 w-2/3" />
-      <Skeleton className="h-3 w-1/3" />
-      <Skeleton className="h-16 w-full" />
-      <div className="space-y-2">
-        {[1,2,3,4].map(i => <Skeleton key={i} className="h-3 w-full" />)}
+    <div className="mb-4 rounded-xl border border-border bg-card p-5 space-y-4">
+      {/* header */}
+      <div className="flex items-center justify-between">
+        <Skeleton className="h-4 w-56" />
+        <Skeleton className="h-7 w-20 rounded-md" />
       </div>
+      {/* 3-column body */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {[0, 1, 2].map(i => (
+          <div key={i} className="space-y-2">
+            <Skeleton className="h-3 w-24" />
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-4/5" />
+            <Skeleton className="h-3 w-full" />
+          </div>
+        ))}
+      </div>
+      {/* footer */}
+      <Skeleton className="h-3 w-64" />
     </div>
   )
 }
 
-// ── Objections section (collapsible) ─────────────────────────────────────────
-function ObjectionsSection({
-  objections,
-}: {
-  objections: { objection: string; response: string }[]
-}) {
-  const [open, setOpen] = useState(false)
-  return (
-    <div className="border-t border-border pt-3">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground transition-colors"
-      >
-        COMMON OBJECTIONS
-        {open ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-      </button>
-      {open && (
-        <div className="mt-2 space-y-3">
-          {objections.map((o, i) => (
-            <div key={i} className="rounded-md bg-muted/40 p-3">
-              <p className="text-sm font-medium text-foreground before:content-['▸_'] text-[13px]">
-                &ldquo;{o.objection}&rdquo;
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                <span className="font-semibold text-foreground">Response: </span>
-                {o.response}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Main card ─────────────────────────────────────────────────────────────────
-interface SellerCoachingCardProps {
+// ── Main card inner ───────────────────────────────────────────────────────────
+interface CardProps {
   listingId:    string
   listingStage: string
+  brokerageId:  string
   agentUserId?: string
 }
 
-export function SellerCoachingCard({ listingId, listingStage, agentUserId }: SellerCoachingCardProps) {
-  const [coaching,   setCoaching]   = useState<SellerCoachingContent | null>(null)
-  const [persona,    setPersona]    = useState<SellerPersona>(null)
-  const [loading,    setLoading]    = useState(true)
-  const [error,      setError]      = useState(false)
-  const [collapsed,  setCollapsed]  = useState(false)
-  const [dismissed,  setDismissed]  = useState(false)
-  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+function SellerCoachingCardInner({ listingId, listingStage, brokerageId, agentUserId }: CardProps) {
+  const [coaching,    setCoaching]    = useState<SellerCoachingContent | null>(null)
+  const [persona,     setPersona]     = useState<SellerPersona>(null)
+  const [generatedAt, setGeneratedAt] = useState<string | undefined>()
+  const [loading,     setLoading]     = useState(true)
+  const [refreshing,  setRefreshing]  = useState(false)
+  const [error,       setError]       = useState(false)
+  const [collapsed,   setCollapsed]   = useState(false)
 
-  const load = async () => {
-    setLoading(true)
+  const load = async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true)
+    else           setLoading(true)
     setError(false)
     try {
-      const result = await getListingCoaching(listingId)
+      const result = isRefresh
+        ? await refreshSellerCoaching(listingId)
+        : await getListingCoaching(listingId)
       if (result.success && result.coaching) {
         setCoaching(result.coaching)
         setPersona(result.persona ?? null)
+        setGeneratedAt(result.generatedAt)
       } else {
         setError(true)
-        // Auto-retry after 30 s
-        retryRef.current = setTimeout(() => load(), 30_000)
       }
     } catch {
       setError(true)
-      retryRef.current = setTimeout(() => load(), 30_000)
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
   }
 
-  useEffect(() => {
-    load()
-    return () => {
-      if (retryRef.current) clearTimeout(retryRef.current)
-    }
-  }, [listingId, listingStage]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [listingId, listingStage]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleDismiss = async () => {
-    setDismissed(true)
-    if (agentUserId) {
-      await dismissCoachingCard(listingId, agentUserId).catch(() => {})
-    }
-  }
-
-  if (dismissed) return null
-  if (loading)   return <CoachingCardSkeleton />
+  if (loading) return <CoachingCardSkeleton />
 
   if (error) {
     return (
-      <div className="mb-4 rounded-xl border border-border bg-card px-5 py-4">
+      <div className="mb-4 rounded-xl border border-border bg-card px-5 py-4 flex items-center justify-between gap-4">
         <p className="text-sm text-muted-foreground">
-          Coaching content is being prepared — check back in a moment.
+          Coaching unavailable — click Refresh to try again.
         </p>
+        <Button size="sm" variant="outline" onClick={() => load(true)} disabled={refreshing}>
+          <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", refreshing && "animate-spin")} />
+          Refresh
+        </Button>
+      </div>
+    )
+  }
+
+  if (!coaching && !loading) {
+    return (
+      <div className="mb-4 rounded-xl border border-border bg-card px-5 py-4 flex items-center justify-between gap-4">
+        <p className="text-sm text-muted-foreground">
+          Click Refresh to generate coaching for this stage.
+        </p>
+        <Button size="sm" variant="outline" onClick={() => load(true)} disabled={refreshing}>
+          <RefreshCw className={cn("h-3.5 w-3.5 mr-1.5", refreshing && "animate-spin")} />
+          Refresh
+        </Button>
       </div>
     )
   }
 
   if (!coaching) return null
 
-  // Collapsed view
+  const personaLabel  = persona
+    ? persona.charAt(0).toUpperCase() + persona.slice(1)
+    : "Standard"
+  const personaStyle  = PERSONA_STYLES[persona ?? "standard"] ?? PERSONA_STYLES.standard
+  const talkingPoints = coaching.suggested_talking_points ?? []
+  const avoidPoints   = (coaching as any).avoid_pitfalls  ?? coaching.risk_signals ?? []
+  const sellerNeeds   = (coaching as any).seller_needs_now ?? ""
+  const isCached      = !!(coaching as any).id
+
   if (collapsed) {
     return (
       <div className="mb-4 flex items-center justify-between rounded-xl border border-border bg-card px-5 py-3">
         <div className="flex items-center gap-2 min-w-0">
           <Target className="h-4 w-4 flex-shrink-0 text-primary" />
-          <span className="text-sm font-medium text-foreground truncate">{coaching.coaching_headline}</span>
+          <span className="text-sm font-medium truncate">
+            AI Coaching — {stageDisplayName(listingStage)}
+          </span>
+          <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium flex-shrink-0", personaStyle)}>
+            {personaLabel}
+          </span>
         </div>
-        <button
-          onClick={() => setCollapsed(false)}
-          className="ml-3 flex-shrink-0 text-xs text-primary underline underline-offset-2 hover:no-underline"
-        >
-          Expand coaching
+        <button onClick={() => setCollapsed(false)} className="ml-3 flex-shrink-0 text-xs text-primary underline underline-offset-2 hover:no-underline">
+          Expand
         </button>
       </div>
     )
@@ -172,15 +183,29 @@ export function SellerCoachingCard({ listingId, listingStage, agentUserId }: Sel
 
   return (
     <div className="mb-4 rounded-xl border border-border bg-card shadow-sm overflow-hidden">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-3">
-        <div className="flex items-start gap-2 min-w-0">
-          <Target className="h-4 w-4 flex-shrink-0 mt-0.5 text-primary" />
-          <h3 className="text-sm font-semibold text-foreground leading-snug">
-            {coaching.coaching_headline}
+      {/* Header row */}
+      <div className="flex items-center justify-between gap-3 px-5 pt-4 pb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <Target className="h-4 w-4 flex-shrink-0 text-primary" />
+          <h3 className="text-sm font-semibold text-foreground truncate">
+            AI Coaching — {stageDisplayName(listingStage)}
           </h3>
+          <span className={cn("inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium flex-shrink-0", personaStyle)}>
+            {personaLabel}
+          </span>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2.5 text-xs gap-1"
+            onClick={() => load(true)}
+            disabled={refreshing}
+            aria-label="Refresh coaching"
+          >
+            <RefreshCw className={cn("h-3 w-3", refreshing && "animate-spin")} />
+            Refresh
+          </Button>
           <button
             onClick={() => setCollapsed(true)}
             className="rounded p-1 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
@@ -188,98 +213,80 @@ export function SellerCoachingCard({ listingId, listingStage, agentUserId }: Sel
           >
             <ChevronUp className="h-4 w-4" />
           </button>
-          <button
-            onClick={handleDismiss}
-            className="rounded p-1 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-            title="Dismiss"
-          >
-            <X className="h-4 w-4" />
-          </button>
         </div>
       </div>
 
-      {/* Persona + Stage meta */}
-      <div className="flex items-center gap-2 px-5 pb-3">
-        <PersonaBadge persona={persona} />
-        <span className="text-xs text-muted-foreground">
-          Stage: <span className="text-foreground font-medium">{listingStage.replace(/_/g, " ")}</span>
-          {coaching.estimated_stage_duration && (
-            <> &middot; Typically <span className="text-foreground font-medium">{coaching.estimated_stage_duration}</span></>
-          )}
-        </span>
-      </div>
-
-      <div className="px-5 pb-5 space-y-4">
-        {/* Coaching body */}
-        <p className="text-sm text-muted-foreground leading-relaxed">{coaching.coaching_body}</p>
-
-        {/* Talking points */}
-        <div>
-          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Talking Points
+      {/* 3-column body */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-0 divide-y md:divide-y-0 md:divide-x divide-border px-5 pb-4">
+        {/* Col 1 — What to Say */}
+        <div className="py-3 md:py-0 md:pr-4">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            What to Say
           </p>
-          <ul className="space-y-1">
-            {coaching.suggested_talking_points.map((pt, i) => (
-              <li key={i} className="flex items-start gap-2 text-sm text-foreground">
-                <span className="mt-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary" />
+          <ul className="space-y-1.5">
+            {talkingPoints.map((pt: string, i: number) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-foreground leading-snug">
+                <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary" />
                 {pt}
               </li>
             ))}
+            {talkingPoints.length === 0 && (
+              <li className="text-xs text-muted-foreground italic">No talking points available.</li>
+            )}
           </ul>
         </div>
 
-        {/* Objections */}
-        <ObjectionsSection objections={coaching.common_objections} />
-
-        {/* Success + Risk signals */}
-        <div className="grid grid-cols-2 gap-3 border-t border-border pt-3">
-          <div>
-            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Success Signals
-            </p>
-            <ul className="space-y-1">
-              {coaching.success_signals.map((s, i) => (
-                <li key={i} className="flex items-start gap-1.5 text-xs text-foreground">
-                  <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0 mt-0.5 text-green-600" />
-                  {s}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <div>
-            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Watch For
-            </p>
-            <ul className="space-y-1">
-              {coaching.risk_signals.map((r, i) => (
-                <li key={i} className="flex items-start gap-1.5 text-xs text-foreground">
-                  <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5 text-amber-500" />
-                  {r}
-                </li>
-              ))}
-            </ul>
-          </div>
+        {/* Col 2 — What to Avoid */}
+        <div className="py-3 md:py-0 md:px-4">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            What to Avoid
+          </p>
+          <ul className="space-y-1.5">
+            {avoidPoints.map((pt: string, i: number) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-foreground leading-snug">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-red-500" />
+                {pt}
+              </li>
+            ))}
+            {avoidPoints.length === 0 && (
+              <li className="text-xs text-muted-foreground italic">No pitfalls listed.</li>
+            )}
+          </ul>
         </div>
 
-        {/* Next action footer */}
-        <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
-          <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-0.5">
-              Next Action
-            </p>
-            <p className="text-sm text-foreground">{coaching.next_action_prompt}</p>
-          </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="flex-shrink-0 gap-1"
-            onClick={() => setCollapsed(true)}
-          >
-            Got it
-            <ChevronRight className="h-3.5 w-3.5" />
-          </Button>
+        {/* Col 3 — Seller Needs Now */}
+        <div className="py-3 md:py-0 md:pl-4">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Seller Needs Now
+          </p>
+          {sellerNeeds ? (
+            <div className="flex items-start gap-2">
+              <Heart className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-rose-400" />
+              <p className="text-sm text-foreground leading-snug">{sellerNeeds}</p>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground italic">No empathy prompt available.</p>
+          )}
         </div>
       </div>
+
+      {/* Footer */}
+      <div className="border-t border-border bg-muted/30 px-5 py-2">
+        <p className="text-xs text-muted-foreground">
+          Generated for <span className="font-medium text-foreground">{personaLabel}</span> seller
+          {isCached && <> &middot; <span>Cached</span></>}
+          {generatedAt && <> &middot; Last refreshed {timeAgo(generatedAt)}</>}
+        </p>
+      </div>
     </div>
+  )
+}
+
+// ── Public export (wrapped in error boundary) ─────────────────────────────────
+export function SellerCoachingCard(props: CardProps) {
+  return (
+    <CoachingErrorBoundary>
+      <SellerCoachingCardInner {...props} />
+    </CoachingErrorBoundary>
   )
 }

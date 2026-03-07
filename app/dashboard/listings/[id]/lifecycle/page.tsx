@@ -106,6 +106,7 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
         <SellerCoachingCard
           listingId={listingId}
           listingStage={currentStage}
+          brokerageId={userRow.brokerage_id}
           agentUserId={user.id}
         />
         <TasksPanel tasks={tasks ?? []} listingId={listingId} />

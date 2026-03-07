@@ -49,21 +49,19 @@ export async function getListingCoaching(
   const { data: listing, error: listingError } = await listingQuery.single()
   if (listingError || !listing) return { success: false, error: "Listing not found" }
 
-  // Load seller persona from the contact record
+  // Derive seller persona from contact fields per spec
   let persona: SellerPersona = null
 
   if (listing.contact_id) {
     const { data: contact } = await supabase
       .from("contacts")
-      .select("contact_persona")
+      .select("contact_persona, motivation_score, tags, communication_preference")
       .eq("id", listing.contact_id)
       .single()
 
-    const rawPersona = contact?.contact_persona as string | null
-    const validPersonas: SellerPersona[] = [
-      "motivated", "skeptical", "emotional", "investor", "indecisive", "analytical",
-    ]
-    persona = (validPersonas.includes(rawPersona as SellerPersona) ? rawPersona : null) as SellerPersona
+    if (contact) {
+      persona = getSellerPersona(contact)
+    }
   }
 
   try {
@@ -83,6 +81,81 @@ export async function getListingCoaching(
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Coaching generation failed" }
   }
+}
+
+/**
+ * getSellerPersona
+ * Derives seller persona from contact fields per spec:
+ *   motivation_score > 80  → 'motivated'
+ *   tags includes 'investor' → 'investor'
+ *   communication_preference = 'detailed' → 'analytical'
+ *   contact_persona field (already set) → use directly if valid
+ *   Default → 'standard'
+ */
+export function getSellerPersona(contact: {
+  contact_persona?: string | null
+  motivation_score?: number | null
+  tags?: string[] | null
+  communication_preference?: string | null
+}): SellerPersona {
+  const valid: SellerPersona[] = [
+    "motivated", "skeptical", "emotional", "investor", "indecisive", "analytical",
+  ]
+
+  // Explicit derivation rules (spec-ordered, highest priority first)
+  if ((contact.motivation_score ?? 0) > 80)               return "motivated"
+  if (contact.tags?.includes("investor"))                  return "investor"
+  if (contact.communication_preference === "detailed")     return "analytical"
+
+  // Fall back to stored contact_persona if it's a valid value
+  const stored = contact.contact_persona as SellerPersona
+  if (stored && valid.includes(stored))                    return stored
+
+  return "standard" as SellerPersona
+}
+
+/**
+ * refreshSellerCoaching
+ * Forces regeneration of coaching for a listing by invalidating the cache
+ * (sets updated_at to epoch so the 7-day check treats it as stale).
+ */
+export async function refreshSellerCoaching(
+  listingId: string
+): Promise<GetListingCoachingResult> {
+  // Invalidate cache for this listing's stage/persona by clearing updated_at
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthorized" }
+
+  // Load listing stage + contact to get invalidation key
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("id, lifecycle_stage, contact_id, brokerage_id")
+    .eq("id", listingId)
+    .single()
+
+  if (!listing) return { success: false, error: "Listing not found" }
+
+  let persona: SellerPersona = null
+  if (listing.contact_id) {
+    const { data: contact } = await supabase
+      .from("contacts")
+      .select("contact_persona, motivation_score, tags, communication_preference")
+      .eq("id", listing.contact_id)
+      .single()
+    if (contact) persona = getSellerPersona(contact)
+  }
+
+  // Invalidate: set updated_at to epoch so staleness check forces re-generation
+  const svc = createServiceClient()
+  await svc
+    .from("seller_stage_coaching")
+    .update({ updated_at: new Date(0).toISOString() })
+    .eq("listing_stage", listing.lifecycle_stage ?? "LEAD")
+    .or(persona ? `persona.eq.${persona},persona.is.null` : "persona.is.null")
+
+  // Re-run full generation
+  return getListingCoaching(listingId)
 }
 
 interface DismissResult {
