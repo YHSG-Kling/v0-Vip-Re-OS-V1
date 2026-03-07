@@ -3,6 +3,7 @@
 import { createClient }        from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { getSellerCoaching }   from "@/lib/seller-coaching"
+import { getSellerPersona }    from "@/lib/seller-coaching/persona-utils"
 import type { SellerPersona, SellerCoachingContent } from "@/lib/seller-coaching"
 
 interface GetListingCoachingResult {
@@ -81,37 +82,6 @@ export async function getListingCoaching(
   } catch (err: any) {
     return { success: false, error: err?.message ?? "Coaching generation failed" }
   }
-}
-
-/**
- * getSellerPersona
- * Derives seller persona from contact fields per spec:
- *   motivation_score > 80  → 'motivated'
- *   tags includes 'investor' → 'investor'
- *   communication_preference = 'detailed' → 'analytical'
- *   contact_persona field (already set) → use directly if valid
- *   Default → 'standard'
- */
-export function getSellerPersona(contact: {
-  contact_persona?: string | null
-  motivation_score?: number | null
-  tags?: string[] | null
-  communication_preference?: string | null
-}): SellerPersona {
-  const valid: SellerPersona[] = [
-    "motivated", "skeptical", "emotional", "investor", "indecisive", "analytical",
-  ]
-
-  // Explicit derivation rules (spec-ordered, highest priority first)
-  if ((contact.motivation_score ?? 0) > 80)               return "motivated"
-  if (contact.tags?.includes("investor"))                  return "investor"
-  if (contact.communication_preference === "detailed")     return "analytical"
-
-  // Fall back to stored contact_persona if it's a valid value
-  const stored = contact.contact_persona as SellerPersona
-  if (stored && valid.includes(stored))                    return stored
-
-  return "standard" as SellerPersona
 }
 
 /**
