@@ -1573,7 +1573,9 @@ export function TransactionDetailClient({
                               "h-4 w-4 mt-0.5 shrink-0",
                               a.status === "fail" && "text-red-500",
                               a.status === "pending" && "text-amber-500",
-                              a.status === "pass" && "text-green-500"
+                              a.status === "needs_review" && "text-orange-500",
+                              a.status === "pass" && "text-green-500",
+                              a.status === "waived" && "text-slate-500"
                             )}
                           />
                           <div className="flex-1">

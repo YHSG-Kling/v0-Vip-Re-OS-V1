@@ -175,13 +175,13 @@ async function scoreInspection(
     let hasCompletedMain = false
     
     for (const insp of inspections) {
-      // Check status
-      if (insp.status === "completed" || insp.status === "passed") {
+      // Check status - normalized: completed, pass (not "passed")
+      if (insp.status === "completed" || insp.status === "pass") {
         if (insp.inspection_type?.toLowerCase().includes("home") || 
             insp.inspection_type?.toLowerCase().includes("general")) {
           hasCompletedMain = true
         }
-      } else if (insp.status === "failed") {
+      } else if (insp.status === "fail") {
         issues.push(`Inspection "${insp.inspection_type}" failed`)
         score = Math.min(score, 25)
       } else if (insp.status === "pending" || insp.status === "scheduled") {
@@ -517,9 +517,10 @@ async function scoreCompliance(
     .eq("transaction_id", transactionId)
 
   if (complianceLog && complianceLog.length > 0) {
-    const failed = complianceLog.filter(c => c.status === "failed" || c.status === "violation")
-    const blocking = complianceLog.filter(c => c.is_blocking && c.status !== "passed" && c.status !== "resolved")
-    const pending = complianceLog.filter(c => c.status === "pending" || c.status === "in_review")
+    // Normalized status values: pending, pass, fail, waived, needs_review
+    const failed = complianceLog.filter(c => c.status === "fail" || c.status === "violation")
+    const blocking = complianceLog.filter(c => c.is_blocking && c.status !== "pass" && c.status !== "waived")
+    const pending = complianceLog.filter(c => c.status === "pending" || c.status === "needs_review")
     
     if (blocking.length > 0) {
       issues.push(`${blocking.length} blocking compliance issue(s)`)
@@ -558,9 +559,10 @@ async function scoreCompliance(
       
       // Check individual items if available
       if (checklist.items && Array.isArray(checklist.items)) {
+        // Normalized status values: completed, pass (not "passed")
         const incompleteItems = checklist.items.filter(
           (item: { status?: string; required?: boolean }) => 
-            item.required && item.status !== "completed" && item.status !== "passed"
+            item.required && item.status !== "completed" && item.status !== "pass"
         )
         if (incompleteItems.length > 0) {
           issues.push(`${incompleteItems.length} incomplete required items in ${checklist.checklist_type}`)
@@ -924,7 +926,7 @@ export async function calculateDealHealth(params: {
   }
 }
 
-// ─── AI Narrative Generator ───────────────────────────────────────────────────
+// ─── AI Narrative Generator ───────────���───────────────────────────────────────
 
 async function generateDealHealthNarrative(params: {
   transactionId:       string

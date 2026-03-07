@@ -85,16 +85,17 @@ export async function seedTransactionComplianceChecks(
 }
 
 // ─── COMPLIANCE STATUS TYPE ──────────────────────────────────────────────────────
-// Status values are normalized to: pass, fail, pending, waived
+// Status values are normalized to: pending, pass, fail, waived, needs_review
 // These match the actual values stored in the Supabase transaction_compliance_log table
 
-export type ComplianceCheckStatus = "pending" | "pass" | "fail" | "waived"
+export type ComplianceCheckStatus = "pending" | "pass" | "fail" | "waived" | "needs_review"
 
 // Status constants for writes (normalized)
 const STATUS_PASS = "pass"
 const STATUS_FAIL = "fail"
 const STATUS_PENDING = "pending"
 const STATUS_WAIVED = "waived"
+const STATUS_NEEDS_REVIEW = "needs_review"
 
 export async function updateComplianceCheck(params: {
   checkId: string
@@ -190,10 +191,10 @@ export async function updateComplianceCheck(params: {
 
 /**
  * Checks if a transaction can proceed to CLOSING_PREP stage.
- * Filters by valid statuses from Supabase: pass/fail/pending/waived
+ * Filters by valid statuses from Supabase: pending, pass, fail, waived, needs_review
  * 
  * ALLOWED to proceed: status = "pass" or "waived"
- * BLOCKED from proceeding: status = "fail" or "pending" (for blocking checks)
+ * BLOCKED from proceeding: status = "fail", "pending", or "needs_review" (for blocking checks)
  */
 export async function canProceedToClosingPrep(
   transactionId: string,
@@ -212,7 +213,7 @@ export async function canProceedToClosingPrep(
     .eq("brokerage_id", brokerageId)
     .eq("is_blocking", true)
     // Only consider valid statuses stored in Supabase
-    .in("status", [STATUS_PASS, STATUS_FAIL, STATUS_PENDING, STATUS_WAIVED])
+    .in("status", [STATUS_PASS, STATUS_FAIL, STATUS_PENDING, STATUS_WAIVED, STATUS_NEEDS_REVIEW])
 
   if (error) {
     console.error("[transaction-compliance] Failed to fetch compliance checks:", error)
@@ -231,6 +232,10 @@ export async function canProceedToClosingPrep(
     // "pending" status blocking checks also prevent CLOSING_PREP
     if (check.status === STATUS_PENDING) {
       blockers.push(`Compliance pending: ${check.check_label}`)
+    }
+    // "needs_review" status blocking checks also prevent CLOSING_PREP
+    if (check.status === STATUS_NEEDS_REVIEW) {
+      blockers.push(`Compliance needs review: ${check.check_label}`)
     }
     // "pass" and "waived" statuses are allowed - no action needed
   }

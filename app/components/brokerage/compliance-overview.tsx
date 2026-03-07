@@ -31,9 +31,10 @@ export function BrokerageComplianceOverview() {
       if (error) throw error
 
       const audits = data || []
-      const passed = audits.filter((a: any) => a.status === "passed").length
-      const failed = audits.filter((a: any) => a.status === "failed").length
-      const pending = audits.filter((a: any) => a.status === "pending").length
+      // Normalized status values: pending, pass, fail, waived, needs_review
+      const passed = audits.filter((a: any) => a.status === "pass").length
+      const failed = audits.filter((a: any) => a.status === "fail").length
+      const pending = audits.filter((a: any) => a.status === "pending" || a.status === "needs_review").length
 
       setMetrics({
         total_audits: audits.length,
