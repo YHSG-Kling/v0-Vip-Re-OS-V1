@@ -73,6 +73,9 @@ export { checkTransactionDeadlines } from './deadline-monitor'
 // ─── GIFT ORDER TRIGGER ───────────────────────────────────────────────────────
 export { checkAndTriggerGiftOrder } from './gift-order-trigger'
 
+// ─── STAGE AUTO TASKS ─────────────────────────────────────────────────────────
+export { seedStageAutoTasks } from './stage-auto-tasks'
+
 // ─── CLASSES ──────────────────────────────────────────────────────────────────
 export { TransactionOrchestrator } from './transaction-orchestrator'
 export { TransparencyService } from './transparency-service'
