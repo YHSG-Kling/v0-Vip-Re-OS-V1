@@ -9,17 +9,16 @@ interface GenerateBuyerPredictionsParams {
   brokerageId: string
 }
 
-interface PredictionResult {
-  predicted:   null
-  reason:      "insufficient_data"
-} | {
-  predicted:             true
-  predicted_price_range: { min: number; max: number }
-  predicted_property_type: string
-  predicted_timeline_days: number
-  confidence:              number
-  reasoning:               string
-}
+type PredictionResult =
+  | { predicted: null; reason: "insufficient_data" }
+  | {
+      predicted:               true
+      predicted_price_range:   { min: number; max: number }
+      predicted_property_type: string
+      predicted_timeline_days: number
+      confidence:              number
+      reasoning:               string
+    }
 
 /**
  * generateBuyerPredictions
