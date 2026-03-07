@@ -9,6 +9,7 @@ import { BuyerCoachingCard }                  from "./components/buyer-coaching-
 import { ConversationCoachingPanel }          from "./components/conversation-coaching-panel"
 import BuyerInsightsPanel                     from "./components/buyer-insights-panel"
 import { FatiguePanel }                       from "./components/fatigue-panel"
+import { FatigueWidget }                      from "./components/fatigue-widget"
 import { isTourAllowed, isOfferAllowed }      from "@/lib/buyer-lifecycle/gating-helpers"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
@@ -350,8 +351,15 @@ export function BuyerOverviewClient({
 
           {/* RIGHT — AI Buyer Insights + conversation coaching (320px) */}
           <aside className="w-[320px] flex-shrink-0 border-l border-border overflow-y-auto px-4 py-5 space-y-5">
-            {/* AI Buyer Insights — above fatigue score per spec */}
+            {/* AI Buyer Insights — top of right column */}
             <BuyerInsightsPanel contactId={buyerId} brokerageId={brokerageId} />
+
+            {/* Fatigue Widget — below insights, above coaching */}
+            <FatigueWidget
+              contactId={buyerId}
+              brokerageId={brokerageId}
+              agentUserId={agentUserId}
+            />
 
             <ConversationCoachingPanel
               contactId={buyerId}
