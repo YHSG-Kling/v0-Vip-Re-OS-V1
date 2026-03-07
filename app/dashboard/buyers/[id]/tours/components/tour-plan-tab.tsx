@@ -78,6 +78,10 @@ export function TourPlanTab({
         next.delete(key)
         setOrderedStops(os => os.filter(s => s.listingId !== prop.listing_id && s.propertyAddress !== prop.listings?.address))
       } else {
+        if (orderedStops.length >= 10) {
+          toast({ title: 'Maximum 10 stops per tour', variant: 'destructive' })
+          return prev
+        }
         next.add(key)
         const stop: TourStop = {
           listingId:        prop.listing_id ?? undefined,
@@ -166,7 +170,9 @@ export function TourPlanTab({
       {/* Left panel */}
       <div className="w-72 flex-shrink-0 flex flex-col gap-4">
         <div>
-          <p className="text-sm font-medium text-foreground mb-2">Select properties to tour</p>
+          <p className="text-sm font-medium text-foreground mb-2">
+            Available Properties
+          </p>
           <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
             {savedProperties.length === 0 && (
               <p className="text-xs text-muted-foreground">No saved properties yet.</p>
@@ -180,13 +186,21 @@ export function TourPlanTab({
                     onCheckedChange={() => toggleProperty(prop)}
                     className="mt-0.5"
                   />
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium leading-tight truncate">
-                      {prop.listings?.address ?? 'Unknown address'}
-                    </p>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-xs font-medium leading-tight truncate flex-1">
+                        {prop.listings?.address ?? 'Unknown address'}
+                      </p>
+                      {prop.ai_match_score != null && (
+                        <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
+                          {prop.ai_match_score}%
+                        </Badge>
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       {formatPrice(prop.listings?.list_price ?? null)}
                       {prop.listings?.bedrooms ? ` · ${prop.listings.bedrooms}bd` : ''}
+                      {prop.listings?.bathrooms ? `/${prop.listings.bathrooms}ba` : ''}
                     </p>
                   </div>
                 </label>
@@ -212,7 +226,9 @@ export function TourPlanTab({
         {/* Selected stops with drag handles */}
         {orderedStops.length > 0 && (
           <div className="border rounded-md p-2 space-y-1">
-            <p className="text-xs font-medium text-muted-foreground mb-1">Stop order</p>
+            <p className="text-xs font-medium text-muted-foreground mb-1">
+              Tour Stops ({orderedStops.length})
+            </p>
             {orderedStops.map((stop, idx) => (
               <div key={idx} className="flex items-center gap-1 group">
                 <GripVertical className="h-3 w-3 text-muted-foreground cursor-grab" />
@@ -341,7 +357,7 @@ export function TourPlanTab({
               disabled={isPending || !tourDate || orderedStops.length === 0}
               className="w-full"
             >
-              {isPending ? 'Creating tour plan...' : 'Send Plan to Agent'}
+              {isPending ? 'Creating tour plan...' : 'Continue to Confirm \u2192'}
             </Button>
           </>
         )}

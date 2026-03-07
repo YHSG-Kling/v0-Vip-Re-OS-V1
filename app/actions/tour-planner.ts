@@ -406,6 +406,42 @@ export async function confirmTourStop(params: ConfirmStopParams) {
   return { success: true, allConfirmed }
 }
 
+// ─── 4b. Confirm Tour (tour-level confirm — sets status='confirmed') ──────────
+
+export async function confirmTour(params: {
+  tourId: string
+  brokerageId: string
+  contactId: string
+  agentUserId: string
+  departureTime?: string
+  agentNotes?: string
+}) {
+  const { tourId, brokerageId, contactId, agentUserId, departureTime, agentNotes } = params
+  const supabase = createServiceClient()
+
+  const { error } = await supabase
+    .from('tours')
+    .update({
+      status:       'confirmed',
+      confirmed_at: new Date().toISOString(),
+      notes:        agentNotes ?? null,
+    })
+    .eq('id', tourId)
+
+  if (error) return { success: false, error: error.message }
+
+  await supabase.from('lifecycle_events').insert({
+    brokerage_id:  brokerageId,
+    entity_type:   'buyer_lifecycle',
+    entity_id:     contactId,
+    event_type:    'tour.confirmed',
+    actor_user_id: agentUserId,
+    metadata:      { tour_id: tourId, departure_time: departureTime },
+  })
+
+  return { success: true }
+}
+
 // ─── 5. Rate a stop (day-of) ──────────────────────────────────────────────────
 
 export async function rateTourStop(params: RateStopParams) {

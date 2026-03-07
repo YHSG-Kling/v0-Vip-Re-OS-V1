@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { ChevronDown, ChevronRight, CheckCircle, Clock } from 'lucide-react'
+import { ChevronDown, ChevronRight, CheckCircle, Clock, MapPin, ArrowLeft } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -10,7 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
-import { confirmTourStop } from '@/app/actions/tour-planner'
+import { confirmTourStop, confirmTour } from '@/app/actions/tour-planner'
 
 interface TourStop {
   id: string
@@ -36,6 +36,7 @@ interface Tour {
   id: string
   tour_date: string
   status: string
+  all_confirmed?: boolean
   tour_stops: TourStop[]
 }
 
@@ -45,6 +46,7 @@ interface TourConfirmTabProps {
   brokerageId: string
   agentUserId: string
   onRefresh: () => void
+  onBackToPlan?: () => void
 }
 
 const ACCESS_METHODS = [
@@ -58,6 +60,17 @@ const ACCESS_METHODS = [
 
 function formatDate(d: string) {
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+}
+
+function buildMapUrl(stops: TourStop[]): string | null {
+  if (!stops.length) return null
+  if (process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY) {
+    const origin      = encodeURIComponent(stops[0].property_address)
+    const destination = encodeURIComponent(stops[stops.length - 1].property_address)
+    const waypoints   = stops.slice(1, -1).map(s => encodeURIComponent(s.property_address)).join('|')
+    return `https://maps.googleapis.com/maps/api/staticmap?size=600x200&path=weight:3%7Ccolor:0x3b82f6&markers=${stops.map((s, i) => `label:${i + 1}%7C${encodeURIComponent(s.property_address)}`).join('&markers=')}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}`
+  }
+  return null
 }
 
 function StopConfirmForm({
@@ -85,7 +98,6 @@ function StopConfirmForm({
       return
     }
     const confirmedTimestamp = `${confirmedDate}T${confirmedTime}:00`
-
     startTransition(async () => {
       const res = await confirmTourStop({
         tourStopId:          stop.id,
@@ -186,39 +198,90 @@ function StopConfirmForm({
   )
 }
 
-export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onRefresh }: TourConfirmTabProps) {
+export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onRefresh, onBackToPlan }: TourConfirmTabProps) {
   const [expandedStopId, setExpandedStopId] = useState<string | null>(null)
+  const [departureTime, setDepartureTime]   = useState('09:00')
+  const [agentNotes, setAgentNotes]         = useState('')
+  const [confirmingTourId, setConfirmingTourId] = useState<string | null>(null)
+  const [isPending, startTransition]        = useTransition()
 
   const activeTours = tours.filter(t => ['planned', 'confirmed'].includes(t.status))
 
   if (activeTours.length === 0) {
     return (
-      <div className="flex items-center justify-center h-48">
+      <div className="flex flex-col items-center justify-center h-48 gap-3">
         <p className="text-sm text-muted-foreground">No active tours to confirm. Create a tour plan first.</p>
+        {onBackToPlan && (
+          <Button variant="outline" size="sm" onClick={onBackToPlan}>
+            <ArrowLeft className="h-3.5 w-3.5 mr-1.5" />
+            Back to Plan
+          </Button>
+        )}
       </div>
     )
   }
 
+  function handleConfirmTour(tourId: string) {
+    setConfirmingTourId(tourId)
+    startTransition(async () => {
+      const res = await confirmTour({ tourId, brokerageId, contactId, agentUserId, departureTime, agentNotes })
+      if (res.success) {
+        toast({ title: 'Tour confirmed!' })
+        onRefresh()
+      } else {
+        toast({ title: res.error ?? 'Failed to confirm tour', variant: 'destructive' })
+      }
+      setConfirmingTourId(null)
+    })
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {activeTours.map(tour => {
-        const sortedStops = [...tour.tour_stops].sort((a, b) => a.order_index - b.order_index)
+        const sortedStops    = [...tour.tour_stops].sort((a, b) => a.order_index - b.order_index)
         const confirmedCount = sortedStops.filter(s => s.is_confirmed).length
+        const mapUrl         = buildMapUrl(sortedStops)
 
         return (
-          <div key={tour.id}>
-            <div className="flex items-center justify-between mb-3">
+          <div key={tour.id} className="space-y-4">
+            {/* Tour header */}
+            <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-semibold">{formatDate(tour.tour_date)}</p>
                 <p className="text-xs text-muted-foreground">
                   {confirmedCount}/{sortedStops.length} stops confirmed
                 </p>
               </div>
-              <Badge variant={tour.all_confirmed ? 'default' : 'secondary'}>
+              <Badge variant={tour.status === 'confirmed' ? 'default' : 'secondary'}>
                 {tour.status}
               </Badge>
             </div>
 
+            {/* Map placeholder */}
+            {mapUrl ? (
+              <div className="rounded-lg overflow-hidden border h-40">
+                <img src={mapUrl} alt="Tour route map" className="w-full h-full object-cover" />
+              </div>
+            ) : (
+              <div className="rounded-lg border bg-muted/40 p-3 space-y-1">
+                <div className="flex items-center gap-1.5 mb-2">
+                  <MapPin className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-xs font-medium text-muted-foreground">Tour Route</span>
+                </div>
+                {sortedStops.map((s, i) => (
+                  <div key={s.id} className="flex items-start gap-2">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
+                      {i + 1}
+                    </span>
+                    <p className="text-xs text-muted-foreground leading-tight pt-0.5">
+                      {s.property_address}{s.city ? `, ${s.city}` : ''}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Stop-by-stop confirm list */}
             <div className="space-y-2">
               {sortedStops.map(stop => {
                 const isExpanded = expandedStopId === stop.id
@@ -269,6 +332,51 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
                   </Card>
                 )
               })}
+            </div>
+
+            {/* Departure time + agent notes */}
+            <div className="space-y-3 pt-2 border-t">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Departure Time</Label>
+                  <Input
+                    type="time"
+                    value={departureTime}
+                    onChange={e => setDepartureTime(e.target.value)}
+                    className="h-8 text-xs mt-1"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label className="text-xs">Agent Notes for Buyer</Label>
+                <Textarea
+                  value={agentNotes}
+                  onChange={e => setAgentNotes(e.target.value)}
+                  placeholder="e.g. Meet in front — parking on street is fine."
+                  className="text-xs mt-1 min-h-[72px]"
+                />
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-3">
+              {onBackToPlan && (
+                <Button variant="outline" size="sm" onClick={onBackToPlan} className="gap-1.5">
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  Back to Plan
+                </Button>
+              )}
+              <Button
+                className="flex-1"
+                disabled={isPending || tour.status === 'confirmed'}
+                onClick={() => handleConfirmTour(tour.id)}
+              >
+                {isPending && confirmingTourId === tour.id
+                  ? 'Confirming...'
+                  : tour.status === 'confirmed'
+                    ? 'Tour Confirmed'
+                    : 'Confirm Tour'}
+              </Button>
             </div>
           </div>
         )

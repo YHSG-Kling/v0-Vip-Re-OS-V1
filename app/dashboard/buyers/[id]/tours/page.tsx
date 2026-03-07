@@ -60,9 +60,7 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
           <CardContent className="pt-6 pb-6 text-center space-y-3">
             <p className="text-base font-semibold">Tour Planning Not Yet Available</p>
             <p className="text-sm text-muted-foreground">
-              {contact.first_name} {contact.last_name} must complete financial verification
-              before tours can be planned. Current stage:{' '}
-              <span className="font-mono text-xs">{contact.buyer_stage ?? 'not set'}</span>
+              Buyer must complete search setup before tours can be planned.
             </p>
             <Button asChild variant="outline" size="sm">
               <Link href={`/dashboard/buyers/${contactId}`}>

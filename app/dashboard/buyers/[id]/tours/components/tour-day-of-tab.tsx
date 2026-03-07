@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition, useEffect } from 'react'
+import { useState, useTransition, useEffect, useRef, useCallback } from 'react'
 import { ChevronLeft, ChevronRight, Phone, MapPin, Key } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -74,14 +74,64 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
   const upcomingTour = todayTour ?? tours.find(t => ['planned','confirmed'].includes(t.status))
 
   const [isOffline, setIsOffline]           = useState(false)
-  const [offlineCached, setOfflineCached]   = useState(false)
   const [currentIdx, setCurrentIdx]         = useState(0)
   const [ratings, setRatings]               = useState<Record<string, InterestLevel>>({})
+  const [pendingSignals, setPendingSignals] = useState<Array<{ stopId: string; level: InterestLevel }>>([])
   const [notes, setNotes]                   = useState<Record<string, string>>({})
   const [showRating, setShowRating]         = useState(false)
   const [tourComplete, setTourComplete]     = useState(false)
   const [agentNote, setAgentNote]           = useState('')
   const [isPending, startTransition]        = useTransition()
+
+  // Stopwatch per stop
+  const [elapsed, setElapsed]   = useState(0)          // seconds
+  const timerRef                = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // navigator.onLine tracking
+  useEffect(() => {
+    function handleOnline()  { setIsOffline(false) }
+    function handleOffline() { setIsOffline(true)  }
+    setIsOffline(!navigator.onLine)
+    window.addEventListener('online',  handleOnline)
+    window.addEventListener('offline', handleOffline)
+    return () => {
+      window.removeEventListener('online',  handleOnline)
+      window.removeEventListener('offline', handleOffline)
+    }
+  }, [])
+
+  // Flush queued signals when back online
+  useEffect(() => {
+    if (isOffline || !pendingSignals.length || !activeTour) return
+    const toFlush = [...pendingSignals]
+    setPendingSignals([])
+    for (const sig of toFlush) {
+      const s = sortedStops.find(x => x.id === sig.stopId)
+      if (!s) continue
+      rateTourStop({
+        tourStopId: s.id, showingId: s.showing_id ?? '', contactId,
+        brokerageId, agentUserId, listingId: s.listing_id ?? undefined,
+        propertyAddress: s.property_address, listPrice: s.list_price ?? undefined,
+        city: s.city ?? undefined, zip: s.zip ?? undefined,
+        interestLevel: sig.level, note: notes[s.id],
+      }).catch(() => {})
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOffline])
+
+  // Restart stopwatch when stop changes
+  useEffect(() => {
+    setElapsed(0)
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = setInterval(() => setElapsed(s => s + 1), 1000)
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [currentIdx])
+
+  function formatElapsed(secs: number): string {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0')
+    const s = (secs % 60).toString().padStart(2, '0')
+    return `${m}:${s}`
+  }
 
   const activeTour = upcomingTour
   const sortedStops = activeTour
@@ -136,8 +186,10 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
 
       if (!isOffline) {
         await saveStop()
+      } else {
+        // Queue signal to flush when online
+        setPendingSignals(q => [...q, { stopId: stop.id, level }])
       }
-      // If offline: will batch-save on tour completion
 
       setShowRating(false)
       if (currentIdx < sortedStops.length - 1) {
@@ -222,10 +274,16 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
         )}
 
         {lovedStops.length > 0 && (
-          <div className="p-3 bg-amber-50 border border-amber-200 rounded-md">
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded-md flex items-start justify-between gap-3">
             <p className="text-sm font-medium text-amber-900">
               {buyerName} loved {lovedStops[0].property_address}. Ready to discuss an offer?
             </p>
+            <a
+              href={`/dashboard/buyers/${contactId}/offers/new`}
+              className="shrink-0 px-3 py-1.5 bg-amber-700 text-white text-xs font-semibold rounded-md hover:bg-amber-800 transition-colors whitespace-nowrap"
+            >
+              Start Offer
+            </a>
           </div>
         )}
 
@@ -249,22 +307,15 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
   // ── Main day-of navigator ───────────────────────────────────────────────────
   return (
     <div className="space-y-4 max-w-lg mx-auto">
-      {/* Offline toggle */}
-      <div className={`flex items-center justify-between p-3 rounded-lg border-2 transition-colors ${isOffline ? 'border-green-500 bg-green-50' : 'border-border'}`}>
-        <div>
-          <p className="text-sm font-semibold">{isOffline ? 'Offline Mode Active' : 'Go Offline'}</p>
-          <p className="text-xs text-muted-foreground">
-            {isOffline ? 'Showing data saved to device' : 'Cache tour data for field use'}
+      {/* Online/offline status — driven by navigator.onLine */}
+      {isOffline && (
+        <div className="flex items-center gap-2 p-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-800">
+          <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+          <p className="text-xs font-medium">
+            Offline — feedback queued ({pendingSignals.length} pending). Will sync when connection restores.
           </p>
         </div>
-        <button
-          onClick={handleToggleOffline}
-          className={`relative w-12 h-6 rounded-full transition-colors ${isOffline ? 'bg-green-500' : 'bg-muted'}`}
-          aria-label="Toggle offline mode"
-        >
-          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${isOffline ? 'translate-x-6' : 'translate-x-0.5'}`} />
-        </button>
-      </div>
+      )}
 
       {/* Stop navigator */}
       <div className="flex items-center justify-between">
@@ -280,10 +331,15 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
       {/* Current stop card */}
       {!showRating && stop && (
         <Card className="overflow-hidden">
-          {/* Time header */}
+          {/* Time header with stopwatch */}
           <div className="flex items-center justify-between px-4 py-2 bg-muted/60 border-b">
             <span className="text-sm font-mono font-semibold">{formatTime(stop.confirmed_time)}</span>
-            <span className="text-xs text-muted-foreground">STOP {currentIdx + 1} of {sortedStops.length}</span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground font-mono">
+                Time at this stop: {formatElapsed(elapsed)}
+              </span>
+              <span className="text-xs text-muted-foreground">STOP {currentIdx + 1} of {sortedStops.length}</span>
+            </div>
           </div>
 
           {/* Photo */}

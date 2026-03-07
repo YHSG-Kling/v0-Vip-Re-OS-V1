@@ -97,6 +97,7 @@ export function ToursClient({
           brokerageId={brokerageId}
           agentUserId={agentUserId}
           onRefresh={refresh}
+          onBackToPlan={() => setTab('plan')}
         />
       </TabsContent>
 
