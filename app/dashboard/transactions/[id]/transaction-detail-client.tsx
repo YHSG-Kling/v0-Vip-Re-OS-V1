@@ -51,6 +51,7 @@ import {
   Plus,
   Loader2,
 } from "lucide-react"
+import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -777,6 +778,15 @@ export function TransactionDetailClient({
                 )}
               </CardContent>
             </Card>
+
+            {/* Suggested Vendors */}
+            {["INSPECTION", "APPRAISAL", "FINANCING_PENDING"].includes(currentStage) && (
+              <SuggestedVendors
+                transactionId={transaction.id}
+                stage={currentStage}
+                propertyAddress={transaction.property_address}
+              />
+            )}
 
             {/* Recent Timeline */}
             <Card>

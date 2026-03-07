@@ -18,7 +18,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { MapPin, Calendar, Clock, User, DollarSign, FileText } from "lucide-react"
-import { updateVendorBookingStatus_v2 , submitVendorInvoice } from "@/app/actions/multi-persona"
+import { updateVendorBookingStatus_v2, submitVendorInvoice } from "@/app/actions/multi-persona"
 
 interface Booking {
   id: string
@@ -79,7 +79,7 @@ export function VendorBookingsList({ bookings }: { bookings: Booking[] }) {
     if (!selectedBooking || !newStatus) return
 
     startTransition(async () => {
-      await updateVendorBookingStatus({
+      await updateVendorBookingStatus_v2({
         bookingId: selectedBooking.id,
         status: newStatus,
         notes,

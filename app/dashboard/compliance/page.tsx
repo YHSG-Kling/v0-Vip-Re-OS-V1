@@ -11,7 +11,7 @@ import SubmitContentForm from "@/components/compliance/submit-content-form"
 import PendingApprovalsList from "@/components/compliance/pending-approvals-list"
 import ViolationsDashboard from "@/components/compliance/violations-dashboard"
 import ApprovedContentLibrary from "@/components/compliance/approved-content-library"
-import { TransactionComplianceTab } from "@/components/compliance/transaction-compliance-tab"
+import { TransactionComplianceTab } from "@/app/components/compliance/transaction-compliance-tab"
 
 export default async function ComplianceDashboardPage() {
   const supabase = await createClient()
