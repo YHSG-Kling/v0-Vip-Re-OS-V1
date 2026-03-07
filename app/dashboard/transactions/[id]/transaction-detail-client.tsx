@@ -1065,12 +1065,11 @@ export function TransactionDetailClient({
                 <CardContent>
                   {/* Title/Escrow Company Info (read-only display) */}
 {titleEscrow && (titleEscrow.title_company_name || titleEscrow.escrow_company_name) && (
-                  <div className="space-y-2 pt-4 border-t">
-                    <p className="text-sm text-muted-foreground">Title Company</p>
-                    <p className="font-medium">{titleEscrow.title_company_name ?? "Not set"}</p>
-                    <p className="text-sm text-muted-foreground">Escrow Company</p>
-                    <p className="font-medium">{titleEscrow.escrow_company_name ?? "Not set"}</p>
-                      </div>
+                    <div className="space-y-2 pt-4 border-t">
+                      <p className="text-sm text-muted-foreground">Title Company</p>
+                      <p className="font-medium">{titleEscrow.title_company_name ?? "Not set"}</p>
+                      <p className="text-sm text-muted-foreground">Escrow Company</p>
+                      <p className="font-medium">{titleEscrow.escrow_company_name ?? "Not set"}</p>
                     </div>
                   )}
 
