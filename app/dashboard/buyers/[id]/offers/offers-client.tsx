@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { OfferInitiationFlow } from "./components/offer-initiation-flow"
 import { recordOfferOutcome, sendOfferForESign } from "@/app/actions/buyer-offers"
@@ -216,12 +217,12 @@ export function OffersClient({
             <h2 className="text-sm font-semibold">Offers</h2>
             <p className="text-xs text-muted-foreground mt-0.5">{offers.length} total</p>
           </div>
-          <button
-            onClick={() => setShowFlow(true)}
+          <Link
+            href={`/dashboard/buyers/${contactId}/offers/new`}
             className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
           >
             Create New Offer
-          </button>
+          </Link>
         </div>
 
         {offers.length === 0 ? (

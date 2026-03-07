@@ -3,6 +3,32 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
+import { KernelEvent }         from "@/lib/kernel/events"
+
+// ─── startOfferDraft ─────────────────────────────────────────────────────────
+// Emits lifecycle_event for buyer.offer.draft_started on page mount.
+// Called by /offers/new/page.tsx RSC before rendering the initiation flow.
+export async function startOfferDraft(params: {
+  contactId:   string
+  brokerageId: string
+  agentUserId: string
+  listingId?:  string | null
+}): Promise<{ success: boolean; error?: string }> {
+  const { contactId, brokerageId, agentUserId, listingId } = params
+  const supabase = createServiceClient()
+
+  const { error } = await supabase.from("lifecycle_events").insert({
+    brokerage_id:  brokerageId,
+    entity_type:   "buyer_lifecycle",
+    entity_id:     contactId,
+    event_type:    KernelEvent.BUYER_OFFER_DRAFT_STARTED,
+    actor_user_id: agentUserId,
+    metadata:      { listing_id: listingId ?? null },
+  })
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
