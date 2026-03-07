@@ -497,6 +497,14 @@ export function TransactionDetailClient({
                 ${transaction.purchase_price?.toLocaleString()} | {transaction.deal_type ?? "Purchase"}
               </p>
             </div>
+            {currentStage === "CLOSING_PREP" && (
+              <Link href={`/dashboard/transactions/${transaction.id}/cda`}>
+                <Button variant="outline" size="sm">
+                  <FileText className="h-4 w-4 mr-2" />
+                  CDA Workflow
+                </Button>
+              </Link>
+            )}
             <Badge variant={currentStage === "CLOSED" ? "default" : currentStage === "LOST" ? "destructive" : "secondary"}>
               {currentStage.replace(/_/g, " ")}
             </Badge>

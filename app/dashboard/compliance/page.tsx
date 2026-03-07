@@ -3,13 +3,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import { AlertTriangle, CheckCircle, Shield, TrendingUp } from "lucide-react"
+import { AlertTriangle, CheckCircle, Shield, TrendingUp, FileCheck } from "lucide-react"
 import { getPendingApprovals, getComplianceViolations, generateComplianceReport } from "@/app/actions/compliance-monitoring"
+import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
 import { createClient } from "@/lib/supabase/server"
 import SubmitContentForm from "@/components/compliance/submit-content-form"
 import PendingApprovalsList from "@/components/compliance/pending-approvals-list"
 import ViolationsDashboard from "@/components/compliance/violations-dashboard"
 import ApprovedContentLibrary from "@/components/compliance/approved-content-library"
+import { TransactionComplianceTab } from "@/components/compliance/transaction-compliance-tab"
 
 export default async function ComplianceDashboardPage() {
   const supabase = await createClient()
@@ -20,13 +22,14 @@ export default async function ComplianceDashboardPage() {
   const today = new Date()
   const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const [pendingApprovals, violations, monthlyReport] = await Promise.all([
+  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs] = await Promise.all([
     getPendingApprovals(),
     getComplianceViolations(),
     generateComplianceReport({
       startDate: thirtyDaysAgo.toISOString(),
       endDate: today.toISOString(),
     }),
+    getAllTransactionComplianceLogs({ limit: 100 }),
   ])
 
   const complianceRate =
@@ -129,6 +132,14 @@ export default async function ComplianceDashboardPage() {
           </TabsTrigger>
           <TabsTrigger value="library">Approved Library</TabsTrigger>
           <TabsTrigger value="violations">Violations</TabsTrigger>
+          <TabsTrigger value="transactions">
+            Transaction Compliance
+            {transactionComplianceLogs.logs.filter(l => l.status === "pending").length > 0 && (
+              <Badge variant="secondary" className="ml-2">
+                {transactionComplianceLogs.logs.filter(l => l.status === "pending").length}
+              </Badge>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="submit" className="space-y-4">
@@ -160,6 +171,12 @@ export default async function ComplianceDashboardPage() {
         <TabsContent value="violations" className="space-y-4">
           <Suspense fallback={<div>Loading violations...</div>}>
             <ViolationsDashboard initialViolations={violations} report={monthlyReport} />
+          </Suspense>
+        </TabsContent>
+
+        <TabsContent value="transactions" className="space-y-4">
+          <Suspense fallback={<div>Loading transaction compliance...</div>}>
+            <TransactionComplianceTab initialLogs={transactionComplianceLogs.logs} />
           </Suspense>
         </TabsContent>
       </Tabs>

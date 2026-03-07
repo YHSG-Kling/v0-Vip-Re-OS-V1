@@ -4,6 +4,7 @@ import { getMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { seedStageAutoTasks } from "./stage-auto-tasks"
 import { seedTransactionComplianceChecks } from "./compliance-checks-seeder"
+import { canProceedToClosingPrep } from "@/app/actions/transaction-compliance"
 
 export interface StageProgressionResult {
   success: boolean
@@ -109,6 +110,14 @@ export async function canAdvanceStage(
       for (const flag of dealBreakerFlags) {
         blockers.push(`Deal-breaker compliance flag: ${flag.flag_type} (${flag.status})`)
       }
+    }
+  }
+
+  // 9. Block CLOSING_PREP if any blocking transaction compliance checks have failed
+  if (targetStage === "CLOSING_PREP") {
+    const complianceResult = await canProceedToClosingPrep(transactionId, brokerageId)
+    if (!complianceResult.allowed) {
+      blockers.push(...complianceResult.blockers)
     }
   }
 
