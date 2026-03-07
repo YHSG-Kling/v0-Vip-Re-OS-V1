@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition, useEffect, useRef, useCallback } from 'react'
+import { useState, useTransition, useEffect, useRef } from 'react'
 import { ChevronLeft, ChevronRight, Phone, MapPin, Key } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -87,10 +87,25 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
   const [elapsed, setElapsed]   = useState(0)          // seconds
   const timerRef                = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  // navigator.onLine tracking
+  // navigator.onLine tracking — flush queued signals on reconnect
   useEffect(() => {
-    function handleOnline()  { setIsOffline(false) }
-    function handleOffline() { setIsOffline(true)  }
+    function handleOnline() {
+      setIsOffline(false)
+      const toFlush = [...pendingSignalsRef.current]
+      if (!toFlush.length) return
+      setPendingSignals([])
+      for (const sig of toFlush) {
+        rateTourStop({
+          tourStopId:      sig.stopId,
+          showingId:       '',
+          contactId,       brokerageId,    agentUserId,
+          interestLevel:   sig.level,
+          propertyAddress: '',
+          note:            notesRef.current[sig.stopId],
+        }).catch(() => {})
+      }
+    }
+    function handleOffline() { setIsOffline(true) }
     setIsOffline(!navigator.onLine)
     window.addEventListener('online',  handleOnline)
     window.addEventListener('offline', handleOffline)
@@ -98,26 +113,14 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
       window.removeEventListener('online',  handleOnline)
       window.removeEventListener('offline', handleOffline)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Flush queued signals when back online
-  useEffect(() => {
-    if (isOffline || !pendingSignals.length || !activeTour) return
-    const toFlush = [...pendingSignals]
-    setPendingSignals([])
-    for (const sig of toFlush) {
-      const s = sortedStops.find(x => x.id === sig.stopId)
-      if (!s) continue
-      rateTourStop({
-        tourStopId: s.id, showingId: s.showing_id ?? '', contactId,
-        brokerageId, agentUserId, listingId: s.listing_id ?? undefined,
-        propertyAddress: s.property_address, listPrice: s.list_price ?? undefined,
-        city: s.city ?? undefined, zip: s.zip ?? undefined,
-        interestLevel: sig.level, note: notes[s.id],
-      }).catch(() => {})
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOffline])
+  // Refs so the online handler can access latest state without stale closure
+  const pendingSignalsRef = useRef(pendingSignals)
+  const notesRef          = useRef(notes)
+  useEffect(() => { pendingSignalsRef.current = pendingSignals }, [pendingSignals])
+  useEffect(() => { notesRef.current = notes }, [notes])
 
   // Restart stopwatch when stop changes
   useEffect(() => {
@@ -139,22 +142,6 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
     : []
   const stop = sortedStops[currentIdx]
   const nextStop = sortedStops[currentIdx + 1] ?? null
-
-  function handleToggleOffline() {
-    if (!isOffline) {
-      // Cache tour data to sessionStorage as fallback
-      if (activeTour) {
-        try {
-          sessionStorage.setItem('vip_offline_tour', JSON.stringify(activeTour))
-          setOfflineCached(true)
-        } catch {}
-      }
-      setIsOffline(true)
-    } else {
-      setIsOffline(false)
-      setOfflineCached(false)
-    }
-  }
 
   function handleRating(level: InterestLevel) {
     if (!stop) return
