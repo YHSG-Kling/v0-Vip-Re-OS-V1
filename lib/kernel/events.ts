@@ -155,10 +155,10 @@ export enum KernelEvent {
   BUYER_FATIGUE_DETECTED         = 'buyer_fatigue_detected',
   BUYER_FATIGUE_ALERT            = 'buyer_fatigue_alert',
   OFFER_STRATEGY_RECOMMENDED     = 'offer_strategy_recommended',
-  BUYER_OFFER_DRAFT_STARTED      = 'buyer.offer.draft_started',
-  BUYER_OFFER_SUBMITTED          = 'buyer.offer.submitted',
-  BUYER_UNDER_CONTRACT           = 'buyer.under_contract',
-  BUYER_OFFER_ELIGIBLE           = 'buyer.offer_eligible',
+  BUYER_OFFER_DRAFT_STARTED      = 'buyer_offer_draft_started',
+  BUYER_OFFER_SUBMITTED          = 'buyer_offer_submitted',
+  BUYER_UNDER_CONTRACT           = 'buyer_under_contract',
+  BUYER_OFFER_ELIGIBLE           = 'buyer_offer_eligible',
 
   // ── PROPERTY ALERTS (Layer 5 - B06) ──────────────────────────────────────
   PROPERTY_ALERT_CREATED         = 'property_alert_created',

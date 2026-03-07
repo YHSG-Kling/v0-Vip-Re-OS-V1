@@ -117,10 +117,9 @@ export async function getLifecycleHistory(
   const supabase = createServiceClient()
   
   let query = supabase
-    .from("activities")
-    .select("id, created_at, user_id, metadata")
-    .eq("type", "buyer.lifecycle.transition")
-    .eq("entity_type", "contact")
+    .from("lifecycle_events")
+    .select("id, created_at, actor_user_id, metadata, from_state, to_state, event_type")
+    .eq("entity_type", "buyer_lifecycle")
     .eq("entity_id", contactId)
     .order("created_at", { ascending: false })
     .limit(limit)
@@ -147,14 +146,14 @@ export async function getLifecycleHistory(
   return events.map((event) => {
     const metadata = (event.metadata as Record<string, unknown>) || {}
     return {
-      id: event.id,
-      fromState: (metadata.from_state as BuyerState) || null,
-      toState: metadata.to_state as BuyerState,
-      occurredAt: new Date(event.created_at),
-      triggeredBy: (metadata.triggered_by as string) || "unknown",
+      id:            event.id,
+      fromState:     (event.from_state as BuyerState) ?? (metadata.from_state as BuyerState) ?? null,
+      toState:       (event.to_state   as BuyerState) ?? (metadata.to_state   as BuyerState),
+      occurredAt:    new Date(event.created_at),
+      triggeredBy:   (metadata.triggered_by   as string) || "unknown",
       authorityRole: (metadata.authority_role as string) || "unknown",
-      userId: event.user_id || "system",
-      sourceSystem: (metadata.source_system as string) || "unknown",
+      userId:        event.actor_user_id || "system",
+      sourceSystem:  (metadata.source_system  as string) || "unknown",
       overrideReason: metadata.override_reason as string | undefined,
     }
   })
