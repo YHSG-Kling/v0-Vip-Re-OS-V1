@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { TransactionOrchestrator } from "@/lib/transactions/transaction-orchestrator"
 import { TransactionStage, TRANSACTION_STAGES } from "@/lib/transactions/transaction-stages"
+import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { revalidatePath } from "next/cache"
 
 // ─── THIN WRAPPERS AROUND TransactionOrchestrator ─────────────────────────────
@@ -77,6 +78,14 @@ export async function advanceTransactionStage(params: {
     revalidatePath(`/dashboard/transactions/${params.transactionId}`)
     revalidatePath(`/dashboard/coordinator`)
     revalidatePath(`/dashboard/transactions`)
+
+    // Non-blocking: trigger deal health score recalculation
+    calculateDealHealth({
+      transactionId: params.transactionId,
+      brokerageId:   params.brokerageId,
+    }).catch(error => {
+      console.error("[transaction-stage-machine] calculateDealHealth failed:", error)
+    })
   }
 
   return result

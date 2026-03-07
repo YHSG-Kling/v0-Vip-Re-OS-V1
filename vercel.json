@@ -89,6 +89,10 @@
     {
       "path": "/api/fatigue/cron",
       "schedule": "0 */12 * * *"
+    },
+    {
+      "path": "/api/deal-health/cron",
+      "schedule": "0 6 * * *"
     }
   ]
 }

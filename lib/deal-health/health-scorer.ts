@@ -34,13 +34,16 @@ export interface ComponentScore {
   data:        Record<string, unknown>  // raw data for debugging
 }
 
+export type RiskLevel = "healthy" | "watch" | "at_risk" | "critical"
+
 export interface DealHealthResult {
   transactionId:   string
   brokerageId:     string
   overallScore:    number       // 0-100 weighted average
-  riskLevel:       "healthy" | "at_risk" | "critical"
+  riskLevel:       RiskLevel
   components:      ComponentScore[]
   calculatedAt:    string
+  aiNarrative?:    string       // Generated when tier changes or first score
 }
 
 // ─── Category Weights (sum = 100) ─────────────────────────────────────────────
@@ -499,15 +502,45 @@ export async function calculateDealHealth(params: {
   const weightedSum = components.reduce((sum, c) => sum + c.score * c.weight, 0)
   const overallScore = Math.round(weightedSum / totalWeight)
 
-  // Determine risk level
-  let riskLevel: DealHealthResult["riskLevel"] = "healthy"
+  // Determine risk level: healthy(85+), watch(70-84), at_risk(40-69), critical(<40)
+  let riskLevel: RiskLevel = "healthy"
   if (overallScore < 40) {
     riskLevel = "critical"
   } else if (overallScore < 70) {
     riskLevel = "at_risk"
+  } else if (overallScore < 85) {
+    riskLevel = "watch"
   }
 
   const calculatedAt = new Date().toISOString()
+
+  // ─── Get previous score to detect tier changes ────────────────────────────
+  const { data: previousScoreRow } = await supabase
+    .from("deal_health_scores")
+    .select("overall_score, risk_level, ai_narrative")
+    .eq("transaction_id", transactionId)
+    .maybeSingle()
+
+  const previousRiskLevel = previousScoreRow?.risk_level as RiskLevel | null
+  const previousOverallScore = previousScoreRow?.overall_score as number | null
+  const isFirstScore = !previousScoreRow
+  const tierChanged = previousRiskLevel && previousRiskLevel !== riskLevel
+  const scoreDroppedMaterially = previousOverallScore !== null && (previousOverallScore - overallScore) >= 10
+
+  // ─── Generate AI narrative when: first score, tier changes, or score drops 10+ points
+  let aiNarrative: string | undefined
+  if (isFirstScore || tierChanged || scoreDroppedMaterially) {
+    aiNarrative = await generateDealHealthNarrative({
+      transactionId,
+      overallScore,
+      riskLevel,
+      components,
+      previousRiskLevel,
+      previousOverallScore,
+    }).catch(() => undefined)
+  } else {
+    aiNarrative = previousScoreRow?.ai_narrative ?? undefined
+  }
 
   // ─── Persist to deal_health_scores ────────────────────────────────────────
   await supabase.from("deal_health_scores").upsert(
@@ -517,9 +550,16 @@ export async function calculateDealHealth(params: {
       overall_score:  overallScore,
       risk_level:     riskLevel,
       calculated_at:  calculatedAt,
+      ai_narrative:   aiNarrative ?? null,
     },
     { onConflict: "transaction_id" }
   )
+
+  // ─── UPDATE transactions.health_score ─────────────────────────────────────
+  await supabase
+    .from("transactions")
+    .update({ health_score: overallScore })
+    .eq("id", transactionId)
 
   // ─── Persist per-factor rows to deal_health_components ────────────────────
   const componentRows = components.map(c => ({
@@ -542,17 +582,7 @@ export async function calculateDealHealth(params: {
   await supabase.from("deal_health_components").insert(componentRows)
 
   // ─── Emit kernel event if risk level changed ──────────────────────────────
-  const { data: previousScore } = await supabase
-    .from("lifecycle_events")
-    .select("metadata")
-    .eq("entity_id", transactionId)
-    .eq("event_type", KernelEvent.DEAL_HEALTH_CHANGED)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  const previousRiskLevel = (previousScore?.metadata as Record<string, unknown>)?.risk_level
-  if (previousRiskLevel && previousRiskLevel !== riskLevel) {
+  if (tierChanged) {
     await supabase.from("lifecycle_events").insert({
       brokerage_id:  brokerageId,
       entity_type:   "transaction",
@@ -573,9 +603,84 @@ export async function calculateDealHealth(params: {
     riskLevel,
     components,
     calculatedAt,
+    aiNarrative,
+  }
+}
+
+// ─── AI Narrative Generator ───────────────────────────────────────────────────
+
+async function generateDealHealthNarrative(params: {
+  transactionId:       string
+  overallScore:        number
+  riskLevel:           RiskLevel
+  components:          ComponentScore[]
+  previousRiskLevel?:  RiskLevel | null
+  previousOverallScore?: number | null
+}): Promise<string> {
+  const { overallScore, riskLevel, components, previousRiskLevel, previousOverallScore } = params
+
+  // Identify top issues
+  const issueCategories = components
+    .filter(c => c.issues.length > 0)
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 3)
+
+  const issuesSummary = issueCategories
+    .map(c => `${c.category}: ${c.issues.join("; ")}`)
+    .join("\n")
+
+  let contextNote = ""
+  if (previousRiskLevel && previousRiskLevel !== riskLevel) {
+    contextNote = `Risk level changed from ${previousRiskLevel.toUpperCase()} to ${riskLevel.toUpperCase()}.`
+  } else if (previousOverallScore !== null && (previousOverallScore - overallScore) >= 10) {
+    contextNote = `Score dropped ${previousOverallScore - overallScore} points from ${previousOverallScore} to ${overallScore}.`
+  } else {
+    contextNote = "This is the first health score for this deal."
+  }
+
+  const prompt = `You are a real estate transaction coordinator AI. Write a 2-3 sentence summary of this deal's health status.
+
+Deal Health Score: ${overallScore}/100
+Risk Level: ${riskLevel.toUpperCase()}
+${contextNote}
+
+Top Issues:
+${issuesSummary || "No major issues identified."}
+
+Write a concise, actionable summary for the agent/broker. Focus on what needs attention.`
+
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 200,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`Anthropic API error: ${response.status}`)
+    }
+
+    const data = await response.json()
+    const text = data.content?.[0]?.text ?? ""
+    return text.trim()
+  } catch {
+    // Fallback narrative
+    const topIssue = issueCategories[0]
+    if (topIssue) {
+      return `Deal health is ${riskLevel.toUpperCase()} (${overallScore}/100). Primary concern: ${topIssue.category} - ${topIssue.issues[0] ?? "needs attention"}.`
+    }
+    return `Deal health is ${riskLevel.toUpperCase()} (${overallScore}/100). No critical issues identified.`
   }
 }
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-export { CATEGORY_WEIGHTS }
+export { CATEGORY_WEIGHTS, type RiskLevel }
