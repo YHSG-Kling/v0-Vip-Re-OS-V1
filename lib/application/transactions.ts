@@ -1694,64 +1694,239 @@ export async function celebrateMilestone(transactionId: string, milestone: strin
 
 export async function loadClientDashboard(transactionId: string, contactId?: string) {
   const supabase = await createClient()
+  
+  // Fetch transaction with full relationships
   const { data: transaction } = await supabase
     .from("transactions")
     .select(`*, contacts(*), agents(*)`)
     .eq("id", transactionId)
     .single()
-
+  
   if (!transaction) throw new Error("Transaction not found")
   if (contactId && transaction.contact_id !== contactId) {
     throw new Error("Unauthorized: Transaction does not belong to this contact")
   }
-
-  const persona =
-    transaction.contacts?.contact_persona || transaction.transaction_type === "sale" ? "seller" : "buyer"
-
-  const [timeline, costBreakdown, tasks, updates, health] = await Promise.all([
-    getClientTimeline(transactionId),
-    getCostBreakdown(transactionId),
-    getClientTasks(transactionId),
-    getRecentUpdates(transactionId),
+  
+  const persona = transaction.contacts?.contact_persona || (transaction.deal_type === "seller" ? "seller" : "buyer")
+  
+  // Fetch all client-visible data in parallel from real tables
+  const [
+    milestones,
+    clientFriendlyUpdates,
+    transparencyUpdates,
+    educationalMoments,
+    timelineTransparency,
+    titleEscrow,
+    closingChecklist,
+    teamContacts,
+    requestedDocuments,
+    health,
+  ] = await Promise.all([
+    // Client-visible milestones
+    supabase
+      .from("transaction_milestones")
+      .select("id, milestone_name, milestone_date, status, completed_at, notes")
+      .eq("transaction_id", transactionId)
+      .order("milestone_date", { ascending: true })
+      .then(r => r.data || []),
+    // Client-friendly updates
+    supabase
+      .from("client_friendly_updates")
+      .select("id, update_text, update_type, tone, created_at, read_at")
+      .eq("transaction_id", transactionId)
+      .order("created_at", { ascending: false })
+      .limit(15)
+      .then(r => r.data || []),
+    // Transparency updates
+    supabase
+      .from("transparency_updates")
+      .select("id, title, plain_language_summary, stage, responsible_party, responsible_party_name, next_step, next_step_date, created_at")
+      .eq("transaction_id", transactionId)
+      .order("created_at", { ascending: false })
+      .limit(10)
+      .then(r => r.data || []),
+    // Educational moments
+    supabase
+      .from("educational_moments")
+      .select("id, content_title, content_body, content_type, stage_context, delivered_at, read_at")
+      .eq("transaction_id", transactionId)
+      .order("delivered_at", { ascending: false })
+      .limit(5)
+      .then(r => r.data || []),
+    // Timeline transparency (delays)
+    supabase
+      .from("timeline_transparency")
+      .select("id, delays, reason_for_delays, impact_on_closing, communicated_to_client, created_at")
+      .eq("transaction_id", transactionId)
+      .order("created_at", { ascending: false })
+      .limit(3)
+      .then(r => r.data || []),
+    // Title/Escrow - earnest money status only
+    supabase
+      .from("transaction_title_escrow")
+      .select("earnest_money_amount, earnest_money_held_by, earnest_money_received_date")
+      .eq("transaction_id", transactionId)
+      .maybeSingle()
+      .then(r => r.data),
+    // Closing checklist - required items summary only
+    supabase
+      .from("closing_checklist_items")
+      .select("id, item_name, category, completed, required")
+      .eq("transaction_id", transactionId)
+      .eq("required", true)
+      .order("sequence", { ascending: true })
+      .then(r => r.data || []),
+    // Team contacts from participants
+    supabase
+      .from("transaction_participants")
+      .select("id, role, name, company, email, phone")
+      .eq("transaction_id", transactionId)
+      .then(r => r.data || []),
+    // Requested documents
+    supabase
+      .from("transaction_documents")
+      .select("id, doc_label, doc_type, status, created_at")
+      .eq("transaction_id", transactionId)
+      .eq("status", "requested")
+      .order("created_at", { ascending: false })
+      .then(r => r.data || []),
+    // Transaction health
     getTransactionHealth(transactionId),
   ])
-
-  const personaConfig = getPersonaConfig(persona, transaction.transaction_type)
-
+  
+  const personaConfig = getPersonaConfig(persona, transaction.deal_type || "buyer")
+  
+  // Calculate progress from milestones
+  const completedMilestones = milestones.filter((m: any) => m.status === "completed").length
+  const progressPercent = Math.round((completedMilestones / Math.max(milestones.length, 1)) * 100)
+  
+  // Combine updates from multiple sources
+  const combinedUpdates = [
+    ...clientFriendlyUpdates.map((u: any) => ({
+      id: u.id,
+      text: u.update_text,
+      type: u.update_type,
+      timestamp: u.created_at,
+      icon: getUpdateIcon(u.update_type),
+      source: "friendly_update",
+    })),
+    ...transparencyUpdates.map((u: any) => ({
+      id: u.id,
+      text: u.plain_language_summary || u.title,
+      type: "info",
+      timestamp: u.created_at,
+      icon: "info",
+      source: "transparency",
+      nextStep: u.next_step,
+      nextStepDate: u.next_step_date,
+    })),
+  ].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).slice(0, 15)
+  
+  // Format earnest money status (no sensitive financial data)
+  const earnestMoneyStatus = titleEscrow ? {
+    received: !!titleEscrow.earnest_money_received_date,
+    heldBy: titleEscrow.earnest_money_held_by || "Escrow",
+    receivedDate: titleEscrow.earnest_money_received_date,
+  } : null
+  
+  // Closing checklist summary (required items only)
+  const checklistSummary = {
+    totalRequired: closingChecklist.length,
+    completed: closingChecklist.filter((i: any) => i.completed).length,
+    pendingItems: closingChecklist.filter((i: any) => !i.completed).map((i: any) => ({
+      id: i.id,
+      name: i.item_name,
+      category: i.category,
+    })),
+  }
+  
+  // Format timeline delays for client
+  const delayInfo = timelineTransparency.length > 0 ? {
+    hasDelays: timelineTransparency.some((t: any) => t.delays?.length > 0),
+    impactOnClosing: timelineTransparency[0]?.impact_on_closing || 0,
+    reasons: timelineTransparency[0]?.reason_for_delays || [],
+  } : null
+  
   return {
     persona,
     personaConfig,
     hero: {
       property_address: transaction.property_address,
-      current_stage_display: friendlyStageName(transaction.status, persona),
+      current_stage_display: friendlyStageName(transaction.stage || transaction.status, persona),
       status_message: await generateFriendlyStatusMessage(transaction, persona),
-      progress_percent: calculateOverallProgress(transaction, timeline),
+      progress_percent: progressPercent,
       health_indicator: health.overall_health >= 75 ? "on_track" : "needs_attention",
       days_until_closing: calculateDaysUntil(transaction.close_date),
       persona_theme: personaConfig.theme,
     },
-    timeline: timeline.map((m: any) => ({
+    timeline: milestones.map((m: any) => ({
+      id: m.id,
       name: m.milestone_name,
-      date: m.target_date,
+      date: m.milestone_date,
       status: m.status,
       icon: getMilestoneIcon(m.milestone_name),
-      description: m.what_happens,
+      description: m.notes || getDefaultMilestoneDescription(m.milestone_name),
     })),
-    next_actions: tasks
-      .filter((t: any) => t.assigned_to_role === "client" && t.status !== "completed")
-      .slice(0, 5)
-      .map((t: any) => ({ id: t.id, task: t.task_name, due_date: t.due_date, priority: t.priority, help_url: t.help_content_url })),
-    costs: costBreakdown,
-    updates: updates.map((u: any) => ({
-      text: u.update_text,
-      type: u.update_type,
-      timestamp: u.created_at,
-      icon: getUpdateIcon(u.update_type),
+    next_actions: requestedDocuments.slice(0, 5).map((d: any) => ({
+      id: d.id,
+      task: `Submit: ${d.doc_label || d.doc_type}`,
+      due_date: null,
+      priority: "high",
+      help_url: null,
     })),
-    team: await getTeamContacts(transactionId),
+    earnestMoney: earnestMoneyStatus,
+    checklistSummary,
+    delayInfo,
+    updates: combinedUpdates,
+    team: teamContacts.map((p: any) => ({
+      id: p.id,
+      role: p.role,
+      name: p.name,
+      company: p.company,
+      email: p.email,
+      phone: p.phone,
+    })),
+    educationalContent: educationalMoments.length > 0 
+      ? {
+          title: educationalMoments[0].content_title,
+          content: educationalMoments[0].content_body,
+          type: educationalMoments[0].content_type,
+          isRead: !!educationalMoments[0].read_at,
+        }
+      : getPersonaEducation(persona, transaction.stage || transaction.status),
     personaTools: getPersonaSpecificTools(persona),
-    educationalContent: getPersonaEducation(persona, transaction.status),
+    contactAgent: {
+      message: "Have questions? Your agent is here to help.",
+      action: "Contact Your Agent",
+    },
   }
+  }
+
+function getDefaultMilestoneDescription(milestoneName: string): string {
+  const descriptions: Record<string, string> = {
+    "Offer Submitted": "Your offer has been submitted to the seller.",
+    "Offer Accepted": "Congratulations! The seller has accepted your offer.",
+    "Earnest Money Deposited": "Your earnest money deposit has been received.",
+    "Home Inspection Scheduled": "The home inspection has been scheduled.",
+    "Home Inspection Complete": "The inspection is complete and the report is ready.",
+    "Repair Negotiations Complete": "Repair negotiations have been finalized.",
+    "Appraisal Ordered": "The appraisal has been ordered by your lender.",
+    "Appraisal Complete": "The appraisal has been completed.",
+    "Loan Approved": "Your loan has been approved.",
+    "Title Search Complete": "The title search has been completed.",
+    "Final Walkthrough": "Time for your final walkthrough before closing.",
+    "Closing Documents Signed": "All closing documents have been signed.",
+    "Funds Transferred": "Funds have been transferred.",
+    "Keys Received": "You've received the keys to your new home!",
+    "Listing Agreement Signed": "The listing agreement has been signed.",
+    "Property Listed": "Your property is now listed on the market.",
+    "Offer Received": "You've received an offer on your property.",
+    "Title Clear": "Title is clear and ready for closing.",
+    "Closing Scheduled": "Your closing date has been scheduled.",
+    "Funds Received": "Funds have been received from the sale.",
+    "Keys Delivered": "Keys have been delivered to the new owner.",
+  }
+  return descriptions[milestoneName] || "This milestone is in progress."
 }
 
 // ============================================

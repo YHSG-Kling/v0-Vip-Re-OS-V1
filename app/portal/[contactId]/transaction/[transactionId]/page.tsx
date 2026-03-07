@@ -23,6 +23,11 @@ import {
   Bell,
   HelpCircle,
   ChevronDown,
+  Phone,
+  Mail,
+  MessageCircle,
+  Clock,
+  Shield,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -45,6 +50,7 @@ interface DashboardData {
     persona_theme: string
   }
   timeline: Array<{
+    id: string
     name: string
     date: string
     status: string
@@ -54,18 +60,43 @@ interface DashboardData {
   next_actions: Array<{
     id: string
     task: string
-    due_date: string
+    due_date: string | null
     priority: string
-    help_url?: string
+    help_url?: string | null
   }>
-  costs: any
+  earnestMoney: {
+    received: boolean
+    heldBy: string
+    receivedDate: string | null
+  } | null
+  checklistSummary: {
+    totalRequired: number
+    completed: number
+    pendingItems: Array<{ id: string; name: string; category: string }>
+  }
+  delayInfo: {
+    hasDelays: boolean
+    impactOnClosing: number
+    reasons: string[]
+  } | null
   updates: Array<{
+    id: string
     text: string
     type: string
     timestamp: string
     icon: string
+    source?: string
+    nextStep?: string
+    nextStepDate?: string
   }>
-  team: any[]
+  team: Array<{
+    id: string
+    role: string
+    name: string
+    company: string
+    email: string
+    phone: string
+  }>
   personaTools: Array<{
     name: string
     url: string
@@ -74,8 +105,14 @@ interface DashboardData {
   educationalContent: {
     title: string
     content: string
-    videoUrl: string
+    type?: string
+    isRead?: boolean
+    videoUrl?: string
   } | null
+  contactAgent: {
+    message: string
+    action: string
+  }
 }
 
 const iconMap: Record<string, any> = {
@@ -246,36 +283,82 @@ export default function TransactionDashboard() {
               )}
             </Card>
 
-            {/* Cost Breakdown Widget */}
+            {/* Earnest Money & Checklist Status */}
             <Card className="p-6">
-              <h2 className="text-xl font-semibold mb-4">Money Matters</h2>
+              <h2 className="text-xl font-semibold mb-4">Transaction Status</h2>
               <div className="space-y-4">
-                <div className="text-center py-6 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/20 dark:to-indigo-950/20 rounded-lg">
-                  <p className="text-sm text-muted-foreground mb-2">
-                    {data.costs.transaction_type === "seller" ? "Estimated Net Proceeds" : "Cash Needed at Closing"}
-                  </p>
-                  <p className="text-4xl font-bold">${(data.costs.net_proceeds || data.costs.cash_needed_at_closing || 0).toLocaleString()}</p>
-                  <p className="text-xs text-muted-foreground mt-2">Last updated: {new Date().toLocaleDateString()}</p>
+                {/* Earnest Money Status */}
+                {data.earnestMoney && (
+                  <div className="flex items-center justify-between p-4 bg-muted/50 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <div className={cn(
+                        "w-10 h-10 rounded-full flex items-center justify-center",
+                        data.earnestMoney.received ? "bg-green-100 dark:bg-green-950/30" : "bg-amber-100 dark:bg-amber-950/30"
+                      )}>
+                        <Shield className={cn("w-5 h-5", data.earnestMoney.received ? "text-green-600" : "text-amber-600")} />
+                      </div>
+                      <div>
+                        <p className="font-medium">Earnest Money Deposit</p>
+                        <p className="text-sm text-muted-foreground">
+                          {data.earnestMoney.received 
+                            ? `Received - Held by ${data.earnestMoney.heldBy}`
+                            : `Pending - Will be held by ${data.earnestMoney.heldBy}`
+                          }
+                        </p>
+                      </div>
+                    </div>
+                    {data.earnestMoney.received && (
+                      <Badge className="bg-green-100 text-green-700 border-0">Secured</Badge>
+                    )}
+                  </div>
+                )}
+
+                {/* Closing Checklist Summary */}
+                <div className="border rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-medium">Closing Checklist</h3>
+                    <span className="text-sm text-muted-foreground">
+                      {data.checklistSummary.completed} of {data.checklistSummary.totalRequired} complete
+                    </span>
+                  </div>
+                  <Progress 
+                    value={(data.checklistSummary.completed / Math.max(data.checklistSummary.totalRequired, 1)) * 100} 
+                    className="h-2 mb-3" 
+                  />
+                  {data.checklistSummary.pendingItems.length > 0 && (
+                    <details className="group">
+                      <summary className="cursor-pointer flex items-center justify-between text-sm text-muted-foreground hover:text-foreground">
+                        {data.checklistSummary.pendingItems.length} items remaining
+                        <ChevronDown className="w-4 h-4 group-open:rotate-180 transition-transform" />
+                      </summary>
+                      <ul className="mt-3 space-y-2">
+                        {data.checklistSummary.pendingItems.slice(0, 5).map((item) => (
+                          <li key={item.id} className="flex items-center gap-2 text-sm">
+                            <Circle className="w-3 h-3 text-muted-foreground" />
+                            <span>{item.name}</span>
+                            <Badge variant="outline" className="ml-auto text-xs">{item.category}</Badge>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
                 </div>
 
-                <details className="group">
-                  <summary className="cursor-pointer flex items-center justify-between text-sm font-semibold hover:text-primary">
-                    See detailed breakdown
-                    <ChevronDown className="w-5 h-5 group-open:rotate-180 transition-transform" />
-                  </summary>
-                  <div className="mt-4 space-y-3">
-                    {data.costs.detailed_costs &&
-                      Object.entries(data.costs.detailed_costs).map(([key, cost]: [string, any]) => (
-                        <div key={key} className="flex items-center justify-between py-2 border-b border-border">
-                          <div className="flex-1">
-                            <p className="font-medium">{key.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}</p>
-                            {cost.explanation && <p className="text-xs text-muted-foreground">{cost.explanation}</p>}
-                          </div>
-                          <p className="font-semibold">${(cost.total || cost || 0).toLocaleString()}</p>
-                        </div>
-                      ))}
+                {/* Delay Info if present */}
+                {data.delayInfo?.hasDelays && (
+                  <div className="flex items-start gap-3 p-4 bg-amber-50 dark:bg-amber-950/20 rounded-lg border border-amber-200 dark:border-amber-800">
+                    <Clock className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-medium text-amber-800 dark:text-amber-200">Timeline Update</p>
+                      <p className="text-sm text-amber-700 dark:text-amber-300">
+                        {data.delayInfo.impactOnClosing > 0 
+                          ? `Closing may be delayed by approximately ${data.delayInfo.impactOnClosing} days.`
+                          : "There are some items that need attention. Your agent will keep you updated."
+                        }
+                      </p>
+                    </div>
                   </div>
-                </details>
+                )}
               </div>
             </Card>
           </div>
@@ -313,31 +396,88 @@ export default function TransactionDashboard() {
             <Card className="p-6">
               <h2 className="text-xl font-semibold mb-4">Recent Updates</h2>
               <div className="space-y-4">
-                {data.updates.map((update, index) => {
-                  const Icon = iconMap[update.icon] || Bell
-                  return (
-                    <div key={index} className="flex items-start">
-                      <div
-                        className={cn(
-                          "w-10 h-10 rounded-full flex items-center justify-center mr-4 flex-shrink-0",
-                          update.type === "celebration" && "bg-green-100 dark:bg-green-950/20",
-                          update.type === "urgent" && "bg-red-100 dark:bg-red-950/20",
-                          update.type !== "celebration" && update.type !== "urgent" && "bg-blue-100 dark:bg-blue-950/20",
-                        )}
-                      >
-                        <Icon className="w-5 h-5" />
+                {data.updates.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-4">No updates yet. Check back soon!</p>
+                ) : (
+                  data.updates.map((update, index) => {
+                    const Icon = iconMap[update.icon] || Bell
+                    return (
+                      <div key={update.id || index} className="flex items-start">
+                        <div
+                          className={cn(
+                            "w-10 h-10 rounded-full flex items-center justify-center mr-4 flex-shrink-0",
+                            update.type === "celebration" && "bg-green-100 dark:bg-green-950/20",
+                            update.type === "urgent" && "bg-red-100 dark:bg-red-950/20",
+                            update.type !== "celebration" && update.type !== "urgent" && "bg-blue-100 dark:bg-blue-950/20",
+                          )}
+                        >
+                          <Icon className="w-5 h-5" />
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm">{update.text}</p>
+                          {update.nextStep && (
+                            <p className="text-xs text-primary mt-1">Next: {update.nextStep}</p>
+                          )}
+                          <p className="text-xs text-muted-foreground mt-1">{new Date(update.timestamp).toLocaleDateString()}</p>
+                        </div>
                       </div>
-                      <div className="flex-1">
-                        <p className="text-sm">{update.text}</p>
-                        <p className="text-xs text-muted-foreground mt-1">{new Date(update.timestamp).toLocaleDateString()}</p>
-                      </div>
-                    </div>
-                  )
-                })}
+                    )
+                  })
+                )}
               </div>
             </Card>
+
+            {/* Team Contacts */}
+            {data.team && data.team.length > 0 && (
+              <Card className="p-6">
+                <h2 className="text-xl font-semibold mb-4">Your Team</h2>
+                <div className="space-y-4">
+                  {data.team.map((member) => (
+                    <div key={member.id} className="flex items-start gap-3">
+                      <div className="w-10 h-10 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
+                        <span className="text-sm font-medium">{member.name?.charAt(0) || "?"}</span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium truncate">{member.name}</p>
+                        <p className="text-sm text-muted-foreground">{member.role}</p>
+                        {member.company && <p className="text-xs text-muted-foreground">{member.company}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
           </div>
         </div>
+
+        {/* Contact Agent CTA - Sticky on mobile */}
+        <div className="fixed bottom-0 left-0 right-0 p-4 bg-background/95 backdrop-blur border-t lg:relative lg:bottom-auto lg:left-auto lg:right-auto lg:p-0 lg:bg-transparent lg:backdrop-blur-none lg:border-0 lg:mt-8">
+          <Card className="p-4 lg:p-6 bg-gradient-to-r from-primary/10 to-primary/5 border-primary/20">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="text-center sm:text-left">
+                <h3 className="font-semibold">Have Questions?</h3>
+                <p className="text-sm text-muted-foreground">{data.contactAgent?.message || "Your agent is here to help with any questions."}</p>
+              </div>
+              <div className="flex gap-2 w-full sm:w-auto">
+                <Button variant="outline" size="sm" className="flex-1 sm:flex-initial">
+                  <Phone className="w-4 h-4 mr-2" />
+                  Call
+                </Button>
+                <Button variant="outline" size="sm" className="flex-1 sm:flex-initial">
+                  <Mail className="w-4 h-4 mr-2" />
+                  Email
+                </Button>
+                <Button size="sm" className="flex-1 sm:flex-initial">
+                  <MessageCircle className="w-4 h-4 mr-2" />
+                  Message
+                </Button>
+              </div>
+            </div>
+          </Card>
+        </div>
+
+        {/* Bottom padding for mobile sticky CTA */}
+        <div className="h-24 lg:h-0" />
       </div>
     </div>
   )
