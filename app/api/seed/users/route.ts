@@ -48,8 +48,8 @@ export async function POST() {
       email: "tc@nexus.local",
       first_name: "Taylor",
       last_name: "Coordinator",
-      user_type: "TC",
-      role: "TC",
+      user_type: "tc",
+      role: "tc",
       brokerage: null,
     },
     {

@@ -14,24 +14,20 @@
 
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
-import { 
-  getBuyerJourneyStatus, 
+import {
+  getBuyerJourneyStatus,
   enforceFinancialGate,
   getBuyerFriendlyMessage,
   logBuyerExecutionEvent,
-  type BuyerExecutionContext 
-} from '@/lib/buyer-execution/buyer-execution-engine'
-import {
   handleBuyerVoiceRequest,
-  type VoiceAssistantRequest
-} from '@/lib/buyer-execution/voice-assistant-integration'
-import {
   lenderConfirmFinancialVerification,
   agentAssistSearchConfiguration,
   adminOverrideFinancialGate,
   agentAdvanceBuyerStage,
-  getMultiPartyUpdateHistory
-} from '@/lib/buyer-execution/multi-party-updates'
+  getMultiPartyUpdateHistory,
+  type BuyerExecutionContext,
+  type VoiceAssistantRequest,
+} from '@/lib/buyer-execution'
 
 /**
  * Get buyer's complete journey status

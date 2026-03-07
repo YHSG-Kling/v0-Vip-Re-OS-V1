@@ -1,13 +1,24 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { generatePersonalizedEmail, logEmailActivity } from '@/lib/ai-isa/email-generator'
-import { generateHeyGenVideo, embedVideoInEmail } from '@/lib/ai-isa/video-generator'
-import { shouldTriggerDirectMail, triggerDirectMailCampaign } from '@/lib/ai-isa/direct-mail-trigger'
+import {
+  generatePersonalizedEmail,
+  logEmailActivity,
+  generateHeyGenVideo,
+  embedVideoInEmail,
+  shouldTriggerDirectMail,
+  triggerDirectMailCampaign,
+} from '@/lib/ai-isa'
+import {
+  logISAOutreach,
+  checkMaxTouches,
+  checkUnderContractPause,
+} from '@/lib/ai-isa/isa-outreach-logger'
+import { handleISAQualificationStarted } from '@/lib/kernel/lead-acquisition-handlers'
+import { evaluateOutbound } from '@/lib/kernel'
+import { dispatchEmail } from '@/lib/providers/dispatch'
 
 export async function initiateAIISAEngagement(leadId: string) {
-  console.log('[v0] Initiating AI ISA engagement for lead:', leadId)
-  
   const supabase = createServiceClient()
   
   try {
@@ -24,16 +35,60 @@ export async function initiateAIISAEngagement(leadId: string) {
     
     // Validate lead is eligible for AI ISA (not assigned to agent yet)
     if (lead.agent_id) {
-      console.log('[v0] Lead already assigned to agent, skipping AI ISA')
       return { success: false, reason: 'Lead already assigned to agent' }
     }
-    
+
     // Check if email is available
     if (!lead.email) {
-      console.log('[v0] No email available for lead')
       return { success: false, reason: 'No email available' }
     }
-    
+
+    // ── Step A: Hard stops 1 + 2 (lead-level) ────────────────────────────────
+    if (lead.lifecycle_state === 'representation') {
+      return { success: false, reason: 'stop:representation' }
+    }
+    if (lead.is_active === false) {
+      return { success: false, reason: 'stop:inactive' }
+    }
+
+    // Resolve contact_id if present (lead may have an associated contact)
+    const contactId: string | null = lead.contact_id ?? null
+
+    // ── Step B: Hard stops 3 + 4 (contact-level) ─────────────────────────────
+    if (contactId) {
+      const { data: contact } = await supabase
+        .from('contacts')
+        .select('dnc_status, isa_reengage_allowed')
+        .eq('id', contactId)
+        .maybeSingle()
+
+      if (contact?.dnc_status === true) {
+        return { success: false, reason: 'stop:dnc' }
+      }
+      if (contact?.isa_reengage_allowed === false) {
+        return { success: false, reason: 'stop:reengage_blocked' }
+      }
+    }
+
+    // ── Step C: Under-contract pause ─────────────────────────────────────────
+    if (contactId) {
+      const paused = await checkUnderContractPause(
+        lead.brokerage_id,
+        contactId,
+        'lead',
+        leadId,
+      )
+      if (paused) {
+        return { success: false, reason: 'paused:under_contract' }
+      }
+    }
+
+    // ── Step D: Max touches check ─────────────────────────────────────────────
+    const canContinue = await checkMaxTouches(leadId, 'lead', lead.brokerage_id)
+    if (!canContinue) {
+      return { success: false, reason: 'stop:max_touches' }
+    }
+
     // Step 1: Generate personalized email
     const emailContext = {
       leadId: lead.id,
@@ -62,15 +117,48 @@ export async function initiateAIISAEngagement(leadId: string) {
     const videoResult = await generateHeyGenVideo(videoContext)
     const finalEmailBody = await embedVideoInEmail(body, videoResult.videoUrl)
     
-    // Step 3: Send email (stub - implement actual email sending)
-    // TODO: Integrate with email service (SendGrid, Resend, etc.)
-    console.log('[v0] Would send email to:', lead.email)
-    console.log('[v0] Subject:', subject)
-    console.log('[v0] Body preview:', finalEmailBody.substring(0, 200))
-    
-    const emailSent = true // Assume success for now
-    
-    // Log email activity
+    // ── Step F: evaluateOutbound — stop 5 ────────────────────────────────────
+    const compliance = await evaluateOutbound({
+      brokerageId: lead.brokerage_id,
+      entityType:  'lead',
+      entityId:    leadId,
+      channel:     'email',
+    })
+    if (!compliance.allowed) {
+      return { success: false, reason: `stop:compliance:${compliance.reason ?? 'blocked'}` }
+    }
+
+    // ── Step G: Send via dispatch layer (honors kernel/providers selection) ──
+    await dispatchEmail({
+      brokerageId: lead.brokerage_id,
+      from:        fromName,
+      to:          lead.email,
+      subject,
+      html:        finalEmailBody,
+      text:        finalEmailBody.replace(/<[^>]+>/g, ''),
+      metadata:    { leadId, source: 'ai_isa' },
+    })
+
+    const emailSent = true
+
+    // ── Step H: Log outreach ──────────────────────────────────────────────────
+    await logISAOutreach({
+      brokerageId:  lead.brokerage_id,
+      entity:       { entityType: 'lead', leadId },
+      channel:      'email',
+      subject,
+      bodySnippet:  finalEmailBody.substring(0, 500),
+    })
+
+    // ── Step I: Transition to isa_qualifying if unconsented ───────────────────
+    if (lead.lifecycle_state === 'unconsented') {
+      await handleISAQualificationStarted({
+        leadId,
+        brokerageId: lead.brokerage_id,
+      })
+    }
+
+    // Log legacy email activity
     await logEmailActivity(leadId, lead.brokerage_id, emailSent)
     
     // Step 4: Check if direct mail should be triggered

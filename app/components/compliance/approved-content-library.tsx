@@ -48,7 +48,7 @@ export default function ApprovedContentLibrary() {
     return (
       item.content_template?.toLowerCase().includes(searchLower) ||
       item.content_category?.toLowerCase().includes(searchLower) ||
-      item.content_approval_queue?.content_title?.toLowerCase().includes(searchLower)
+      item.activities?.title?.toLowerCase().includes(searchLower)
     )
   })
 
@@ -165,8 +165,8 @@ export default function ApprovedContentLibrary() {
                       </Badge>
                     </div>
 
-                    {item.content_approval_queue?.content_title && (
-                      <h4 className="font-medium mb-2 line-clamp-1">{item.content_approval_queue.content_title}</h4>
+                    {item.activities?.title && (
+                      <h4 className="font-medium mb-2 line-clamp-1">{item.activities.title}</h4>
                     )}
 
                     <p className="text-sm text-muted-foreground line-clamp-3 mb-3">{item.content_template}</p>
@@ -221,7 +221,7 @@ export default function ApprovedContentLibrary() {
       <Dialog open={!!selectedContent} onOpenChange={(open) => !open && setSelectedContent(null)}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{selectedContent?.content_approval_queue?.content_title || "Approved Content"}</DialogTitle>
+            <DialogTitle>{selectedContent?.activities?.title || "Approved Content"}</DialogTitle>
           </DialogHeader>
 
           {selectedContent && (
@@ -234,8 +234,8 @@ export default function ApprovedContentLibrary() {
                 <div>
                   <span className="text-muted-foreground">Approved:</span>
                   <p className="font-medium">
-                    {selectedContent.content_approval_queue?.approved_at
-                      ? new Date(selectedContent.content_approval_queue.approved_at).toLocaleDateString()
+                    {selectedContent.activities?.metadata?.approved_at
+                      ? new Date(selectedContent.activities.metadata.approved_at).toLocaleDateString()
                       : "N/A"}
                   </p>
                 </div>
@@ -270,10 +270,10 @@ export default function ApprovedContentLibrary() {
                 </div>
               </div>
 
-              {selectedContent.content_approval_queue?.usage_count !== undefined && (
-                <p className="text-sm text-muted-foreground">
-                  Used {selectedContent.content_approval_queue.usage_count} times
-                </p>
+              {selectedContent.activities?.metadata?.usage_count !== undefined && (
+                <Badge variant="outline" className="flex items-center gap-1">
+                  Used {selectedContent.activities.metadata.usage_count} times
+                </Badge>
               )}
             </div>
           )}

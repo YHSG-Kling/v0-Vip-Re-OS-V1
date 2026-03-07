@@ -1,3 +1,4 @@
+// Agent task (correct location, no changes) — activity_type: lead_promotion
 /**
  * Logs lead-to-contact promotion events
  * 
@@ -32,7 +33,7 @@ export async function logPromotionActivity(
       created_at: new Date().toISOString()
     })
 
-    console.log(`[v0] Promotion logged for contact ${data.contactId}`)
+    console.log(`[PromotionLogger] Promotion logged for contact ${data.contactId}`)
 
     return { success: true }
 

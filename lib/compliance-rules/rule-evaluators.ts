@@ -1,5 +1,3 @@
-"use server"
-
 // ============================================
 // SYSTEM 4.2 – COMPLIANCE RULE EVALUATORS
 // Pure evaluation logic (no database dependencies)

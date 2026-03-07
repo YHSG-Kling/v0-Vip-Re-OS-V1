@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -26,6 +25,10 @@ interface PortalAIAssistantProps {
   isSeller: boolean
   persona: string
 }
+
+// Generate unique message IDs
+let messageCounter = 0
+const generateMessageId = () => `msg-${Date.now()}-${messageCounter++}`
 
 export default function PortalAIAssistant({ contact, contactId, isBuyer, isSeller, persona }: PortalAIAssistantProps) {
   const [isOpen, setIsOpen] = useState(false)
@@ -167,7 +170,7 @@ export default function PortalAIAssistant({ contact, contactId, isBuyer, isSelle
     if (!input.trim() || isLoading) return
 
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: generateMessageId(),
       role: "user",
       content: input.trim(),
       timestamp: new Date(),
@@ -197,7 +200,7 @@ export default function PortalAIAssistant({ contact, contactId, isBuyer, isSelle
       const data = await response.json()
 
       const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
+        id: generateMessageId(),
         role: "assistant",
         content: data.response,
         timestamp: new Date(),
@@ -209,7 +212,7 @@ export default function PortalAIAssistant({ contact, contactId, isBuyer, isSelle
     } catch (error) {
       // Fallback response if API fails
       const fallbackMessage: Message = {
-        id: (Date.now() + 1).toString(),
+        id: generateMessageId(),
         role: "assistant",
         content:
           "I apologize, but I'm having trouble connecting right now. Your agent has been notified and will follow up with you shortly. In the meantime, you can browse your dashboard or documents.",

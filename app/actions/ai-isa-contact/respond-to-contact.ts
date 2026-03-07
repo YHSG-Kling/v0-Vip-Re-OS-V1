@@ -26,11 +26,16 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { generateAIResponse, ResponseContext } from '@/lib/ai-isa-contact/response-generator'
-import { extractQualificationSignals, persistQualificationSignals } from '@/lib/ai-isa-contact/qualification-engine'
-import { evaluateHandoffReadiness, logHandoffSignal } from '@/lib/ai-isa-contact/handoff-detector'
-import { ingestMessage } from '@/app/actions/communication-spine/ingest-message'
-import { trackVendorUsage } from '@/app/actions/vendor-governance/track-usage'
+import {
+  generateAIResponse,
+  extractQualificationSignals,
+  persistQualificationSignals,
+  evaluateHandoffReadiness,
+  logHandoffSignal,
+  type ResponseContext,
+} from '@/lib/ai-isa-contact'
+import { ingestMessageService as ingestMessage } from '@/lib/communication-spine'
+import { trackVendorUsageService as trackVendorUsage } from '@/lib/vendor-governance'
 
 export interface RespondToContactParams {
   contactId: string
@@ -153,10 +158,10 @@ export async function respondToContact(
     let escalationLogged = false
     if (handoffSignal.shouldEscalate) {
       escalationLogged = await logHandoffSignal(params.contactId, handoffSignal)
-      console.log(`[v0] [AI ISA CONTACT] Handoff signal logged for ${params.contactId}`)
+      console.log(`[AI ISA Contact] Handoff signal logged for ${params.contactId}`)
     }
 
-    // STEP 8: Log completion
+    // STEP 8: Log completion — Agent task (correct location, no changes) — activity_type: ai_isa_response
     await supabase.from('activities').insert({
       activity_type: 'ai_isa_response',
       title: 'AI ISA Contact Response',

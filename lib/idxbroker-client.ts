@@ -1,15 +1,36 @@
 // IDX Broker API Client for property search activity tracking
 // Tracks what properties leads view, save, and share on IDX sites
 
+import { createServiceClient } from "@/lib/supabase/service"
+
 export class IDXBrokerClient {
   private apiKey: string
   private baseUrl = "https://api.idxbroker.com"
 
-  constructor() {
-    this.apiKey = process.env.IDXBROKER_API_KEY || ""
+  constructor(apiKey?: string) {
+    this.apiKey = apiKey ?? process.env.IDXBROKER_API_KEY ?? ""
     if (!this.apiKey) {
       console.warn("[IDXBroker] API key not configured")
     }
+  }
+
+  /** Multi-tenant factory: resolves API key from platform_credentials for a brokerage. */
+  static async forBrokerage(brokerageId: string): Promise<IDXBrokerClient> {
+    const supabase = createServiceClient()
+    const { data: cred } = await supabase
+      .from("platform_credentials")
+      .select("api_key")
+      .eq("brokerage_id", brokerageId)
+      .eq("provider_name", "idxbroker")
+      .eq("is_active", true)
+      .limit(1)
+      .maybeSingle()
+    const apiKey = cred?.api_key || process.env.IDXBROKER_API_KEY || ""
+    return new IDXBrokerClient(apiKey)
+  }
+
+  isConfigured(): boolean {
+    return !!this.apiKey
   }
 
   async getLeadActivity(email: string) {

@@ -40,7 +40,7 @@ import {
   CheckCircle2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { useAuth } from "@/contexts/AuthContext"
+import { useAuth } from "@/lib/auth/client"
 import { getVideoScriptLibrary, getVideoTemplates, queueVideoGeneration, getAgentVideoProfile, getVideoBrandingPresets, saveVideoScript } from "@/app/actions/video-generation"
 
 const VIDEO_TYPES = [

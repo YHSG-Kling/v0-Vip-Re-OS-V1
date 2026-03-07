@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { validateThemFirstContent } from "@/lib/them-first/validator"
+import { validateThemFirstContent } from "@/lib/them-first"
 
 export async function POST(req: Request) {
   try {

@@ -106,6 +106,7 @@ export async function emitSLAExpectationMetadata(params: {
 
   const supabase = createServiceClient()
 
+  // Agent task (correct location, no changes) — type: buyer.lifecycle.sla_expectations, buyer.lifecycle.sla_breach, buyer.lifecycle.renewal_reminder
   // Emit one metadata event with all expectations
   const { error } = await supabase.from("activities").insert({
     type: "buyer.lifecycle.sla_expectations",

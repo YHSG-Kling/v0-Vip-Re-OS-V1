@@ -1,11 +1,17 @@
 "use server"
 
-// =====================================================
-// EXTERNAL SERVICE INTEGRATIONS
-// =====================================================
-// These are the real API calls that workflows should use
+/**
+ * EXTERNAL SERVICES (thin wrappers)
+ * All API calls are delegated to lib/providers/*.
+ * This file preserves existing function signatures for backward compatibility.
+ */
+
+import { sendSMS, sendEmail } from "@/lib/providers/messaging"
+import { createTransfer } from "@/lib/providers/payment"
+import { createCalendarEvent } from "@/lib/providers/calendar"
 
 // HEYGEN VIDEO GENERATION
+// HeyGen is a video-specific provider — kept inline until lib/providers/video is created.
 export async function generateHeyGenVideo(params: {
   avatarId: string
   voiceId: string
@@ -15,7 +21,6 @@ export async function generateHeyGenVideo(params: {
   const apiKey = process.env.HEYGEN_API_KEY
 
   if (!apiKey) {
-    console.warn("[External Services] HeyGen API key not configured")
     return {
       success: false,
       error: "HeyGen API key not configured. Add HEYGEN_API_KEY to environment variables.",
@@ -55,11 +60,7 @@ export async function generateHeyGenVideo(params: {
       throw new Error(data.error?.message || "HeyGen API error")
     }
 
-    return {
-      success: true,
-      videoId: data.data?.video_id,
-      status: "processing",
-    }
+    return { success: true, videoId: data.data?.video_id, status: "processing" }
   } catch (error: any) {
     console.error("[External Services] HeyGen error:", error)
     return { success: false, error: error.message }
@@ -90,58 +91,21 @@ export async function getHeyGenVideoStatus(videoId: string) {
   }
 }
 
-// TWILIO SMS
+// TWILIO SMS — delegates to lib/providers/messaging
 export async function sendTwilioSMS(params: {
   to: string
   message: string
   contactId?: string
 }) {
-  const accountSid = process.env.TWILIO_ACCOUNT_SID
-  const authToken = process.env.TWILIO_AUTH_TOKEN
-  const fromNumber = process.env.TWILIO_PHONE_NUMBER
-
-  if (!accountSid || !authToken || !fromNumber) {
-    console.warn("[External Services] Twilio not configured")
-    return {
-      success: false,
-      error:
-        "Twilio not configured. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_PHONE_NUMBER to environment variables.",
-      mock: true,
-    }
-  }
-
   try {
-    const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`, {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        To: params.to,
-        From: fromNumber,
-        Body: params.message,
-      }),
-    })
-
-    const data = await response.json()
-
-    if (!response.ok) {
-      throw new Error(data.message || "Twilio API error")
-    }
-
-    return {
-      success: true,
-      messageId: data.sid,
-      status: data.status,
-    }
+    return await sendSMS(params)
   } catch (error: any) {
     console.error("[External Services] Twilio error:", error)
     return { success: false, error: error.message }
   }
 }
 
-// SENDGRID EMAIL
+// SENDGRID EMAIL — delegates to lib/providers/messaging
 export async function sendSendGridEmail(params: {
   to: string
   subject: string
@@ -150,92 +114,23 @@ export async function sendSendGridEmail(params: {
   from?: string
   contactId?: string
 }) {
-  const apiKey = process.env.SENDGRID_API_KEY
-  const defaultFrom = process.env.SENDGRID_FROM_EMAIL || "noreply@yourdomain.com"
-
-  if (!apiKey) {
-    console.warn("[External Services] SendGrid not configured")
-    return {
-      success: false,
-      error: "SendGrid not configured. Add SENDGRID_API_KEY to environment variables.",
-      mock: true,
-    }
-  }
-
   try {
-    const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        personalizations: [{ to: [{ email: params.to }] }],
-        from: { email: params.from || defaultFrom },
-        subject: params.subject,
-        content: [
-          { type: "text/plain", value: params.text || params.html.replace(/<[^>]*>/g, "") },
-          { type: "text/html", value: params.html },
-        ],
-      }),
-    })
-
-    if (!response.ok) {
-      const error = await response.text()
-      throw new Error(error || "SendGrid API error")
-    }
-
-    return { success: true, status: "sent" }
+    return await sendEmail(params)
   } catch (error: any) {
     console.error("[External Services] SendGrid error:", error)
     return { success: false, error: error.message }
   }
 }
 
-// STRIPE (for commission splits, etc.)
+// STRIPE — delegates to lib/providers/payment
 export async function createStripeTransfer(params: {
   amount: number
   destinationAccountId: string
   description?: string
   transactionId?: string
 }) {
-  const secretKey = process.env.STRIPE_SECRET_KEY
-
-  if (!secretKey) {
-    console.warn("[External Services] Stripe not configured")
-    return {
-      success: false,
-      error: "Stripe not configured. Add STRIPE_SECRET_KEY to environment variables.",
-      mock: true,
-    }
-  }
-
   try {
-    const response = await fetch("https://api.stripe.com/v1/transfers", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${secretKey}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        amount: Math.round(params.amount * 100).toString(), // Convert to cents
-        currency: "usd",
-        destination: params.destinationAccountId,
-        description: params.description || "Commission transfer",
-      }),
-    })
-
-    const data = await response.json()
-
-    if (!response.ok) {
-      throw new Error(data.error?.message || "Stripe API error")
-    }
-
-    return {
-      success: true,
-      transferId: data.id,
-      amount: data.amount / 100,
-    }
+    return await createTransfer(params)
   } catch (error: any) {
     console.error("[External Services] Stripe error:", error)
     return { success: false, error: error.message }

@@ -1,25 +1,23 @@
 "use server"
 
-import { ContentGenerationOutput } from "@/lib/content-generation/content-generator"
-import { ComplianceVerdict } from "@/lib/compliance-rules/compliance-engine"
+import { type ContentGenerationOutput } from "@/lib/content-generation"
+import { type ComplianceVerdict } from "@/lib/compliance-rules"
 import {
-  ApprovalContext,
-  ApprovalDecision,
-  ApproverRole,
   determineApprovalDecision,
   determineRequiredApprovers,
   hasApprovalAuthority,
   batchDetermineApprovalDecisions,
   previewApprovalDecision,
   formatApprovalDecision,
-} from "@/lib/approval-workflow/approval-engine"
-import {
   logApprovalDecision,
   logBatchApprovalDecisions,
   getApprovalDecisionHistory,
   getApprovalStats,
   getPendingApprovals,
-} from "@/lib/approval-workflow/approval-logger"
+  type ApprovalContext,
+  type ApprovalDecision,
+  type ApproverRole,
+} from "@/lib/approval-workflow"
 import { isValidUUID } from "@/lib/validations"
 
 // ============================================

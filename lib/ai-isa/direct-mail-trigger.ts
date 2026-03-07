@@ -1,9 +1,13 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { dispatchDirectMail } from '@/lib/providers/dispatch'
 
 export interface DirectMailContext {
   leadId: string
+  brokerageId: string
+  agentUserId?: string
+  templateId?: string
   firstName: string
   lastName: string
   mailingAddress?: string
@@ -46,10 +50,7 @@ export async function shouldTriggerDirectMail(leadId: string): Promise<boolean> 
 }
 
 export async function triggerDirectMailCampaign(context: DirectMailContext) {
-  console.log('[v0] Triggering direct mail for lead:', context.leadId)
-  
   if (!context.mailingAddress || !context.city || !context.state || !context.zip) {
-    console.log('[v0] Insufficient address data for direct mail')
     return { success: false, error: 'Missing address data' }
   }
   
@@ -71,64 +72,64 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
       .select()
       .single()
     
-    // TODO: Integrate with Lob or PostcardMania API
-    // const lobResponse = await fetch('https://api.lob.com/v1/postcards', {
-    //   method: 'POST',
-    //   headers: {
-    //     'Authorization': `Basic ${Buffer.from(process.env.LOB_API_KEY + ':').toString('base64')}`,
-    //     'Content-Type': 'application/json'
-    //   },
-    //   body: JSON.stringify({
-    //     to: {
-    //       name: `${context.firstName} ${context.lastName}`,
-    //       address_line1: context.mailingAddress,
-    //       address_city: context.city,
-    //       address_state: context.state,
-    //       address_zip: context.zip
-    //     },
-    //     front: 'personalized_front_design_url',
-    //     back: 'personalized_back_design_url'
-    //   })
-    // })
-    
+    // Step 3: Dispatch through provider resolution layer
+    const result = await dispatchDirectMail({
+      brokerageId:    context.brokerageId,
+      userId:         context.agentUserId,
+      recipientName:  `${context.firstName} ${context.lastName}`.trim(),
+      mailingAddress: context.mailingAddress ?? '',
+      city:           context.city ?? '',
+      state:          context.state ?? '',
+      zip:            context.zip ?? '',
+      templateId:     context.templateId ?? process.env.LOB_DEFAULT_TEMPLATE_ID ?? '',
+      mergeVars: {
+        first_name:        context.firstName,
+        motivation_type:   context.motivation_type ?? '',
+        property_interest: context.property_interest ?? '',
+      },
+      systemSource: 'ai_isa',
+      leadId:       context.leadId,
+    })
+
+    // Step 4: Fire-and-forget provider log
+    supabase.from('message_provider_logs').insert({
+      brokerage_id:        context.brokerageId,
+      provider_key:        'lob',
+      channel:             'direct_mail',
+      direction:           'outbound',
+      provider_message_id: result.messageId ?? null,
+      provider_status:     result.success ? 'sent' : 'failed',
+      error_message:       result.error ?? null,
+    }).then(() => {}).catch(() => {})
+
     // Log activity
-    const { data: lead } = await supabase
-      .from('leads')
-      .select('brokerage_id')
-      .eq('id', context.leadId)
-      .single()
-    
-    if (lead) {
-      await supabase.from('activities').insert({
-        contact_id: context.leadId,
-        brokerage_id: lead.brokerage_id,
-        activity_type: 'ai_isa_direct_mail',
-        title: 'Direct Mail Triggered',
-        description: `Personalized direct mail sent to ${context.mailingAddress}`,
-        status: 'completed',
-        created_at: new Date().toISOString()
-      })
-    }
-    
+    await supabase.from('activities').insert({
+      contact_id:    context.leadId,
+      brokerage_id:  context.brokerageId,
+      activity_type: 'ai_isa_direct_mail',
+      title:         'Direct Mail Triggered',
+      description:   `Personalized direct mail sent to ${context.mailingAddress}`,
+      status:        'completed',
+      created_at:    new Date().toISOString(),
+    })
+
     return {
-      success: true,
-      campaignId: campaign?.id
+      success:    result.success,
+      campaignId: campaign?.id,
+      error:      result.error,
     }
-  } catch (error: any) {
-    console.error('[v0] Direct mail trigger error:', error)
-    
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+
     await supabase.from('automation_errors').insert({
       workflow_name: 'ai_isa_direct_mail',
-      error_message: error.message,
-      context_json: JSON.stringify(context),
-      severity: 'low',
-      status: 'new',
-      created_at: new Date().toISOString()
+      error_message: msg,
+      context_json:  JSON.stringify(context),
+      severity:      'low',
+      status:        'open',
+      created_at:    new Date().toISOString(),
     })
-    
-    return {
-      success: false,
-      error: error.message
-    }
+
+    return { success: false, error: msg }
   }
 }

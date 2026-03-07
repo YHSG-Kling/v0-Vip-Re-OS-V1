@@ -6,7 +6,7 @@ import { X, Sparkles, Copy, Check, Save, Loader2, Bot, ShieldCheck, Zap } from "
 import type { AIToolName } from "../../types"
 import { workflowService } from "../../services/workflowService"
 import { supabaseService } from "../../services/supabaseService"
-import { useAuth } from "../../contexts/AuthContext"
+import { useAuth } from "@/lib/auth/client"
 
 interface AIToolModalProps {
   tool: {

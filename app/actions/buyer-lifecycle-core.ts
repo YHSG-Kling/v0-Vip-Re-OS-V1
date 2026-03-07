@@ -15,33 +15,27 @@ import {
   validateRollback,
   validateReactivation,
   getNextAllowedStates,
-  type TransitionValidationResult,
-} from "@/lib/buyer-lifecycle/transition-validator"
-import {
   emitLifecycleTransition,
   getLifecycleHistory,
   getCurrentBuyerState as getStateFromHistory,
   getLifecycleStatistics,
   getBuyersInState,
-  type LifecycleHistoryEntry,
-  type LifecycleStatistics,
-} from "@/lib/buyer-lifecycle/lifecycle-logger"
-import {
   isSearchAllowed,
   isTourAllowed,
   isOfferAllowed,
   getEnabledGatesForBuyer,
   isGateEnabled,
-  type GatingResult,
-} from "@/lib/buyer-lifecycle/gating-helpers"
-import {
   checkFinancialVerification,
   emitFinancialVerificationEvent,
   getFinancialVerificationStatus,
+  type TransitionValidationResult,
+  type LifecycleHistoryEntry,
+  type LifecycleStatistics,
+  type GatingResult,
   type FinancialVerificationResult,
   type FinancialVerificationStatus,
-} from "@/lib/buyer-lifecycle/financial-verification"
-import type { BuyerState } from "@/lib/buyer-lifecycle/lifecycle-definitions"
+  type BuyerState,
+} from "@/lib/buyer-lifecycle"
 
 /**
  * Validate a buyer lifecycle state transition

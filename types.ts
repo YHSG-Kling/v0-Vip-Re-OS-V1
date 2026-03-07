@@ -1,14 +1,39 @@
-export enum UserRole {
-  BROKER = "broker",
-  AGENT = "agent",
-  ADMIN = "admin",
-  VENDOR = "vendor",
-  LENDER = "lender",
-  TC = "TC",
-  COMPLIANCE_OFFICER = "compliance_officer",
-  CONTACT = "contact",
-  TEAM_LEADER = "team_leader",
-}
+// UserRole — canonical string union sourced from lib/security/types.ts.
+// The const object below preserves the legacy dot-access pattern (UserRole.ADMIN)
+// used throughout the codebase while emitting the correct canonical values.
+// Do NOT add new roles here — add them to lib/security/types.ts first.
+export type UserRole =
+  | 'superadmin'
+  | 'admin'
+  | 'broker'
+  | 'team_lead'
+  | 'agent'
+  | 'isa'
+  | 'tc'
+  | 'compliance_officer'
+  | 'vendor'
+  | 'lender'
+  | 'title_agent'
+  | 'contact'
+
+// Runtime accessor object — enables UserRole.ADMIN, UserRole.TC, etc.
+// Values are always the canonical strings above.
+export const UserRole = {
+  SUPERADMIN: 'superadmin' as const,
+  ADMIN: 'admin' as const,
+  BROKER: 'broker' as const,
+  TEAM_LEAD: 'team_lead' as const,
+  /** @deprecated Use TEAM_LEAD. Kept for backward compatibility. */
+  TEAM_LEADER: 'team_lead' as const,
+  AGENT: 'agent' as const,
+  ISA: 'isa' as const,
+  TC: 'tc' as const,
+  COMPLIANCE_OFFICER: 'compliance_officer' as const,
+  VENDOR: 'vendor' as const,
+  LENDER: 'lender' as const,
+  TITLE_AGENT: 'title_agent' as const,
+  CONTACT: 'contact' as const,
+} as const
 
 export type PersonaType =
   | "first_time_buyer"

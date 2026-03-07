@@ -11,27 +11,23 @@ import {
   batchClassifyTemplates,
   isAutoApprovalEligible,
   formatTemplateClassification,
-  type TemplateMetadata,
-  type TemplateClassification,
-} from "@/lib/brand-template-registry/template-classifier"
-import {
   getBrandRequirements,
   batchGetBrandRequirements,
   validateBrandCompliance,
   formatBrandRequirements,
   getBrandElementDescription,
-  type BrandContext,
-  type BrandRequirements,
-  type RequiredBrandElement,
-} from "@/lib/brand-template-registry/brand-requirements"
-import {
   logTemplateClassification,
   logBrandRequirements,
   logBrandCompliance,
   getTemplateClassificationHistory,
   getBrandComplianceHistory,
   getBrandTemplateStatistics,
-} from "@/lib/brand-template-registry/registry-logger"
+  type TemplateMetadata,
+  type TemplateClassification,
+  type BrandContext,
+  type BrandRequirements,
+  type RequiredBrandElement,
+} from "@/lib/brand-template-registry"
 
 // ============================================
 // TEMPLATE CLASSIFICATION ACTIONS

@@ -1,20 +1,17 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { supabase } from "@/services/supabase"
+import { getAgentContext } from "@/lib/identity"
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
-    }
+    const { agentId, brokerageId } = await getAgentContext()
 
     const { data: contact, error } = await supabase
       .from("contacts")
       .select("*")
       .eq("id", params.id)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .is("deleted_at", null)
       .single()
 
@@ -35,19 +32,15 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
 
 export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
   try {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
-    }
+    const { agentId, brokerageId } = await getAgentContext()
 
     // Soft delete
     const { error } = await supabase
       .from("contacts")
       .update({ deleted_at: new Date().toISOString() })
       .eq("id", params.id)
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
 
     if (error) {
       console.error("[Contact Delete] Supabase error:", error)

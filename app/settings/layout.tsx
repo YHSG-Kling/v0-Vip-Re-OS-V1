@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { SettingsSidebar } from '@/app/components/settings/SettingsSidebar';
-import { useAuth } from '@/lib/auth/useAuth';
+import { useAuth } from '@/lib/auth/client';
 import { redirect } from 'next/navigation';
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {

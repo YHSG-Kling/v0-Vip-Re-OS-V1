@@ -80,6 +80,7 @@ export async function emitCompliancePassed(params: {
 
   const supabase = createServiceClient()
 
+  // Agent task (correct location, no changes) — activity_type: buyer.offer.compliance.passed (offer status signal, not a compliance gate log)
   const { error } = await supabase.from("activities").insert({
     entity_type: "offer",
     entity_id: offerId,

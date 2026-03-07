@@ -1,0 +1,269 @@
+"use client"
+
+import { useState, useTransition } from "react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Upload, Sparkles, Link, RefreshCw } from "lucide-react"
+import { OfferUploadZone } from "./components/offer-upload-zone"
+import { OfferComparisonMatrix } from "./components/offer-comparison-matrix"
+import { OfferCard } from "./components/offer-card"
+import { CounterOfferSlideOver } from "./components/counter-offer-slide-over"
+import { AIRecommendationBanner } from "./components/ai-recommendation-banner"
+import { triggerOfferComparison, generateSellerPortalLink, acceptOffer, rejectOffer } from "@/app/actions/seller-offers"
+import { toast } from "@/hooks/use-toast"
+
+type Offer = {
+  id: string
+  offer_number: string | null
+  offer_price: number
+  earnest_money: number | null
+  earnest_money_amount: number | null
+  closing_date: string | null
+  financing_type: string | null
+  down_payment_amount: number | null
+  down_payment_percent: number | null
+  appraisal_contingency_days: number | null
+  financing_contingency_days: number | null
+  inspection_period_days: number | null
+  escalation_clause: boolean | null
+  escalation_cap: number | null
+  appraisal_gap: number | null
+  closing_cost_contribution: number | null
+  due_diligence_fee: number | null
+  possession_terms: string | null
+  contingencies: string[] | null
+  buyer_notes: string | null
+  seller_net_estimate: number | null
+  ai_recommendation: string | null
+  ai_analysis: Record<string, unknown> | null
+  ai_extraction_status: string | null
+  offer_document_url: string | null
+  offer_document_name: string | null
+  status: string | null
+  offer_type: string | null
+  parent_offer_id: string | null
+  current_round: number | null
+  is_winning_offer: boolean | null
+  winning_offer: boolean | null
+  submitted_at: string | null
+  response_deadline: string | null
+  seller_viewed_at: string | null
+  contact_id: string
+  agent_id: string | null
+  brokerage_id: string | null
+}
+
+interface Props {
+  listing: {
+    id: string
+    address: string
+    city: string | null
+    state: string | null
+    list_price: number | null
+    status: string | null
+    brokerage_id: string | null
+    agent_id: string | null
+  }
+  initialOffers: Offer[]
+  currentUserId: string
+  brokerageId: string
+  userRole: string
+}
+
+export function OffersManagerClient({ listing, initialOffers, currentUserId, brokerageId, userRole }: Props) {
+  const [offers, setOffers] = useState<Offer[]>(initialOffers)
+  const [activeTab, setActiveTab] = useState("overview")
+  const [counterTarget, setCounterTarget] = useState<Offer | null>(null)
+  const [aiResult, setAiResult] = useState<Record<string, unknown> | null>(null)
+  const [isPending, startTransition] = useTransition()
+
+  const activeOffers = offers.filter((o) => o.status !== "rejected")
+  const canApprove = ["admin", "broker", "owner"].includes(userRole)
+
+  function handleUploadComplete(newOffer: Offer) {
+    setOffers((prev) => [newOffer, ...prev])
+  }
+
+  function handleRunAI() {
+    startTransition(async () => {
+      const result = await triggerOfferComparison({
+        listingId: listing.id,
+        brokerageId,
+        agentUserId: currentUserId,
+      })
+      if (result.success && result.result) {
+        setAiResult(result.result as Record<string, unknown>)
+        toast({ title: "AI comparison generated" })
+      } else {
+        toast({ title: "AI comparison failed", description: result.error, variant: "destructive" })
+      }
+    })
+  }
+
+  function handleCopyPortalLink() {
+    startTransition(async () => {
+      const result = await generateSellerPortalLink({ listingId: listing.id, brokerageId })
+      if (result.success && result.url) {
+        await navigator.clipboard.writeText(result.url)
+        toast({ title: "Seller portal link copied", description: `Expires ${new Date(result.expires_at!).toLocaleDateString()}` })
+      } else {
+        toast({ title: "Failed to generate link", variant: "destructive" })
+      }
+    })
+  }
+
+  function handleAccept(offerId: string) {
+    startTransition(async () => {
+      const result = await acceptOffer({ offerId, listingId: listing.id, brokerageId, agentUserId: currentUserId })
+      if (result.success) {
+        setOffers((prev) =>
+          prev.map((o) =>
+            o.id === offerId
+              ? { ...o, is_winning_offer: true, winning_offer: true, status: "accepted" }
+              : { ...o, is_winning_offer: false, winning_offer: false }
+          )
+        )
+        toast({ title: "Offer accepted", description: "Listing moved to Under Contract" })
+      } else {
+        toast({ title: "Accept failed", description: result.error, variant: "destructive" })
+      }
+    })
+  }
+
+  function handleReject(offerId: string) {
+    startTransition(async () => {
+      const result = await rejectOffer({ offerId, listingId: listing.id, brokerageId, agentUserId: currentUserId })
+      if (result.success) {
+        setOffers((prev) => prev.filter((o) => o.id !== offerId))
+        toast({ title: "Offer rejected" })
+      } else {
+        toast({ title: "Reject failed", description: result.error, variant: "destructive" })
+      }
+    })
+  }
+
+  return (
+    <div className="flex flex-col gap-6 p-6">
+      {/* Header */}
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-foreground">{listing.address}</h1>
+          <p className="text-sm text-muted-foreground">
+            {listing.city}, {listing.state} &middot; Listed at{" "}
+            {listing.list_price != null
+              ? `$${listing.list_price.toLocaleString()}`
+              : "price TBD"}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant={activeOffers.length > 0 ? "default" : "secondary"}>
+            {activeOffers.length} active offer{activeOffers.length !== 1 ? "s" : ""}
+          </Badge>
+          <Button variant="outline" size="sm" onClick={handleCopyPortalLink} disabled={isPending}>
+            <Link className="mr-1.5 h-3.5 w-3.5" />
+            Seller Portal Link
+          </Button>
+          {activeOffers.length >= 2 && (
+            <Button variant="outline" size="sm" onClick={handleRunAI} disabled={isPending}>
+              {isPending ? (
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Run AI Comparison
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* AI recommendation banner */}
+      {aiResult && (
+        <AIRecommendationBanner
+          result={aiResult}
+          offers={activeOffers}
+        />
+      )}
+
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="matrix" disabled={activeOffers.length < 2}>
+            Comparison Matrix
+          </TabsTrigger>
+          <TabsTrigger value="upload">
+            <Upload className="mr-1.5 h-3.5 w-3.5" />
+            Upload Offer
+          </TabsTrigger>
+        </TabsList>
+
+        {/* OVERVIEW — individual offer cards */}
+        <TabsContent value="overview" className="mt-4">
+          {activeOffers.length === 0 ? (
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-16 gap-3">
+                <p className="text-muted-foreground text-sm">No active offers yet.</p>
+                <Button variant="outline" size="sm" onClick={() => setActiveTab("upload")}>
+                  <Upload className="mr-1.5 h-3.5 w-3.5" />
+                  Upload First Offer
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {activeOffers.map((offer) => (
+                <OfferCard
+                  key={offer.id}
+                  offer={offer}
+                  listPrice={listing.list_price ?? 0}
+                  canApprove={canApprove}
+                  isPending={isPending}
+                  onAccept={() => handleAccept(offer.id)}
+                  onReject={() => handleReject(offer.id)}
+                  onCounter={() => setCounterTarget(offer)}
+                />
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* COMPARISON MATRIX */}
+        <TabsContent value="matrix" className="mt-4">
+          <OfferComparisonMatrix
+            offers={activeOffers}
+            listPrice={listing.list_price ?? 0}
+            aiResult={aiResult}
+          />
+        </TabsContent>
+
+        {/* UPLOAD ZONE */}
+        <TabsContent value="upload" className="mt-4">
+          <OfferUploadZone
+            listingId={listing.id}
+            brokerageId={brokerageId}
+            onUploadComplete={(offer) => {
+              handleUploadComplete(offer as unknown as Offer)
+              setActiveTab("overview")
+            }}
+          />
+        </TabsContent>
+      </Tabs>
+
+      {/* Counter offer slide-over */}
+      {counterTarget && (
+        <CounterOfferSlideOver
+          offer={counterTarget}
+          listingId={listing.id}
+          brokerageId={brokerageId}
+          agentUserId={currentUserId}
+          onClose={() => setCounterTarget(null)}
+          onSuccess={(counter) => {
+            setOffers((prev) => [counter as unknown as Offer, ...prev])
+            setCounterTarget(null)
+          }}
+        />
+      )}
+    </div>
+  )
+}

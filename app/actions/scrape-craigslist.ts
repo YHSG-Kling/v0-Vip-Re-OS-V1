@@ -1,11 +1,10 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { runApifyActor } from '@/lib/external/apify-client'
+import { runApifyActor } from '@/lib/external'
 import { trackVendorUsage } from '@/lib/vendor-tracking'
-import { analyzeLead } from '@/lib/ai/lead-analyzer'
-import { analyzePropertyImages } from '@/lib/ai/vision-analyzer'
-import { processRawRecord } from '@/lib/lead-pipeline/pipeline-processor'
+import { analyzeLead, analyzePropertyImages } from '@/lib/ai'
+import { processRawRecord } from '@/lib/lead-pipeline'
 
 export async function scrapeCraigslist(params: {
   brokerageId: string

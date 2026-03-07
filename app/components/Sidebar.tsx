@@ -50,6 +50,7 @@ import {
   Phone, // Import Phone
   PhoneCall, // Import PhoneCall
   GraduationCap, // Import GraduationCap
+  Mic, // Voice Command Center
 } from "lucide-react"
 
 interface SidebarProps {
@@ -115,6 +116,7 @@ const ALL_NAV_ITEMS: Record<string, { label: string; icon: any }> = {
   "seller-dashboard": { label: "Seller Dashboard", icon: BarChart3 },
   "listing-journey": { label: "Listing Journey", icon: Activity },
   "ai-chat": { label: "Smart Engine Chat", icon: MessageSquare },
+  "dashboard-voice": { label: "Voice Command Center", icon: Mic },
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ role, onLogout }) => {
@@ -142,7 +144,7 @@ const Sidebar: React.FC<SidebarProps> = ({ role, onLogout }) => {
     "Listings & Showings": ["listing-intake", "oh-manager", "showings", "buyer-tours", "feedback-log"],
     "Client Tools": ["offer-lab", "cma", "closing-dashboard"],
     "Marketing & Content": ["content-studio", "social-planner", "shareable-assets"],
-    "AI & Intelligence": ["ai-tools", "lead-intelligence", "ai-isa", "ai-chat", "voice-call-bridge"],
+    "AI & Intelligence": ["ai-tools", "lead-intelligence", "ai-isa", "ai-chat", "voice-call-bridge", "dashboard-voice"],
     "Resources": ["documents", "sphere", "map-intelligence", "knowledge-base", "events"],
     "Personal": ["agent-onboarding", "financials"],
   }

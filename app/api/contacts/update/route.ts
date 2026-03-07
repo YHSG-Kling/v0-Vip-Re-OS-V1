@@ -1,8 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { updateContact } from "@/lib/services/contact-management.service"
+import { updateContact } from "@/lib/services"
 import { createClient } from "@/lib/supabase/server"
-import { supabase } from "@/lib/supabase/client" // Import supabase
-import { supabaseService } from "@/lib/services/supabase.service" // Import supabaseService
 
 export async function PUT(request: NextRequest) {
   try {

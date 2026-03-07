@@ -1,7 +1,7 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
-import { logVideoGenerated } from "@/lib/events/event-helpers"
+import { logVideoGenerated } from "@/lib/events"
 import { generateText } from "ai"
 
 // =====================================================

@@ -28,7 +28,7 @@ import { isValidUUID } from '@/lib/validations'
 export interface VoiceCommandRequest {
   voice_input: string
   user_id: string
-  user_role: 'agent' | 'team_leader' | 'admin' | 'broker' | 'transaction_coordinator' | 'compliance_manager' | 'vendor'
+  user_role: 'agent' | 'team_lead' | 'admin' | 'broker' | 'tc' | 'compliance_officer' | 'vendor'
   brokerage_id: string
   context?: {
     current_listing_id?: string

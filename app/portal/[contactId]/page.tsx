@@ -3,8 +3,7 @@ import { redirect } from "next/navigation"
 import PersonaWelcomeHero from "@/components/portal/PersonaWelcomeHero"
 import PersonaWidgetGrid from "@/components/portal/PersonaWidgetGrid"
 import PersonaDashboardTabs from "@/components/portal/PersonaDashboardTabs"
-import { getPersonaConfig, getPersonaJourneyStages } from "@/lib/portal/persona-config"
-import { calculateJourneyProgress } from "@/lib/portal/journey-utils"
+import { getPersonaConfig, getPersonaJourneyStages, calculateJourneyProgress } from "@/lib/portal"
 
 export default async function PortalHomePage({
   params,

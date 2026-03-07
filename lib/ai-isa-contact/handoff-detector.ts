@@ -89,6 +89,7 @@ export async function logHandoffSignal(
 ): Promise<boolean> {
   const supabase = createServiceClient()
 
+  // Agent task (correct location, no changes) — activity_type: ai_handoff_signal
   const { error } = await supabase.from('activities').insert({
     activity_type: 'ai_handoff_signal',
     title: 'AI ISA Handoff Signal',

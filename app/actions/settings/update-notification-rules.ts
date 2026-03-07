@@ -1,24 +1,24 @@
-'use server';
+'use server'
 
-import { createServiceClient } from '@/lib/supabase/service';
+import { createClient } from "@/lib/supabase/server"
+import { updateNotificationRule } from "@/lib/kernel"
 
-export async function updateNotificationRules(id: string, updates: any) {
-  const supabase = createServiceClient();
-  
-  const { data, error } = await supabase
-    .from('notification_rules')
-    .update({
-      ...updates,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', id)
-    .select()
-    .single();
-    
-  if (error) {
-    console.error('[v0] Error updating notification rules:', error);
-    return { error: 'Failed to update notification rules' };
+export async function updateNotificationRules(
+  id: string,
+  updates: { is_active?: boolean }
+) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (!user?.id) {
+    throw new Error("Unauthorized")
   }
-  
-  return { data };
+
+  await updateNotificationRule({
+    userId: user.id,
+    ruleId: id,
+    updates: { is_active: updates.is_active },
+  })
+
+  return { data: { ok: true } }
 }

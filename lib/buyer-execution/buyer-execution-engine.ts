@@ -14,9 +14,13 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { checkFinancialVerification, type FinancialVerificationResult } from '@/lib/buyer-lifecycle/financial-verification'
-import { getCurrentState } from '@/lib/buyer-lifecycle/transition-validator'
-import { isSystemGateEnabled, type BuyerState } from '@/lib/buyer-lifecycle/lifecycle-definitions'
+import {
+  checkFinancialVerification,
+  isSystemGateEnabled,
+  getCurrentBuyerState as getCurrentState,
+  type FinancialVerificationResult,
+  type BuyerState,
+} from '@/lib/buyer-lifecycle'
 
 export interface BuyerExecutionContext {
   contactId: string
@@ -314,6 +318,7 @@ export async function logBuyerExecutionEvent(params: {
   const { contactId, eventType, userId, source, metadata } = params
   const supabase = createServiceClient()
   
+  // Agent task (correct location, no changes) — type: dynamic buyer lifecycle event
   const { error } = await supabase.from('activities').insert({
     type: eventType,
     entity_type: 'contact',

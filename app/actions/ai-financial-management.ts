@@ -6,7 +6,7 @@ import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 // ============================================================================
 // AI FINANCIAL MANAGEMENT SYSTEM

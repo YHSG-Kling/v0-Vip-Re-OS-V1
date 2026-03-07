@@ -9,16 +9,15 @@ import {
   generateImagePrompt,
   generateOmnipresentContent,
   generateContentVariations,
-  ContentGenerationParams,
-  ContentGenerationOutput,
-} from "@/lib/content-generation/content-generator"
-import { gatherContext, enrichPromptWithContext } from "@/lib/content-generation/context-enricher"
-import {
+  gatherContext,
+  enrichPromptWithContext,
   logContentGeneration,
   logOmnipresentGeneration,
   getContentGenerationHistory,
   getContentGenerationStats,
-} from "@/lib/content-generation/generation-logger"
+  type ContentGenerationParams,
+  type ContentGenerationOutput,
+} from "@/lib/content-generation"
 import { v4 as uuidv4 } from "uuid"
 
 // ============================================
@@ -73,7 +72,7 @@ export async function generateText(params: {
 
     // Enrich prompt with context
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     // Generate content
@@ -136,7 +135,7 @@ export async function generateAudio(params: {
     })
 
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     const content = await generateAudioScript({
@@ -193,7 +192,7 @@ export async function generateVideo(params: {
     })
 
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     const content = await generateVideoScript({
@@ -247,7 +246,7 @@ export async function generateImage(params: {
     })
 
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     const content = await generateImagePrompt({
@@ -342,7 +341,7 @@ export async function generateVariations(params: {
     })
 
     const enrichedPrompt = params.custom_prompt
-      ? enrichPromptWithContext(params.custom_prompt, context)
+      ? await enrichPromptWithContext(params.custom_prompt, context)
       : ""
 
     const variations = await generateContentVariations(

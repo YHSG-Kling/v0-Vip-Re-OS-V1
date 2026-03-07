@@ -223,7 +223,7 @@ export function validateRollback(
   
   // Check role authority
   const normalizedRole = userRole.toLowerCase() as RequiredRole
-  const allowedRoles: RequiredRole[] = ["agent", "team_leader", "broker", "admin"]
+  const allowedRoles: RequiredRole[] = ["agent", "team_lead", "broker", "admin"]
   
   if (!allowedRoles.includes(normalizedRole)) {
     return {
@@ -272,7 +272,7 @@ export async function validateReactivation(
   
   // Check role authority
   const normalizedRole = userRole.toLowerCase() as RequiredRole
-  const allowedRoles: RequiredRole[] = ["agent", "team_leader", "broker", "admin"]
+  const allowedRoles: RequiredRole[] = ["agent", "team_lead", "broker", "admin"]
   
   if (!allowedRoles.includes(normalizedRole)) {
     return {

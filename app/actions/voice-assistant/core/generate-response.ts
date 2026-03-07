@@ -1,7 +1,7 @@
-'use server'
-
 /**
  * SYSTEM 6.1 - Response Generator
+ * Pure utility — no 'use server' needed here since this is imported only by
+ * handle-voice-command.ts which carries its own 'use server' directive.
  * Generates text and speakable responses for voice output
  */
 

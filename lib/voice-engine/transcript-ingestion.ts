@@ -8,7 +8,7 @@
  * We just normalize and pass through.
  */
 
-import { ingestMessage } from '@/app/actions/communication-spine/ingest-message'
+import { getOrCreateConversation, normalizeOutboundMessage, persistMessageWithContext } from '@/lib/communication-spine'
 import { normalizeVoiceTranscript, NormalizedTranscript, RawTranscript } from './transcript-normalizer'
 
 export interface IngestTranscriptParams {
@@ -39,7 +39,7 @@ export async function ingestVoiceTranscript(
   params: IngestTranscriptParams
 ): Promise<IngestTranscriptResult> {
   try {
-    console.log('[v0] [VOICE ENGINE] Ingesting transcript for call:', params.rawTranscript.callId)
+    console.log('[VOICE ENGINE] Ingesting transcript for call:', params.rawTranscript.callId)
 
     // STEP 1: Normalize transcript
     const normalized = normalizeVoiceTranscript(params.rawTranscript)
@@ -48,16 +48,26 @@ export async function ingestVoiceTranscript(
     const authorType = params.callMetadata.initiatorRole
 
     // STEP 3: Write transcript as message via Communication Spine
-    const result = await ingestMessage({
+    // 3a. Get or create conversation for this contact
+    const conversation = await getOrCreateConversation({
       contactId: params.contactId,
       transactionId: params.callMetadata.transactionId,
       listingId: params.callMetadata.listingId,
       agentId: params.callMetadata.agentId,
+      initialChannel: 'voice',
+    })
+
+    if (!conversation.success || !conversation.conversationId) {
+      return { success: false, error: conversation.error ?? 'Could not resolve conversation' }
+    }
+
+    // 3b. Normalize the transcript into the standard message format
+    const normalizedMsg = normalizeOutboundMessage(
+      'voice_transcript',
       authorType,
-      outboundMessage: {
-        channel: 'voice',
+      normalized.fullText,
+      {
         subject: `Voice Call Transcript (${Math.ceil(normalized.metadata.duration / 60)} min)`,
-        body: normalized.fullText,
         metadata: {
           callId: params.rawTranscript.callId,
           vendor: normalized.metadata.vendor,
@@ -66,26 +76,35 @@ export async function ingestVoiceTranscript(
           speakers: normalized.speakers.map(s => s.role),
           transcriptQuality: normalized.metadata.wasComplete ? 'complete' : 'partial',
         },
-      },
+      }
+    )
+
+    // 3c. Persist via Communication Spine
+    const result = await persistMessageWithContext(normalizedMsg, {
+      conversationId: conversation.conversationId,
+      contactId: params.contactId,
+      agentId: params.callMetadata.agentId,
+      transactionId: params.callMetadata.transactionId,
+      listingId: params.callMetadata.listingId,
     })
 
     if (!result.success) {
-      console.error('[v0] [VOICE ENGINE] Failed to ingest transcript:', result.error)
+      console.error('[VOICE ENGINE] Failed to ingest transcript:', result.error)
       return {
         success: false,
         error: result.error,
       }
     }
 
-    console.log(`[v0] [VOICE ENGINE] Transcript ingested as message ${result.messageId}`)
+    console.log(`[VOICE ENGINE] Transcript ingested as message ${result.messageId}`)
 
     return {
       success: true,
       messageId: result.messageId,
-      conversationId: result.conversationId,
+      conversationId: conversation.conversationId,
     }
   } catch (error: any) {
-    console.error('[v0] [VOICE ENGINE] Error ingesting transcript:', error)
+    console.error('[VOICE ENGINE] Error ingesting transcript:', error)
     return {
       success: false,
       error: error.message,
@@ -105,11 +124,14 @@ export async function ingestVoiceTranscript(
 export async function emitVoiceHandoffSignal(
   contactId: string,
   conversationId: string,
-  transcriptSummary: string
+  transcriptSummary: string,
+  agentId: string,
+  brokerageId: string
 ): Promise<boolean> {
   try {
     const supabase = await import('@/lib/supabase/service').then(m => m.createServiceClient())
 
+    // Agent task (correct location, no changes) — activity_type: voice_transcript_available
     await supabase.from('activities').insert({
       activity_type: 'voice_transcript_available',
       title: 'Voice Transcript Available for AI Review',
@@ -117,6 +139,8 @@ export async function emitVoiceHandoffSignal(
       status: 'pending',
       priority: 'normal',
       contact_id: contactId,
+      agent_id: agentId,
+      brokerage_id: brokerageId,
       notes: JSON.stringify({
         conversationId,
         signal: 'ai_isa_review_requested',
@@ -124,10 +148,10 @@ export async function emitVoiceHandoffSignal(
       created_at: new Date().toISOString(),
     })
 
-    console.log(`[v0] [VOICE ENGINE] AI ISA handoff signal emitted for contact ${contactId}`)
+    console.log(`[VOICE ENGINE] AI ISA handoff signal emitted for contact ${contactId}`)
     return true
   } catch (error) {
-    console.error('[v0] [VOICE ENGINE] Failed to emit handoff signal:', error)
+    console.error('[VOICE ENGINE] Failed to emit handoff signal:', error)
     return false
   }
 }

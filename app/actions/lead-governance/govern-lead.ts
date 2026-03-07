@@ -19,11 +19,14 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { calculateLeadScore } from '@/lib/lead-governance/multi-factor-scorer'
-import { evaluateRoutingEligibility } from '@/lib/lead-governance/routing-evaluator'
-import { selectAgentForLead } from '@/lib/lead-governance/agent-selector'
-import { evaluateSLA, logEscalation } from '@/lib/lead-governance/sla-monitor'
-import { evaluatePromotionReadiness } from '@/lib/lead-governance/promotion-readiness'
+import {
+  calculateLeadScore,
+  evaluateRoutingEligibility,
+  selectAgentForLead,
+  evaluateSLA,
+  logEscalation,
+  evaluatePromotionReadiness,
+} from '@/lib/lead-governance'
 
 export interface GovernanceResult {
   success: boolean
@@ -40,7 +43,7 @@ export interface GovernanceResult {
 /**
  * Execute full governance cycle for a lead
  */
-export async function governLead(leadId: string): Promise<GovernanceResult> {
+export async function governLead(leadId: string, brokerageId?: string, actorAgentId?: string): Promise<GovernanceResult> {
   const supabase = createServiceClient()
 
   try {
@@ -59,7 +62,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
 
     // STEP 2: CALCULATE AUTHORITATIVE SCORE
     const scoringResult = calculateLeadScore(lead)
-    console.log(`[v0] [LEAD GOVERNANCE] Score calculated: ${scoringResult.finalScore}/100`)
+    console.log(`[LeadGovernance] Score calculated: ${scoringResult.finalScore}/100`)
 
     // STEP 3: UPDATE LEAD WITH SCORE
     await supabase
@@ -70,7 +73,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
       })
       .eq('id', leadId)
 
-    // STEP 4: LOG SCORING EXPLANATION
+    // STEP 4: LOG SCORING EXPLANATION — Agent task (correct location, no changes) — activity_type: lead_scoring, agent_assignment, routing_decision, promotion_signal
     await supabase.from('activities').insert({
       activity_type: 'lead_scoring',
       title: `Lead Scored: ${scoringResult.finalScore}/100`,
@@ -78,6 +81,9 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
       status: 'completed',
       priority: 'normal',
       notes: JSON.stringify(scoringResult.factors),
+      brokerage_id: lead.brokerage_id || brokerageId,
+      agent_id: agentAssigned || actorAgentId || lead.agent_id,
+      entity_type: 'lead',
       created_at: new Date().toISOString(),
     })
 
@@ -90,7 +96,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
     )
 
     const routingDecision = routingEligibility.eligible ? 'assign_agent' : 'continue_ai_nurturing'
-    console.log(`[v0] [LEAD GOVERNANCE] Routing decision: ${routingDecision}`)
+    console.log(`[LeadGovernance] Routing decision: ${routingDecision}`)
 
     let agentAssigned: string | null = null
 
@@ -118,11 +124,13 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
           description: agentSelection.reason,
           status: 'completed',
           priority: 'normal',
-          agent_id: agentSelection.selectedAgentId,
+          agent_id: agentAssigned || actorAgentId || lead.agent_id,
+          brokerage_id: lead.brokerage_id || brokerageId,
+          entity_type: 'lead',
           created_at: new Date().toISOString(),
         })
 
-        console.log(`[v0] [LEAD GOVERNANCE] Agent ${agentAssigned} assigned to lead ${leadId}`)
+        console.log(`[LeadGovernance] Agent ${agentAssigned} assigned to lead ${leadId}`)
       }
     } else {
       // Log reason for not assigning
@@ -133,6 +141,9 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
         status: 'completed',
         priority: 'normal',
         notes: JSON.stringify(routingEligibility.thresholdsMet),
+        brokerage_id: lead.brokerage_id || brokerageId,
+        agent_id: agentAssigned || actorAgentId || lead.agent_id,
+        entity_type: 'lead',
         created_at: new Date().toISOString(),
       })
     }
@@ -142,7 +153,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
     
     if (slaStatus.escalationRequired) {
       await logEscalation(leadId, slaStatus, supabase)
-      console.log(`[v0] [LEAD GOVERNANCE] SLA breach detected and escalated for lead ${leadId}`)
+      console.log(`[LeadGovernance] SLA breach detected and escalated for lead ${leadId}`)
     }
 
     // STEP 8: EVALUATE PROMOTION READINESS
@@ -155,10 +166,13 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
         description: promotionReadiness.reason,
         status: 'pending',
         priority: 'high',
+        brokerage_id: lead.brokerage_id || brokerageId,
+        agent_id: agentAssigned || actorAgentId || lead.agent_id,
+        entity_type: 'lead',
         created_at: new Date().toISOString(),
       })
 
-      console.log(`[v0] [LEAD GOVERNANCE] Lead ${leadId} signaled as ready for promotion`)
+      console.log(`[LeadGovernance] Lead ${leadId} signaled as ready for promotion`)
     }
 
     return {
@@ -182,7 +196,7 @@ export async function governLead(leadId: string): Promise<GovernanceResult> {
       error_message: error.message,
       context_json: JSON.stringify({ leadId }),
       severity: 'high',
-      status: 'unresolved',
+      status: 'open',
       created_at: new Date().toISOString(),
     })
 

@@ -1,9 +1,9 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { fetchMotivatedSellers } from '@/lib/external/batchdata-client'
+import { fetchMotivatedSellers } from '@/lib/external'
 import { trackVendorUsage } from '@/lib/vendor-tracking'
-import { processRawRecord } from '@/lib/lead-pipeline/pipeline-processor'
+import { processRawRecord } from '@/lib/lead-pipeline'
 
 const MOTIVATION_TYPES = [
   'probate',

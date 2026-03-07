@@ -35,6 +35,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       },
       { id: 'divider2', divider: true },
       { id: 'coaching', label: 'Training & Coaching', href: '/agent/coaching', icon: 'BookOpen' },
+      { id: 'onboarding', label: 'Onboarding', href: '/dashboard/onboarding', icon: 'BookOpen' },
       { id: 'settings', label: 'Settings', href: '/agent/settings', icon: 'Settings' },
     ],
     topNavItems: [
@@ -206,7 +207,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
   },
 
-  compliance_manager: {
+  compliance_officer: {
     sidebarItems: [
       { id: 'dashboard', label: 'Compliance Dashboard', href: '/compliance/dashboard', icon: 'LayoutGrid' },
       { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badge: { count: 2, color: 'red' } },
@@ -232,7 +233,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
   },
 
-  transaction_coordinator: {
+  tc: {
     sidebarItems: [
       { id: 'dashboard', label: 'Coordinator Dashboard', href: '/transaction/dashboard', icon: 'LayoutGrid' },
       { id: 'deals', label: 'Active Deals', href: '/transaction/deals', icon: 'Handshake', badge: { count: 8, color: 'red' } },
@@ -307,6 +308,64 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     commandPaletteItems: [
       { id: 'new-order', label: 'New Title Order', href: '/title/orders/new' },
       { id: 'schedule-closing', label: 'Schedule Closing', href: '/title/closing/new' },
+    ],
+  },
+
+  // superadmin — same full access as admin + platform management
+  superadmin: {
+    sidebarItems: [
+      { id: 'platform', label: 'Platform Admin', href: '/admin/platform', icon: 'ShieldAlert' },
+      { id: 'brokerages', label: 'Brokerages', href: '/admin/brokerages', icon: 'Building2' },
+      { id: 'users', label: 'All Users', href: '/admin/users', icon: 'Users' },
+      { id: 'system-health', label: 'System Health', href: '/admin/system-health', icon: 'Activity' },
+      { id: 'ai-audit', label: 'AI Audit', href: '/admin/ai-audit', icon: 'Eye' },
+      { id: 'integrations', label: 'Integrations', href: '/admin/integrations', icon: 'Plug' },
+      { id: 'settings', label: 'Settings', href: '/admin/settings', icon: 'Settings' },
+    ],
+    topNavItems: [
+      { id: 'alerts', label: 'Alerts', icon: 'Bell' },
+      { id: 'profile', label: 'Profile', icon: 'User' },
+    ],
+    mobileBottomNav: [
+      { id: 'platform', label: 'Platform', href: '/admin/platform', icon: 'ShieldAlert' },
+      { id: 'brokerages', label: 'Brokerages', href: '/admin/brokerages', icon: 'Building2' },
+      { id: 'system-health', label: 'System', href: '/admin/system-health', icon: 'Activity' },
+      { id: 'settings', label: 'Settings', href: '/admin/settings', icon: 'Settings' },
+      { id: 'more', label: 'More', href: '/admin/menu', icon: 'Menu' },
+    ],
+    commandPaletteItems: [
+      { id: 'manage-brokerages', label: 'Manage Brokerages', href: '/admin/brokerages' },
+      { id: 'system-health', label: 'View System Health', href: '/admin/system-health' },
+    ],
+  },
+
+  // team_lead — agent capabilities + team management overlay
+  team_lead: {
+    sidebarItems: [
+      { id: 'dashboard', label: 'Team Dashboard', href: '/agent/dashboard', icon: 'LayoutGrid' },
+      { id: 'crm', label: 'CRM', href: '/agent/crm', icon: 'Users' },
+      { id: 'transactions', label: 'Transactions', href: '/agent/transactions', icon: 'FileText' },
+      { id: 'lead-intelligence', label: 'Lead Intelligence', href: '/agent/lead-intelligence', icon: 'Brain' },
+      { id: 'agent-roster', label: 'My Team', href: '/agent/roster', icon: 'UserCheck' },
+      { id: 'financials', label: 'Financials', href: '/agent/financials', icon: 'DollarSign' },
+      { id: 'compliance', label: 'Compliance', href: '/agent/compliance', icon: 'CheckCircle' },
+      { id: 'content-studio', label: 'Content Studio', href: '/agent/content-studio', icon: 'Palette' },
+      { id: 'settings', label: 'Settings', href: '/agent/settings', icon: 'Settings' },
+    ],
+    topNavItems: [
+      { id: 'alerts', label: 'Alerts', icon: 'Bell', badge: { count: 3, color: 'red' } },
+      { id: 'profile', label: 'Profile', icon: 'User' },
+    ],
+    mobileBottomNav: [
+      { id: 'dashboard', label: 'Dashboard', href: '/agent/dashboard', icon: 'LayoutGrid' },
+      { id: 'crm', label: 'CRM', href: '/agent/crm', icon: 'Users' },
+      { id: 'transactions', label: 'Deals', href: '/agent/transactions', icon: 'FileText' },
+      { id: 'team', label: 'Team', href: '/agent/roster', icon: 'UserCheck' },
+      { id: 'more', label: 'More', href: '/agent/menu', icon: 'Menu' },
+    ],
+    commandPaletteItems: [
+      { id: 'view-team', label: 'View Team', href: '/agent/roster' },
+      { id: 'new-contact', label: 'New Contact', href: '/agent/crm/new' },
     ],
   },
 }

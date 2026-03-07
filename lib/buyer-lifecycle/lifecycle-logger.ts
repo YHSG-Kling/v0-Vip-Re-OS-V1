@@ -1,12 +1,15 @@
 /**
  * System 5.1C: Buyer Lifecycle Governance Core - Lifecycle Logger
- * 
- * Emits lifecycle transition events to activities table.
- * Every state transition MUST be logged for auditability.
- * 
- * This is GOVERNANCE ONLY - only logs events, does not execute transitions
+ *
+ * Routes buyer state transitions through the kernel (Law 1).
+ * Every state transition calls transitionLifecycle() → lifecycle_events.
+ *
+ * CHANGED: No longer writes to activities table.
+ * The kernel's transitionLifecycle() handles all persistence.
  */
 
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { KernelEvent }         from "@/lib/kernel/events"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { BuyerState } from "./lifecycle-definitions"
 
@@ -18,12 +21,33 @@ export interface LifecycleTransitionEvent {
   authorityRole: string
   userId: string
   sourceSystem: string
+  brokerageId: string
   overrideReason?: string
   metadata?: Record<string, unknown>
 }
 
 /**
- * Emit a lifecycle transition event to activities table
+ * Maps buyer lifecycle toState values to the canonical KernelEvent string.
+ * Prevents loose string interpolation that won't match the kernel event map.
+ * Unmapped states fall back to BUYER_STATE_CHANGED (catch-all added in B00 Edit 1).
+ */
+function resolveBuyerKernelEvent(toState: BuyerState): string {
+  const milestones: Record<string, string> = {
+    BUYER_FINANCIALLY_VERIFIED: "BUYER_FINANCIALLY_VERIFIED",
+    BUYER_SEARCH_CONFIGURED:    "BUYER_SEARCH_CONFIGURED",
+    BUYER_TOUR_ELIGIBLE:        "TOUR_ELIGIBLE",
+    BUYER_OFFER_ELIGIBLE:       "OFFER_ELIGIBLE",
+    BUYER_UNDER_CONTRACT:       "CONTRACT_SIGNED",
+    BUYER_CLOSED:               "DEAL_CLOSED",
+    BUYER_LIFETIME:             "LIFETIME_CUSTOMER",
+    BUYER_DISENGAGED:           "BUYER_DISENGAGED",
+  }
+  return milestones[toState] ?? "BUYER_STATE_CHANGED"
+}
+
+/**
+ * Emit a buyer lifecycle transition through the kernel.
+ * Routes to lifecycle_events table via transitionLifecycle().
  */
 export async function emitLifecycleTransition(
   event: LifecycleTransitionEvent
@@ -36,38 +60,34 @@ export async function emitLifecycleTransition(
     authorityRole,
     userId,
     sourceSystem,
+    brokerageId,
     overrideReason,
     metadata,
   } = event
-  
-  const supabase = createServiceClient()
-  
-  const { data, error } = await supabase
-    .from("activities")
-    .insert({
-      type: "buyer.lifecycle.transition",
-      entity_type: "contact",
-      entity_id: contactId,
-      user_id: userId,
+
+  try {
+    const result = await transitionLifecycle({
+      brokerageId,
+      entityType:  "buyer_lifecycle",
+      entityId:    contactId,
+      fromState:   fromState ?? null,   // null = unknown prior state; never fake with toState
+      toState,
+      actorUserId: userId,
+      actorRole:   authorityRole,
+      eventType:   resolveBuyerKernelEvent(toState),
       metadata: {
-        from_state: fromState,
-        to_state: toState,
-        triggered_by: triggeredBy,
-        authority_role: authorityRole,
-        source_system: sourceSystem,
+        triggered_by:    triggeredBy,
+        source_system:   sourceSystem,
         override_reason: overrideReason,
         ...metadata,
       },
     })
-    .select("id")
-    .single()
-  
-  if (error) {
-    console.error("[buyer-lifecycle] Error emitting lifecycle transition:", error)
-    return { success: false, error: error.message }
+    return { success: true, activityId: result.activityId }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error("[buyer-lifecycle] emitLifecycleTransition failed:", message)
+    return { success: false, error: message }
   }
-  
-  return { success: true, activityId: data?.id }
 }
 
 /**
@@ -97,10 +117,9 @@ export async function getLifecycleHistory(
   const supabase = createServiceClient()
   
   let query = supabase
-    .from("activities")
-    .select("id, created_at, user_id, metadata")
-    .eq("type", "buyer.lifecycle.transition")
-    .eq("entity_type", "contact")
+    .from("lifecycle_events")
+    .select("id, created_at, actor_user_id, metadata, from_state, to_state, event_type")
+    .eq("entity_type", "buyer_lifecycle")
     .eq("entity_id", contactId)
     .order("created_at", { ascending: false })
     .limit(limit)
@@ -127,14 +146,14 @@ export async function getLifecycleHistory(
   return events.map((event) => {
     const metadata = (event.metadata as Record<string, unknown>) || {}
     return {
-      id: event.id,
-      fromState: (metadata.from_state as BuyerState) || null,
-      toState: metadata.to_state as BuyerState,
-      occurredAt: new Date(event.created_at),
-      triggeredBy: (metadata.triggered_by as string) || "unknown",
+      id:            event.id,
+      fromState:     (event.from_state as BuyerState) ?? (metadata.from_state as BuyerState) ?? null,
+      toState:       (event.to_state   as BuyerState) ?? (metadata.to_state   as BuyerState),
+      occurredAt:    new Date(event.created_at),
+      triggeredBy:   (metadata.triggered_by   as string) || "unknown",
       authorityRole: (metadata.authority_role as string) || "unknown",
-      userId: event.user_id || "system",
-      sourceSystem: (metadata.source_system as string) || "unknown",
+      userId:        event.actor_user_id || "system",
+      sourceSystem:  (metadata.source_system  as string) || "unknown",
       overrideReason: metadata.override_reason as string | undefined,
     }
   })

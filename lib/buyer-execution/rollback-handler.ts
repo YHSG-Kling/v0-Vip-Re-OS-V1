@@ -10,7 +10,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { type BuyerState } from '@/lib/buyer-lifecycle/lifecycle-definitions'
+import { type BuyerState } from '@/lib/buyer-lifecycle'
 
 export interface RollbackTrigger {
   contactId: string
@@ -45,6 +45,7 @@ export async function emitRollbackEvent(
 
   const supabase = createServiceClient()
 
+  // Agent task (correct location, no changes) — type: journey.rollback
   const { error } = await supabase.from('activities').insert({
     type: 'journey.rollback',
     entity_type: 'contact',

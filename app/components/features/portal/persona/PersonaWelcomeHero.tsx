@@ -3,7 +3,7 @@
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { getPersonaConfig } from "@/lib/portal/persona-config"
+import { getPersonaConfig } from "@/lib/portal"
 import { cn } from "@/lib/utils"
 
 interface Contact {

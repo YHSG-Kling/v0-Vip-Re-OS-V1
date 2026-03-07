@@ -42,6 +42,9 @@ export type ListingStage =
   | "CLOSING_PREP"
   | "CLOSED"
   | "LIFETIME_CUSTOMER"
+  | "SELLER_DECLINED"
+  | "LISTING_CANCELLED"
+  | "LISTING_EXPIRED"
 
 export type ReadinessCheckType =
   | "documents_verified"
@@ -57,7 +60,7 @@ export type ReadinessCheckType =
   | "financing_approved"
   | "closing_docs_ready"
 
-export type RequiredRole = "agent" | "team_leader" | "broker" | "admin"
+export type RequiredRole = "agent" | "team_lead" | "broker" | "admin"
 
 export interface StageDefinition {
   stage: ListingStage
@@ -91,7 +94,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Initial lead captured, not yet assigned",
     allowedFrom: [],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
   },
   {
@@ -100,7 +103,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Lead assigned to an agent",
     allowedFrom: ["LEAD"],
     readinessChecks: [],
-    requiredRoles: ["team_leader", "broker", "admin"],
+    requiredRoles: ["team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -109,7 +112,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Agent is consulting with potential seller",
     allowedFrom: ["LEAD_ASSIGNED"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -118,7 +121,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Listing presentation appointment scheduled",
     allowedFrom: ["AGENT_CONSULTATION"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
   },
   {
@@ -127,7 +130,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Comparative Market Analysis being prepared",
     allowedFrom: ["APPOINTMENT_SET"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -136,7 +139,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Listing presentation materials prepared",
     allowedFrom: ["CMA_GENERATION"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -145,7 +148,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Custom presentation video created",
     allowedFrom: ["LISTING_PRESENTATION_CREATED"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -154,7 +157,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Follow-up sequence prepared",
     allowedFrom: ["PRESENTATION_VIDEO_GENERATED"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -163,7 +166,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Awaiting seller decision to list",
     allowedFrom: ["PRESENTATION_DRIP_PREP"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
   },
   {
@@ -172,7 +175,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Listing agreement process started",
     allowedFrom: ["SELLER_DECISION"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -181,7 +184,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Listing agreement fully executed",
     allowedFrom: ["LISTING_AGREEMENT_INITIATED"],
     readinessChecks: ["dotloop_signatures", "documents_verified"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
   },
   {
@@ -190,7 +193,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "MLS go-live date confirmed with seller",
     allowedFrom: ["LISTING_AGREEMENT_SIGNED"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -199,7 +202,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Preparing for coming soon marketing",
     allowedFrom: ["MLS_DATE_CONFIRMED"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -208,7 +211,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Pre-listing repairs being completed",
     allowedFrom: ["COMING_SOON_PREP"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -217,7 +220,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Coming soon marketing active",
     allowedFrom: ["REPAIRS_IN_PROGRESS"],
     readinessChecks: ["repairs_completed"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["marketing_execution"],
     isMilestone: true,
   },
@@ -227,7 +230,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Professional photos/video being captured",
     allowedFrom: ["COMING_SOON_ACTIVE"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -236,7 +239,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Photos/video approved by agent and seller",
     allowedFrom: ["MEDIA_CAPTURE"],
     readinessChecks: ["media_approved"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -245,7 +248,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Ready to go live on MLS",
     allowedFrom: ["MEDIA_APPROVED"],
     readinessChecks: ["mls_data_complete", "media_approved"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["flyers_packets", "listing_marketing"],
     isMilestone: true,
   },
@@ -255,7 +258,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Open house marketing materials prepared",
     allowedFrom: ["MLS_READY"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["open_house_system"],
     isMilestone: false,
   },
@@ -265,7 +268,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Live on MLS",
     allowedFrom: ["OPEN_HOUSE_MARKETING"],
     readinessChecks: ["mls_data_complete"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
   },
   {
@@ -274,7 +277,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Open house event scheduled/completed",
     allowedFrom: ["MLS_ACTIVE"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -283,7 +286,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Showing management active",
     allowedFrom: ["OPEN_HOUSE_EVENT", "MLS_ACTIVE"],
     readinessChecks: ["showings_enabled"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["seller_showings"],
     isMilestone: false,
   },
@@ -293,7 +296,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "One or more offers received",
     allowedFrom: ["SHOWINGS_ACTIVE"],
     readinessChecks: ["offer_exists"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["offers_system"],
     isMilestone: true,
   },
@@ -303,7 +306,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Negotiating offer terms",
     allowedFrom: ["OFFERS_RECEIVED"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -312,7 +315,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Contract executed, pending contingencies",
     allowedFrom: ["NEGOTIATION"],
     readinessChecks: ["contract_signed"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["transactions_system"],
     isMilestone: true,
   },
@@ -322,7 +325,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Buyer inspection period",
     allowedFrom: ["UNDER_CONTRACT"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -331,7 +334,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Property appraisal in progress",
     allowedFrom: ["INSPECTION"],
     readinessChecks: ["inspection_completed"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -340,7 +343,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Buyer financing approval in progress",
     allowedFrom: ["APPRAISAL"],
     readinessChecks: ["appraisal_completed"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: false,
   },
   {
@@ -349,7 +352,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Preparing for closing",
     allowedFrom: ["FINANCING"],
     readinessChecks: ["financing_approved"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["closing_prep_system"],
     isMilestone: false,
   },
@@ -359,7 +362,7 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Transaction closed successfully",
     allowedFrom: ["CLOSING_PREP"],
     readinessChecks: ["closing_docs_ready"],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     isMilestone: true,
   },
   {
@@ -368,9 +371,38 @@ export const LISTING_LIFECYCLE_STAGES: StageDefinition[] = [
     description: "Enrolled in lifetime customer retention program",
     allowedFrom: ["CLOSED"],
     readinessChecks: [],
-    requiredRoles: ["agent", "team_leader", "broker", "admin"],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
     enablesSystemGates: ["retention_system"],
     isMilestone: true,
+  },
+
+  // ── Terminal exit stages (cannot be advanced from) ──────────────────────────
+  {
+    stage: "SELLER_DECLINED",
+    label: "Seller Declined",
+    description: "Seller decided not to list — listing process terminated",
+    allowedFrom: ["SELLER_DECISION"],
+    readinessChecks: [],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
+    isMilestone: false,
+  },
+  {
+    stage: "LISTING_CANCELLED",
+    label: "Listing Cancelled",
+    description: "Active listing cancelled by agent, seller, or admin",
+    allowedFrom: [],  // can originate from any active stage — enforced at engine layer
+    readinessChecks: [],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
+    isMilestone: false,
+  },
+  {
+    stage: "LISTING_EXPIRED",
+    label: "Listing Expired",
+    description: "Listing agreement period elapsed without a contract",
+    allowedFrom: ["MLS_ACTIVE"],
+    readinessChecks: [],
+    requiredRoles: ["agent", "team_lead", "broker", "admin"],
+    isMilestone: false,
   },
 ]
 

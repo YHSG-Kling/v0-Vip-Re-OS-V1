@@ -17,7 +17,7 @@ export interface LeadEmailContext {
 }
 
 export async function generatePersonalizedEmail(context: LeadEmailContext) {
-  console.log('[v0] Generating personalized email for lead:', context.leadId)
+  console.log('[AI ISA] Generating personalized email for lead:', context.leadId)
   
   // Generate email content focused on THEM, not us
   const emailBody = `Hi ${context.firstName},
@@ -58,6 +58,7 @@ export async function logEmailActivity(
 ) {
   const supabase = createServiceClient()
   
+  // Agent task (correct location, no changes) — activity_type: ai_isa_email
   await supabase.from('activities').insert({
     contact_id: leadId,
     brokerage_id: brokerageId,

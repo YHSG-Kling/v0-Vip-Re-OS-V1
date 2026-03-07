@@ -55,11 +55,11 @@ export function evaluateSLA(lead: any): SLAStatus {
     }
   }
 
-  // RULE 3: Qualified leads sitting too long
-  if (lead.lead_stage === 'qualified' && daysInState > 14) {
+  // RULE 3: Leads stuck in ISA qualifying too long
+  if (lead.lifecycle_state === 'isa_qualifying' && daysInState > 14) {
     isBreached = true
     escalationRequired = true
-    escalationReason = `Qualified lead stalled for ${daysInState} days (SLA: 14 days)`
+    escalationReason = `Lead stuck in ISA qualifying for ${daysInState} days (SLA: 14 days)`
     escalationRecipient = 'broker'
   }
 
@@ -72,6 +72,7 @@ export function evaluateSLA(lead: any): SLAStatus {
   }
 }
 
+// Agent task (correct location, no changes) — activity_type: sla_escalation
 /**
  * Log escalation activity
  */
@@ -94,5 +95,5 @@ export async function logEscalation(
     created_at: new Date().toISOString(),
   })
 
-  console.log(`[v0] SLA escalation logged for lead ${leadId}: ${slaStatus.escalationReason}`)
+  console.log(`[SLAMonitor] Escalation logged for lead ${leadId}: ${slaStatus.escalationReason}`)
 }

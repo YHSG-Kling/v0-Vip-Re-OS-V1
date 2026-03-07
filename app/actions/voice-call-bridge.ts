@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
+import { placeCall } from "@/lib/providers/messaging"
 
 /**
  * Call Whisper Bridge & Vapi Voice Bot System
@@ -32,7 +33,7 @@ export async function initiateWhisperBridge(params: {
       .single()
 
     const { data: agent } = await supabase
-      .from("profiles")
+      .from("users")
       .select("phone, first_name, last_name")
       .eq("id", agentId)
       .single()
@@ -48,36 +49,23 @@ export async function initiateWhisperBridge(params: {
     // Generate intelligent whisper text
     const whisperText = `This is ${contact.first_name} ${contact.last_name}, ${context}. Connecting now.`
 
-    const accountSid = process.env.TWILIO_ACCOUNT_SID
-    const authToken = process.env.TWILIO_AUTH_TOKEN
-    const fromNumber = process.env.TWILIO_PHONE_NUMBER
     const appUrl = process.env.NEXT_PUBLIC_APP_URL
 
-    if (!accountSid || !authToken || !fromNumber || !appUrl) {
+    if (!appUrl) {
       return {
         success: false,
-        error: "Twilio not configured. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, and NEXT_PUBLIC_APP_URL.",
+        error: "NEXT_PUBLIC_APP_URL is not configured.",
       }
     }
 
-    // Call Twilio to initiate whisper bridge
-    const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Calls.json`, {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString("base64")}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        To: agent.phone,
-        From: fromNumber,
-        Url: `${appUrl}/api/twiml/whisper-bridge?contactPhone=${encodeURIComponent(contact.phone)}&whisper=${encodeURIComponent(whisperText)}`,
-      }),
+    // Initiate whisper bridge call via messaging provider
+    const callResult = await placeCall({
+      to: agent.phone,
+      twimlUrl: `${appUrl}/api/twiml/whisper-bridge?contactPhone=${encodeURIComponent(contact.phone)}&whisper=${encodeURIComponent(whisperText)}`,
     })
 
-    const callData = await response.json()
-
-    if (!response.ok) {
-      throw new Error(callData.message || "Twilio API error")
+    if (!callResult.success) {
+      return { success: false, error: callResult.error }
     }
 
     // Log whisper bridge call
@@ -85,7 +73,7 @@ export async function initiateWhisperBridge(params: {
       contact_id: contactId,
       agent_id: agentId,
       whisper_text: whisperText,
-      twilio_call_sid: callData.sid,
+      twilio_call_sid: callResult.callSid,
       agent_phone: agent.phone,
       contact_phone: contact.phone,
     })
@@ -94,7 +82,7 @@ export async function initiateWhisperBridge(params: {
       console.error("[Whisper Bridge] Failed to log call:", logError)
     }
 
-    // Create activity log
+    // Create activity log — Agent task (correct location, no changes) — activity_type: whisper_bridge_initiated, call_made
     await supabase.from("activities").insert({
       user_id: agentId,
       activity_type: "whisper_bridge_initiated",
@@ -105,7 +93,7 @@ export async function initiateWhisperBridge(params: {
 
     return {
       success: true,
-      callSid: callData.sid,
+      callSid: callResult.callSid,
       whisperText,
     }
   } catch (error: any) {
@@ -244,7 +232,7 @@ export async function triggerVapiVoiceBot(params: {
       console.error("[Vapi Voice] Failed to log call:", logError)
     }
 
-    // Create activity log
+    // Create activity log — Agent task (correct location, no changes) — activity_type: vapi_voice_initiated
     await supabase.from("activities").insert({
       user_id: contactId,
       activity_type: "vapi_voice_initiated",

@@ -1,8 +1,8 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateAssignmentEligibility } from "@/lib/lead-assignment/assignment-eligibility"
-import { promoteLeadToContact } from "@/app/actions/contact-promotion/promote-lead-to-contact"
+import { evaluateAssignmentEligibility } from "@/lib/lead-assignment"
+import { promoteLeadToContactService as promoteLeadToContact } from "@/lib/contact-promotion"
 
 export interface AssignmentResult {
   success: boolean
@@ -71,7 +71,7 @@ export async function assignAgentToLead(
       throw new Error(`Failed to assign agent: ${updateError.message}`)
     }
 
-    // Step 4: Log assignment activity
+    // Step 4: Log assignment activity — Agent task (correct location, no changes) — activity_type: agent_assignment
     await supabase.from("activities").insert({
       contact_id: leadId,
       agent_id: agentId,
@@ -83,7 +83,7 @@ export async function assignAgentToLead(
       created_at: new Date().toISOString()
     })
 
-    console.log(`[v0] Successfully assigned agent ${agentId} to lead ${leadId}`)
+    console.log(`[AgentAssignment] Successfully assigned agent ${agentId} to lead ${leadId}`)
 
     // Step 5: TRIGGER LEAD-TO-CONTACT PROMOTION
     // The moment an agent is assigned, the relationship begins

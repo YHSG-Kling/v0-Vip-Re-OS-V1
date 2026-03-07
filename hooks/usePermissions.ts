@@ -1,11 +1,11 @@
 "use client"
 
 import { useMemo } from "react"
-import { useAuthStore } from "../stores/authStore"
+import { useAuth } from "@/lib/auth/client"
 import { permissionsService, type Permission, type UserAccessContext } from "../services/permissionsService"
 
 export function usePermissions() {
-  const { user, role } = useAuthStore()
+  const { user, role } = useAuth()
 
   const context: UserAccessContext = useMemo(
     () => ({

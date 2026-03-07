@@ -1,7 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { detectStaleLeads } from "@/lib/lead-assignment/stale-lead-detector"
+import { detectStaleLeads } from "@/lib/lead-assignment"
 
 export interface EscalationResult {
   success: boolean
@@ -53,11 +53,11 @@ export async function escalateStaleLeads(brokerageId: string): Promise<Escalatio
         .single()
 
       if (recentEscalation) {
-        console.log(`[v0] Lead ${lead.id} already escalated recently, skipping`)
+        console.log(`[StaleLead] Lead ${lead.id} already escalated recently, skipping`)
         continue
       }
 
-      // Step 3: Log escalation activity
+      // Step 3: Log escalation activity — Agent task (correct location, no changes) — activity_type: lead_escalation
       const { error: activityError } = await supabase.from("activities").insert({
         contact_id: lead.id,
         activity_type: "lead_escalation",
@@ -70,7 +70,7 @@ export async function escalateStaleLeads(brokerageId: string): Promise<Escalatio
       })
 
       if (activityError) {
-        console.error(`[v0] Failed to log escalation for lead ${lead.id}:`, activityError)
+        console.error(`[StaleLead] Failed to log escalation for lead ${lead.id}:`, activityError)
         continue
       }
 

@@ -8,7 +8,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { checkFinancialVerification } from "@/lib/buyer-lifecycle/financial-verification"
+import { checkFinancialVerification } from "@/lib/buyer-lifecycle"
 import { isValidUUID } from "@/lib/validations"
 
 const MAX_PENDING_OFFERS = 3 // Configurable limit

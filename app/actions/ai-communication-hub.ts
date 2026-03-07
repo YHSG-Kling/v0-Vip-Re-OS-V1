@@ -1,11 +1,14 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateText, generateObject } from "ai"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
+import { dispatchEmail } from "@/lib/providers/dispatch"
+import { dispatchSms } from "@/lib/providers/dispatch"
 
 /**
  * AI Communication Hub
@@ -24,85 +27,228 @@ const SentimentSchema = z.object({
   suggestedResponse: z.string().optional(),
 })
 
+// Send a message in a conversation
+export async function sendMessage(params: {
+  conversationId: string
+  contactId: string
+  agentId: string           // agents.id (NOT users.id)
+  channel: "email" | "sms" | "in_app"
+  body: string
+  subject?: string
+  attachmentUrls?: string[]
+}) {
+  try {
+    const supabase = await createClient()
+    const now = new Date().toISOString()
+
+    // Step 1: INSERT into messages
+    const { data: message, error: msgError } = await supabase
+      .from("messages")
+      .insert({
+        conversation_id:  params.conversationId,
+        contact_id:       params.contactId,
+        agent_id:         params.agentId,
+        type:             params.channel,
+        direction:        "outbound",
+        body:             params.body,
+        subject:          params.subject ?? null,
+        status:           "sent",
+        attachment_urls:  params.attachmentUrls ?? [],
+        created_at:       now,
+        updated_at:       now,
+      })
+      .select()
+      .single()
+
+    if (msgError) throw msgError
+
+    // Step 2: UPDATE conversations — bump last_message_at + message_count
+    // Read current count first (RPC not required — simple read-increment-write)
+    const { data: convRow } = await supabase
+      .from("conversations")
+      .select("message_count")
+      .eq("id", params.conversationId)
+      .single()
+
+    await supabase
+      .from("conversations")
+      .update({
+        last_message_at: now,
+        updated_at:      now,
+        message_count:   (convRow?.message_count ?? 0) + 1,
+      })
+      .eq("id", params.conversationId)
+
+    // Step 3: Dispatch via provider layer
+    let dispatchResult: { success: boolean; messageId?: string; error?: string; providerKey: string } = {
+      success: true,
+      providerKey: "in_app",
+    }
+
+    if (params.channel === "email") {
+      // Fetch contact email for dispatch
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("email, first_name, last_name")
+        .eq("id", params.contactId)
+        .single()
+
+      if (contact?.email) {
+        // Fetch agent brokerage_id for dispatch context
+        const { data: agent } = await supabase
+          .from("agents")
+          .select("brokerage_id")
+          .eq("id", params.agentId)
+          .single()
+
+        dispatchResult = await dispatchEmail({
+          brokerageId: agent?.brokerage_id ?? "",
+          agentId:     params.agentId,
+          from:        "noreply@platform.com",
+          to:          contact.email,
+          subject:     params.subject ?? "(No Subject)",
+          html:        `<p>${params.body}</p>`,
+          systemSource: "inbox",
+        })
+      }
+    } else if (params.channel === "sms") {
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("phone")
+        .eq("id", params.contactId)
+        .single()
+
+      if (contact?.phone) {
+        const { data: agent } = await supabase
+          .from("agents")
+          .select("brokerage_id")
+          .eq("id", params.agentId)
+          .single()
+
+        dispatchResult = await dispatchSms({
+          brokerageId: agent?.brokerage_id ?? "",
+          agentId:     params.agentId,
+          to:          contact.phone,
+          message:     params.body,
+          systemSource: "inbox",
+        })
+      }
+    }
+
+    // Step 4: Fire-and-forget message_provider_logs
+    const serviceClient = createServiceClient()
+    const { data: agentForLog } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("id", params.agentId)
+      .single()
+
+    serviceClient
+      .from("message_provider_logs")
+      .insert({
+        brokerage_id:        agentForLog?.brokerage_id ?? null,
+        message_id:          message.id,
+        provider_key:        dispatchResult.providerKey,
+        channel:             params.channel,
+        direction:           "outbound",
+        provider_message_id: dispatchResult.messageId ?? null,
+        provider_status:     dispatchResult.success ? "sent" : "failed",
+        error_message:       dispatchResult.error ?? null,
+        created_at:          now,
+      })
+      .then(() => {})
+      .catch(() => {})
+
+    revalidatePath("/dashboard/communications/inbox")
+    return { success: true, message }
+  } catch (error) {
+    return handleError(error, "sendMessage")
+  }
+}
+
 // Get conversations/messages for inbox
 export async function getConversations(params: {
-  agentId?: string
+  brokerageId: string
   contactId?: string
   limit?: number
   unreadOnly?: boolean
+  channel?: string
 }) {
   try {
     const supabase = await createClient()
 
-    // Fetch messages without the foreign key join
     let query = supabase
-      .from("chat_messages")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(params.limit || 50)
+      .from("conversations")
+      .select(`
+        *,
+        contacts(id, first_name, last_name, email, phone, lifecycle_state, lead_score),
+        agents(id, user_id, users(first_name, last_name))
+      `)
+      .eq("brokerage_id", params.brokerageId)
+      .order("last_message_at", { ascending: false })
+      .limit(params.limit ?? 50)
 
-    if (params.agentId) {
-      query = query.eq("agent_id", params.agentId)
+    if (params.unreadOnly) {
+      query = query.gt("unread_count", 0)
     }
 
     if (params.contactId) {
       query = query.eq("contact_id", params.contactId)
     }
 
-    if (params.unreadOnly) {
-      query = query.eq("read", false)
+    if (params.channel) {
+      query = query.eq("type", params.channel)
     }
 
-    const { data: messages, error } = await query
+    const { data: conversations, error } = await query
 
     if (error) throw error
 
-    // Manually fetch related contacts
-    let contactsMap: Record<string, any> = {}
-    
-    if (messages && messages.length > 0) {
-      const contactIds = [...new Set(messages.map((m: any) => m.contact_id).filter(Boolean))]
-      
-      if (contactIds.length > 0) {
-        const { data: contacts } = await supabase
-          .from("contacts")
-          .select("*")
-          .in("id", contactIds)
-        
-        contactsMap = (contacts || []).reduce((acc: any, c: any) => {
-          acc[c.id] = c
-          return acc
-        }, {})
-      }
-    }
-
-    // Group messages by contact to create conversation threads
-    const conversations = new Map()
-    
-    messages?.forEach((msg: any) => {
-      const contactId = msg.contact_id
-      if (!conversations.has(contactId)) {
-        conversations.set(contactId, {
-          contactId,
-          contact: contactsMap[contactId] || null,
-          messages: [],
-          lastMessageAt: msg.created_at,
-          unreadCount: 0,
-        })
-      }
-      conversations.get(contactId).messages.push(msg)
-      if (!msg.read) {
-        conversations.get(contactId).unreadCount++
-      }
-    })
-
     return {
       success: true,
-      conversations: Array.from(conversations.values()),
-      totalMessages: messages?.length || 0,
+      conversations: conversations ?? [],
+      total: conversations?.length ?? 0,
     }
   } catch (error) {
     return handleError(error, "getConversations")
+  }
+}
+
+// Get all messages in a conversation thread
+export async function getMessageThread(conversationId: string) {
+  try {
+    const supabase = await createClient()
+
+    const { data: messages, error } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true })
+
+    if (error) throw error
+
+    return { success: true, messages: messages ?? [] }
+  } catch (error) {
+    return handleError(error, "getMessageThread")
+  }
+}
+
+// Mark a conversation as read
+export async function markConversationRead(conversationId: string) {
+  try {
+    const supabase = await createClient()
+
+    const { error } = await supabase
+      .from("conversations")
+      .update({ unread_count: 0, updated_at: new Date().toISOString() })
+      .eq("id", conversationId)
+
+    if (error) throw error
+
+    revalidatePath("/dashboard/communication")
+    return { success: true }
+  } catch (error) {
+    return handleError(error, "markConversationRead")
   }
 }
 

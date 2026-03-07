@@ -1,0 +1,6 @@
+export { runAlert, runAllActiveAlerts }      from "./alert-engine"
+export { scorePropertyForAlert }             from "./alert-matcher"
+export { searchIDXForAlert }                 from "./idx-alert-search"
+export { deliverAlertResults }               from "./alert-notifier"
+export type { RunAlertResult }               from "./alert-engine"
+export type { MatchResult, AlertProperty, AlertCriteria } from "./alert-matcher"

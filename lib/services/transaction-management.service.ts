@@ -5,7 +5,7 @@ import { isValidUUID, validateTransactionData } from "@/lib/validations"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 import { TRANSACTION_TYPES, TRANSACTION_STATUSES } from "@/lib/constants"
 import { revalidatePath } from "next/cache"
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 /**
  * Unified Transaction Management Service

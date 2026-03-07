@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
-import { syncOfferStatus } from "@/lib/buyer-offer/status-sync"
+import { syncOfferStatus } from "@/lib/buyer-offer"
 
 interface RollbackOfferParams {
   offerId: string

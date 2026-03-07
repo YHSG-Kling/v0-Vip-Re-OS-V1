@@ -26,7 +26,7 @@ export interface CMAQualityInput {
   brokerApproved?: boolean
   
   // Override context
-  overrideByRole?: "agent" | "team_leader" | "broker" | "admin"
+  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
   overrideReason?: string
 }
 

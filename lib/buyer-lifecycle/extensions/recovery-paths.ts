@@ -152,7 +152,7 @@ export async function validateDisengagedReengagement(params: {
 
   // Rule 2: Agent-authorized reactivation
   if (source === "agent" && trigger === "agent_reactivation") {
-    const allowedRoles = ["agent", "team_leader", "broker", "admin"]
+    const allowedRoles = ["agent", "team_lead", "broker", "admin"]
     if (!allowedRoles.includes(userRole.toLowerCase())) {
       return {
         allowed: false,

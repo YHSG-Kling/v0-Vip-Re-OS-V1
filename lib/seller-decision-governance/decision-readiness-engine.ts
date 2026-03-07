@@ -26,7 +26,7 @@ export interface DecisionReadinessInput {
   targetState: SellerDecisionState
   
   // Optional overrides
-  overrideByRole?: "agent" | "team_leader" | "broker" | "admin"
+  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
   overrideReason?: string
   
   // Current listing stage (for reversal validation)

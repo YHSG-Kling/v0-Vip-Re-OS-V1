@@ -1,19 +1,15 @@
-'use server';
+'use server'
 
-import { createServiceClient } from '@/lib/supabase/service';
+import { createClient } from "@/lib/supabase/server"
+import { listNotificationRules as kernelListNotificationRules } from "@/lib/kernel"
 
 export async function listNotificationRules() {
-  const supabase = createServiceClient();
-  
-  const { data, error } = await supabase
-    .from('notification_rules')
-    .select('*')
-    .order('created_at', { ascending: false });
-    
-  if (error) {
-    console.error('[v0] Error fetching notification rules:', error);
-    throw new Error('Failed to fetch notification rules');
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (!user?.id) {
+    throw new Error("Unauthorized")
   }
-  
-  return data || [];
+
+  return await kernelListNotificationRules({ userId: user.id })
 }

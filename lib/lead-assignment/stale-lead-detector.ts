@@ -72,18 +72,20 @@ export async function detectStaleLeads(brokerageId: string): Promise<StaleLead[]
 
   // Check last activity for assigned leads
   for (const lead of assignedLeads || []) {
-    const { data: lastActivity } = await supabase
-      .from("activities")
+    const { data: lastEvent } = await supabase
+      .from("lifecycle_events")
       .select("created_at")
-      .eq("contact_id", lead.id)
+      .eq("entity_id", lead.id)
+      .eq("entity_type", "lead")
       .order("created_at", { ascending: false })
       .limit(1)
       .single()
 
-    if (lastActivity) {
-      const lastActivityDate = new Date(lastActivity.created_at)
-      const daysSinceActivity = Math.floor((Date.now() - lastActivityDate.getTime()) / (1000 * 60 * 60 * 24))
-
+    if (lastEvent) {
+      const lastActivityDate = new Date(lastEvent.created_at)
+      const daysSinceActivity = Math.floor(
+        (Date.now() - lastActivityDate.getTime()) / (1000 * 60 * 60 * 24)
+      )
       if (daysSinceActivity >= STALE_THRESHOLD_DAYS) {
         staleLeads.push({
           id: lead.id,
@@ -91,7 +93,7 @@ export async function detectStaleLeads(brokerageId: string): Promise<StaleLead[]
           lastName: lead.last_name || "",
           email: lead.email || "",
           leadStage: lead.lead_stage || "new",
-          lastActivityDate: lastActivity.created_at,
+          lastActivityDate: lastEvent.created_at,
           daysStale: daysSinceActivity,
           staleReason: "no_recent_activity"
         })

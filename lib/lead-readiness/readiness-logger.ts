@@ -13,7 +13,8 @@ export async function logReadinessTransition(
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  console.log("[v0] Logging readiness transition for lead:", leadId, evaluation.state)
+  // Agent task (correct location, no changes) — activity_type: readiness_evaluation
+  console.log("[ReadinessLogger] Logging readiness transition for lead:", leadId, evaluation.state)
 
   const { error } = await supabase.from("activities").insert({
     contact_id: leadId,
@@ -32,7 +33,7 @@ export async function logReadinessTransition(
   })
 
   if (error) {
-    console.error("[v0] Failed to log readiness transition:", error)
+    console.error("[ReadinessLogger] Failed to log readiness transition:", error)
     // Log to automation_errors for visibility
     await supabase.from("automation_errors").insert({
       workflow_name: "lead_readiness_evaluation",
@@ -54,7 +55,7 @@ export async function logReadinessAnomaly(
 ): Promise<void> {
   const supabase = createServiceClient()
 
-  console.error("[v0] Readiness anomaly detected for lead:", leadId, anomalyDescription)
+  console.error("[ReadinessLogger] Readiness anomaly detected for lead:", leadId, anomalyDescription)
 
   await supabase.from("automation_errors").insert({
     workflow_name: "lead_readiness_evaluation",

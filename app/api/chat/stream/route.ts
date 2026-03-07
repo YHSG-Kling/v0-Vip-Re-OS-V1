@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
 
     // Get conversation history
     const { data: messages } = await supabase
-      .from("chat_messages")
+      .from("messages")
       .select("*")
       .eq("session_id", sessionId)
       .order("created_at", { ascending: true })

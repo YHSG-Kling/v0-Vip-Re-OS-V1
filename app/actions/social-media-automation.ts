@@ -498,15 +498,21 @@ export async function submitForApproval(postId: string) {
     // Run compliance check
     const complianceResult = await checkSocialCompliance(post.post_text, post.platform)
 
-    await supabase.from("content_approval_queue").insert({
-      agent_id: post.agent_id,
-      content_id: postId,
-      content_type: "social_post",
-      platform: post.platform,
-      content_preview: post.post_text.substring(0, 200),
-      compliance_status: complianceResult.passed ? "approved" : "needs_revision",
-      compliance_flags: complianceResult.flags,
-      submitted_at: new Date().toISOString(),
+    // Agent task (correct location, no changes) — activity_type: content.approval
+    await supabase.from("activities").insert({
+      brokerage_id: post.agent_id, // TODO: Get actual brokerage_id
+      activity_type: "content.approval",
+      entity_type: "content",
+      entity_id: postId,
+      title: `Social Post Approval: ${post.platform}`,
+      description: post.post_text.substring(0, 200),
+      status: complianceResult.passed ? "approved" : "needs_revision",
+      metadata: {
+        agent_id: post.agent_id,
+        content_type: "social_post",
+        platform: post.platform,
+        compliance_flags: complianceResult.flags,
+      },
     })
 
     await supabase
@@ -760,11 +766,12 @@ export async function getApprovalQueue(agentId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("content_approval_queue")
+    .from("activities")
     .select("*")
-    .eq("agent_id", agentId)
-    .in("compliance_status", ["pending_review", "needs_revision"])
-    .order("submitted_at", { ascending: false })
+    .eq("activity_type", "content.approval")
+    .contains("metadata", { agent_id: agentId })
+    .in("status", ["pending", "needs_revision"])
+    .order("created_at", { ascending: false })
 
   if (error) {
     console.error("Get approval queue error:", error)

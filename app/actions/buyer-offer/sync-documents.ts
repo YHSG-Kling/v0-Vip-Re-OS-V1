@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
-import { getTransactionProvider } from "@/lib/integrations/providers/provider-resolver"
+import { getTransactionProvider } from "@/lib/integrations"
 
 export async function syncOfferDocumentsFromProvider(offerId: string, userId: string) {
   if (!isValidUUID(offerId) || !isValidUUID(userId)) {

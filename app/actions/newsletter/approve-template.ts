@@ -51,7 +51,7 @@ export async function approveTemplate(templateId: string, approvingUserId: strin
     .eq('id', user.id)
     .single()
 
-  if (!approverData || !['broker_admin', 'admin'].includes(approverData.role)) {
+  if (!approverData || !['broker', 'admin'].includes(approverData.role)) {
     throw new Error('Only broker admins can approve templates')
   }
 
@@ -88,7 +88,7 @@ export async function rejectTemplate(templateId: string, rejectionReason: string
     .eq('id', user.id)
     .single()
 
-  if (!rejectorData || !['broker_admin', 'admin'].includes(rejectorData.role)) {
+  if (!rejectorData || !['broker', 'admin'].includes(rejectorData.role)) {
     throw new Error('Only broker admins can reject templates')
   }
 

@@ -7,7 +7,7 @@ import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ChevronRight, CheckCircle2 } from "lucide-react"
 import Link from "next/link"
-import { getPersonaConfig, formatWidgetValue } from "@/lib/portal/persona-config"
+import { getPersonaConfig, formatWidgetValue } from "@/lib/portal"
 import { cn } from "@/lib/utils"
 
 interface Contact {

@@ -142,6 +142,7 @@ export async function emitFinancialVerificationEvent(params: {
   const { contactId, verificationType, userId, expiresAt, metadata } = params
   const supabase = createServiceClient()
   
+  // Agent task (correct location, no changes) — type: buyer.pre_approval.uploaded, buyer.proof_of_funds.uploaded, buyer.lender.introduced, agent.confirms.buyer.financial
   // Map verification type to event type
   const eventTypeMap = {
     pre_approval: "buyer.pre_approval.uploaded",

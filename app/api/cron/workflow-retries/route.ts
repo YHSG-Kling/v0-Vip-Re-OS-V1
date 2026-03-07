@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { WorkflowOrchestrator } from "@/lib/orchestrator/workflow-engine"
+import { WorkflowOrchestrator } from "@/lib/orchestrator"
 
 export async function GET(request: Request) {
   try {

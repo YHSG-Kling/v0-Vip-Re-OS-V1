@@ -15,9 +15,16 @@
 import { createServiceClient } from '@/lib/supabase/service'
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
-import { scoreBuyerForListing, rankBuyersForListing, filterViableBuyers } from '@/lib/property-matching/match-scorer'
-import { logBuyerMatchSignal, logBatchMatchSignals } from '@/lib/property-matching/match-logger'
-import type { BuyerProfile, ListingProfile, MatchScore } from '@/lib/property-matching/match-scorer'
+import {
+  scoreBuyerForListing,
+  rankBuyersForListing,
+  filterViableBuyers,
+  logBuyerMatchSignal,
+  logBatchMatchSignals,
+  type BuyerProfile,
+  type ListingProfile,
+  type MatchScore,
+} from '@/lib/property-matching'
 
 /**
  * Run smart matching for a listing

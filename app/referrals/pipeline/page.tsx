@@ -4,21 +4,19 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Phone, CheckCircle, XCircle, Clock } from "lucide-react"
 import Link from "next/link"
+import { getAgentContext } from "@/lib/identity"
+
+export const dynamic = "force-dynamic"
 
 export default async function ReferralPipelinePage() {
+  const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    return <div>Not authenticated</div>
-  }
 
   const { data: referrals } = await supabase
     .from("referrals")
     .select("*, referring_contact:contacts!referring_contact_id(first_name, last_name)")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
     .order("referral_date", { ascending: false })
 
   const statusColors = {

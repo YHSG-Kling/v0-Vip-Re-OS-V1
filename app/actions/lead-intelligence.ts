@@ -2,11 +2,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { requirePermission } from "@/lib/rbac-utils"
+import { requirePermission } from "@/lib/security"
 import { revalidatePath } from "next/cache"
-import { ZenrowsClient } from "@/lib/zenrows-client"
-import { BatchDataClient } from "@/lib/batchdata-client"
-import { PeopleDataClient } from "@/lib/peopledata-client"
+import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { IDXBrokerClient } from "@/lib/idxbroker-client"
 import { OSINTClient } from "@/lib/osint-client"
 import { calculateLeadScore } from "@/lib/services/lead-management.service"

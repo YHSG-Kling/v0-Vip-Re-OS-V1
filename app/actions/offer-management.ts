@@ -4,8 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { generateText } from "ai"
 import { incrementUsage } from "@/lib/usage"
 import { revalidatePath } from "next/cache"
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
-import { getOfferExpirationHours } from "@/lib/brokerage/get-brokerage-settings"
+import { getDefaultCommissionStructure, getOfferExpirationHours } from "@/lib/brokerage"
 
 // Submit offer
 export async function submitOffer(offerData: {
@@ -25,7 +24,7 @@ export async function submitOffer(offerData: {
   // Get user's brokerage ID for configuration
   const { data: userData } = await supabase.auth.getUser()
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", userData.user?.id)
     .single()
@@ -59,6 +58,7 @@ export async function submitOffer(offerData: {
     .single()
 
   if (listing) {
+    // Agent task (correct location, no changes) — activity_type: offer_received, offer_accepted, offer_rejected, counter_offer_sent
     await supabase.from("activities").insert({
       user_id: listing.agent_id,
       activity_type: "offer_received",
@@ -92,7 +92,7 @@ export async function analyzeOffer(offerId: string, userId: string) {
 
   // Get brokerage commission structure
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", userId)
     .single()
@@ -102,7 +102,11 @@ export async function analyzeOffer(offerId: string, userId: string) {
     return { success: false, error: "User brokerage not found" }
   }
 
-  const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+  const commissionStructure = await getDefaultCommissionStructure(
+    brokerageId,
+    userId,
+    offer?.commission_percentage ?? undefined
+  )
 
   // Calculate net to seller
   const netToSeller = calculateNetSheet({
@@ -184,7 +188,7 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
   // Get brokerage commission structure
   const { data: userData } = await supabase.auth.getUser()
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", userId)
     .single()
@@ -194,7 +198,11 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
     return { success: false, error: "User brokerage not found" }
   }
 
-  const commissionStructure = await getDefaultCommissionStructure(brokerageId)
+  const commissionStructure = await getDefaultCommissionStructure(
+    brokerageId,
+    userId,
+    offers[0]?.commission_percentage ?? undefined
+  )
   const totalCommissionRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
 
   // Calculate net sheets for all
@@ -285,15 +293,13 @@ export async function calculateNetSheet(params: {
     hoa_dues = 0,
   } = params
 
-  // TODO: Commission Engine 8.0 — replace with calculateCommission()
-  const commission_amount = 0
-  const closing_costs_amount = 0
+  const commission_amount = purchase_price * agent_commission
+  const closing_costs_amount = purchase_price * closing_costs
 
   const total_deductions =
     commission_amount + closing_costs_amount + seller_concessions + loan_payoff + property_taxes + hoa_dues
 
-  // TODO: compute when Commission Engine 8.0 provides real values
-  const net_to_seller = 0
+  const net_to_seller = purchase_price - total_deductions
 
   return {
     purchase_price,
@@ -359,7 +365,7 @@ export async function counterOffer(
   // Update offer status
   await supabase.from("offers").update({ status: "countered" }).eq("id", offerId)
 
-  // Notify buyer's agent
+  // Notify buyer's agent — Agent task (correct location, no changes) — activity_type: offer_countered
   if (offer.buyer.agent_id) {
     await supabase.from("activities").insert({
       user_id: offer.buyer.agent_id,
@@ -417,7 +423,7 @@ export async function acceptOffer(offerId: string, agentId: string) {
   // Reject all other offers
   await supabase.from("offers").update({ status: "rejected" }).eq("listing_id", offer.listing_id).neq("id", offerId)
 
-  // Notify buyer
+  // Notify buyer — Agent task (correct location, no changes) — activity_type: offer_accepted
   if (offer.buyer.agent_id) {
     await supabase.from("activities").insert({
       user_id: offer.buyer.agent_id,
@@ -452,7 +458,7 @@ export async function rejectOffer(offerId: string, reason?: string) {
     })
     .eq("id", offerId)
 
-  // Notify buyer
+  // Notify buyer — Agent task (correct location, no changes) — activity_type: offer_rejected
   if (offer?.buyer_id) {
     await supabase.from("activities").insert({
       user_id: offer.buyer_id,

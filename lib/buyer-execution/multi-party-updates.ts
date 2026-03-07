@@ -10,7 +10,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { emitFinancialVerificationEvent } from '@/lib/buyer-lifecycle/financial-verification'
+import { emitFinancialVerificationEvent } from '@/lib/buyer-lifecycle'
 import { logBuyerExecutionEvent } from './buyer-execution-engine'
 
 export type ActorRole = 'agent' | 'lender' | 'admin' | 'broker'
@@ -119,7 +119,7 @@ export async function agentAssistSearchConfiguration(params: {
     .eq('id', agentId)
     .single()
   
-  if (!user || !['agent', 'team_leader', 'broker', 'admin'].includes(user.role)) {
+  if (!user || !['agent', 'team_lead', 'broker', 'admin'].includes(user.role)) {
     return {
       success: false,
       error: 'Invalid agent role'
@@ -258,7 +258,7 @@ export async function agentAdvanceBuyerStage(params: {
     .eq('id', agentId)
     .single()
   
-  if (!user || !['agent', 'team_leader', 'broker', 'admin'].includes(user.role)) {
+  if (!user || !['agent', 'team_lead', 'broker', 'admin'].includes(user.role)) {
     return {
       success: false,
       error: 'Invalid agent role'

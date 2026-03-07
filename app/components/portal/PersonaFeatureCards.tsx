@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ChevronRight, Star } from "lucide-react"
 import Link from "next/link"
-import { getPersonaConfig } from "@/lib/portal/persona-config"
+import { getPersonaConfig } from "@/lib/portal"
 import { cn } from "@/lib/utils"
 
 interface PersonaFeatureCardsProps {

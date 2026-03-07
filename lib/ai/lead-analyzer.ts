@@ -1,7 +1,6 @@
 'use server'
 
-import { openai } from '@ai-sdk/openai'
-import { generateText } from 'ai'
+import { runPipelineSimple } from "./pipeline"
 
 export async function analyzeLead(params: {
   content: string
@@ -33,9 +32,9 @@ Extract and determine:
 
 Return JSON only, no markdown or preamble.`
 
-  const { text } = await generateText({
-    model: openai('gpt-4o'),
-    prompt,
+  const text = await runPipelineSimple(prompt, {
+    model: "gpt-4o",
+    feature: "lead_analysis",
   })
 
   const result = JSON.parse(text)

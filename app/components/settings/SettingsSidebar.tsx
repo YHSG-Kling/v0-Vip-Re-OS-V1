@@ -12,6 +12,7 @@ const menuItems = [
   { label: 'Email Templates', href: '/settings/email-templates' },
   { label: 'Notifications', href: '/settings/notifications' },
   { label: 'Integrations', href: '/settings/integrations' },
+  { label: 'Providers', href: '/settings/providers' },
   { label: 'Users', href: '/settings/users' },
 ];
 

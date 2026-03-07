@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { processRawRecord } from "@/lib/lead-pipeline/pipeline-processor"
+import { processRawRecord } from "@/lib/lead-pipeline"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300

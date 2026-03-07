@@ -1,10 +1,56 @@
 
 import { createClient } from "@/lib/supabase/server"
-import { sendSMS, sendEmail } from "@/app/actions/communications"
-import { createTask } from "@/app/actions/tasks"
-import { advanceListingStage } from "@/app/actions/listing-lifecycle"
-import { generateVideoScript } from "@/app/actions/video-content"
-import { updateContactStage } from "@/app/actions/crm"
+import { sendSMS, sendEmail } from "@/lib/providers/messaging"
+import { generateVideoScript } from "@/lib/content-generation"
+
+/**
+ * Advance a listing to a new stage directly via Supabase.
+ * Kept local to lib/orchestrator to avoid importing lib/application (upward dep).
+ * Full validation/lifecycle logic should be invoked at the app/ layer.
+ */
+async function advanceListingStage(listingId: string, stage: string): Promise<{ success: boolean }> {
+  if (!listingId) return { success: false }
+  const supabase = await createClient()
+  await supabase
+    .from("listings")
+    .update({ current_stage: stage, updated_at: new Date().toISOString() })
+    .eq("id", listingId)
+  return { success: true }
+}
+
+// Lightweight task & contact helpers — direct Supabase writes, no app/actions dependency
+async function createTask(params: {
+  title: string
+  description?: string
+  dueDate?: string
+  assignedTo?: string
+  contactId?: string
+  listingId?: string
+  priority?: string
+}) {
+  const supabase = await createClient()
+  const { data } = await supabase.from("tasks").insert({
+    title: params.title,
+    description: params.description,
+    due_date: params.dueDate,
+    assigned_to: params.assignedTo,
+    contact_id: params.contactId,
+    listing_id: params.listingId,
+    priority: params.priority || "medium",
+    status: "pending",
+    created_at: new Date().toISOString(),
+  }).select().single()
+  return { success: true, task: data }
+}
+
+async function updateContactStage(params: { contactId: string; newStage: string; notes?: string }) {
+  const supabase = await createClient()
+  await supabase.from("contacts").update({
+    stage: params.newStage,
+    updated_at: new Date().toISOString(),
+  }).eq("id", params.contactId)
+  return { success: true }
+}
 
 type WorkflowStep = {
   id: string

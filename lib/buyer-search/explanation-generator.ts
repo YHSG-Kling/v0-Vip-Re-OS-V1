@@ -11,7 +11,7 @@
 
 import type { ParsedBuyerIntent } from './intent-parser'
 import type { PersonaProfile } from './persona-inference'
-import type { ListingProfile } from '@/lib/property-matching/match-scorer'
+import type { ListingProfile } from '@/lib/property-matching'
 
 export interface BuyerFacingExplanation {
   headline: string // Short, compelling match reason

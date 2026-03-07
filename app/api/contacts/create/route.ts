@@ -1,11 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { createContact } from "@/lib/services/contact-management.service"
+import { createContact } from "@/lib/services"
 import { createClient } from "@/lib/supabase/server"
 import type { ContactFormData } from "@/types/contact"
 import { enrichContact } from "@/app/actions/contact-enrichment"
 import { handleError } from "@/lib/errors"
-import { supabase } from "@/lib/supabase/client" // Declare supabase variable
-import { supabaseService } from "@/lib/services/supabase.service" // Declare supabaseService variable
 
 export async function POST(request: NextRequest) {
   try {

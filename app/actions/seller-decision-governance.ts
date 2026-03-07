@@ -29,7 +29,7 @@ import { isValidUUID } from "@/lib/validations"
 export async function evaluateSellerDecisionReadiness(input: {
   listingId: string
   targetState: SellerDecisionState
-  overrideByRole?: "agent" | "team_leader" | "broker" | "admin"
+  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
   overrideReason?: string
 }) {
   try {
@@ -86,7 +86,7 @@ export async function evaluateListingCMAQuality(input: {
   maxRadiusMiles?: number
   agentApproved?: boolean
   brokerApproved?: boolean
-  overrideByRole?: "agent" | "team_leader" | "broker" | "admin"
+  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
   overrideReason?: string
 }) {
   try {
@@ -149,7 +149,7 @@ export async function validateListingNetSheetValidity(input: {
   listingId: string
   generatedAt?: Date
   validityDays?: number
-  overrideByRole?: "agent" | "team_leader" | "broker" | "admin"
+  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
   overrideReason?: string
 }) {
   try {
@@ -304,7 +304,7 @@ export async function logSellerDecisionTransition(input: {
   listing_id: string
   from_state?: SellerDecisionState
   to_state: SellerDecisionState
-  authority_role: "agent" | "team_leader" | "broker" | "admin"
+  authority_role: "agent" | "team_lead" | "broker" | "admin"
   override_flag?: boolean
   override_reason?: string
   metadata?: Record<string, any>

@@ -1,3 +1,19 @@
+// ─── CLASS ALIAS (backward compat for callers using `new BatchDataClient()`) ──
+export class BatchDataClient {
+  async searchByAddress(address: string, city: string, state: string) {
+    return searchProperties(`${address}, ${city}, ${state}`).then(r => r.matches)
+  }
+  async searchByName(firstName: string, lastName: string, city: string, state: string) {
+    return fetchMotivatedSellers({ state }).then(r => r.records)
+  }
+  async getMotivatedSellers(filters: { city: string; state?: string; minEquity?: number }) {
+    return fetchMotivatedSellers({ state: filters.state || "" }).then(r => r.records)
+  }
+  async getPropertyDetails(propertyId: string) {
+    return enrichPropertyWithBatchData(propertyId).then(r => r)
+  }
+}
+
 const BATCHDATA_API_KEY = process.env.BATCHDATA_API_KEY!
 const BATCHDATA_API_URL = 'https://api.batchdata.com/api/v1'
 

@@ -1,11 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { generateContent } from "@/lib/services/content-generation.service"
+import { generateContent } from "@/lib/services"
 import { createClient } from "@/lib/supabase/server"
 import { handleError } from "@/lib/errors"
-import { generateText } from "@/lib/services/text-generation.service"
-import { analyzeContentQuality } from "@/lib/services/content-quality.service"
-
-const supabase = createClient()
 
 export async function POST(request: NextRequest) {
   try {

@@ -1,8 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateAIJSON } from "@/app/actions/ai-generate"
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { generateAIJSON } from "@/lib/ai"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 // ============================================
 // PREDICTIVE LEAD CONVERSION ENGINE

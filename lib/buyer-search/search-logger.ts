@@ -1,3 +1,4 @@
+// Agent task (correct location, no changes) — activity_type: buyer_search_match
 /**
  * SYSTEM 5.1B - BUYER SEARCH SIGNAL LOGGER
  * Logs buyer search and match signals to activities table
@@ -42,7 +43,7 @@ export async function logBuyerSearchMatch(
     generated_at: new Date().toISOString(),
   }
 
-  console.log('[v0] Logging buyer search match:', contactId, listingId, confidenceLevel)
+  console.log('[SearchLogger] Logging buyer search match:', contactId, listingId, confidenceLevel)
 
   const { error } = await supabase.from('activities').insert({
     entity_type: 'contact',
@@ -61,7 +62,7 @@ export async function logBuyerSearchMatch(
   })
 
   if (error) {
-    console.error('[v0] Failed to log search match:', error)
+    console.error('[SearchLogger] Failed to log search match:', error)
     return { success: false, error: error.message }
   }
 
@@ -102,12 +103,12 @@ export async function logBatchBuyerSearchMatches(
     created_at: new Date().toISOString(),
   }))
 
-  console.log('[v0] Logging batch buyer search matches:', contactId, matches.length)
+  console.log('[SearchLogger] Logging batch buyer search matches:', contactId, matches.length)
 
   const { error, count } = await supabase.from('activities').insert(records)
 
   if (error) {
-    console.error('[v0] Failed to log batch search matches:', error)
+    console.error('[SearchLogger] Failed to log batch search matches:', error)
     errors.push(error.message)
   } else {
     logged = count || records.length
@@ -127,7 +128,7 @@ export async function appendBuyerSearchPreferences(
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = createServiceClient()
 
-  console.log('[v0] Appending search preferences for contact:', contactId)
+  console.log('[SearchLogger] Appending search preferences for contact:', contactId)
 
   // Fetch existing notes
   const { data: contact, error: fetchError } = await supabase
@@ -137,7 +138,7 @@ export async function appendBuyerSearchPreferences(
     .single()
 
   if (fetchError) {
-    console.error('[v0] Failed to fetch contact notes:', fetchError)
+    console.error('[SearchLogger] Failed to fetch contact notes:', fetchError)
     return { success: false, error: fetchError.message }
   }
 
@@ -178,7 +179,7 @@ export async function appendBuyerSearchPreferences(
     .eq('id', contactId)
 
   if (updateError) {
-    console.error('[v0] Failed to update contact notes:', updateError)
+    console.error('[SearchLogger] Failed to update contact notes:', updateError)
     return { success: false, error: updateError.message }
   }
 

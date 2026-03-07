@@ -10,9 +10,13 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
-import { checkFinancialVerification, isVerificationExpired, type FinancialVerificationResult } from '@/lib/buyer-lifecycle/financial-verification'
-import { getCurrentState } from '@/lib/buyer-lifecycle/transition-validator'
-import { type BuyerState } from '@/lib/buyer-lifecycle/lifecycle-definitions'
+import {
+  checkFinancialVerification,
+  isVerificationExpired,
+  getCurrentBuyerState as getCurrentState,
+  type FinancialVerificationResult,
+  type BuyerState,
+} from '@/lib/buyer-lifecycle'
 
 export interface GovernanceCheckResult {
   allowed: boolean
@@ -193,6 +197,7 @@ export async function emitGovernanceBlockEvent(params: {
   const { contactId, action, blockResult, userId, source } = params
   const supabase = createServiceClient()
 
+  // Agent task (correct location, no changes) — type: buyer.financial_verification_required, financial.verification_expired, buyer.action.blocked.*, buyer.lifecycle.eligibility_checked
   const eventType = blockResult.blockerType === 'financial_gate'
     ? 'buyer.financial_verification_required'
     : blockResult.blockerType === 'verification_expired'

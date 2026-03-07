@@ -2,7 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { calculateFuzzyMatch } from './fuzzy-matcher'
-import { skipTraceWithPeopleData } from '@/lib/external/peopledata-client'
+import { skipTraceWithPeopleData } from '@/lib/external'
 
 interface RawRecord {
   id: string

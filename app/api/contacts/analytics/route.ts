@@ -1,20 +1,17 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { supabase } from "@/services/supabase"
+import { getAgentContext } from "@/lib/identity"
 
 export async function GET(request: NextRequest) {
   try {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) {
-      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
-    }
+    const { agentId, brokerageId } = await getAgentContext()
 
     // Get all contacts for agent
     const { data: contacts, error } = await supabase
       .from("contacts")
       .select("*")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .is("deleted_at", null)
 
     if (error) {

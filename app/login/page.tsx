@@ -89,7 +89,7 @@ function LoginContent() {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <Tabs defaultValue="password" className="w-full">
+        <Tabs defaultValue="password" className="w-full" suppressHydrationWarning>
           <TabsList className="grid w-full grid-cols-2 mb-6">
             <TabsTrigger value="password">Email &amp; Password</TabsTrigger>
             <TabsTrigger value="magic">Magic Link</TabsTrigger>

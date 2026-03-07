@@ -1,7 +1,7 @@
 "use client"
 
 import useSWR from "swr"
-import { useAuth } from "@/contexts/AuthContext"
+import { useAuth } from "@/lib/auth/client"
 import { getContactById } from "@/app/actions/contact-details"
 import { getTransactions } from "@/app/actions/transactions"
 import { getShowings } from "@/app/actions/showings"

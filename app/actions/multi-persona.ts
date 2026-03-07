@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { getDefaultCommissionStructure } from "@/lib/brokerage/get-default-commission-structure"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 // ============================================
 // BROKERAGE ADMIN FUNCTIONS
@@ -237,18 +237,63 @@ export async function rateVendor(data: { bookingId: string; clientRating?: numbe
   if (error) throw error
 
   // Update vendor's average rating
-  const { data: booking } = await supabase.from("vendor_bookings").select("vendor_id").eq("id", data.bookingId).single()
+  const { data: booking } = await supabase.from("vendor_bookings").select("vendor_id, brokerage_id").eq("id", data.bookingId).single()
 
   if (booking) {
+    // Get all ratings for this vendor
     const { data: allRatings } = await supabase
       .from("vendor_bookings")
-      .select("agent_rating")
+      .select("agent_rating, client_rating")
       .eq("vendor_id", booking.vendor_id)
       .not("agent_rating", "is", null)
 
     if (allRatings && allRatings.length > 0) {
-      const avgRating = allRatings.reduce((sum, r) => sum + (r.agent_rating || 0), 0) / allRatings.length
-      await supabase.from("vendor_directory").update({ rating: avgRating }).eq("id", booking.vendor_id)
+      const agentRatings = allRatings.filter(r => r.agent_rating != null).map(r => r.agent_rating)
+      const clientRatings = allRatings.filter(r => r.client_rating != null).map(r => r.client_rating)
+      const fiveStars = agentRatings.filter(r => r === 5).length
+      const oneStars = agentRatings.filter(r => r === 1).length
+      
+      const avgAgentRating = agentRatings.length > 0
+        ? agentRatings.reduce((a, b) => a + b, 0) / agentRatings.length
+        : null
+      const avgClientRating = clientRatings.length > 0
+        ? clientRatings.reduce((a, b) => a + b, 0) / clientRatings.length
+        : null
+
+      // Update vendors table (for global sorting)
+      if (avgAgentRating) {
+        await supabase.from("vendors").update({ rating: avgAgentRating }).eq("id", booking.vendor_id)
+      }
+
+      // Update vendor_ratings table (for brokerage-specific stats)
+      if (booking.brokerage_id) {
+        const { error: upsertError } = await supabase
+          .from("vendor_ratings")
+          .upsert({
+            vendor_id: booking.vendor_id,
+            brokerage_id: booking.brokerage_id,
+            avg_agent_rating: avgAgentRating,
+            avg_client_rating: avgClientRating,
+            total_bookings: allRatings.length,
+            five_star_count: fiveStars,
+            one_star_count: oneStars,
+            last_updated: new Date().toISOString(),
+          }, { onConflict: "vendor_id,brokerage_id" })
+
+        // If upsert fails (no unique constraint), try insert
+        if (upsertError) {
+          await supabase.from("vendor_ratings").insert({
+            vendor_id: booking.vendor_id,
+            brokerage_id: booking.brokerage_id,
+            avg_agent_rating: avgAgentRating,
+            avg_client_rating: avgClientRating,
+            total_bookings: allRatings.length,
+            five_star_count: fiveStars,
+            one_star_count: oneStars,
+            last_updated: new Date().toISOString(),
+          })
+        }
+      }
     }
   }
 
@@ -1108,11 +1153,12 @@ export async function calculateComplianceRiskScore(agentId: string) {
   const [{ data: violations }, { data: unapprovedContent }, { data: themFirstScores }] = await Promise.all([
     supabase.from("compliance_flags").select("*").eq("agent_id", agentId).gte("detected_at", thirtyDaysAgo.toISOString()),
     supabase
-      .from("content_approval_queue")
+      .from("activities")
       .select("*")
-      .eq("agent_id", agentId)
-      .eq("compliance_status", "needs_revision")
-      .gte("submitted_at", thirtyDaysAgo.toISOString()),
+      .eq("activity_type", "content.approval")
+      .eq("status", "needs_revision")
+      .gte("created_at", thirtyDaysAgo.toISOString())
+      .contains("metadata", { agent_id: agentId }),
     supabase.from("chat_sessions").select("them_first_score").eq("agent_id", agentId).gte("created_at", thirtyDaysAgo.toISOString()),
   ])
 

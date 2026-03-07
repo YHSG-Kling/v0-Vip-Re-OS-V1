@@ -201,7 +201,7 @@ export async function gatherContext(params: {
 /**
  * Build enhanced prompt with context data
  */
-export function enrichPromptWithContext(basePrompt: string, context: EnrichedContext): string {
+export async function enrichPromptWithContext(basePrompt: string, context: EnrichedContext): Promise<string> {
   let enrichedPrompt = basePrompt + "\n\n"
 
   if (context.listing) {

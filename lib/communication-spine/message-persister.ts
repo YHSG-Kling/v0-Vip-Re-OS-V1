@@ -10,7 +10,7 @@
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { NormalizedMessage } from './message-normalizer'
-import { trackVendorUsage } from '@/app/actions/vendor-governance/track-usage'
+import { logVendorUsage, normalizeVendorCost } from '@/lib/vendor-governance'
 
 export interface MessagePersistContext {
   conversationId: string
@@ -165,17 +165,21 @@ async function trackOutboundVendorCost(
     }
 
     if (vendor) {
-      await trackVendorUsage({
-        vendor,
+      const estimatedCost = normalizeVendorCost(vendor, unitCount)
+      await logVendorUsage({
+        vendorName: vendor,
+        usageType: 'api_calls',
         unitCount,
+        estimatedCost,
         systemSource: 'communication_spine',
-        contactId: context.contactId,
         agentId: context.agentId,
-        transactionId: context.transactionId,
         metadata: {
           messageChannel: message.channel,
           messageLength: message.body.length,
+          contactId: context.contactId,
+          transactionId: context.transactionId,
         },
+        timestamp: new Date(),
       })
     }
   } catch (error) {

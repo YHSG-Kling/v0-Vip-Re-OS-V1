@@ -2,8 +2,14 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-
-const DOTLOOP_API_BASE = "https://api-gateway.dotloop.com/public/v2"
+import {
+  createLoop,
+  addParticipant,
+  getLoopSignatureStatus,
+  syncLoopDocuments,
+  uploadLoopDocument,
+  getLoopActivity,
+} from "@/lib/providers/esign"
 
 interface DotloopTransactionData {
   listingId?: string
@@ -24,38 +30,16 @@ interface DotloopSyncData {
 
 export async function createDotloopTransaction(data: DotloopTransactionData) {
   try {
-    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
-    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
-
-    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
-      throw new Error("Dotloop API credentials not configured")
-    }
-
-    const response = await fetch(`${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        name: `${data.propertyAddress} - ${data.transactionType}`,
-        status: "Active",
-        transaction_type: data.transactionType === "purchase" ? "Purchase" : "Listing for Sale",
-        street_address: data.propertyAddress,
-      }),
+    const result = await createLoop({
+      propertyAddress: data.propertyAddress,
+      transactionType: data.transactionType,
     })
 
-    if (!response.ok) {
-      throw new Error(`Dotloop API error: ${response.statusText}`)
+    if (!result.success || !result.loopId) {
+      throw new Error(result.error || "No loop_id returned from Dotloop")
     }
 
-    const result = await response.json()
-    const loopId = result.data?.loop_id
-
-    if (!loopId) {
-      throw new Error("No loop_id returned from Dotloop")
-    }
-
+    const loopId = result.loopId
     const supabase = await createClient()
 
     if (data.listingId) {
@@ -93,28 +77,11 @@ export async function createDotloopTransaction(data: DotloopTransactionData) {
 
 export async function syncDotloopDocuments(data: DotloopSyncData) {
   try {
-    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
-    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
-
-    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
-      throw new Error("Dotloop API credentials not configured")
-    }
-
-    const response = await fetch(`${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop/${data.loopId}/folder`, {
-      headers: {
-        Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-      },
-    })
-
-    if (!response.ok) {
-      throw new Error(`Dotloop API error: ${response.statusText}`)
-    }
-
-    const folders = await response.json()
+    const { folders } = await syncLoopDocuments(data.loopId)
     const supabase = await createClient()
     let syncedCount = 0
 
-    for (const folder of folders.data || []) {
+    for (const folder of folders) {
       for (const document of folder.documents || []) {
         // Check if already synced
         const { data: existing } = await supabase
@@ -206,13 +173,6 @@ export async function sendForDotloopSignature(data: {
   contactId?: string
 }) {
   try {
-    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
-    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
-
-    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
-      throw new Error("Dotloop API credentials not configured")
-    }
-
     const supabase = await createClient()
 
     // Get document details
@@ -220,45 +180,29 @@ export async function sendForDotloopSignature(data: {
 
     if (!document) throw new Error("Document not found")
 
-    // Add participants to the loop
+    // Add participants to the loop via provider
     for (const signer of data.signers) {
-      await fetch(`${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop/${data.loopId}/participant`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          email: signer.email,
-          full_name: signer.name,
-          role: signer.role,
-        }),
+      await addParticipant({
+        loopId: data.loopId,
+        email: signer.email,
+        name: signer.name,
+        role: signer.role,
       })
     }
 
     // Upload document to Dotloop if not already there
     if (!document.dotloop_document_id) {
-      const uploadResponse = await fetch(
-        `${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop/${data.loopId}/folder/Documents/document`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            name: document.document_name,
-            file_url: document.document_url,
-          }),
-        }
-      )
+      const uploadResult = await uploadLoopDocument({
+        loopId: data.loopId,
+        documentName: document.document_name,
+        fileUrl: document.document_url,
+      })
 
-      if (uploadResponse.ok) {
-        const uploadResult = await uploadResponse.json()
+      if (uploadResult.success && uploadResult.dotloopDocumentId) {
         await supabase
           .from("client_documents")
           .update({
-            dotloop_document_id: uploadResult.data?.document_id,
+            dotloop_document_id: uploadResult.dotloopDocumentId,
             dotloop_loop_id: data.loopId,
           })
           .eq("id", data.documentId)
@@ -305,37 +249,16 @@ export async function sendForDotloopSignature(data: {
 
 export async function getDotloopDocumentStatus(loopId: string, documentId?: string) {
   try {
-    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
-    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
+    const { activities: allActivities } = await getLoopActivity(loopId)
 
-    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
-      throw new Error("Dotloop API credentials not configured")
-    }
-
-    const response = await fetch(
-      `${DOTLOOP_API_BASE}/profile/${DOTLOOP_PROFILE_ID}/loop/${loopId}/activity`,
-      {
-        headers: {
-          Authorization: `Bearer ${DOTLOOP_API_KEY}`,
-        },
-      }
-    )
-
-    if (!response.ok) {
-      throw new Error(`Dotloop API error: ${response.statusText}`)
-    }
-
-    const activities = await response.json()
-
-    // Filter for signature-related activities
-    const signatureActivities = activities.data?.filter(
+    const signatureActivities = allActivities.filter(
       (a: any) => a.activity_type === "signature" || a.activity_type === "document_signed"
     )
 
     return {
       success: true,
-      activities: signatureActivities || [],
-      lastActivity: activities.data?.[0],
+      activities: signatureActivities,
+      lastActivity: allActivities[0],
     }
   } catch (error: any) {
     console.error("[v0] Get Dotloop Document Status error:", error)

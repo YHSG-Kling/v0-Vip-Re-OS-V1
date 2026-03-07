@@ -7,6 +7,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js"
 import type { ListingStage } from "./lifecycle-definitions"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 export interface LifecycleEventData {
   listingId: string
@@ -36,69 +37,80 @@ export interface LifecycleEventData {
 }
 
 /**
- * Log lifecycle stage transition
+ * Log lifecycle stage transition.
+ *
+ * Routes through transitionLifecycle() which handles:
+ *   1. UPDATE listings.lifecycle_stage = toStage
+ *   2. INSERT lifecycle_events row
+ *   3. processKernelEvent() → notifications fire (non-blocking)
+ *
+ * Milestone stages emit high-signal KernelEvents via resolveStageMilestoneEvent().
+ * All other stages emit LISTING_STAGE_CHANGED.
  */
 export async function logStageTransition(
-  supabase: SupabaseClient,
   event: LifecycleEventData
-): Promise<void> {
-  const title = event.isOverride
-    ? `Listing Stage Override: ${event.fromStage || "none"} → ${event.toStage}`
-    : `Listing Stage Transition: ${event.fromStage || "none"} → ${event.toStage}`
-  
-  const description = buildTransitionDescription(event)
-  
-  await supabase.from("activities").insert({
-    activity_type: "listing_lifecycle_transition",
-    title,
-    description,
-    agent_id: event.agentId,
-    brokerage_id: event.brokerageId,
-    listing_id: event.listingId,
-    status: "completed",
-    completed_at: new Date().toISOString(),
-    notes: JSON.stringify({
-      from_stage: event.fromStage,
-      to_stage: event.toStage,
-      user_id: event.userId,
-      user_role: event.userRole,
-      is_override: event.isOverride || false,
-      override_reason: event.overrideReason,
-      skipped_stages: event.skippedStages || [],
-      readiness_checks_passed: event.readinessChecksPassed || [],
-      readiness_checks_failed: event.readinessChecksFailed || [],
-      metadata: event.metadata || {},
-      timestamp: new Date().toISOString(),
-    }),
+): Promise<{ activityId: string }> {
+  const result = await transitionLifecycle({
+    brokerageId:  event.brokerageId,
+    entityType:   'listing_stage_machine',
+    entityId:     event.listingId,
+    fromState:    event.fromStage ?? null,
+    toState:      event.toStage,
+    actorUserId:  event.userId,
+    // Milestone stages get high-signal events; all others get LISTING_STAGE_CHANGED
+    eventType:    resolveStageMilestoneEvent(event.toStage),
+    metadata: {
+      user_role:        event.userRole,
+      is_override:      event.isOverride ?? false,
+      override_reason:  event.overrideReason,
+      skipped_stages:   event.skippedStages ?? [],
+      readiness_passed: event.readinessChecksPassed ?? [],
+      readiness_failed: event.readinessChecksFailed ?? [],
+      notes:            event.notes,
+    },
   })
+  return { activityId: result.activityId }
 }
 
 /**
- * Log failed transition attempt
+ * Resolve which kernel eventType string to pass for a given toStage.
+ * Milestone stages map to higher-signal events; all others use the generic catch-all.
+ */
+function resolveStageMilestoneEvent(toStage: string): string {
+  const milestones: Record<string, string> = {
+    'MLS_ACTIVE':        'MLS_ACTIVE',
+    'UNDER_CONTRACT':    'UNDER_CONTRACT',
+    'CLOSED':            'CLOSED',
+    'LIFETIME_CUSTOMER': 'LIFETIME_CUSTOMER',
+  }
+  return milestones[toStage] ?? 'LISTING_STAGE_CHANGED'
+}
+
+/**
+ * Log failed transition attempt.
+ *
+ * Writes directly to lifecycle_events — no state change occurs,
+ * so transitionLifecycle() is NOT called and processKernelEvent() is NOT fired.
  */
 export async function logFailedTransition(
   supabase: SupabaseClient,
   event: LifecycleEventData & { failureReason: string }
 ): Promise<void> {
-  await supabase.from("activities").insert({
-    activity_type: "listing_lifecycle_transition_failed",
-    title: `Failed Transition: ${event.fromStage || "none"} → ${event.toStage}`,
-    description: `Transition blocked: ${event.failureReason}`,
-    agent_id: event.agentId,
-    brokerage_id: event.brokerageId,
-    listing_id: event.listingId,
-    status: "failed",
-    notes: JSON.stringify({
-      from_stage: event.fromStage,
-      to_stage: event.toStage,
-      user_id: event.userId,
-      user_role: event.userRole,
-      failure_reason: event.failureReason,
-      readiness_checks_passed: event.readinessChecksPassed || [],
-      readiness_checks_failed: event.readinessChecksFailed || [],
-      timestamp: new Date().toISOString(),
-    }),
+  await supabase.from('lifecycle_events').insert({
+    brokerage_id:  event.brokerageId,
+    entity_type:   'listing_stage_machine',
+    entity_id:     event.listingId,
+    event_type:    'lifecycle.LISTING_STAGE_TRANSITION_FAILED',
+    actor_user_id: event.userId,
+    metadata: {
+      from_stage:       event.fromStage,
+      to_stage:         event.toStage,
+      failure_reason:   event.failureReason,
+      readiness_failed: event.readinessChecksFailed ?? [],
+      is_override:      false,
+    },
   })
+  // processKernelEvent NOT called — no state change occurred
 }
 
 /**
@@ -162,7 +174,8 @@ function buildTransitionDescription(event: LifecycleEventData): string {
 }
 
 /**
- * Query lifecycle history for a listing
+ * Query lifecycle history for a listing.
+ * Reads from lifecycle_events (entity_type = 'listing_stage_machine').
  */
 export async function getLifecycleHistory(
   supabase: SupabaseClient,
@@ -173,34 +186,25 @@ export async function getLifecycleHistory(
   fromStage: ListingStage | null
   toStage: ListingStage
   userId: string
-  userRole: string
   isOverride: boolean
   notes: string | null
 }>> {
-  const { data, error } = await supabase
-    .from("activities")
-    .select("*")
-    .eq("listing_id", listingId)
-    .eq("activity_type", "listing_lifecycle_transition")
-    .order("created_at", { ascending: true })
-  
-  if (error || !data) {
-    return []
-  }
-  
-  return data.map((activity) => {
-    const parsed = activity.notes ? JSON.parse(activity.notes) : {}
-    return {
-      id: activity.id,
-      timestamp: activity.created_at,
-      fromStage: parsed.from_stage || null,
-      toStage: parsed.to_stage,
-      userId: parsed.user_id,
-      userRole: parsed.user_role,
-      isOverride: parsed.is_override || false,
-      notes: activity.description,
-    }
-  })
+  const { data } = await supabase
+    .from('lifecycle_events')
+    .select('*')
+    .eq('entity_type', 'listing_stage_machine')
+    .eq('entity_id', listingId)
+    .order('created_at', { ascending: true })
+
+  return (data ?? []).map(e => ({
+    id:         e.id,
+    timestamp:  e.created_at,
+    fromStage:  (e.metadata?.from_state ?? null) as ListingStage | null,
+    toStage:    e.metadata?.to_state as ListingStage,
+    userId:     e.actor_user_id,
+    isOverride: e.metadata?.is_override ?? false,
+    notes:      e.metadata?.notes ?? null,
+  }))
 }
 
 /**

@@ -1,24 +1,18 @@
 import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
+import { getAgentContext } from "@/lib/identity"
 
 export async function GET() {
   try {
+    const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
-
-    // Check authentication
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
 
     // Fetch pending approval items
     const { data, error, count } = await supabase
       .from("approval_items")
       .select("*", { count: "exact" })
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
       .eq("status", "pending")
       .order("created_at", { ascending: false })
 

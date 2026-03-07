@@ -21,7 +21,7 @@ export interface NetSheetValidityInput {
   validityDays?: number
   
   // Override context
-  overrideByRole?: "agent" | "team_leader" | "broker" | "admin"
+  overrideByRole?: "agent" | "team_lead" | "broker" | "admin"
   overrideReason?: string
 }
 
@@ -158,6 +158,7 @@ export async function isNetSheetValid(listingId: string): Promise<boolean> {
   return result.isValid
 }
 
+// Agent task (correct location, no changes) — event_type: seller.net_sheet.expiration_warning
 /**
  * Emit net sheet expiration event (for monitoring only)
  */

@@ -7,6 +7,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import type { TemplateClassification } from "./template-classifier"
 import type { BrandRequirements } from "./brand-requirements"
 
+// Agent task (correct location, no changes) — activity_type: template_classified, brand_requirements_evaluated, brand_compliance_validated
 /**
  * Log template classification to activities table
  */
