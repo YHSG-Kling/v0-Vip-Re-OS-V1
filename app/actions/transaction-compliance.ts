@@ -84,17 +84,17 @@ export async function seedTransactionComplianceChecks(
   return { success: true, inserted: checksToInsert.length }
 }
 
-// ─── BUILD25 VALID STATUSES ─────────────────────────────────────────────────────
-// Normalized to pass/fail per kernel OS specification
-
-export const BUILD25_COMPLIANCE_STATUSES = {
-  PASS: "pass",
-  FAIL: "fail",
-  PENDING: "pending",
-  WAIVED: "waived",
-} as const
+// ─── COMPLIANCE STATUS TYPE ──────────────────────────────────────────────────────
+// Status values are normalized to: pass, fail, pending, waived
+// These match the actual values stored in the Supabase transaction_compliance_log table
 
 export type ComplianceCheckStatus = "pending" | "pass" | "fail" | "waived"
+
+// Status constants for writes (normalized)
+const STATUS_PASS = "pass"
+const STATUS_FAIL = "fail"
+const STATUS_PENDING = "pending"
+const STATUS_WAIVED = "waived"
 
 export async function updateComplianceCheck(params: {
   checkId: string
@@ -139,14 +139,14 @@ export async function updateComplianceCheck(params: {
     updated_at: new Date().toISOString(),
   }
 
-  // Normalize writes: pass/fail per build25 spec
-  if (params.status === BUILD25_COMPLIANCE_STATUSES.PASS || params.status === "waived") {
+  // Normalize writes: pass/fail
+  if (params.status === STATUS_PASS || params.status === STATUS_WAIVED) {
     updateData.resolved_by = user.id
     updateData.resolved_at = new Date().toISOString()
     updateData.resolution_notes = params.resolutionNotes ?? null
   }
 
-  if (params.status === BUILD25_COMPLIANCE_STATUSES.FAIL) {
+  if (params.status === STATUS_FAIL) {
     updateData.failure_reason = params.failureReason ?? null
   }
 
@@ -190,7 +190,7 @@ export async function updateComplianceCheck(params: {
 
 /**
  * Checks if a transaction can proceed to CLOSING_PREP stage.
- * Filters by build25-valid statuses only: pass/fail/pending/waived
+ * Filters by valid statuses from Supabase: pass/fail/pending/waived
  * 
  * ALLOWED to proceed: status = "pass" or "waived"
  * BLOCKED from proceeding: status = "fail" or "pending" (for blocking checks)
@@ -204,20 +204,15 @@ export async function canProceedToClosingPrep(
 
   const supabase = createServiceClient()
 
-  // Get all blocking compliance checks - filter by build25-valid statuses
+  // Get all blocking compliance checks - filter by valid statuses from database
   const { data: blockingChecks, error } = await supabase
     .from("transaction_compliance_log")
     .select("id, check_type, check_label, status, is_blocking, failure_reason")
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
     .eq("is_blocking", true)
-    // Only consider build25-valid statuses
-    .in("status", [
-      BUILD25_COMPLIANCE_STATUSES.PASS,
-      BUILD25_COMPLIANCE_STATUSES.FAIL,
-      BUILD25_COMPLIANCE_STATUSES.PENDING,
-      BUILD25_COMPLIANCE_STATUSES.WAIVED,
-    ])
+    // Only consider valid statuses stored in Supabase
+    .in("status", [STATUS_PASS, STATUS_FAIL, STATUS_PENDING, STATUS_WAIVED])
 
   if (error) {
     console.error("[transaction-compliance] Failed to fetch compliance checks:", error)
@@ -227,17 +222,17 @@ export async function canProceedToClosingPrep(
   const blockers: string[] = []
 
   for (const check of blockingChecks ?? []) {
-    // build25: "fail" status blocking checks prevent CLOSING_PREP
-    if (check.status === BUILD25_COMPLIANCE_STATUSES.FAIL) {
+    // "fail" status blocking checks prevent CLOSING_PREP
+    if (check.status === STATUS_FAIL) {
       blockers.push(
         `Compliance failed: ${check.check_label}${check.failure_reason ? ` - ${check.failure_reason}` : ""}`
       )
     }
-    // build25: "pending" status blocking checks also prevent CLOSING_PREP
-    if (check.status === BUILD25_COMPLIANCE_STATUSES.PENDING) {
+    // "pending" status blocking checks also prevent CLOSING_PREP
+    if (check.status === STATUS_PENDING) {
       blockers.push(`Compliance pending: ${check.check_label}`)
     }
-    // build25: "pass" and "waived" statuses are allowed - no action needed
+    // "pass" and "waived" statuses are allowed - no action needed
   }
 
   return {
@@ -391,11 +386,11 @@ export async function batchPassComplianceChecks(params: {
 
   const supabase = createServiceClient()
 
-  // Normalize writes: use "pass" per build25 spec
+  // Normalize writes: use "pass"
   const { error, count } = await supabase
     .from("transaction_compliance_log")
     .update({
-      status: BUILD25_COMPLIANCE_STATUSES.PASS, // normalized: pass
+      status: STATUS_PASS,
       checked_by: user.id,
       checked_at: new Date().toISOString(),
       resolved_by: user.id,
@@ -411,14 +406,14 @@ export async function batchPassComplianceChecks(params: {
     return { success: false, updated: 0, error: error.message }
   }
 
-  // Log timeline entry (normalized status: pass)
+  // Log timeline entry
   await supabase.from("transaction_timeline").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
     activity_type: "compliance_batch_pass",
     description: `${params.checkIds.length} compliance checks marked as pass`,
     performed_by: user.id,
-    metadata: { check_ids: params.checkIds, status: BUILD25_COMPLIANCE_STATUSES.PASS },
+    metadata: { check_ids: params.checkIds, status: STATUS_PASS },
     created_at: new Date().toISOString(),
   })
 
