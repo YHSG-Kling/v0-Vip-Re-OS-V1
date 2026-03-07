@@ -21,6 +21,17 @@ import {
   markTransactionLost,
 } from "@/app/actions/transaction-stage-machine"
 import {
+  scheduleInspectionAction,
+  approveInspectionQuoteAction,
+  markInspectionCompleteAction,
+  uploadInspectionReportAction,
+  requestInsuranceQuoteAction,
+  submitInsuranceQuoteApprovalAction,
+  approveInsuranceQuoteAction,
+  updateEarnestMoneyAction,
+  getPendingQuoteApprovalsAction,
+} from "@/app/actions/transaction-inspections"
+import {
   ArrowLeft,
   ArrowRight,
   AlertTriangle,
@@ -36,6 +47,9 @@ import {
   Building2,
   CircleDot,
   XCircle,
+  Upload,
+  Plus,
+  Loader2,
 } from "lucide-react"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
@@ -116,18 +130,41 @@ interface TransactionDetailClientProps {
     actor_name: string | null
   }>
   titleEscrow: {
+    id: string
     title_company: string | null
     escrow_company: string | null
     earnest_money_amount: number | null
     earnest_money_received_at: string | null
     earnest_money_holder: string | null
   } | null
+  inspections: Array<{
+    id: string
+    inspection_type: string
+    inspector_name: string | null
+    inspector_company: string | null
+    inspector_email: string | null
+    inspector_phone: string | null
+    scheduled_date: string | null
+    completed_date: string | null
+    cost: number | null
+    status: string
+    report_url: string | null
+    report_received: boolean
+  }>
+  pendingQuoteApprovals: Array<{
+    id: string
+    activity_type: string
+    title: string
+    metadata: Record<string, unknown>
+  }>
   vendorServices: Array<{
     id: string
     service_type: string
     vendor_name: string
+    vendor_email: string | null
+    vendor_phone: string | null
     status: string
-    quote_amount: number | null
+    cost: number | null
     scheduled_date: string | null
   }>
   insuranceQuotes: Array<{
@@ -189,6 +226,8 @@ export function TransactionDetailClient({
   tasks,
   timeline,
   titleEscrow,
+  inspections,
+  pendingQuoteApprovals,
   vendorServices,
   insuranceQuotes,
   repairs,
@@ -213,6 +252,28 @@ export function TransactionDetailClient({
   const [lostReason, setLostReason] = useState("")
   const [lostCategory, setLostCategory] = useState("")
   const [earnestOutcome, setEarnestOutcome] = useState<"returned" | "forfeited">("returned")
+
+  // Inspection form state
+  const [showInspectionForm, setShowInspectionForm] = useState(false)
+  const [inspectionType, setInspectionType] = useState("home_inspection")
+  const [inspectorName, setInspectorName] = useState("")
+  const [inspectorCompany, setInspectorCompany] = useState("")
+  const [inspectorEmail, setInspectorEmail] = useState("")
+  const [inspectorPhone, setInspectorPhone] = useState("")
+  const [inspectionDate, setInspectionDate] = useState("")
+  const [inspectionCost, setInspectionCost] = useState("")
+
+  // Insurance form state
+  const [showInsuranceForm, setShowInsuranceForm] = useState(false)
+  const [insuranceVendorName, setInsuranceVendorName] = useState("")
+  const [insuranceVendorEmail, setInsuranceVendorEmail] = useState("")
+  const [insuranceVendorPhone, setInsuranceVendorPhone] = useState("")
+  const [insuranceQuoteAmount, setInsuranceQuoteAmount] = useState("")
+
+  // Earnest money form state
+  const [emAmount, setEmAmount] = useState(titleEscrow?.earnest_money_amount?.toString() ?? "")
+  const [emHeldBy, setEmHeldBy] = useState(titleEscrow?.earnest_money_holder ?? "")
+  const [emReceivedDate, setEmReceivedDate] = useState(titleEscrow?.earnest_money_received_at ?? "")
 
   const currentStage = transaction.stage as TransactionStage
   const allowedNextStages = STAGE_TRANSITIONS[currentStage] || []
@@ -281,6 +342,126 @@ export function TransactionDetailClient({
         setShowLostModal(false)
         router.refresh()
       }
+    })
+  }
+
+  // ─── INSPECTION HANDLERS ─────────────────────────────────────────────────────
+
+  async function handleScheduleInspection() {
+    if (!inspectorName) return
+
+    startTransition(async () => {
+      const result = await scheduleInspectionAction({
+        transactionId: transaction.id,
+        brokerageId,
+        inspectionType,
+        inspectorName,
+        inspectorCompany: inspectorCompany || undefined,
+        inspectorEmail: inspectorEmail || undefined,
+        inspectorPhone: inspectorPhone || undefined,
+        scheduledDate: inspectionDate || undefined,
+        cost: inspectionCost ? parseFloat(inspectionCost) : undefined,
+      })
+
+      if (result.success) {
+        setShowInspectionForm(false)
+        setInspectorName("")
+        setInspectorCompany("")
+        setInspectorEmail("")
+        setInspectorPhone("")
+        setInspectionDate("")
+        setInspectionCost("")
+        router.refresh()
+      }
+    })
+  }
+
+  async function handleApproveQuote(activityId: string, vendorName: string, quoteType: string) {
+    startTransition(async () => {
+      if (quoteType === "inspector") {
+        await approveInspectionQuoteAction({
+          activityId,
+          transactionId: transaction.id,
+          brokerageId,
+          vendorName,
+        })
+      } else {
+        await approveInsuranceQuoteAction({
+          activityId,
+          serviceId: activityId,
+          transactionId: transaction.id,
+          brokerageId,
+          vendorName,
+        })
+      }
+      router.refresh()
+    })
+  }
+
+  async function handleMarkInspectionComplete(inspectionId: string) {
+    startTransition(async () => {
+      await markInspectionCompleteAction({
+        inspectionId,
+        transactionId: transaction.id,
+        brokerageId,
+      })
+      router.refresh()
+    })
+  }
+
+  // ─── INSURANCE HANDLERS ──────────────────────────────────────────────────────
+
+  async function handleRequestInsuranceQuote() {
+    if (!insuranceVendorName) return
+
+    startTransition(async () => {
+      const result = await requestInsuranceQuoteAction({
+        transactionId: transaction.id,
+        brokerageId,
+        vendorName: insuranceVendorName,
+        vendorEmail: insuranceVendorEmail || undefined,
+        vendorPhone: insuranceVendorPhone || undefined,
+      })
+
+      if (result.success) {
+        setShowInsuranceForm(false)
+        setInsuranceVendorName("")
+        setInsuranceVendorEmail("")
+        setInsuranceVendorPhone("")
+        router.refresh()
+      }
+    })
+  }
+
+  async function handleSubmitInsuranceQuoteAmount(serviceId: string, vendorName: string) {
+    if (!insuranceQuoteAmount) return
+
+    startTransition(async () => {
+      await submitInsuranceQuoteApprovalAction({
+        serviceId,
+        transactionId: transaction.id,
+        brokerageId,
+        vendorName,
+        quoteAmount: parseFloat(insuranceQuoteAmount),
+      })
+      setInsuranceQuoteAmount("")
+      router.refresh()
+    })
+  }
+
+  // ─── EARNEST MONEY HANDLER ───────────────────────────────────────────────────
+
+  async function handleUpdateEarnestMoney() {
+    startTransition(async () => {
+      await updateEarnestMoneyAction({
+        transactionId: transaction.id,
+        brokerageId,
+        titleEscrowId: titleEscrow?.id,
+        earnestMoneyAmount: emAmount ? parseFloat(emAmount) : undefined,
+        earnestMoneyHeldBy: emHeldBy || undefined,
+        earnestMoneyReceivedDate: emReceivedDate || undefined,
+      })
+      router.refresh()
     })
   }
 
@@ -794,9 +975,13 @@ export function TransactionDetailClient({
             {/* Title & Escrow Tab */}
             <TabsContent value="title" className="mt-4">
               <Card>
-                <CardContent className="pt-4">
-                  {titleEscrow ? (
-                    <div className="grid grid-cols-2 gap-4 text-sm">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Title & Escrow</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {/* Title/Escrow Company Info (read-only display) */}
+                  {titleEscrow && (titleEscrow.title_company || titleEscrow.escrow_company) && (
+                    <div className="grid grid-cols-2 gap-4 text-sm mb-6 pb-4 border-b">
                       <div>
                         <p className="text-muted-foreground">Title Company</p>
                         <p className="font-medium">{titleEscrow.title_company ?? "Not set"}</p>
@@ -805,30 +990,74 @@ export function TransactionDetailClient({
                         <p className="text-muted-foreground">Escrow Company</p>
                         <p className="font-medium">{titleEscrow.escrow_company ?? "Not set"}</p>
                       </div>
+                    </div>
+                  )}
+
+                  {/* Earnest Money Section - Editable */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-medium">Earnest Money</h4>
+                    <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <p className="text-muted-foreground">Earnest Money</p>
-                        <p className="font-medium">
-                          {titleEscrow.earnest_money_amount
-                            ? `$${titleEscrow.earnest_money_amount.toLocaleString()}`
-                            : "Not set"}
-                        </p>
+                        <Label htmlFor="emAmount">Amount</Label>
+                        <div className="relative mt-1">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
+                          <Input
+                            id="emAmount"
+                            type="number"
+                            value={emAmount}
+                            onChange={(e) => setEmAmount(e.target.value)}
+                            placeholder="10000"
+                            className="pl-6"
+                          />
+                        </div>
                       </div>
                       <div>
-                        <p className="text-muted-foreground">EM Received</p>
-                        <p className="font-medium">
-                          {titleEscrow.earnest_money_received_at
-                            ? new Date(titleEscrow.earnest_money_received_at).toLocaleDateString()
-                            : "Pending"}
-                        </p>
+                        <Label htmlFor="emHeldBy">Held By</Label>
+                        <Select value={emHeldBy} onValueChange={setEmHeldBy}>
+                          <SelectTrigger className="mt-1">
+                            <SelectValue placeholder="Select holder" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="title_company">Title Company</SelectItem>
+                            <SelectItem value="escrow_company">Escrow Company</SelectItem>
+                            <SelectItem value="listing_brokerage">Listing Brokerage</SelectItem>
+                            <SelectItem value="buyers_brokerage">Buyers Brokerage</SelectItem>
+                            <SelectItem value="attorney">Attorney</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </div>
-                      <div className="col-span-2">
-                        <p className="text-muted-foreground">EM Holder</p>
-                        <p className="font-medium">{titleEscrow.earnest_money_holder ?? "Not set"}</p>
+                      <div>
+                        <Label htmlFor="emReceivedDate">Received Date</Label>
+                        <Input
+                          id="emReceivedDate"
+                          type="date"
+                          value={emReceivedDate}
+                          onChange={(e) => setEmReceivedDate(e.target.value)}
+                          className="mt-1"
+                        />
                       </div>
                     </div>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">No title & escrow information added.</p>
-                  )}
+                    <Button
+                      onClick={handleUpdateEarnestMoney}
+                      disabled={isPending}
+                    >
+                      {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                      Save Earnest Money
+                    </Button>
+
+                    {/* Status Indicator */}
+                    {titleEscrow?.earnest_money_received_at && (
+                      <Alert className="border-green-500 bg-green-50">
+                        <CheckCircle2 className="h-4 w-4 text-green-600" />
+                        <AlertTitle className="text-green-800">Earnest Money Received</AlertTitle>
+                        <AlertDescription className="text-green-700">
+                          ${titleEscrow.earnest_money_amount?.toLocaleString() ?? emAmount} received on{" "}
+                          {new Date(titleEscrow.earnest_money_received_at).toLocaleDateString()}{" "}
+                          {titleEscrow.earnest_money_holder && `held by ${titleEscrow.earnest_money_holder.replace(/_/g, " ")}`}
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>
@@ -836,27 +1065,204 @@ export function TransactionDetailClient({
             {/* Inspection Tab */}
             <TabsContent value="inspection" className="mt-4">
               <Card>
-                <CardContent className="pt-4">
-                  {vendorServices.filter(v => v.service_type === "inspection").length > 0 ? (
-                    <div className="space-y-2">
-                      {vendorServices
-                        .filter(v => v.service_type === "inspection")
-                        .map((v) => (
-                          <div key={v.id} className="flex items-center justify-between py-2 border-b last:border-0">
+                <CardHeader className="pb-2 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm">Inspections</CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowInspectionForm(!showInspectionForm)}
+                  >
+                    <Plus className="h-4 w-4 mr-1" />
+                    Add Inspection
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {/* Pending Quote Approvals */}
+                  {pendingQuoteApprovals.filter(a => (a.metadata as Record<string,unknown>)?.quote_type === "inspector").length > 0 && (
+                    <Alert className="mb-4 border-amber-500 bg-amber-50">
+                      <AlertTriangle className="h-4 w-4 text-amber-500" />
+                      <AlertTitle className="text-amber-800">Quote Approval Needed</AlertTitle>
+                      <AlertDescription className="text-amber-700">
+                        {pendingQuoteApprovals
+                          .filter(a => (a.metadata as Record<string,unknown>)?.quote_type === "inspector")
+                          .map((a) => {
+                            const meta = a.metadata as Record<string,unknown>
+                            return (
+                              <div key={a.id} className="flex items-center justify-between mt-2">
+                                <span>{meta.vendor_name as string} - ${(meta.quote_amount as number)?.toLocaleString()}</span>
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleApproveQuote(a.id, meta.vendor_name as string, "inspector")}
+                                  disabled={isPending}
+                                >
+                                  {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Approve"}
+                                </Button>
+                              </div>
+                            )
+                          })}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {/* Schedule Inspection Form */}
+                  {showInspectionForm && (
+                    <div className="border rounded-lg p-4 mb-4 space-y-3 bg-muted/30">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label htmlFor="inspectionType">Inspection Type</Label>
+                          <Select value={inspectionType} onValueChange={setInspectionType}>
+                            <SelectTrigger className="mt-1">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="home_inspection">Home Inspection</SelectItem>
+                              <SelectItem value="pest_inspection">Pest Inspection</SelectItem>
+                              <SelectItem value="radon_inspection">Radon Inspection</SelectItem>
+                              <SelectItem value="roof_inspection">Roof Inspection</SelectItem>
+                              <SelectItem value="sewer_inspection">Sewer Inspection</SelectItem>
+                              <SelectItem value="structural_inspection">Structural Inspection</SelectItem>
+                              <SelectItem value="other">Other</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label htmlFor="inspectorName">Inspector Name *</Label>
+                          <Input
+                            id="inspectorName"
+                            value={inspectorName}
+                            onChange={(e) => setInspectorName(e.target.value)}
+                            placeholder="John Smith"
+                            className="mt-1"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="inspectorCompany">Company</Label>
+                          <Input
+                            id="inspectorCompany"
+                            value={inspectorCompany}
+                            onChange={(e) => setInspectorCompany(e.target.value)}
+                            placeholder="ABC Inspections"
+                            className="mt-1"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="inspectorEmail">Email</Label>
+                          <Input
+                            id="inspectorEmail"
+                            type="email"
+                            value={inspectorEmail}
+                            onChange={(e) => setInspectorEmail(e.target.value)}
+                            placeholder="inspector@example.com"
+                            className="mt-1"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="inspectorPhone">Phone</Label>
+                          <Input
+                            id="inspectorPhone"
+                            value={inspectorPhone}
+                            onChange={(e) => setInspectorPhone(e.target.value)}
+                            placeholder="(555) 123-4567"
+                            className="mt-1"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="inspectionDate">Scheduled Date</Label>
+                          <Input
+                            id="inspectionDate"
+                            type="date"
+                            value={inspectionDate}
+                            onChange={(e) => setInspectionDate(e.target.value)}
+                            className="mt-1"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="inspectionCost">Cost</Label>
+                          <Input
+                            id="inspectionCost"
+                            type="number"
+                            value={inspectionCost}
+                            onChange={(e) => setInspectionCost(e.target.value)}
+                            placeholder="450"
+                            className="mt-1"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex gap-2 pt-2">
+                        <Button onClick={handleScheduleInspection} disabled={!inspectorName || isPending}>
+                          {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                          Schedule Inspection
+                        </Button>
+                        <Button variant="outline" onClick={() => setShowInspectionForm(false)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Existing Inspections */}
+                  {inspections.length > 0 ? (
+                    <div className="space-y-3">
+                      {inspections.map((insp) => (
+                        <div key={insp.id} className="border rounded-lg p-3">
+                          <div className="flex items-center justify-between">
                             <div>
-                              <p className="text-sm font-medium">{v.vendor_name}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {v.scheduled_date
-                                  ? `Scheduled: ${new Date(v.scheduled_date).toLocaleDateString()}`
-                                  : "Not scheduled"}
+                              <p className="text-sm font-medium">
+                                {insp.inspection_type.replace(/_/g, " ")}
                               </p>
+                              <p className="text-xs text-muted-foreground">
+                                {insp.inspector_name}
+                                {insp.inspector_company && ` at ${insp.inspector_company}`}
+                              </p>
+                              {insp.scheduled_date && (
+                                <p className="text-xs text-muted-foreground">
+                                  Scheduled: {new Date(insp.scheduled_date).toLocaleDateString()}
+                                </p>
+                              )}
+                              {insp.cost && (
+                                <p className="text-xs text-muted-foreground">
+                                  Cost: ${insp.cost.toLocaleString()}
+                                </p>
+                              )}
                             </div>
-                            <Badge>{v.status}</Badge>
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                variant={
+                                  insp.status === "report_received"
+                                    ? "default"
+                                    : insp.status === "scheduled"
+                                    ? "secondary"
+                                    : "outline"
+                                }
+                              >
+                                {insp.status.replace(/_/g, " ")}
+                              </Badge>
+                              {insp.status === "scheduled" && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleMarkInspectionComplete(insp.id)}
+                                  disabled={isPending}
+                                >
+                                  Mark Complete
+                                </Button>
+                              )}
+                              {insp.report_url && (
+                                <Button size="sm" variant="ghost" asChild>
+                                  <a href={insp.report_url} target="_blank" rel="noopener noreferrer">
+                                    <FileText className="h-4 w-4" />
+                                  </a>
+                                </Button>
+                              )}
+                            </div>
                           </div>
-                        ))}
+                        </div>
+                      ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground">No inspection scheduled.</p>
+                    !showInspectionForm && (
+                      <p className="text-sm text-muted-foreground">No inspections scheduled yet.</p>
+                    )
                   )}
                 </CardContent>
               </Card>
@@ -865,26 +1271,152 @@ export function TransactionDetailClient({
             {/* Vendors Tab (Insurance Quotes) */}
             <TabsContent value="vendors" className="mt-4">
               <Card>
-                <CardHeader className="pb-2">
+                <CardHeader className="pb-2 flex flex-row items-center justify-between">
                   <CardTitle className="text-sm">Insurance Quotes</CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setShowInsuranceForm(!showInsuranceForm)}
+                  >
+                    <Plus className="h-4 w-4 mr-1" />
+                    Request Quote
+                  </Button>
                 </CardHeader>
                 <CardContent>
-                  {insuranceQuotes.length > 0 ? (
-                    <div className="space-y-2">
-                      {insuranceQuotes.map((q) => (
-                        <div key={q.id} className="flex items-center justify-between py-2 border-b last:border-0">
-                          <div>
-                            <p className="text-sm font-medium">{q.vendor_name}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {q.quote_amount ? `$${q.quote_amount.toLocaleString()}/yr` : "Quote pending"}
-                            </p>
-                          </div>
-                          <Badge>{q.status}</Badge>
+                  {/* Pending Insurance Quote Approvals */}
+                  {pendingQuoteApprovals.filter(a => (a.metadata as Record<string,unknown>)?.quote_type === "insurance").length > 0 && (
+                    <Alert className="mb-4 border-amber-500 bg-amber-50">
+                      <AlertTriangle className="h-4 w-4 text-amber-500" />
+                      <AlertTitle className="text-amber-800">Quote Approval Needed</AlertTitle>
+                      <AlertDescription className="text-amber-700">
+                        {pendingQuoteApprovals
+                          .filter(a => (a.metadata as Record<string,unknown>)?.quote_type === "insurance")
+                          .map((a) => {
+                            const meta = a.metadata as Record<string,unknown>
+                            return (
+                              <div key={a.id} className="flex items-center justify-between mt-2">
+                                <span>{meta.vendor_name as string} - ${(meta.quote_amount as number)?.toLocaleString()}/yr</span>
+                                <Button
+                                  size="sm"
+                                  onClick={() => handleApproveQuote(a.id, meta.vendor_name as string, "insurance")}
+                                  disabled={isPending}
+                                >
+                                  {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Approve"}
+                                </Button>
+                              </div>
+                            )
+                          })}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {/* Request Insurance Quote Form */}
+                  {showInsuranceForm && (
+                    <div className="border rounded-lg p-4 mb-4 space-y-3 bg-muted/30">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label htmlFor="insuranceVendorName">Insurance Provider *</Label>
+                          <Input
+                            id="insuranceVendorName"
+                            value={insuranceVendorName}
+                            onChange={(e) => setInsuranceVendorName(e.target.value)}
+                            placeholder="State Farm"
+                            className="mt-1"
+                          />
                         </div>
-                      ))}
+                        <div>
+                          <Label htmlFor="insuranceVendorEmail">Email</Label>
+                          <Input
+                            id="insuranceVendorEmail"
+                            type="email"
+                            value={insuranceVendorEmail}
+                            onChange={(e) => setInsuranceVendorEmail(e.target.value)}
+                            placeholder="agent@statefarm.com"
+                            className="mt-1"
+                          />
+                        </div>
+                        <div>
+                          <Label htmlFor="insuranceVendorPhone">Phone</Label>
+                          <Input
+                            id="insuranceVendorPhone"
+                            value={insuranceVendorPhone}
+                            onChange={(e) => setInsuranceVendorPhone(e.target.value)}
+                            placeholder="(555) 123-4567"
+                            className="mt-1"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex gap-2 pt-2">
+                        <Button onClick={handleRequestInsuranceQuote} disabled={!insuranceVendorName || isPending}>
+                          {isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : null}
+                          Request Quote
+                        </Button>
+                        <Button variant="outline" onClick={() => setShowInsuranceForm(false)}>
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Existing Insurance Quotes */}
+                  {vendorServices.filter(v => v.service_type === "insurance_quote").length > 0 ? (
+                    <div className="space-y-3">
+                      {vendorServices
+                        .filter(v => v.service_type === "insurance_quote")
+                        .map((v) => (
+                          <div key={v.id} className="border rounded-lg p-3">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-sm font-medium">{v.vendor_name}</p>
+                                {v.vendor_email && (
+                                  <p className="text-xs text-muted-foreground">{v.vendor_email}</p>
+                                )}
+                                {v.cost && (
+                                  <p className="text-xs font-medium text-green-600">
+                                    ${v.cost.toLocaleString()}/yr
+                                  </p>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <Badge
+                                  variant={
+                                    v.status === "approved"
+                                      ? "default"
+                                      : v.status === "pending_approval"
+                                      ? "secondary"
+                                      : "outline"
+                                  }
+                                >
+                                  {v.status.replace(/_/g, " ")}
+                                </Badge>
+                                {v.status === "quote_requested" && (
+                                  <div className="flex items-center gap-2">
+                                    <Input
+                                      type="number"
+                                      placeholder="Amount"
+                                      className="w-24 h-8"
+                                      value={insuranceQuoteAmount}
+                                      onChange={(e) => setInsuranceQuoteAmount(e.target.value)}
+                                    />
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => handleSubmitInsuranceQuoteAmount(v.id, v.vendor_name)}
+                                      disabled={!insuranceQuoteAmount || isPending}
+                                    >
+                                      Submit
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground">No insurance quotes yet.</p>
+                    !showInsuranceForm && (
+                      <p className="text-sm text-muted-foreground">No insurance quotes requested yet.</p>
+                    )
                   )}
                 </CardContent>
               </Card>

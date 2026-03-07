@@ -74,6 +74,8 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     { data: tasks },
     { data: timeline },
     { data: titleEscrow },
+    { data: inspections },
+    { data: pendingQuoteApprovals },
     { data: vendorServices },
     { data: repairs },
     { data: lenderInfo },
@@ -148,6 +150,21 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .eq("transaction_id", id)
       .maybeSingle(),
 
+    // Inspections
+    supabase
+      .from("transaction_inspections")
+      .select("*")
+      .eq("transaction_id", id)
+      .order("created_at", { ascending: false }),
+
+    // Pending quote approvals (activities)
+    supabase
+      .from("activities")
+      .select("*")
+      .eq("transaction_id", id)
+      .eq("activity_type", "client_quote_approval_needed")
+      .eq("status", "pending"),
+
     // Vendor services (insurance quotes, etc.)
     supabase
       .from("transaction_vendor_services")
@@ -217,6 +234,8 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       tasks={tasks ?? []}
       timeline={timeline ?? []}
       titleEscrow={titleEscrow}
+      inspections={inspections ?? []}
+      pendingQuoteApprovals={pendingQuoteApprovals ?? []}
       vendorServices={vendorServices ?? []}
       insuranceQuotes={insuranceQuotes}
       repairs={repairs ?? []}
