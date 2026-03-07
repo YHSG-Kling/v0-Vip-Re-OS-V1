@@ -170,7 +170,28 @@ export enum KernelEvent {
   REENGAGEMENT_STARTED           = 'reengagement_started',
   REENGAGEMENT_COMPLETED         = 'reengagement_completed',
 
-  // ── SLA ──────────────────��───────────────────────────────────────────────
+  // ── TRANSACTION ORCHESTRATION (Layer 6) ──────────────────────────────────
+  TRANSACTION_STAGE_CHANGED           = 'transaction_stage_changed',
+  INSPECTION_ORDERED                  = 'inspection_ordered',
+  INSPECTION_QUOTE_REQUESTED          = 'inspection_quote_requested',
+  INSPECTION_QUOTE_APPROVED           = 'inspection_quote_approved',
+  INSURANCE_QUOTE_REQUESTED           = 'insurance_quote_requested',
+  INSURANCE_QUOTE_APPROVED            = 'insurance_quote_approved',
+  EARNEST_MONEY_RECEIVED              = 'earnest_money_received',
+  EARNEST_MONEY_MILESTONE_COMPLETED   = 'earnest_money_milestone_completed',
+  APPRAISAL_ORDERED                   = 'appraisal_ordered',
+  APPRAISAL_COMPLETED                 = 'appraisal_completed',
+  FINANCING_CLEAR_TO_CLOSE            = 'financing_clear_to_close',
+  CDA_GENERATED                       = 'cda_generated',
+  CDA_APPROVED                        = 'cda_approved',
+  DEAL_HEALTH_CHANGED                 = 'deal_health_changed',
+  TRANSACTION_COMPLIANCE_FAILED       = 'transaction_compliance_failed',
+  TRANSACTION_COMPLIANCE_PASSED       = 'transaction_compliance_passed',
+  MILESTONE_COMPLETED                 = 'milestone_completed',
+  MILESTONE_OVERDUE                   = 'milestone_overdue',
+  POST_CLOSING_PLAN_GENERATED         = 'post_closing_plan_generated',
+
+  // ── SLA ──────────────────────────────────────────────────────────────────
   LEAD_SLA_BREACHED              = 'lead_sla_breached',
   STALE_LEAD_ALERT               = 'stale_lead_alert',
 
