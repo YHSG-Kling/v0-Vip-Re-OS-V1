@@ -79,6 +79,9 @@ export { seedStageAutoTasks } from './stage-auto-tasks'
 // ─── MILESTONE AUTO TRIGGER ───────────────────────────────────────────────────
 export { triggerMilestoneFromDocument } from './milestone-auto-trigger'
 
+// ─── COMPLIANCE CHECKS SEEDER ─────────────────────────────────────────────────
+export { seedTransactionComplianceChecks } from './compliance-checks-seeder'
+
 // ─── CLASSES ──────────────────────────────────────────────────────────────────
 export { TransactionOrchestrator } from './transaction-orchestrator'
 export { TransparencyService } from './transparency-service'

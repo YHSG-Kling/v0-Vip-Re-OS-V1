@@ -2,6 +2,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { STAGE_TRANSITIONS, CRITICAL_MILESTONES, TransactionStage } from "./transaction-stages"
 import { getMilestones } from "./milestone-service"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import { seedStageAutoTasks } from "./stage-auto-tasks"
+import { seedTransactionComplianceChecks } from "./compliance-checks-seeder"
 
 export interface StageProgressionResult {
   success: boolean
@@ -65,6 +67,47 @@ export async function canAdvanceStage(
         blockers.push(`Critical milestone "${criticalName}" not found`)
       } else if (!milestone.completed_at) {
         blockers.push(`Critical milestone "${criticalName}" must be completed`)
+      }
+    }
+  }
+
+  // 6. Get contact_id for compliance_flags lookup (query by contact linkage, not transaction)
+  const { data: txn } = await supabase
+    .from("transactions")
+    .select("contact_id, offer_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+
+  // 7. Check contingency initialed status from offer/contract intelligence
+  if (txn?.offer_id && targetStage !== "LOST") {
+    const { data: offer } = await supabase
+      .from("offers")
+      .select("contingencies, appraisal_contingency_days, financing_contingency_days, inspection_period_days")
+      .eq("id", txn.offer_id)
+      .maybeSingle()
+
+    if (offer) {
+      // Block if any contingency is not initialed (contingencies array contains un-initialed items)
+      const contingencies = offer.contingencies ?? []
+      const notInitialed = contingencies.filter((c: string) => c && !c.toLowerCase().includes("initialed"))
+      if (notInitialed.length > 0) {
+        blockers.push(`Contingencies not initialed: ${notInitialed.join(", ")}`)
+      }
+    }
+  }
+
+  // 8. Check compliance_flags for unresolved deal_breaker severity by contact linkage
+  if (txn?.contact_id) {
+    const { data: dealBreakerFlags } = await supabase
+      .from("compliance_flags")
+      .select("id, flag_type, severity, status")
+      .eq("contact_id", txn.contact_id)
+      .eq("severity", "deal_breaker")
+      .in("status", ["unresolved", "flagged"])
+
+    if (dealBreakerFlags && dealBreakerFlags.length > 0) {
+      for (const flag of dealBreakerFlags) {
+        blockers.push(`Deal-breaker compliance flag: ${flag.flag_type} (${flag.status})`)
       }
     }
   }
@@ -146,7 +189,28 @@ export async function advanceStage(params: {
     metadata:     { reason: params.reason ?? null },
   })
 
-  // 5. Trigger commission calculations based on stage
+  // 5. Seed stage auto-tasks for the new stage
+  await seedStageAutoTasks({
+    transactionId: params.transactionId,
+    brokerageId:   params.brokerageId,
+    stage:         params.targetStage,
+    userId:        params.userId,
+  }).catch(error => {
+    console.error("[stage-progression] seedStageAutoTasks failed:", error)
+  })
+
+  // 6. On INSPECTION stage, seed transaction compliance checks
+  if (params.targetStage === "INSPECTION") {
+    await seedTransactionComplianceChecks({
+      transactionId: params.transactionId,
+      brokerageId:   params.brokerageId,
+      userId:        params.userId,
+    }).catch(error => {
+      console.error("[stage-progression] seedTransactionComplianceChecks failed:", error)
+    })
+  }
+
+  // 7. Trigger commission calculations based on stage
   if (params.targetStage === "CLOSING_PREP") {
     // Trigger preview commission calculation
     const { calculateCommission } = await import("@/lib/commission/engine")
