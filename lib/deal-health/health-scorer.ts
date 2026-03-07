@@ -2,12 +2,22 @@
  * Deal Health Scorer — Layer 6 Transaction Orchestration
  * 
  * Computes a rollup health score (0-100) for transactions and writes:
- *   - deal_health_scores: aggregated score + risk level
- *   - deal_health_components: per-factor breakdown (9 categories, expandable to 47-factor model)
+ *   - deal_health_scores: UPSERT by transaction_id
+ *   - deal_health_components: delete old rows, insert new run consistently
+ *   - transactions.health_score: update every run
  * 
- * Categories (initial 9):
+ * Categories (9):
  *   EARNEST_MONEY, INSPECTION, LENDER, TITLE, MILESTONES,
  *   COMPLIANCE, COMMUNICATION, DOCUMENTS, PARTICIPANTS
+ * 
+ * Data Source Mappings:
+ *   - earnest money status → transaction_title_escrow.earnest_money_received_date
+ *   - inspection state → transaction_inspections.status
+ *   - lender state → transaction_lenders.clear_to_close_date, lender assignment fields
+ *   - title state → transaction_title_escrow.title_company_name, escrow_number, title dates
+ *   - documents → transaction_documents
+ *   - compliance → transaction_compliance_log, compliance_checklists
+ *   - participants → transaction_participants
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
@@ -36,6 +46,19 @@ export interface ComponentScore {
 
 export type RiskLevel = "healthy" | "watch" | "at_risk" | "critical"
 
+/**
+ * Required scoring output shape per specification
+ */
+export interface DealHealthOutput {
+  overall_score: number
+  risk_level: RiskLevel
+  score_components: Record<string, number>
+  flags: string[]
+  ai_narrative?: string
+  previous_score?: number | null
+  score_delta?: number
+}
+
 export interface DealHealthResult {
   transactionId:   string
   brokerageId:     string
@@ -44,6 +67,8 @@ export interface DealHealthResult {
   components:      ComponentScore[]
   calculatedAt:    string
   aiNarrative?:    string       // Generated when tier changes or first score
+  previousScore?:  number | null
+  scoreDelta?:     number
 }
 
 // ─── Category Weights (sum = 100) ─────────────────────────────────────────────
@@ -62,6 +87,9 @@ const CATEGORY_WEIGHTS: Record<HealthCategory, number> = {
 
 // ─── Scorer Functions ─────────────────────────────────────────────────────────
 
+/**
+ * EARNEST MONEY: Maps to transaction_title_escrow.earnest_money_received_date
+ */
 async function scoreEarnestMoney(
   supabase: ReturnType<typeof createServiceClient>,
   transactionId: string
@@ -69,37 +97,30 @@ async function scoreEarnestMoney(
   const issues: string[] = []
   let score = 100
 
-  // Check earnest_money_deposits for this transaction
-  const { data: deposits } = await supabase
-    .from("earnest_money_deposits")
-    .select("id, status, amount, due_date, received_date")
+  // Source: transaction_title_escrow.earnest_money_received_date
+  const { data: titleEscrow } = await supabase
+    .from("transaction_title_escrow")
+    .select("id, earnest_money_received_date, earnest_money_amount, earnest_money_held_by")
     .eq("transaction_id", transactionId)
+    .maybeSingle()
 
-  if (!deposits || deposits.length === 0) {
-    issues.push("No earnest money deposit recorded")
+  if (!titleEscrow) {
+    issues.push("No title/escrow record found")
+    score = 40
+  } else if (!titleEscrow.earnest_money_received_date) {
+    issues.push("Earnest money not yet received")
     score = 30
   } else {
-    for (const dep of deposits) {
-      if (dep.status === "pending" && dep.due_date) {
-        const due = new Date(dep.due_date)
-        const now = new Date()
-        if (due < now) {
-          issues.push(`Earnest money overdue since ${dep.due_date}`)
-          score = Math.min(score, 20)
-        } else {
-          const daysUntilDue = Math.ceil((due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
-          if (daysUntilDue <= 2) {
-            issues.push(`Earnest money due in ${daysUntilDue} day(s)`)
-            score = Math.min(score, 60)
-          }
-        }
-      } else if (dep.status === "received") {
-        // Good
-      } else if (dep.status === "failed" || dep.status === "bounced") {
-        issues.push(`Earnest money ${dep.status}`)
-        score = Math.min(score, 10)
-      }
+    // Earnest money received - check if amount is recorded
+    if (!titleEscrow.earnest_money_amount) {
+      issues.push("Earnest money received but amount not recorded")
+      score = Math.min(score, 80)
     }
+    if (!titleEscrow.earnest_money_held_by) {
+      issues.push("Earnest money holder not specified")
+      score = Math.min(score, 85)
+    }
+    // All good if no issues added
   }
 
   return {
@@ -107,10 +128,13 @@ async function scoreEarnestMoney(
     score,
     weight: CATEGORY_WEIGHTS.EARNEST_MONEY,
     issues,
-    data: { deposits },
+    data: { titleEscrow },
   }
 }
 
+/**
+ * INSPECTION: Maps to transaction_inspections.status
+ */
 async function scoreInspection(
   supabase: ReturnType<typeof createServiceClient>,
   transactionId: string
@@ -118,34 +142,53 @@ async function scoreInspection(
   const issues: string[] = []
   let score = 100
 
-  // Check milestones for inspection-related items
-  const { data: milestones } = await supabase
-    .from("transaction_milestones")
-    .select("id, name, due_date, completed_at")
+  // Source: transaction_inspections.status
+  const { data: inspections } = await supabase
+    .from("transaction_inspections")
+    .select("id, inspection_type, status, scheduled_date, completed_date, issues_found, report_url")
     .eq("transaction_id", transactionId)
-    .ilike("name", "%inspection%")
 
-  const now = new Date()
-  for (const m of milestones ?? []) {
-    if (!m.completed_at && m.due_date) {
-      const due = new Date(m.due_date)
-      if (due < now) {
-        issues.push(`Inspection milestone "${m.name}" overdue`)
-        score = Math.min(score, 30)
+  if (!inspections || inspections.length === 0) {
+    issues.push("No inspections scheduled or recorded")
+    score = 50
+  } else {
+    const now = new Date()
+    let hasCompletedMain = false
+    
+    for (const insp of inspections) {
+      // Check status
+      if (insp.status === "completed" || insp.status === "passed") {
+        if (insp.inspection_type?.toLowerCase().includes("home") || 
+            insp.inspection_type?.toLowerCase().includes("general")) {
+          hasCompletedMain = true
+        }
+      } else if (insp.status === "failed") {
+        issues.push(`Inspection "${insp.inspection_type}" failed`)
+        score = Math.min(score, 25)
+      } else if (insp.status === "pending" || insp.status === "scheduled") {
+        if (insp.scheduled_date) {
+          const scheduled = new Date(insp.scheduled_date)
+          if (scheduled < now) {
+            issues.push(`Inspection "${insp.inspection_type}" overdue since ${insp.scheduled_date}`)
+            score = Math.min(score, 35)
+          }
+        }
+      } else if (insp.status === "issues_found" || insp.issues_found) {
+        issues.push(`Inspection "${insp.inspection_type}" has unresolved issues`)
+        score = Math.min(score, 50)
+      }
+      
+      // Check if report uploaded
+      if (insp.status === "completed" && !insp.report_url) {
+        issues.push(`Inspection "${insp.inspection_type}" completed but no report uploaded`)
+        score = Math.min(score, 70)
       }
     }
-  }
-
-  // Check documents for inspection report
-  const { data: docs } = await supabase
-    .from("documents")
-    .select("id, doc_type, status")
-    .eq("transaction_id", transactionId)
-    .eq("doc_type", "inspection_report")
-
-  if (!docs || docs.length === 0) {
-    issues.push("No inspection report uploaded")
-    score = Math.min(score, 70)
+    
+    if (!hasCompletedMain) {
+      issues.push("Main home inspection not yet completed")
+      score = Math.min(score, 60)
+    }
   }
 
   return {
@@ -153,10 +196,13 @@ async function scoreInspection(
     score,
     weight: CATEGORY_WEIGHTS.INSPECTION,
     issues,
-    data: { milestones, docs },
+    data: { inspections },
   }
 }
 
+/**
+ * LENDER: Maps to transaction_lenders.clear_to_close_date and lender assignment fields
+ */
 async function scoreLender(
   supabase: ReturnType<typeof createServiceClient>,
   transactionId: string
@@ -164,35 +210,59 @@ async function scoreLender(
   const issues: string[] = []
   let score = 100
 
-  // Check for lender-related milestones
-  const { data: milestones } = await supabase
-    .from("transaction_milestones")
-    .select("id, name, due_date, completed_at")
+  // Source: transaction_lenders - clear_to_close_date, lender assignment fields
+  const { data: lender } = await supabase
+    .from("transaction_lenders")
+    .select(`
+      id, lender_name, loan_officer_name, loan_officer_email, loan_officer_phone,
+      loan_type, loan_amount, interest_rate, loan_term_years,
+      pre_approval_date, pre_approval_amount,
+      appraisal_ordered_date, appraisal_completed_date, appraisal_value,
+      underwriting_status, clear_to_close_date
+    `)
     .eq("transaction_id", transactionId)
-    .or("name.ilike.%appraisal%,name.ilike.%loan%,name.ilike.%financing%,name.ilike.%clear to close%")
-
-  const now = new Date()
-  for (const m of milestones ?? []) {
-    if (!m.completed_at && m.due_date) {
-      const due = new Date(m.due_date)
-      if (due < now) {
-        issues.push(`Lender milestone "${m.name}" overdue`)
-        score = Math.min(score, 25)
-      }
-    }
-  }
-
-  // Check for clear to close document
-  const { data: ctcDoc } = await supabase
-    .from("documents")
-    .select("id")
-    .eq("transaction_id", transactionId)
-    .eq("doc_type", "clear_to_close_letter")
     .maybeSingle()
 
-  if (!ctcDoc) {
-    // Not critical until late stages, minor deduction
-    score = Math.min(score, 90)
+  if (!lender) {
+    issues.push("No lender assigned to transaction")
+    score = 30
+  } else {
+    // Check lender assignment fields
+    if (!lender.lender_name) {
+      issues.push("Lender name not specified")
+      score = Math.min(score, 50)
+    }
+    if (!lender.loan_officer_name && !lender.loan_officer_email) {
+      issues.push("Loan officer contact not assigned")
+      score = Math.min(score, 60)
+    }
+    
+    // Check pre-approval
+    if (!lender.pre_approval_date) {
+      issues.push("Pre-approval not received")
+      score = Math.min(score, 40)
+    }
+    
+    // Check appraisal progress
+    if (lender.appraisal_ordered_date && !lender.appraisal_completed_date) {
+      issues.push("Appraisal ordered but not completed")
+      score = Math.min(score, 65)
+    }
+    
+    // Check underwriting status
+    if (lender.underwriting_status === "denied" || lender.underwriting_status === "suspended") {
+      issues.push(`Underwriting ${lender.underwriting_status}`)
+      score = Math.min(score, 15)
+    } else if (lender.underwriting_status === "pending" || lender.underwriting_status === "in_review") {
+      issues.push("Underwriting still in progress")
+      score = Math.min(score, 70)
+    }
+    
+    // Check clear to close date
+    if (!lender.clear_to_close_date) {
+      issues.push("Clear to close not received")
+      score = Math.min(score, 75)
+    }
   }
 
   return {
@@ -200,10 +270,13 @@ async function scoreLender(
     score,
     weight: CATEGORY_WEIGHTS.LENDER,
     issues,
-    data: { milestones },
+    data: { lender },
   }
 }
 
+/**
+ * TITLE: Maps to transaction_title_escrow.title_company_name, escrow_number, title dates
+ */
 async function scoreTitle(
   supabase: ReturnType<typeof createServiceClient>,
   transactionId: string
@@ -211,30 +284,59 @@ async function scoreTitle(
   const issues: string[] = []
   let score = 100
 
-  // Check for title-related documents
-  const { data: titleDocs } = await supabase
-    .from("documents")
-    .select("id, doc_type, status")
+  // Source: transaction_title_escrow - title_company_name, escrow_number, title dates
+  const { data: titleEscrow } = await supabase
+    .from("transaction_title_escrow")
+    .select(`
+      id, title_company_name, title_officer_name, title_officer_email, title_officer_phone,
+      escrow_company_name, escrow_officer_name, escrow_officer_email, escrow_officer_phone,
+      escrow_number, title_search_ordered_date, title_search_completed_date,
+      title_commitment_date, title_issues, closing_scheduled_date, closing_location
+    `)
     .eq("transaction_id", transactionId)
-    .in("doc_type", ["title_commitment", "title_search", "title_insurance"])
+    .maybeSingle()
 
-  if (!titleDocs || titleDocs.length === 0) {
-    issues.push("No title documents uploaded")
-    score = Math.min(score, 70)
-  }
-
-  // Check milestones
-  const { data: milestones } = await supabase
-    .from("transaction_milestones")
-    .select("id, name, due_date, completed_at")
-    .eq("transaction_id", transactionId)
-    .ilike("name", "%title%")
-
-  const now = new Date()
-  for (const m of milestones ?? []) {
-    if (!m.completed_at && m.due_date && new Date(m.due_date) < now) {
-      issues.push(`Title milestone "${m.name}" overdue`)
-      score = Math.min(score, 40)
+  if (!titleEscrow) {
+    issues.push("No title/escrow record found")
+    score = 40
+  } else {
+    // Check title company assignment
+    if (!titleEscrow.title_company_name) {
+      issues.push("Title company not assigned")
+      score = Math.min(score, 50)
+    }
+    
+    // Check escrow number
+    if (!titleEscrow.escrow_number) {
+      issues.push("Escrow number not assigned")
+      score = Math.min(score, 60)
+    }
+    
+    // Check title search progress
+    if (!titleEscrow.title_search_ordered_date) {
+      issues.push("Title search not ordered")
+      score = Math.min(score, 55)
+    } else if (!titleEscrow.title_search_completed_date) {
+      issues.push("Title search ordered but not completed")
+      score = Math.min(score, 70)
+    }
+    
+    // Check title commitment
+    if (!titleEscrow.title_commitment_date) {
+      issues.push("Title commitment not received")
+      score = Math.min(score, 65)
+    }
+    
+    // Check for title issues
+    if (titleEscrow.title_issues) {
+      issues.push(`Title issues identified: ${titleEscrow.title_issues.substring(0, 50)}...`)
+      score = Math.min(score, 35)
+    }
+    
+    // Check closing scheduled
+    if (!titleEscrow.closing_scheduled_date) {
+      issues.push("Closing not scheduled")
+      score = Math.min(score, 75)
     }
   }
 
@@ -243,7 +345,7 @@ async function scoreTitle(
     score,
     weight: CATEGORY_WEIGHTS.TITLE,
     issues,
-    data: { titleDocs, milestones },
+    data: { titleEscrow },
   }
 }
 
@@ -291,45 +393,74 @@ async function scoreMilestones(
   }
 }
 
+/**
+ * COMPLIANCE: Maps to transaction_compliance_log and compliance_checklists
+ */
 async function scoreCompliance(
   supabase: ReturnType<typeof createServiceClient>,
   transactionId: string,
-  contactId: string | null
+  brokerageId: string
 ): Promise<ComponentScore> {
   const issues: string[] = []
   let score = 100
 
-  // Check compliance_checklists for this transaction
-  const { data: checklists } = await supabase
-    .from("compliance_checklists")
-    .select("id, item_name, status, is_required")
+  // Source 1: transaction_compliance_log
+  const { data: complianceLog } = await supabase
+    .from("transaction_compliance_log")
+    .select("id, check_type, check_label, status, is_blocking, failure_reason, checked_at, resolved_at")
     .eq("transaction_id", transactionId)
-    .eq("is_required", true)
 
-  const incomplete = (checklists ?? []).filter(c => c.status !== "completed" && c.status !== "passed")
-  if (incomplete.length > 0) {
-    issues.push(`${incomplete.length} required compliance item(s) incomplete`)
-    score = Math.max(30, 100 - incomplete.length * 15)
+  if (complianceLog && complianceLog.length > 0) {
+    const failed = complianceLog.filter(c => c.status === "failed" || c.status === "violation")
+    const blocking = complianceLog.filter(c => c.is_blocking && c.status !== "passed" && c.status !== "resolved")
+    const pending = complianceLog.filter(c => c.status === "pending" || c.status === "in_review")
+    
+    if (blocking.length > 0) {
+      issues.push(`${blocking.length} blocking compliance issue(s)`)
+      score = Math.min(score, 15)
+      for (const b of blocking.slice(0, 2)) {
+        if (b.failure_reason) {
+          issues.push(`Blocking: ${b.check_label || b.check_type} - ${b.failure_reason.substring(0, 40)}`)
+        }
+      }
+    }
+    
+    if (failed.length > 0) {
+      issues.push(`${failed.length} compliance check(s) failed`)
+      score = Math.min(score, 35)
+    }
+    
+    if (pending.length > 0) {
+      issues.push(`${pending.length} compliance check(s) pending`)
+      score = Math.min(score, 70)
+    }
   }
 
-  // Check compliance_flags by contact linkage
-  if (contactId) {
-    const { data: flags } = await supabase
-      .from("compliance_flags")
-      .select("id, flag_type, severity, status")
-      .eq("contact_id", contactId)
-      .in("status", ["unresolved", "flagged"])
+  // Source 2: compliance_checklists (transaction-level)
+  const { data: checklists } = await supabase
+    .from("compliance_checklists")
+    .select("id, checklist_type, items, compliance_score, ai_recommendations")
+    .eq("transaction_id", transactionId)
 
-    const dealBreakers = (flags ?? []).filter(f => f.severity === "deal_breaker")
-    if (dealBreakers.length > 0) {
-      issues.push(`${dealBreakers.length} deal-breaker compliance flag(s)`)
-      score = Math.min(score, 10)
-    }
-
-    const warnings = (flags ?? []).filter(f => f.severity === "warning")
-    if (warnings.length > 0) {
-      issues.push(`${warnings.length} warning-level compliance flag(s)`)
-      score = Math.min(score, 60)
+  if (checklists && checklists.length > 0) {
+    for (const checklist of checklists) {
+      // Check compliance_score from checklist
+      if (checklist.compliance_score !== null && checklist.compliance_score < 70) {
+        issues.push(`${checklist.checklist_type} checklist score: ${checklist.compliance_score}%`)
+        score = Math.min(score, checklist.compliance_score)
+      }
+      
+      // Check individual items if available
+      if (checklist.items && Array.isArray(checklist.items)) {
+        const incompleteItems = checklist.items.filter(
+          (item: { status?: string; required?: boolean }) => 
+            item.required && item.status !== "completed" && item.status !== "passed"
+        )
+        if (incompleteItems.length > 0) {
+          issues.push(`${incompleteItems.length} incomplete required items in ${checklist.checklist_type}`)
+          score = Math.min(score, Math.max(30, 100 - incompleteItems.length * 10))
+        }
+      }
     }
   }
 
@@ -338,7 +469,7 @@ async function scoreCompliance(
     score,
     weight: CATEGORY_WEIGHTS.COMPLIANCE,
     issues,
-    data: { checklists, contactId },
+    data: { complianceLog, checklists },
   }
 }
 
@@ -374,6 +505,9 @@ async function scoreCommunication(
   }
 }
 
+/**
+ * DOCUMENTS: Maps to transaction_documents
+ */
 async function scoreDocuments(
   supabase: ReturnType<typeof createServiceClient>,
   transactionId: string
@@ -381,17 +515,48 @@ async function scoreDocuments(
   const issues: string[] = []
   let score = 100
 
-  // Check document_checklist for required but missing documents
-  const { data: checklist } = await supabase
-    .from("document_checklist")
-    .select("id, document_name, status, is_required")
+  // Source: transaction_documents
+  const { data: docs } = await supabase
+    .from("transaction_documents")
+    .select("id, doc_type, doc_label, status, uploaded_at, storage_url, rejection_reason")
     .eq("transaction_id", transactionId)
-    .eq("is_required", true)
 
-  const missing = (checklist ?? []).filter(d => d.status !== "received" && d.status !== "approved")
-  if (missing.length > 0) {
-    issues.push(`${missing.length} required document(s) missing or pending`)
-    score = Math.max(30, 100 - missing.length * 10)
+  if (!docs || docs.length === 0) {
+    issues.push("No documents uploaded")
+    score = 40
+  } else {
+    // Check document statuses
+    const rejected = docs.filter(d => d.status === "rejected")
+    const pending = docs.filter(d => d.status === "pending" || d.status === "pending_review")
+    const missing = docs.filter(d => !d.storage_url)
+    
+    if (rejected.length > 0) {
+      issues.push(`${rejected.length} document(s) rejected`)
+      score = Math.min(score, 30)
+      // Add specific rejection reasons
+      for (const doc of rejected.slice(0, 2)) {
+        if (doc.rejection_reason) {
+          issues.push(`"${doc.doc_label || doc.doc_type}" rejected: ${doc.rejection_reason.substring(0, 40)}`)
+        }
+      }
+    }
+    
+    if (pending.length > 0) {
+      issues.push(`${pending.length} document(s) pending review`)
+      score = Math.min(score, 70)
+    }
+    
+    if (missing.length > 0) {
+      issues.push(`${missing.length} document(s) missing file`)
+      score = Math.min(score, 50)
+    }
+    
+    // Check for key documents (contract, disclosures)
+    const docTypes = docs.map(d => d.doc_type?.toLowerCase() ?? "")
+    if (!docTypes.some(t => t.includes("contract") || t.includes("purchase"))) {
+      issues.push("Purchase contract not found")
+      score = Math.min(score, 45)
+    }
   }
 
   return {
@@ -399,10 +564,13 @@ async function scoreDocuments(
     score,
     weight: CATEGORY_WEIGHTS.DOCUMENTS,
     issues,
-    data: { checklist },
+    data: { documents: docs },
   }
 }
 
+/**
+ * PARTICIPANTS: Maps to transaction_participants
+ */
 async function scoreParticipants(
   supabase: ReturnType<typeof createServiceClient>,
   transactionId: string
@@ -410,10 +578,10 @@ async function scoreParticipants(
   const issues: string[] = []
   let score = 100
 
-  // Check transaction_participants
+  // Source: transaction_participants
   const { data: participants } = await supabase
     .from("transaction_participants")
-    .select("id, role, user_id, contact_id, status")
+    .select("id, role, name, company, email, phone, license_number")
     .eq("transaction_id", transactionId)
 
   if (!participants || participants.length === 0) {
@@ -421,14 +589,36 @@ async function scoreParticipants(
     score = 40
   } else {
     // Check for key roles
-    const roles = participants.map(p => p.role?.toLowerCase())
-    if (!roles.includes("buyer") && !roles.includes("buyer_agent")) {
-      issues.push("No buyer/buyer agent assigned")
-      score = Math.min(score, 60)
+    const roles = participants.map(p => p.role?.toLowerCase() ?? "")
+    
+    // Check buyer side
+    const hasBuyer = roles.some(r => r.includes("buyer"))
+    const hasBuyerAgent = roles.some(r => r.includes("buyer_agent") || r.includes("buyer agent"))
+    if (!hasBuyer && !hasBuyerAgent) {
+      issues.push("No buyer or buyer agent assigned")
+      score = Math.min(score, 55)
     }
-    if (!roles.includes("seller") && !roles.includes("listing_agent")) {
-      issues.push("No seller/listing agent assigned")
-      score = Math.min(score, 60)
+    
+    // Check seller side
+    const hasSeller = roles.some(r => r.includes("seller"))
+    const hasListingAgent = roles.some(r => r.includes("listing_agent") || r.includes("listing agent") || r.includes("seller_agent"))
+    if (!hasSeller && !hasListingAgent) {
+      issues.push("No seller or listing agent assigned")
+      score = Math.min(score, 55)
+    }
+    
+    // Check contact info completeness
+    const missingContact = participants.filter(p => !p.email && !p.phone)
+    if (missingContact.length > 0) {
+      issues.push(`${missingContact.length} participant(s) missing contact info`)
+      score = Math.min(score, 75)
+    }
+    
+    // Check for title/escrow participants
+    const hasTitle = roles.some(r => r.includes("title") || r.includes("escrow") || r.includes("closing"))
+    if (!hasTitle) {
+      issues.push("No title/escrow officer assigned")
+      score = Math.min(score, 70)
     }
   }
 
@@ -446,23 +636,12 @@ async function scoreParticipants(
 export async function calculateDealHealth(params: {
   transactionId: string
   brokerageId:   string
-  contactId?:    string | null
 }): Promise<DealHealthResult> {
   const supabase = createServiceClient()
   const { transactionId, brokerageId } = params
 
-  // Get contact_id if not provided
-  let contactId = params.contactId ?? null
-  if (!contactId) {
-    const { data: txn } = await supabase
-      .from("transactions")
-      .select("contact_id")
-      .eq("id", transactionId)
-      .maybeSingle()
-    contactId = txn?.contact_id ?? null
-  }
-
   // Score all categories in parallel
+  // Using exact data source mappings as specified
   const [
     earnestMoney,
     inspection,
@@ -474,15 +653,15 @@ export async function calculateDealHealth(params: {
     documents,
     participants,
   ] = await Promise.all([
-    scoreEarnestMoney(supabase, transactionId),
-    scoreInspection(supabase, transactionId),
-    scoreLender(supabase, transactionId),
-    scoreTitle(supabase, transactionId),
-    scoreMilestones(supabase, transactionId),
-    scoreCompliance(supabase, transactionId, contactId),
-    scoreCommunication(supabase, transactionId),
-    scoreDocuments(supabase, transactionId),
-    scoreParticipants(supabase, transactionId),
+    scoreEarnestMoney(supabase, transactionId),     // → transaction_title_escrow.earnest_money_received_date
+    scoreInspection(supabase, transactionId),        // → transaction_inspections.status
+    scoreLender(supabase, transactionId),            // → transaction_lenders.clear_to_close_date, lender fields
+    scoreTitle(supabase, transactionId),             // → transaction_title_escrow.title_company_name, escrow_number, dates
+    scoreMilestones(supabase, transactionId),        // → transaction_milestones
+    scoreCompliance(supabase, transactionId, brokerageId), // → transaction_compliance_log, compliance_checklists
+    scoreCommunication(supabase, transactionId),     // → activities
+    scoreDocuments(supabase, transactionId),         // → transaction_documents
+    scoreParticipants(supabase, transactionId),      // → transaction_participants
   ])
 
   const components: ComponentScore[] = [
@@ -517,7 +696,7 @@ export async function calculateDealHealth(params: {
   // ─── Get previous score to detect tier changes ────────────────────────────
   const { data: previousScoreRow } = await supabase
     .from("deal_health_scores")
-    .select("overall_score, risk_level, ai_narrative")
+    .select("overall_score, risk_level, ai_narrative, previous_score, score_delta")
     .eq("transaction_id", transactionId)
     .maybeSingle()
 
@@ -526,6 +705,9 @@ export async function calculateDealHealth(params: {
   const isFirstScore = !previousScoreRow
   const tierChanged = previousRiskLevel && previousRiskLevel !== riskLevel
   const scoreDroppedMaterially = previousOverallScore !== null && (previousOverallScore - overallScore) >= 10
+
+  // Calculate score delta
+  const scoreDelta = previousOverallScore !== null ? overallScore - previousOverallScore : 0
 
   // ─── Generate AI narrative when: first score, tier changes, or score drops 10+ points
   let aiNarrative: string | undefined
@@ -542,42 +724,65 @@ export async function calculateDealHealth(params: {
     aiNarrative = previousScoreRow?.ai_narrative ?? undefined
   }
 
-  // ─── Persist to deal_health_scores ────────────────────────────────────────
+  // ─── Build score_components Record<string, number> ────────────────────────
+  const scoreComponents: Record<string, number> = {}
+  for (const c of components) {
+    scoreComponents[c.category] = c.score
+  }
+
+  // ─── Collect all flags from issues ────────────────────────────────────────
+  const flags: string[] = components.flatMap(c => c.issues)
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // REQUIRED WRITE BEHAVIOR
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // 1. deal_health_scores: UPSERT by transaction_id
   await supabase.from("deal_health_scores").upsert(
     {
-      transaction_id: transactionId,
-      brokerage_id:   brokerageId,
-      overall_score:  overallScore,
-      risk_level:     riskLevel,
-      calculated_at:  calculatedAt,
-      ai_narrative:   aiNarrative ?? null,
+      transaction_id:   transactionId,
+      brokerage_id:     brokerageId,
+      overall_score:    overallScore,
+      risk_level:       riskLevel,
+      score_components: scoreComponents,
+      flags:            flags,
+      ai_narrative:     aiNarrative ?? null,
+      previous_score:   previousOverallScore ?? null,
+      score_delta:      scoreDelta,
+      scored_at:        calculatedAt,
     },
     { onConflict: "transaction_id" }
   )
 
-  // ─── UPDATE transactions.health_score ─────────────────────────────────────
+  // 2. transactions.health_score: UPDATE every run
   await supabase
     .from("transactions")
     .update({ health_score: overallScore })
     .eq("id", transactionId)
 
-  // ─── Persist per-factor rows to deal_health_components ────────────────────
-  const componentRows = components.map(c => ({
-    transaction_id: transactionId,
-    brokerage_id:   brokerageId,
-    category:       c.category,
-    score:          c.score,
-    weight:         c.weight,
-    issues:         c.issues,
-    data:           c.data,
-    calculated_at:  calculatedAt,
-  }))
+  // 3. deal_health_components: delete old rows, insert new run consistently
+  // Generate a unique score_run_id for this scoring run
+  const scoreRunId = crypto.randomUUID()
 
-  // Delete old components then insert new (full refresh)
+  // Delete old components for this transaction
   await supabase
     .from("deal_health_components")
     .delete()
     .eq("transaction_id", transactionId)
+
+  // Insert new component rows with consistent score_run_id
+  const componentRows = components.map(c => ({
+    transaction_id:     transactionId,
+    brokerage_id:       brokerageId,
+    score_run_id:       scoreRunId,
+    component_category: c.category,
+    component_name:     c.category,
+    points_earned:      c.score,
+    points_possible:    100,
+    pass:               c.score >= 70,
+    detail:             c.issues.length > 0 ? c.issues.join("; ") : "No issues",
+    scored_at:          calculatedAt,
+  }))
 
   await supabase.from("deal_health_components").insert(componentRows)
 
@@ -592,6 +797,7 @@ export async function calculateDealHealth(params: {
         previous_risk_level: previousRiskLevel,
         new_risk_level:      riskLevel,
         overall_score:       overallScore,
+        score_delta:         scoreDelta,
       },
     })
   }
@@ -604,6 +810,8 @@ export async function calculateDealHealth(params: {
     components,
     calculatedAt,
     aiNarrative,
+    previousScore: previousOverallScore,
+    scoreDelta,
   }
 }
 
@@ -683,4 +891,4 @@ Write a concise, actionable summary for the agent/broker. Focus on what needs at
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-export { CATEGORY_WEIGHTS, type RiskLevel }
+export { CATEGORY_WEIGHTS, type RiskLevel, type DealHealthOutput }
