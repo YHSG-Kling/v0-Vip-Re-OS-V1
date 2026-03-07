@@ -76,6 +76,9 @@ export { checkAndTriggerGiftOrder } from './gift-order-trigger'
 // ─── STAGE AUTO TASKS ─────────────────────────────────────────────────────────
 export { seedStageAutoTasks } from './stage-auto-tasks'
 
+// ─── MILESTONE AUTO TRIGGER ───────────────────────────────────────────────────
+export { triggerMilestoneFromDocument } from './milestone-auto-trigger'
+
 // ─── CLASSES ──────────────────────────────────────────────────────────────────
 export { TransactionOrchestrator } from './transaction-orchestrator'
 export { TransparencyService } from './transparency-service'
