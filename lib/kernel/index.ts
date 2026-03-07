@@ -46,6 +46,7 @@ export type {
   TransitionLifecycleParams,
   EvaluateOutboundParams,
   ComplianceResult,
+  KernelContact,
 } from "./types"
 
 export {
