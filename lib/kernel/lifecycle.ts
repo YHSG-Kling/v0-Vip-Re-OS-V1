@@ -86,6 +86,8 @@ const ENTITY_MAP: Record<
   // Separate entry for the listing stage machine — do NOT merge with 'listing' (MLS status only)
   listing_stage_machine: { table: "listings",  stateColumn: "lifecycle_stage" },
   transaction: { table: "transactions",   stateColumn: "stage"         },
+  // Separate entry for the transaction stage machine — parallels listing_stage_machine pattern
+  transaction_stage_machine: { table: "transactions", stateColumn: "stage" },
   document:    { table: "document_checklist", stateColumn: "status"   },
   offer:       { table: "offers",         stateColumn: "status"        },
   tour:        { table: "tours",          stateColumn: "status"        },
