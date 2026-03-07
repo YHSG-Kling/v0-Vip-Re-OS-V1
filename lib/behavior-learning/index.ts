@@ -1,2 +1,2 @@
-export { updateBuyerPreferences } from "./preference-updater"
-export { generateBuyerPrediction } from "./prediction-engine"
+export { updateBuyerPreferences, updatePreferencesFromSignal } from "./preference-updater"
+export { generateBuyerPrediction, generateBuyerPredictions }   from "./prediction-engine"
