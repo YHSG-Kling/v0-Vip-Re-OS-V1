@@ -18,32 +18,48 @@ import {
 
 type RiskLevel = "critical" | "at_risk" | "watch" | "healthy"
 
+/**
+ * Schema-aligned types for deal health dashboard
+ * 
+ * Source tables:
+ *   - deal_health_scores: scored_at (not calculated_at), flags, score_delta, previous_score
+ *   - transactions: purchase_price (not contract_price), close_date (not closing_date), agent_id
+ *   - agents: links to users for first_name, last_name
+ *   - proactive_interventions: issue_detected, severity, ai_recommendation, resolved
+ */
 interface HealthScore {
   id: string
   transaction_id: string
   overall_score: number
   risk_level: RiskLevel
   ai_narrative: string | null
-  calculated_at: string
+  scored_at: string
+  flags: string[] | null
+  score_delta: number | null
+  previous_score: number | null
   transactions: {
     id: string
     property_address: string | null
     stage: string | null
-    contract_price: number | null
-    closing_date: string | null
+    status: string | null
+    purchase_price: number | null
+    close_date: string | null
     contact_id: string | null
-    agent_user_id: string | null
+    agent_id: string | null
     contacts: { first_name: string | null; last_name: string | null } | null
-    profiles: { first_name: string | null; last_name: string | null } | null
+    agents: { 
+      id: string
+      user_id: string | null
+    } | null
   } | null
 }
 
 interface Intervention {
   id: string
-  intervention_type: string
-  title: string
-  description: string | null
-  status: string
+  issue_detected: string | null
+  severity: string | null
+  ai_recommendation: string | null
+  resolved: boolean
   created_at: string
   transaction_id: string | null
 }
@@ -61,6 +77,7 @@ interface Props {
   interventions: Intervention[]
   summary: Summary
   brokerageId: string
+  agentNames: Record<string, string>  // user_id -> "First Last"
 }
 
 // ─── Risk Level Config ────────────────────────────────────────────────────────
@@ -84,7 +101,7 @@ const STAGE_OPTIONS = [
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function DealHealthDashboardClient({ healthScores, interventions, summary, brokerageId }: Props) {
+export function DealHealthDashboardClient({ healthScores, interventions, summary, brokerageId, agentNames }: Props) {
   const [stageFilter, setStageFilter] = useState<string | null>(null)
   const [riskFilter, setRiskFilter] = useState<RiskLevel | null>(null)
   const [showInterventions, setShowInterventions] = useState(interventions.length > 0)
@@ -138,7 +155,14 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                 <ul className="mt-1 space-y-1">
                   {interventions.slice(0, 3).map(i => (
                     <li key={i.id} className="text-sm text-amber-800">
-                      {i.title}
+                      <span className={cn(
+                        "font-medium mr-1",
+                        i.severity === "critical" ? "text-red-700" : 
+                        i.severity === "high" ? "text-amber-700" : "text-amber-600"
+                      )}>
+                        [{i.severity ?? "info"}]
+                      </span>
+                      {i.issue_detected ?? "Issue detected"}
                       {i.transaction_id && (
                         <Link
                           href={`/dashboard/transactions/${i.transaction_id}`}
@@ -260,9 +284,9 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
               const config = RISK_CONFIG[score.risk_level]
               const Icon = config.icon
               const txn = score.transactions
-              const agentName = txn?.profiles
-                ? `${txn.profiles.first_name ?? ""} ${txn.profiles.last_name ?? ""}`.trim()
-                : "Unassigned"
+              // Look up agent name from the agentNames map using user_id from agents
+              const agentUserId = txn?.agents?.user_id
+              const agentName = agentUserId ? (agentNames[agentUserId] || "Unassigned") : "Unassigned"
 
               return (
                 <tr key={score.id} className="hover:bg-muted/30 transition-colors">
@@ -272,7 +296,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                         {txn?.property_address ?? "No Address"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {formatPrice(txn?.contract_price)}
+                        {formatPrice(txn?.purchase_price)}
                       </p>
                     </div>
                   </td>
@@ -295,6 +319,14 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                         />
                       </div>
                       <span className="text-sm font-medium">{score.overall_score}</span>
+                      {score.score_delta !== null && score.score_delta !== 0 && (
+                        <span className={cn(
+                          "text-xs",
+                          score.score_delta > 0 ? "text-green-600" : "text-red-600"
+                        )}>
+                          {score.score_delta > 0 ? "+" : ""}{score.score_delta}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="px-4 py-3">
@@ -307,7 +339,7 @@ export function DealHealthDashboardClient({ healthScores, interventions, summary
                     {agentName}
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {formatDate(txn?.closing_date)}
+                    {formatDate(txn?.close_date)}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Link

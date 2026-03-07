@@ -6,15 +6,31 @@
  *   - deal_health_components: delete old rows, insert new run consistently
  *   - transactions.health_score: update every run
  * 
- * Categories (9):
- *   EARNEST_MONEY, INSPECTION, LENDER, TITLE, MILESTONES,
+ * Categories (10):
+ *   EARNEST_MONEY, INSPECTION, LENDER, TITLE, MILESTONES, DEADLINES,
  *   COMPLIANCE, COMMUNICATION, DOCUMENTS, PARTICIPANTS
+ * 
+ * Schema source of truth (from Supabase):
+ *   - transactions
+ *   - transaction_milestones
+ *   - transaction_deadlines
+ *   - transaction_inspections
+ *   - transaction_lenders
+ *   - transaction_title_escrow
+ *   - transaction_documents
+ *   - transaction_participants
+ *   - transaction_compliance_log
+ *   - compliance_checklists
+ *   - deal_health_scores
+ *   - deal_health_components
  * 
  * Data Source Mappings:
  *   - earnest money status → transaction_title_escrow.earnest_money_received_date
  *   - inspection state → transaction_inspections.status
  *   - lender state → transaction_lenders.clear_to_close_date, lender assignment fields
  *   - title state → transaction_title_escrow.title_company_name, escrow_number, title dates
+ *   - milestones → transaction_milestones.milestone_name, milestone_date, status
+ *   - deadlines → transaction_deadlines.deadline_type, deadline_date, status
  *   - documents → transaction_documents
  *   - compliance → transaction_compliance_log, compliance_checklists
  *   - participants → transaction_participants
@@ -31,6 +47,7 @@ export type HealthCategory =
   | "LENDER"
   | "TITLE"
   | "MILESTONES"
+  | "DEADLINES"
   | "COMPLIANCE"
   | "COMMUNICATION"
   | "DOCUMENTS"
@@ -73,15 +90,17 @@ export interface DealHealthResult {
 
 // ─── Category Weights (sum = 100) ─────────────────────────────────────────────
 
+// Weights adjusted to sum to 100 with 10 categories
 const CATEGORY_WEIGHTS: Record<HealthCategory, number> = {
-  EARNEST_MONEY:   15,
+  EARNEST_MONEY:   14,
   INSPECTION:      12,
-  LENDER:          15,
+  LENDER:          14,
   TITLE:           10,
-  MILESTONES:      12,
-  COMPLIANCE:      12,
-  COMMUNICATION:    8,
-  DOCUMENTS:       10,
+  MILESTONES:      10,
+  DEADLINES:       10,
+  COMPLIANCE:      10,
+  COMMUNICATION:    6,
+  DOCUMENTS:        8,
   PARTICIPANTS:     6,
 }
 
@@ -349,6 +368,9 @@ async function scoreTitle(
   }
 }
 
+/**
+ * MILESTONES: Maps to transaction_milestones
+ */
 async function scoreMilestones(
   supabase: ReturnType<typeof createServiceClient>,
   transactionId: string
@@ -356,9 +378,10 @@ async function scoreMilestones(
   const issues: string[] = []
   let score = 100
 
+  // Source: transaction_milestones - milestone_name, milestone_date, status, completed_at
   const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select("id, name, due_date, completed_at")
+    .select("id, milestone_name, milestone_date, status, completed_at, completed_by, notes")
     .eq("transaction_id", transactionId)
 
   if (!milestones || milestones.length === 0) {
@@ -370,17 +393,20 @@ async function scoreMilestones(
     let totalIncomplete = 0
 
     for (const m of milestones) {
-      if (!m.completed_at) {
+      if (!m.completed_at && m.status !== "completed") {
         totalIncomplete++
-        if (m.due_date && new Date(m.due_date) < now) {
+        if (m.milestone_date && new Date(m.milestone_date) < now) {
           overdueCount++
+          issues.push(`Milestone "${m.milestone_name}" overdue since ${m.milestone_date}`)
         }
       }
     }
 
     if (overdueCount > 0) {
-      issues.push(`${overdueCount} milestone(s) overdue`)
       score = Math.max(20, 100 - overdueCount * 20)
+    } else if (totalIncomplete > 0) {
+      // Penalize slightly for incomplete but not overdue
+      score = Math.max(60, 100 - totalIncomplete * 5)
     }
   }
 
@@ -390,6 +416,86 @@ async function scoreMilestones(
     weight: CATEGORY_WEIGHTS.MILESTONES,
     issues,
     data: { milestones },
+  }
+}
+
+/**
+ * DEADLINES: Maps to transaction_deadlines
+ * Schema columns: deadline_type, deadline_date, status, completed_at, completed_by, extension_date, extension_reason
+ */
+async function scoreDeadlines(
+  supabase: ReturnType<typeof createServiceClient>,
+  transactionId: string
+): Promise<ComponentScore> {
+  const issues: string[] = []
+  let score = 100
+
+  // Source: transaction_deadlines
+  const { data: deadlines } = await supabase
+    .from("transaction_deadlines")
+    .select("id, deadline_type, deadline_date, status, completed_at, completed_by, extension_date, extension_reason, notes")
+    .eq("transaction_id", transactionId)
+
+  if (!deadlines || deadlines.length === 0) {
+    issues.push("No deadlines tracked for this transaction")
+    score = 60
+  } else {
+    const now = new Date()
+    let overdueCount = 0
+    let upcomingCount = 0
+    let extendedCount = 0
+
+    for (const d of deadlines) {
+      // Skip completed deadlines
+      if (d.status === "completed" || d.completed_at) continue
+
+      const deadlineDate = d.extension_date ? new Date(d.extension_date) : (d.deadline_date ? new Date(d.deadline_date) : null)
+      
+      if (!deadlineDate) continue
+
+      // Check if extended
+      if (d.extension_date) {
+        extendedCount++
+      }
+
+      // Check if overdue
+      if (deadlineDate < now) {
+        overdueCount++
+        issues.push(`Deadline "${d.deadline_type}" overdue since ${d.deadline_date}`)
+      } else {
+        // Check if deadline is within 3 days
+        const threeDaysFromNow = new Date()
+        threeDaysFromNow.setDate(threeDaysFromNow.getDate() + 3)
+        if (deadlineDate <= threeDaysFromNow) {
+          upcomingCount++
+        }
+      }
+    }
+
+    // Overdue deadlines are critical
+    if (overdueCount > 0) {
+      score = Math.max(15, 100 - overdueCount * 25)
+    }
+
+    // Extended deadlines indicate issues
+    if (extendedCount > 0 && score > 60) {
+      issues.push(`${extendedCount} deadline(s) extended`)
+      score = Math.min(score, 75)
+    }
+
+    // Upcoming deadlines warrant attention
+    if (upcomingCount > 0 && score > 70) {
+      issues.push(`${upcomingCount} deadline(s) due within 3 days`)
+      score = Math.min(score, 85)
+    }
+  }
+
+  return {
+    category: "DEADLINES",
+    score,
+    weight: CATEGORY_WEIGHTS.DEADLINES,
+    issues,
+    data: { deadlines },
   }
 }
 
@@ -640,24 +746,26 @@ export async function calculateDealHealth(params: {
   const supabase = createServiceClient()
   const { transactionId, brokerageId } = params
 
-  // Score all categories in parallel
-  // Using exact data source mappings as specified
+  // Score all 10 categories in parallel
+  // Using exact data source mappings per schema source of truth
   const [
     earnestMoney,
     inspection,
     lender,
     title,
     milestones,
+    deadlines,
     compliance,
     communication,
     documents,
     participants,
   ] = await Promise.all([
-    scoreEarnestMoney(supabase, transactionId),     // → transaction_title_escrow.earnest_money_received_date
+    scoreEarnestMoney(supabase, transactionId),      // → transaction_title_escrow.earnest_money_received_date
     scoreInspection(supabase, transactionId),        // → transaction_inspections.status
     scoreLender(supabase, transactionId),            // → transaction_lenders.clear_to_close_date, lender fields
     scoreTitle(supabase, transactionId),             // → transaction_title_escrow.title_company_name, escrow_number, dates
-    scoreMilestones(supabase, transactionId),        // → transaction_milestones
+    scoreMilestones(supabase, transactionId),        // → transaction_milestones.milestone_name, milestone_date, status
+    scoreDeadlines(supabase, transactionId),         // → transaction_deadlines.deadline_type, deadline_date, status
     scoreCompliance(supabase, transactionId, brokerageId), // → transaction_compliance_log, compliance_checklists
     scoreCommunication(supabase, transactionId),     // → activities
     scoreDocuments(supabase, transactionId),         // → transaction_documents
@@ -670,6 +778,7 @@ export async function calculateDealHealth(params: {
     lender,
     title,
     milestones,
+    deadlines,
     compliance,
     communication,
     documents,
