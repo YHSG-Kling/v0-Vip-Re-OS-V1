@@ -268,8 +268,7 @@ export function BuyerOverviewClient({
             {/* 2. Buyer Coaching Card */}
             <BuyerCoachingCard contactId={buyerId} brokerageId={brokerageId} />
 
-            {/* 3. AI Buyer Insights */}
-            <BuyerInsightsPanel contactId={buyerId} />
+            {/* 3. AI Buyer Insights (also rendered in right column above fatigue) */}
 
             {/* 5. Next Steps Panel */}
             <div className="rounded-lg border border-border bg-card p-5">
@@ -349,8 +348,11 @@ export function BuyerOverviewClient({
             </div>
           </main>
 
-          {/* RIGHT — conversation coaching (320px) */}
-          <aside className="w-[320px] flex-shrink-0 border-l border-border overflow-y-auto px-4 py-5">
+          {/* RIGHT — AI Buyer Insights + conversation coaching (320px) */}
+          <aside className="w-[320px] flex-shrink-0 border-l border-border overflow-y-auto px-4 py-5 space-y-5">
+            {/* AI Buyer Insights — above fatigue score per spec */}
+            <BuyerInsightsPanel contactId={buyerId} brokerageId={brokerageId} />
+
             <ConversationCoachingPanel
               contactId={buyerId}
               brokerageId={brokerageId}

@@ -1,148 +1,161 @@
 "use server"
 
-import Anthropic from "@anthropic-ai/sdk"
 import { createServiceClient } from "@/lib/supabase/service"
+import { generateText } from "ai"
 
-const anthropic = new Anthropic()
-
-type EngagementVelocity = "accelerating" | "steady" | "decelerating" | "stalled"
-
-function calcVelocity(last7: number, prev7: number): EngagementVelocity {
-  if (last7 < 5) return "stalled"
-  if (prev7 === 0) return last7 > 0 ? "accelerating" : "stalled"
-  const change = (last7 - prev7) / prev7
-  if (change > 0.5)  return "accelerating"
-  if (change < -0.2) return "decelerating"
-  return "steady"
+interface GenerateBuyerPredictionsParams {
+  contactId:   string
+  agentId:     string
+  brokerageId: string
 }
 
-export async function generateBuyerPrediction(
-  contactId: string,
-  brokerageId: string
+interface PredictionResult {
+  predicted:   null
+  reason:      "insufficient_data"
+} | {
+  predicted:             true
+  predicted_price_range: { min: number; max: number }
+  predicted_property_type: string
+  predicted_timeline_days: number
+  confidence:              number
+  reasoning:               string
+}
+
+/**
+ * generateBuyerPredictions
+ * 1. Fetch last 30 buyer_behavior_log entries
+ * 2. Fetch current property_preferences
+ * 3. Compute engagement_velocity (signals per day, last 7 days)
+ * 4. Guard: < 5 total signals → return insufficient_data
+ * 5. Call Anthropic claude-sonnet-4-20250514
+ * 6. UPSERT buyer_behavior_predictions ON CONFLICT (contact_id)
+ */
+export async function generateBuyerPredictions(
+  params: GenerateBuyerPredictionsParams
 ): Promise<{ success: boolean; error?: string }> {
+  const { contactId, agentId, brokerageId } = params
   const supabase = createServiceClient()
+  const now      = new Date()
+  const d30ago   = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const d7ago    = new Date(now.getTime() -  7 * 24 * 60 * 60 * 1000).toISOString()
 
-  const now       = new Date()
-  const d7ago     = new Date(now.getTime() - 7  * 24 * 60 * 60 * 1000).toISOString()
-  const d14ago    = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000).toISOString()
-  const d30ago    = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  // Step 1 — Fetch last 30 behavior log entries
+  const { data: logs, error: logsErr } = await supabase
+    .from("buyer_behavior_log")
+    .select("signal_type, created_at, list_price, bedrooms, city, property_type")
+    .eq("contact_id", contactId)
+    .eq("brokerage_id", brokerageId)
+    .gte("created_at", d30ago)
+    .order("created_at", { ascending: false })
+    .limit(30)
 
-  // 1. Load engagement data in parallel
-  const [logsRes, savedRes, showingsRes, contactRes] = await Promise.all([
-    supabase
-      .from("buyer_behavior_log")
-      .select("signal_type, created_at")
-      .eq("contact_id", contactId)
-      .eq("brokerage_id", brokerageId)
-      .gte("created_at", d30ago),
-    supabase
-      .from("saved_properties")
-      .select("id")
-      .eq("brokerage_id", brokerageId)
-      .eq("dismissed", false),
-    supabase
-      .from("showings")
-      .select("id, created_at")
-      .eq("contact_id", contactId)
-      .eq("brokerage_id", brokerageId),
-    supabase
-      .from("contacts")
-      .select("buyer_stage, created_at")
-      .eq("id", contactId)
-      .single(),
-  ])
+  if (logsErr) return { success: false, error: logsErr.message }
 
-  const logs     = logsRes.data     ?? []
-  const saved    = savedRes.data    ?? []
-  const showings = showingsRes.data ?? []
-  const contact  = contactRes.data
+  const allLogs = logs ?? []
 
-  // Signal counts
-  const signalsLast30d = logs.length
-  const last7Logs      = logs.filter(l => l.created_at >= d7ago)
-  const prev7Logs      = logs.filter(l => l.created_at >= d14ago && l.created_at < d7ago)
-  const signalsLast7d  = last7Logs.length
-  const signalsPrev7d  = prev7Logs.length
-
-  // 2. Engagement velocity
-  const engagementVelocity = calcVelocity(signalsLast7d, signalsPrev7d)
-
-  // Days searching = days since contact created_at
-  const createdAt    = contact?.created_at ? new Date(contact.created_at) : now
-  const daysSearching = Math.round((now.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24))
-
-  // 3. Call Anthropic
-  const prompt = `Given this buyer's engagement data, predict their next action.
-buyer_stage: ${contact?.buyer_stage ?? "prospect"}
-signals_last_30d: ${signalsLast30d}
-signals_last_7d: ${signalsLast7d}
-showings: ${showings.length}
-saved_properties: ${saved.length}
-engagement_velocity: ${engagementVelocity}
-days_searching: ${daysSearching}
-
-Return ONLY valid JSON (no markdown, no explanation):
-{
-  "predicted_next_action": string,
-  "confidence": number,
-  "predicted_ready_to_offer": boolean,
-  "predicted_fatigue_risk": boolean,
-  "days_to_predicted_offer": number | null,
-  "prediction_factors": string[]
-}`
-
-  let parsed: {
-    predicted_next_action: string
-    confidence: number
-    predicted_ready_to_offer: boolean
-    predicted_fatigue_risk: boolean
-    days_to_predicted_offer: number | null
-    prediction_factors: string[]
+  // Step 4 — Guard: insufficient data
+  if (allLogs.length < 5) {
+    return { success: true } // not an error — just not enough data yet
   }
 
+  // Step 2 — Fetch current property_preferences
+  const { data: prefs } = await supabase
+    .from("property_preferences")
+    .select("*")
+    .eq("contact_id", contactId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  // Step 3 — engagement_velocity = signals_last_7_days / 7 (signals per day)
+  const signalsLast7d      = allLogs.filter(l => l.created_at >= d7ago).length
+  const engagementVelocity = signalsLast7d / 7  // numeric signals-per-day per spec
+
+  // Step 5 — Call Anthropic claude-sonnet-4-20250514
+  const behaviorSummary = {
+    total_signals:        allLogs.length,
+    signals_last_7_days:  signalsLast7d,
+    engagement_velocity:  engagementVelocity,
+    signal_types:         allLogs.map(l => l.signal_type),
+    current_preferences:  prefs ?? {},
+  }
+
+  type AIOutput = {
+    predicted_price_range:    { min: number; max: number }
+    predicted_property_type:  string
+    predicted_timeline_days:  number
+    confidence:                number
+    reasoning:                 string
+  }
+
+  let ai: AIOutput
+
   try {
-    const response = await anthropic.messages.create({
-      model:      "claude-opus-4-5",
-      max_tokens: 512,
-      messages:   [{ role: "user", content: prompt }],
+    const { text } = await generateText({
+      model: "anthropic/claude-sonnet-4-20250514",
+      system:
+        "You are a real estate buyer behavior analyst. Based on buyer signals, predict what property " +
+        "they're most likely to make an offer on. Return JSON only with these exact keys: " +
+        "{ predicted_price_range: {min, max}, predicted_property_type: string, " +
+        "predicted_timeline_days: number, confidence: number (0-1), reasoning: string }",
+      prompt: `Buyer behavior data: ${JSON.stringify(behaviorSummary)}`,
     })
-    const text = response.content[0].type === "text" ? response.content[0].text.trim() : "{}"
-    parsed = JSON.parse(text)
+
+    const clean = text.trim().replace(/^```json?\s*/i, "").replace(/\s*```$/i, "")
+    ai = JSON.parse(clean) as AIOutput
   } catch {
     // Deterministic fallback
-    parsed = {
-      predicted_next_action:   engagementVelocity === "stalled" ? "Re-engagement needed" : "Continue searching",
-      confidence:               0.4,
-      predicted_ready_to_offer: showings.length >= 3 && signalsLast7d >= 5,
-      predicted_fatigue_risk:   engagementVelocity === "decelerating" || engagementVelocity === "stalled",
-      days_to_predicted_offer:  null,
-      prediction_factors:       [`engagement_velocity: ${engagementVelocity}`, `showings: ${showings.length}`],
+    ai = {
+      predicted_price_range:   {
+        min: prefs?.inferred_min_price ?? prefs?.preferred_price_min ?? 0,
+        max: prefs?.inferred_max_price ?? prefs?.preferred_price_max ?? 0,
+      },
+      predicted_property_type:  prefs?.inferred_property_types?.[0] ?? "Single Family",
+      predicted_timeline_days:  engagementVelocity > 1 ? 30 : 60,
+      confidence:                Math.min(0.6, allLogs.length / 30),
+      reasoning:                 "Prediction based on observed engagement patterns.",
     }
   }
 
-  // 4. UPSERT buyer_behavior_predictions
+  // Step 6 — UPSERT buyer_behavior_predictions ON CONFLICT (contact_id)
   const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString()
 
-  const { error } = await supabase
+  const { error: upsertErr } = await supabase
     .from("buyer_behavior_predictions")
     .upsert(
       {
         contact_id:               contactId,
         brokerage_id:             brokerageId,
-        predicted_next_action:    parsed.predicted_next_action,
-        confidence:               parsed.confidence,
-        predicted_ready_to_offer: parsed.predicted_ready_to_offer,
-        predicted_fatigue_risk:   parsed.predicted_fatigue_risk,
-        days_to_predicted_offer:  parsed.days_to_predicted_offer,
-        prediction_factors:       { factors: parsed.prediction_factors },
+        predicted_price_min:      ai.predicted_price_range.min,
+        predicted_price_max:      ai.predicted_price_range.max,
+        predicted_property_type:  ai.predicted_property_type,
+        predicted_timeline_days:  ai.predicted_timeline_days,
+        confidence_score:         ai.confidence,
+        ai_reasoning:             ai.reasoning,
         engagement_velocity:      engagementVelocity,
-        engagement_score:         Math.min(100, signalsLast30d),
+        engagement_score:         Math.min(100, allLogs.length),
+        // also store legacy fields used by insights panel
+        predicted_next_action:    `Offer on ${ai.predicted_property_type}`,
+        confidence:               ai.confidence,
+        predicted_ready_to_offer: ai.confidence > 0.6 && ai.predicted_timeline_days <= 30,
+        predicted_fatigue_risk:   engagementVelocity < 0.3 && allLogs.length > 10,
+        days_to_predicted_offer:  ai.predicted_timeline_days,
+        prediction_factors:       { reasoning: ai.reasoning },
         generated_at:             now.toISOString(),
         expires_at:               expiresAt,
       },
       { onConflict: "contact_id" }
     )
 
-  if (error) return { success: false, error: error.message }
+  if (upsertErr) return { success: false, error: upsertErr.message }
   return { success: true }
+}
+
+/**
+ * generateBuyerPrediction — backward-compatible wrapper used by existing callers
+ */
+export async function generateBuyerPrediction(
+  contactId:   string,
+  brokerageId: string
+): Promise<{ success: boolean; error?: string }> {
+  return generateBuyerPredictions({ contactId, agentId: "system", brokerageId })
 }
