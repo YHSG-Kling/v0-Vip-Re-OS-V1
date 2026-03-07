@@ -81,6 +81,10 @@
     {
       "path": "/api/property-alerts/run?frequency=weekly",
       "schedule": "0 8 * * 1"
+    },
+    {
+      "path": "/api/alerts/cron",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

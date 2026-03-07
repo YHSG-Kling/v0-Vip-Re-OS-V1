@@ -21,7 +21,7 @@ export class IDXBrokerClient {
       .from("platform_credentials")
       .select("api_key")
       .eq("brokerage_id", brokerageId)
-      .eq("platform", "idxbroker")
+      .eq("provider_name", "idxbroker")
       .eq("is_active", true)
       .limit(1)
       .maybeSingle()
