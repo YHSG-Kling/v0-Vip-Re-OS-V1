@@ -82,60 +82,47 @@ export async function scheduleListingAppointment(params: {
     entityId:   listingId,
   }).catch(() => {})
 
-  // Human-readable activity log
+  // Human-readable CRM activity (agent task log — activities is correct here)
   await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id:   listingId,
-    user_id:      userId,
+    brokerage_id:  brokerageId,
+    listing_id:    listingId,
+    user_id:       userId,
     activity_type: "seller.appointment.scheduled",
     status:        "completed",
     metadata:      { appointment_date: appointmentDate },
   })
 
-  // Auto-trigger CMA generation
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.cma.started",
-    status: "in_progress",
-    metadata: {
-      disclaimer: "This CMA follows state appraiser guidelines but is NOT an actual appraisal",
-      appointment_date: appointmentDate,
+  // Sub-events within APPOINTMENT_SET stage — no stage change → lifecycle_events
+  const subEvents = [
+    {
+      event_type: "seller.cma.started",
+      metadata: {
+        disclaimer:       "This CMA follows state appraiser guidelines but is NOT an actual appraisal",
+        appointment_date: appointmentDate,
+      },
     },
-  })
-
-  // Auto-trigger presentation creation
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.presentation.created",
-    status: "in_progress",
-  })
-
-  // Auto-trigger presentation video
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.presentation.video_generated",
-    status: "in_progress",
-  })
-
-  // Auto-trigger drip sequence prep
-  await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
-    activity_type: "seller.presentation.drip_prepared",
-    status: "in_progress",
-    metadata: {
-      start_date: new Date().toISOString(),
-      end_date: appointmentDate,
-      duration_days: Math.ceil((apptDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)),
+    { event_type: "seller.presentation.created",        metadata: {} },
+    { event_type: "seller.presentation.video_generated", metadata: {} },
+    {
+      event_type: "seller.presentation.drip_prepared",
+      metadata: {
+        start_date:    new Date().toISOString(),
+        end_date:      appointmentDate,
+        duration_days: Math.ceil((apptDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)),
+      },
     },
-  })
+  ]
+
+  for (const sub of subEvents) {
+    await supabase.from("lifecycle_events").insert({
+      brokerage_id:  brokerageId,
+      entity_type:   "listing_stage_machine",
+      entity_id:     listingId,
+      event_type:    sub.event_type,
+      actor_user_id: userId,
+      metadata:      sub.metadata,
+    })
+  }
 
   return { success: true }
 }
@@ -174,6 +161,7 @@ export async function markDripCompleted(params: {
     entityId:   listingId,
   }).catch(() => {})
 
+  // CRM human task record — drip sequence completion (activities correct)
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     listing_id:    listingId,
@@ -182,13 +170,14 @@ export async function markDripCompleted(params: {
     status:        "completed",
   })
 
-  // Emit decision readiness (human timeline)
-  await supabase.from("activities").insert({
+  // Sub-event within SELLER_DECISION stage — no stage change → lifecycle_events
+  await supabase.from("lifecycle_events").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
-    activity_type: "seller.decision.ready",
-    status:        "completed",
+    entity_type:   "listing_stage_machine",
+    entity_id:     listingId,
+    event_type:    "seller.decision.ready",
+    actor_user_id: userId,
+    metadata:      {},
   })
 
   return { success: true }
@@ -467,19 +456,19 @@ export async function markAgreementSigned(params: {
   // ── 7. transitionLifecycle + processKernelEvent ───────────────────────────
   await transitionLifecycle({
     brokerageId,
-  entityType:    "listing_stage_machine",
-  entityId:      listingId,
-  fromState:     "new",
-  toState:       "active",
-    actorUserId:   userId,
-    actorRole:     "agent",
-    eventType:     "listing_agreement_signed",
+    entityType:  "listing_stage_machine",
+    entityId:    listingId,
+    fromState:   "LISTING_AGREEMENT_INITIATED",
+    toState:     "LISTING_AGREEMENT_SIGNED",
+    actorUserId: userId,
+    actorRole:   "agent",
+    eventType:   KernelEvent.LISTING_AGREEMENT_SIGNED,
     metadata: {
-      agreement_id:       agreement.id,
-      provider_key:       activeProviderKey,
-      upload_mode:        uploadMode,
-      has_adjustment:     hasAdjustment,
-      go_live_date:       goLiveDate.toISOString().slice(0, 10),
+      agreement_id:   agreement.id,
+      provider_key:   activeProviderKey,
+      upload_mode:    uploadMode,
+      has_adjustment: hasAdjustment,
+      go_live_date:   goLiveDate.toISOString().slice(0, 10),
     },
   })
 
@@ -1139,6 +1128,7 @@ export async function activateMLS(params: {
     entityId:   listingId,
   }).catch(() => {})
 
+  // CRM human task record for MLS activation (activities correct)
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
     listing_id:    listingId,
@@ -1148,13 +1138,14 @@ export async function activateMLS(params: {
     metadata:      { mls_number: mlsNumber },
   })
 
-  // Auto-emit syndication event
-  await supabase.from("activities").insert({
+  // Sub-event within MLS_ACTIVE stage — no stage change → lifecycle_events
+  await supabase.from("lifecycle_events").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
-    activity_type: "seller.listing.syndicated",
-    status:        "in_progress",
+    entity_type:   "listing_stage_machine",
+    entity_id:     listingId,
+    event_type:    "seller.listing.syndicated",
+    actor_user_id: userId,
+    metadata:      { mls_number: mlsNumber },
   })
 
   return { success: true }
