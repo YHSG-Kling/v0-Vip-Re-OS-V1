@@ -469,86 +469,464 @@ export async function getVideoQueue(agentId: string) {
 }
 
 // ============================================
-// VIDEO PERFORMANCE TRACKING
+// VIDEO PERFORMANCE TRACKING — LAYER 8.5
+// Tables: video_engagement_events (raw), video_performance_tracking (aggregates)
+// DO NOT use video_analytics table
 // ============================================
 
-export async function trackVideoPerformance(data: {
-  videoProjectId: string
-  platform: string
-  views?: number
-  likes?: number
-  shares?: number
-  comments?: number
-  watchTime?: number
-  clickThroughRate?: number
-  conversionRate?: number
-  leadsGenerated?: number
-}) {
-  const supabase = await createClient()
+// Supported event types for video_engagement_events
+export const VIDEO_EVENT_TYPES = [
+  "view",
+  "pause",
+  "complete",
+  "click",
+  "share",
+  "lead_capture",
+  "cta_click",
+  "replay",
+] as const
 
-  const { data: tracking, error } = await supabase
-    .from("video_performance_tracking")
-    .upsert(
-      {
-        video_project_id: data.videoProjectId,
-        platform: data.platform,
-        views: data.views || 0,
-        likes: data.likes || 0,
-        shares: data.shares || 0,
-        comments: data.comments || 0,
-        watch_time_seconds: data.watchTime || 0,
-        click_through_rate: data.clickThroughRate || 0,
-        conversion_rate: data.conversionRate || 0,
-        leads_generated: data.leadsGenerated || 0,
-        last_synced_at: new Date().toISOString(),
-      },
-      { onConflict: "video_project_id,platform" }
-    )
-    .select()
-    .single()
+export type VideoEventType = (typeof VIDEO_EVENT_TYPES)[number]
 
-  if (error) throw error
-
-  return tracking
+// Performance thresholds for kernel events
+export const PERFORMANCE_THRESHOLDS = {
+  HIGH_PERFORMER: {
+    minViews: 100,
+    minCompletionRate: 70,
+    minClickThroughRate: 5,
+  },
+  LOW_PERFORMER: {
+    minViews: 50,
+    maxCompletionRate: 20,
+    maxClickThroughRate: 1,
+  },
 }
 
-export async function getVideoPerformanceStats(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return {
-      totalViews: 1250,
-      totalLeads: 8,
-      avgEngagement: 4.2,
-      topPerforming: [],
-    }
+export async function recordVideoEngagementEvent(data: {
+  brokerageId: string
+  videoAssetId?: string
+  videoProjectId?: string
+  contactId?: string
+  eventType: VideoEventType
+  watchDurationSeconds?: number
+  metadata?: Record<string, any>
+}) {
+  if (!VIDEO_EVENT_TYPES.includes(data.eventType)) {
+    throw new Error(`Invalid event type: ${data.eventType}`)
   }
 
   const supabase = await createClient()
 
-  const { data: videos } = await supabase.from("ai_video_projects").select("id").eq("agent_id", agentId)
+  // 1. Insert raw event into video_engagement_events
+  const { data: event, error: eventError } = await supabase
+    .from("video_engagement_events")
+    .insert({
+      video_asset_id: data.videoAssetId || null,
+      contact_id: data.contactId || null,
+      event_type: data.eventType,
+      watch_duration_seconds: data.watchDurationSeconds || 0,
+      timestamp: new Date().toISOString(),
+    })
+    .select()
+    .single()
 
-  const videoIds = videos?.map((v) => v.id) || []
+  if (eventError) {
+    console.error("[video-generation] Error recording engagement event:", eventError)
+    throw eventError
+  }
 
-  const { data: performance } = await supabase.from("video_performance_tracking").select("*").in("video_project_id", videoIds)
+  // 2. Update aggregate metrics in video_performance_tracking
+  const tracking = await updateVideoPerformanceAggregates({
+    brokerageId: data.brokerageId,
+    videoAssetId: data.videoAssetId,
+    videoProjectId: data.videoProjectId,
+    eventType: data.eventType,
+    watchDurationSeconds: data.watchDurationSeconds || 0,
+  })
 
-  const totalViews = performance?.reduce((sum, p) => sum + (p.views || 0), 0) || 0
-  const totalLeads = performance?.reduce((sum, p) => sum + (p.leads_generated || 0), 0) || 0
-  const avgEngagement =
-    performance && performance.length > 0
-      ? performance.reduce((sum, p) => sum + (p.click_through_rate || 0), 0) / performance.length
-      : 0
+  // 3. Check thresholds and fire kernel events
+  if (tracking) {
+    await checkAndFirePerformanceEvents(data.brokerageId, tracking)
+  }
 
-  const topPerforming =
-    performance
-      ?.sort((a, b) => (b.views || 0) - (a.views || 0))
-      .slice(0, 5)
-      .map((p) => ({
+  revalidatePath("/dashboard/videos/analytics")
+  return { event, tracking }
+}
+
+async function updateVideoPerformanceAggregates(data: {
+  brokerageId: string
+  videoAssetId?: string
+  videoProjectId?: string
+  eventType: VideoEventType
+  watchDurationSeconds: number
+}) {
+  const supabase = await createClient()
+
+  // Find existing tracking record
+  let query = supabase.from("video_performance_tracking").select("*")
+
+  if (data.videoAssetId) {
+    query = query.eq("video_asset_id", data.videoAssetId)
+  } else if (data.videoProjectId) {
+    query = query.eq("video_project_id", data.videoProjectId)
+  } else {
+    return null
+  }
+
+  const { data: existing } = await query.maybeSingle()
+
+  const now = new Date().toISOString()
+  const updates: Record<string, any> = {
+    last_event_at: now,
+    updated_at: now,
+  }
+
+  if (existing) {
+    // Update based on event type
+    switch (data.eventType) {
+      case "view":
+        updates.total_views = (existing.total_views || 0) + 1
+        updates.unique_views = (existing.unique_views || 0) + 1
+        break
+      case "complete":
+        const totalViews = existing.total_views || 1
+        const completions = Math.floor((existing.average_completion_rate || 0) * totalViews / 100) + 1
+        updates.average_completion_rate = Math.round((completions / totalViews) * 100)
+        break
+      case "click":
+      case "cta_click":
+        const views = existing.total_views || 1
+        const clicks = Math.floor((existing.click_through_rate || 0) * views / 100) + 1
+        updates.click_through_rate = Math.round((clicks / views) * 100)
+        break
+      case "share":
+        const viewsForShare = existing.total_views || 1
+        const shares = Math.floor((existing.share_rate || 0) * viewsForShare / 100) + 1
+        updates.share_rate = Math.round((shares / viewsForShare) * 100)
+        break
+      case "lead_capture":
+        updates.lead_conversions = (existing.lead_conversions || 0) + 1
+        updates.estimated_roi = (updates.lead_conversions || existing.lead_conversions || 0) * 500
+        break
+    }
+
+    // Update watch time
+    if (data.watchDurationSeconds > 0) {
+      updates.total_watch_time_seconds = (existing.total_watch_time_seconds || 0) + data.watchDurationSeconds
+      const totalViews = updates.total_views || existing.total_views || 1
+      updates.average_watch_time_seconds = Math.round(
+        (updates.total_watch_time_seconds || existing.total_watch_time_seconds || 0) / totalViews
+      )
+    }
+
+    const { data: updated, error } = await supabase
+      .from("video_performance_tracking")
+      .update(updates)
+      .eq("id", existing.id)
+      .select()
+      .single()
+
+    if (error) {
+      console.error("[video-generation] Error updating performance tracking:", error)
+      return existing
+    }
+
+    return updated
+  } else {
+    // Create new record
+    const newRecord = {
+      video_asset_id: data.videoAssetId || null,
+      video_project_id: data.videoProjectId || null,
+      brokerage_id: data.brokerageId,
+      total_views: data.eventType === "view" ? 1 : 0,
+      unique_views: data.eventType === "view" ? 1 : 0,
+      total_watch_time_seconds: data.watchDurationSeconds,
+      average_watch_time_seconds: data.watchDurationSeconds,
+      average_completion_rate: data.eventType === "complete" ? 100 : 0,
+      click_through_rate: data.eventType === "click" || data.eventType === "cta_click" ? 100 : 0,
+      share_rate: data.eventType === "share" ? 100 : 0,
+      lead_conversions: data.eventType === "lead_capture" ? 1 : 0,
+      estimated_roi: data.eventType === "lead_capture" ? 500 : 0,
+      last_event_at: now,
+      created_at: now,
+      updated_at: now,
+    }
+
+    const { data: created, error } = await supabase
+      .from("video_performance_tracking")
+      .insert(newRecord)
+      .select()
+      .single()
+
+    if (error) {
+      console.error("[video-generation] Error creating performance tracking:", error)
+      return null
+    }
+
+    return created
+  }
+}
+
+async function checkAndFirePerformanceEvents(brokerageId: string, tracking: any) {
+  const supabase = await createClient()
+  const totalViews = tracking.total_views || 0
+  const completionRate = tracking.average_completion_rate || 0
+  const clickThroughRate = tracking.click_through_rate || 0
+
+  // Always fire VIDEO_PERFORMANCE_UPDATED
+  await supabase.from("lifecycle_events").insert({
+    entity_type: "video_performance",
+    entity_id: tracking.id,
+    brokerage_id: brokerageId,
+    event_type: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
+    metadata: {
+      total_views: totalViews,
+      completion_rate: completionRate,
+      click_through_rate: clickThroughRate,
+      video_asset_id: tracking.video_asset_id,
+      video_project_id: tracking.video_project_id,
+    },
+  })
+
+  await processKernelEvent({
+    event: KernelEvent.VIDEO_PERFORMANCE_UPDATED,
+    brokerageId,
+    entityType: "video_performance",
+    entityId: tracking.id,
+  }).catch(err => console.error("[video-generation] Kernel event failed:", err))
+
+  // Check high performer threshold
+  if (
+    totalViews >= PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minViews &&
+    completionRate >= PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minCompletionRate &&
+    clickThroughRate >= PERFORMANCE_THRESHOLDS.HIGH_PERFORMER.minClickThroughRate
+  ) {
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "video_performance",
+      entity_id: tracking.id,
+      brokerage_id: brokerageId,
+      event_type: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
+      metadata: {
+        total_views: totalViews,
+        completion_rate: completionRate,
+        click_through_rate: clickThroughRate,
+        thresholds: PERFORMANCE_THRESHOLDS.HIGH_PERFORMER,
+      },
+    })
+
+    await processKernelEvent({
+      event: KernelEvent.VIDEO_HIGH_PERFORMER_DETECTED,
+      brokerageId,
+      entityType: "video_performance",
+      entityId: tracking.id,
+    }).catch(err => console.error("[video-generation] Kernel event failed:", err))
+  }
+
+  // Check low performer threshold
+  if (
+    totalViews >= PERFORMANCE_THRESHOLDS.LOW_PERFORMER.minViews &&
+    completionRate <= PERFORMANCE_THRESHOLDS.LOW_PERFORMER.maxCompletionRate &&
+    clickThroughRate <= PERFORMANCE_THRESHOLDS.LOW_PERFORMER.maxClickThroughRate
+  ) {
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "video_performance",
+      entity_id: tracking.id,
+      brokerage_id: brokerageId,
+      event_type: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,
+      metadata: {
+        total_views: totalViews,
+        completion_rate: completionRate,
+        click_through_rate: clickThroughRate,
+        thresholds: PERFORMANCE_THRESHOLDS.LOW_PERFORMER,
+      },
+    })
+
+    await processKernelEvent({
+      event: KernelEvent.VIDEO_LOW_PERFORMER_DETECTED,
+      brokerageId,
+      entityType: "video_performance",
+      entityId: tracking.id,
+    }).catch(err => console.error("[video-generation] Kernel event failed:", err))
+  }
+}
+
+export async function getVideoPerformanceStats(agentId: string, brokerageId?: string) {
+  const supabase = await createClient()
+
+  // Get video projects for this agent
+  let projectQuery = supabase.from("ai_video_projects").select("id, title, video_type, status, created_at")
+
+  if (isValidUUID(agentId)) {
+    projectQuery = projectQuery.eq("agent_id", agentId)
+  } else if (brokerageId && isValidUUID(brokerageId)) {
+    projectQuery = projectQuery.eq("brokerage_id", brokerageId)
+  } else {
+    return {
+      totalViews: 0,
+      uniqueViews: 0,
+      totalWatchTime: 0,
+      avgWatchTime: 0,
+      avgCompletionRate: 0,
+      avgClickThroughRate: 0,
+      avgShareRate: 0,
+      totalLeadConversions: 0,
+      estimatedRoi: 0,
+      topPerforming: [],
+      videoCount: 0,
+    }
+  }
+
+  const { data: videos } = await projectQuery
+
+  if (!videos || videos.length === 0) {
+    return {
+      totalViews: 0,
+      uniqueViews: 0,
+      totalWatchTime: 0,
+      avgWatchTime: 0,
+      avgCompletionRate: 0,
+      avgClickThroughRate: 0,
+      avgShareRate: 0,
+      totalLeadConversions: 0,
+      estimatedRoi: 0,
+      topPerforming: [],
+      videoCount: 0,
+    }
+  }
+
+  const videoIds = videos.map((v) => v.id)
+
+  // Get performance tracking data
+  const { data: performance } = await supabase
+    .from("video_performance_tracking")
+    .select("*")
+    .in("video_project_id", videoIds)
+
+  const performanceCount = performance?.length || 0
+
+  const totalViews = performance?.reduce((sum, p) => sum + (p.total_views || 0), 0) || 0
+  const uniqueViews = performance?.reduce((sum, p) => sum + (p.unique_views || 0), 0) || 0
+  const totalWatchTime = performance?.reduce((sum, p) => sum + (p.total_watch_time_seconds || 0), 0) || 0
+  const avgWatchTime = performanceCount > 0
+    ? performance.reduce((sum, p) => sum + (p.average_watch_time_seconds || 0), 0) / performanceCount
+    : 0
+  const avgCompletionRate = performanceCount > 0
+    ? performance.reduce((sum, p) => sum + (p.average_completion_rate || 0), 0) / performanceCount
+    : 0
+  const avgClickThroughRate = performanceCount > 0
+    ? performance.reduce((sum, p) => sum + (p.click_through_rate || 0), 0) / performanceCount
+    : 0
+  const avgShareRate = performanceCount > 0
+    ? performance.reduce((sum, p) => sum + (p.share_rate || 0), 0) / performanceCount
+    : 0
+  const totalLeadConversions = performance?.reduce((sum, p) => sum + (p.lead_conversions || 0), 0) || 0
+  const estimatedRoi = performance?.reduce((sum, p) => sum + (p.estimated_roi || 0), 0) || 0
+
+  // Get top performing videos
+  const topPerforming = performance
+    ?.sort((a, b) => (b.total_views || 0) - (a.total_views || 0))
+    .slice(0, 10)
+    .map((p) => {
+      const video = videos.find(v => v.id === p.video_project_id)
+      return {
         videoId: p.video_project_id,
-        platform: p.platform,
-        views: p.views,
-        leads: p.leads_generated,
-      })) || []
+        videoAssetId: p.video_asset_id,
+        title: video?.title || "Untitled",
+        videoType: video?.video_type || "unknown",
+        totalViews: p.total_views || 0,
+        uniqueViews: p.unique_views || 0,
+        completionRate: p.average_completion_rate || 0,
+        clickThroughRate: p.click_through_rate || 0,
+        shareRate: p.share_rate || 0,
+        leadConversions: p.lead_conversions || 0,
+        estimatedRoi: p.estimated_roi || 0,
+        lastEventAt: p.last_event_at,
+      }
+    }) || []
 
-  return { totalViews, totalLeads, avgEngagement, topPerforming }
+  return {
+    totalViews,
+    uniqueViews,
+    totalWatchTime,
+    avgWatchTime: Math.round(avgWatchTime),
+    avgCompletionRate: Math.round(avgCompletionRate),
+    avgClickThroughRate: Math.round(avgClickThroughRate * 10) / 10,
+    avgShareRate: Math.round(avgShareRate * 10) / 10,
+    totalLeadConversions,
+    estimatedRoi,
+    topPerforming,
+    videoCount: videos.length,
+  }
+}
+
+export async function getVideoEngagementEvents(filters: {
+  brokerageId?: string
+  videoAssetId?: string
+  videoProjectId?: string
+  contactId?: string
+  eventType?: VideoEventType
+  limit?: number
+}) {
+  const supabase = await createClient()
+
+  let query = supabase
+    .from("video_engagement_events")
+    .select("*")
+    .order("timestamp", { ascending: false })
+    .limit(filters.limit || 100)
+
+  if (filters.videoAssetId) {
+    query = query.eq("video_asset_id", filters.videoAssetId)
+  }
+  if (filters.contactId) {
+    query = query.eq("contact_id", filters.contactId)
+  }
+  if (filters.eventType) {
+    query = query.eq("event_type", filters.eventType)
+  }
+
+  const { data, error } = await query
+
+  if (error) {
+    console.error("[video-generation] Error fetching engagement events:", error)
+    return []
+  }
+
+  return data || []
+}
+
+export async function getVideoPerformanceTracking(filters: {
+  brokerageId?: string
+  videoAssetId?: string
+  videoProjectId?: string
+  limit?: number
+}) {
+  const supabase = await createClient()
+
+  let query = supabase
+    .from("video_performance_tracking")
+    .select("*")
+    .order("total_views", { ascending: false })
+    .limit(filters.limit || 50)
+
+  if (filters.brokerageId) {
+    query = query.eq("brokerage_id", filters.brokerageId)
+  }
+  if (filters.videoAssetId) {
+    query = query.eq("video_asset_id", filters.videoAssetId)
+  }
+  if (filters.videoProjectId) {
+    query = query.eq("video_project_id", filters.videoProjectId)
+  }
+
+  const { data, error } = await query
+
+  if (error) {
+    console.error("[video-generation] Error fetching performance tracking:", error)
+    return []
+  }
+
+  return data || []
 }
 
 // ============================================

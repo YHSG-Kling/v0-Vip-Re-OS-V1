@@ -228,4 +228,9 @@ export enum KernelEvent {
   SNIPPET_PUBLISHED              = 'snippet_published',
   CONTENT_REPURPOSED             = 'content_repurposed',
   REPURPOSE_BATCH_COMPLETED      = 'repurpose_batch_completed',
+
+  // ── Layer 8.5 — Video Performance Tracking ────────────────────────────
+  VIDEO_PERFORMANCE_UPDATED      = 'video_performance_updated',
+  VIDEO_HIGH_PERFORMER_DETECTED  = 'video_high_performer_detected',
+  VIDEO_LOW_PERFORMER_DETECTED   = 'video_low_performer_detected',
 }

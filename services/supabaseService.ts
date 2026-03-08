@@ -452,17 +452,20 @@ export const supabaseService = {
   },
 
   // =====================================================
-  // VIDEO ENGAGEMENT & ASSETS
+  // VIDEO ENGAGEMENT & ASSETS — LAYER 8.5
+  // Tables: video_engagement_events (raw), video_performance_tracking (aggregates)
+  // DO NOT use video_analytics table
   // =====================================================
 
   async getVideoEngagement(contactId: string) {
     try {
       const supabase = getSupabaseAdmin()
+      // Query video_engagement_events (raw event ledger)
       const { data, error } = await supabase
-        .from("video_engagement")
+        .from("video_engagement_events")
         .select("*")
         .eq("contact_id", contactId)
-        .order("created_at", { ascending: false })
+        .order("timestamp", { ascending: false })
 
       if (error) throw error
 
@@ -473,10 +476,53 @@ export const supabaseService = {
     }
   },
 
-  async logVideoEngagement(event: any) {
+  async getVideoPerformanceTracking(filters: { brokerageId?: string; videoAssetId?: string; videoProjectId?: string }) {
     try {
       const supabase = getSupabaseAdmin()
-      const { data, error } = await supabase.from("video_engagement_events").insert(event).select().single()
+      let query = supabase
+        .from("video_performance_tracking")
+        .select("*")
+        .order("total_views", { ascending: false })
+
+      if (filters.brokerageId) {
+        query = query.eq("brokerage_id", filters.brokerageId)
+      }
+      if (filters.videoAssetId) {
+        query = query.eq("video_asset_id", filters.videoAssetId)
+      }
+      if (filters.videoProjectId) {
+        query = query.eq("video_project_id", filters.videoProjectId)
+      }
+
+      const { data, error } = await query
+      if (error) throw error
+
+      return data || []
+    } catch (error) {
+      console.error("[Supabase Service] Error fetching video performance tracking:", error)
+      return []
+    }
+  },
+
+  async logVideoEngagement(event: {
+    video_asset_id?: string
+    contact_id?: string
+    event_type: string
+    watch_duration_seconds?: number
+  }) {
+    try {
+      const supabase = getSupabaseAdmin()
+      const { data, error } = await supabase
+        .from("video_engagement_events")
+        .insert({
+          video_asset_id: event.video_asset_id || null,
+          contact_id: event.contact_id || null,
+          event_type: event.event_type,
+          watch_duration_seconds: event.watch_duration_seconds || 0,
+          timestamp: new Date().toISOString(),
+        })
+        .select()
+        .single()
       if (error) throw error
       return data
     } catch (error) {
