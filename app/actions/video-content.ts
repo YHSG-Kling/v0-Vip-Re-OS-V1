@@ -97,7 +97,7 @@ export async function approveAndGenerateVideo(payload: any) {
 
   // Update script status
   await supabase
-    .from("video_scripts")
+    .from("video_scripts_library")
     .update({
       approval_status: "approved",
       approved_by: user_id,
@@ -191,7 +191,7 @@ export async function createShortClip(params: {
 
   // Create short clip record
   const { data: clip, error } = await supabase
-    .from("short_clip")
+    .from("video_snippets")
     .insert({
       long_form_video_id: params.long_form_video_id,
       clip_start_sec: params.clip_start_sec,
