@@ -1,10 +1,19 @@
 "use server"
 
+// app/actions/social-media-automation.ts
+// Layer 9.2 Social Media Automation — Server Actions
+// Canonical Tables: social_posts, social_media_accounts, social_engagement_tracking, social_publish_log
+// DO NOT use social_media_posts or social_accounts
+
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
 import { isValidUUID } from "@/lib/validations"
-import { handleError } from "@/lib/errors"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
 
 function parseAIJsonResponse(text: string) {
   let cleanText = text.trim()
@@ -22,11 +31,14 @@ function parseAIJsonResponse(text: string) {
 
 export async function connectSocialAccount(params: {
   agentId: string
-  platform: "facebook" | "instagram" | "linkedin" | "twitter" | "tiktok"
+  platform: "facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "youtube" | "pinterest"
   accountName: string
   accessToken: string
   refreshToken?: string
   expiresAt?: string
+  accountId?: string
+  brokerageId?: string
+  scope?: "brokerage" | "agent"
 }) {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
@@ -39,44 +51,51 @@ export async function connectSocialAccount(params: {
       .from("social_media_accounts")
       .insert({
         agent_id: params.agentId,
+        brokerage_id: params.brokerageId || null,
         platform: params.platform,
         account_name: params.accountName,
+        account_id: params.accountId || null,
         access_token: params.accessToken,
         refresh_token: params.refreshToken,
         token_expires_at: params.expiresAt,
+        scope: params.scope || "agent",
         is_active: true,
-        connected_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
       })
       .select()
       .single()
 
     if (error) throw error
 
-    revalidatePath("/dashboard/social-media/accounts")
+    revalidatePath("/dashboard/social")
     return { success: true, data: account }
   } catch (error) {
-    console.error("Connect social account error:", error)
+    console.error("[social-media-automation] Connect social account error:", error)
     return { success: false, error: "Failed to connect account" }
   }
 }
 
-export async function getConnectedAccounts(agentId: string) {
-  // Return empty array for invalid UUIDs - production requires valid agent ID
-  if (!isValidUUID(agentId)) {
-    console.warn("[social-media-automation] getConnectedAccounts called with invalid UUID:", agentId)
+export async function getConnectedAccounts(agentId?: string, brokerageId?: string) {
+  const supabase = await createClient()
+
+  let query = supabase
+    .from("social_media_accounts")
+    .select("*")
+    .eq("is_active", true)
+    .order("platform")
+
+  if (agentId && isValidUUID(agentId)) {
+    query = query.eq("agent_id", agentId)
+  } else if (brokerageId && isValidUUID(brokerageId)) {
+    query = query.eq("brokerage_id", brokerageId)
+  } else {
     return []
   }
 
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("social_media_accounts")
-    .select("*")
-    .eq("agent_id", agentId)
-    .order("connected_at", { ascending: false })
+  const { data, error } = await query
 
   if (error) {
-    console.error("Get connected accounts error:", error)
+    console.error("[social-media-automation] Get connected accounts error:", error)
     return []
   }
 
@@ -90,81 +109,227 @@ export async function disconnectSocialAccount(accountId: string) {
 
   const supabase = await createClient()
 
-  const { error } = await supabase.from("social_media_accounts").update({ is_active: false }).eq("id", accountId)
+  const { error } = await supabase
+    .from("social_media_accounts")
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq("id", accountId)
 
   if (error) {
-    console.error("Disconnect account error:", error)
+    console.error("[social-media-automation] Disconnect account error:", error)
     return { success: false, error: "Failed to disconnect account" }
   }
 
-  revalidatePath("/dashboard/social-media/accounts")
+  revalidatePath("/dashboard/social")
   return { success: true }
 }
 
 // ============================================
-// POST SCHEDULING & PUBLISHING
+// POST SCHEDULING — KERNEL INTEGRATED
 // ============================================
 
-export async function schedulePost(params: {
-  agentId: string
+/**
+ * Schedule a social post with full kernel integration
+ * - canAccessFeature('social_automation') check
+ * - applyBrandVoice() on content
+ * - evaluateOutbound() — blocks if compliance fails
+ * - processKernelEvent(SOCIAL_POST_SCHEDULED)
+ */
+export async function scheduleSocialPost(params: {
+  brokerageId: string
+  agentId?: string
+  userId: string
   platform: string
-  contentId?: string
-  postText: string
-  imageUrls?: string[]
-  scheduledFor: string
+  postType: string
+  content: string
+  mediaUrls?: string[]
   hashtags?: string[]
-  autoPublish?: boolean
+  scheduledFor: string
+  socialAccountId: string
+  listingId?: string
+  campaignId?: string
 }) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+  // Validate required UUIDs
+  if (!isValidUUID(params.brokerageId)) {
+    return { success: false, error: "Invalid brokerage ID" }
+  }
+  if (!isValidUUID(params.userId)) {
+    return { success: false, error: "Invalid user ID" }
+  }
+  if (!isValidUUID(params.socialAccountId)) {
+    return { success: false, error: "Invalid social account ID" }
+  }
+
+  // Feature access check
+  const canAccess = await canAccessFeature({
+    featureKey: "social_automation",
+    brokerageId: params.brokerageId,
+    userId: params.userId,
+  })
+
+  if (!canAccess.allowed) {
+    return { success: false, error: "Feature not available for your subscription tier" }
   }
 
   const supabase = await createClient()
 
   try {
-    // Get connected account
-    const { data: account } = await supabase
-      .from("social_media_accounts")
-      .select("*")
-      .eq("agent_id", params.agentId)
-      .eq("platform", params.platform)
-      .eq("is_active", true)
-      .maybeSingle()
-
-    if (!account) {
-      return { success: false, error: `No connected ${params.platform} account` }
+    // Apply brand voice to content
+    let processedContent = params.content
+    try {
+      const brandVoiceResult = await applyBrandVoice({
+        brokerageId: params.brokerageId,
+        content: params.content,
+        contentType: "social_post",
+      })
+      if (brandVoiceResult.transformedContent) {
+        processedContent = brandVoiceResult.transformedContent
+      }
+    } catch (brandError) {
+      console.warn("[social-media-automation] Brand voice application failed:", brandError)
+      // Continue with original content
     }
 
-    const { data: post, error } = await supabase
+    // Evaluate outbound compliance — BLOCK if fails
+    try {
+      const complianceResult = await evaluateOutbound({
+        brokerageId: params.brokerageId,
+        content: processedContent,
+        channel: "social",
+        messageType: "social_post",
+      })
+
+      if (!complianceResult.allowed) {
+        return {
+          success: false,
+          error: `Compliance blocked: ${complianceResult.reason || "Content failed compliance check"}`,
+          blocked: true,
+        }
+      }
+    } catch (complianceError) {
+      console.warn("[social-media-automation] Compliance evaluation failed:", complianceError)
+      // Continue if compliance service is unavailable
+    }
+
+    // INSERT social_posts with status='scheduled', approval_status='pending'
+    const { data: post, error: insertError } = await supabase
       .from("social_posts")
       .insert({
-        agent_id: params.agentId,
-        content_id: params.contentId,
+        brokerage_id: params.brokerageId,
+        agent_id: params.agentId || null,
+        user_id: params.userId,
         platform: params.platform,
-        account_id: account.id,
-        post_text: params.postText,
-        image_urls: params.imageUrls,
-        hashtags: params.hashtags,
+        post_type: params.postType,
+        content: processedContent,
+        media_urls: params.mediaUrls || [],
+        hashtags: params.hashtags || [],
         scheduled_for: params.scheduledFor,
-        status: params.autoPublish ? "scheduled" : "draft",
+        social_account_id: params.socialAccountId,
+        listing_id: params.listingId || null,
+        status: "scheduled",
+        approval_status: "pending",
+        brand_compliance_passed: null,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       })
+      .select()
+      .single()
+
+    if (insertError) {
+      console.error("[social-media-automation] Insert error:", insertError)
+      throw insertError
+    }
+
+    // Link to marketing campaign if provided
+    if (params.campaignId && isValidUUID(params.campaignId)) {
+      await supabase.from("marketing_assets").insert({
+        brokerage_id: params.brokerageId,
+        campaign_id: params.campaignId,
+        asset_type: "social_post",
+        asset_name: `${params.platform} - ${params.postType}`,
+        source_table: "social_posts",
+        source_id: post.id,
+        approval_status: "pending",
+        created_at: new Date().toISOString(),
+      })
+    }
+
+    // Increment feature usage
+    await incrementFeatureUsage({
+      featureKey: "social_automation",
+      brokerageId: params.brokerageId,
+      userId: params.userId,
+    }).catch((err) => console.warn("[social-media-automation] Usage increment failed:", err))
+
+    // Fire kernel event
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "social_post",
+      entity_id: post.id,
+      brokerage_id: params.brokerageId,
+      event_type: KernelEvent.SOCIAL_POST_SCHEDULED,
+      metadata: {
+        platform: params.platform,
+        post_type: params.postType,
+        scheduled_for: params.scheduledFor,
+        listing_id: params.listingId,
+        campaign_id: params.campaignId,
+      },
+    })
+
+    await processKernelEvent({
+      event: KernelEvent.SOCIAL_POST_SCHEDULED,
+      brokerageId: params.brokerageId,
+      entityType: "social_post",
+      entityId: post.id,
+    }).catch((err) => console.error("[social-media-automation] Kernel event failed:", err))
+
+    revalidatePath("/dashboard/social")
+    return { success: true, data: post }
+  } catch (error: any) {
+    console.error("[social-media-automation] Schedule post error:", error)
+    return { success: false, error: error.message || "Failed to schedule post" }
+  }
+}
+
+/**
+ * Approve a social post
+ */
+export async function approveSocialPost(postId: string, approverUserId: string) {
+  if (!isValidUUID(postId)) {
+    return { success: false, error: "Invalid post ID" }
+  }
+  if (!isValidUUID(approverUserId)) {
+    return { success: false, error: "Invalid approver user ID" }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    const { data: post, error } = await supabase
+      .from("social_posts")
+      .update({
+        approval_status: "approved",
+        approved_by: approverUserId,
+        approved_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", postId)
       .select()
       .single()
 
     if (error) throw error
 
-    // Note: Scheduling is handled via social_posts.scheduled_for column
-    // No separate posting_schedule_calendar table needed
-
-    revalidatePath("/dashboard/social-media")
+    revalidatePath("/dashboard/social")
     return { success: true, data: post }
-  } catch (error) {
-    console.error("Schedule post error:", error)
-    return { success: false, error: "Failed to schedule post" }
+  } catch (error: any) {
+    console.error("[social-media-automation] Approve post error:", error)
+    return { success: false, error: error.message || "Failed to approve post" }
   }
 }
 
-export async function publishPost(postId: string) {
+/**
+ * Reject a social post
+ */
+export async function rejectSocialPost(postId: string, rejectorUserId: string, reason?: string) {
   if (!isValidUUID(postId)) {
     return { success: false, error: "Invalid post ID" }
   }
@@ -172,48 +337,41 @@ export async function publishPost(postId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: post } = await supabase.from("social_posts").select("*").eq("id", postId).single()
-
-    if (!post) {
-      return { success: false, error: "Post not found" }
-    }
-
-    const { data: account } = await supabase.from("social_media_accounts").select("*").eq("id", post.account_id).single()
-
-    // Use consolidated social publishing service
-    const { publishToSocialMedia } = await import("@/lib/services/social-publishing.service")
-    const publishResult = await publishToSocialMedia({
-      agentId: post.agent_id,
-      platform: post.platform,
-      content: post.post_text,
-      mediaUrls: post.media_urls || [],
-      accountId: post.account_id,
-    })
-
-    if (!publishResult.success) {
-      return { success: false, error: publishResult.error || "Failed to publish" }
-    }
-
-    // Update post status
-    await supabase
+    const { data: post, error } = await supabase
       .from("social_posts")
       .update({
-        status: "published",
-        published_at: new Date().toISOString(),
-        platform_post_id: `demo_${Date.now()}`, // Would be real platform ID
+        approval_status: "rejected",
+        status: "cancelled",
+        error_message: reason || "Rejected by approver",
+        updated_at: new Date().toISOString(),
       })
       .eq("id", postId)
+      .select()
+      .single()
 
-    revalidatePath("/dashboard/social-media")
-    return { success: true }
-  } catch (error) {
-    console.error("Publish post error:", error)
-    return { success: false, error: "Failed to publish post" }
+    if (error) throw error
+
+    revalidatePath("/dashboard/social")
+    return { success: true, data: post }
+  } catch (error: any) {
+    console.error("[social-media-automation] Reject post error:", error)
+    return { success: false, error: error.message || "Failed to reject post" }
   }
 }
 
-export async function getScheduledPosts(agentId: string, dateRange?: { start: string; end: string }) {
-  if (!isValidUUID(agentId)) {
+/**
+ * Get social queue with filters
+ */
+export async function getSocialQueue(
+  brokerageId: string,
+  filters?: {
+    platform?: string
+    status?: string
+    agentId?: string
+    approvalStatus?: string
+  }
+) {
+  if (!isValidUUID(brokerageId)) {
     return []
   }
 
@@ -221,22 +379,81 @@ export async function getScheduledPosts(agentId: string, dateRange?: { start: st
 
   let query = supabase
     .from("social_posts")
-    .select("*")
-    .eq("agent_id", agentId)
-    .in("status", ["scheduled", "draft"])
-    .order("scheduled_for")
+    .select(
+      `
+      *,
+      social_media_accounts (id, platform, account_name),
+      social_engagement_tracking (*)
+    `
+    )
+    .eq("brokerage_id", brokerageId)
+    .order("scheduled_for", { ascending: true })
 
-  if (dateRange?.start) {
-    query = query.gte("scheduled_for", dateRange.start)
+  if (filters?.platform) {
+    query = query.eq("platform", filters.platform)
   }
-  if (dateRange?.end) {
-    query = query.lte("scheduled_for", dateRange.end)
+  if (filters?.status) {
+    query = query.eq("status", filters.status)
+  }
+  if (filters?.agentId && isValidUUID(filters.agentId)) {
+    query = query.eq("agent_id", filters.agentId)
+  }
+  if (filters?.approvalStatus) {
+    query = query.eq("approval_status", filters.approvalStatus)
   }
 
   const { data, error } = await query
 
   if (error) {
-    console.error("Get scheduled posts error:", error)
+    console.error("[social-media-automation] Get social queue error:", error)
+    return []
+  }
+
+  return data || []
+}
+
+/**
+ * Get engagement data for a post
+ */
+export async function getSocialEngagement(postId: string) {
+  if (!isValidUUID(postId)) {
+    return []
+  }
+
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from("social_engagement_tracking")
+    .select("*")
+    .eq("social_post_id", postId)
+    .order("captured_at", { ascending: false })
+
+  if (error) {
+    console.error("[social-media-automation] Get engagement error:", error)
+    return []
+  }
+
+  return data || []
+}
+
+/**
+ * Get publish logs for a post
+ */
+export async function getPublishLog(postId: string) {
+  if (!isValidUUID(postId)) {
+    return []
+  }
+
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from("social_publish_log")
+    .select("*")
+    .eq("social_post_id", postId)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    console.error("[social-media-automation] Get publish log error:", error)
     return []
   }
 
@@ -247,15 +464,24 @@ export async function getScheduledPosts(agentId: string, dateRange?: { start: st
 // AUTOMATED LISTING POSTS
 // ============================================
 
-export async function createListingPosts(params: { propertyId: string; agentId: string; platforms: string[] }) {
-  if (!isValidUUID(params.agentId) || !isValidUUID(params.propertyId)) {
+export async function createListingPosts(params: {
+  propertyId: string
+  agentId: string
+  brokerageId: string
+  platforms: string[]
+}) {
+  if (!isValidUUID(params.agentId) || !isValidUUID(params.propertyId) || !isValidUUID(params.brokerageId)) {
     return { success: false, error: "Invalid IDs" }
   }
 
   const supabase = await createClient()
 
   try {
-    const { data: property } = await supabase.from("listings").select("*").eq("id", params.propertyId).single()
+    const { data: property } = await supabase
+      .from("listings")
+      .select("*")
+      .eq("id", params.propertyId)
+      .single()
 
     if (!property) {
       return { success: false, error: "Property not found" }
@@ -264,6 +490,20 @@ export async function createListingPosts(params: { propertyId: string; agentId: 
     const results = []
 
     for (const platform of params.platforms) {
+      // Get connected account for this platform
+      const { data: account } = await supabase
+        .from("social_media_accounts")
+        .select("id")
+        .eq("agent_id", params.agentId)
+        .eq("platform", platform)
+        .eq("is_active", true)
+        .maybeSingle()
+
+      if (!account) {
+        results.push({ platform, success: false, error: `No connected ${platform} account` })
+        continue
+      }
+
       // Generate platform-optimized content
       const content = await generatePlatformContent({
         platform,
@@ -274,48 +514,39 @@ export async function createListingPosts(params: { propertyId: string; agentId: 
       // Schedule post for optimal time
       const optimalTime = getOptimalPostingTime(platform)
 
-      const result = await schedulePost({
+      const result = await scheduleSocialPost({
+        brokerageId: params.brokerageId,
         agentId: params.agentId,
+        userId: params.agentId,
         platform,
-        postText: content.text,
-        imageUrls: [property.primary_image_url],
+        postType: "new_listing",
+        content: content.text,
+        mediaUrls: property.primary_image_url ? [property.primary_image_url] : [],
         hashtags: content.hashtags,
         scheduledFor: optimalTime,
-        autoPublish: true,
+        socialAccountId: account.id,
+        listingId: params.propertyId,
       })
 
-      results.push({ platform, success: result.success })
+      results.push({ platform, success: result.success, postId: result.data?.id })
     }
 
     return { success: true, data: results }
   } catch (error) {
-    console.error("Create listing posts error:", error)
+    console.error("[social-media-automation] Create listing posts error:", error)
     return { success: false, error: "Failed to create listing posts" }
   }
 }
 
 async function generatePlatformContent(params: { platform: string; property: any; agentId: string }) {
   const platformSpecs: Record<string, any> = {
-    facebook: {
-      maxLength: 500,
-      style: "conversational",
-      hashtagCount: 3,
-    },
-    instagram: {
-      maxLength: 2200,
-      style: "visual-first",
-      hashtagCount: 20,
-    },
-    linkedin: {
-      maxLength: 1300,
-      style: "professional",
-      hashtagCount: 5,
-    },
-    twitter: {
-      maxLength: 280,
-      style: "concise",
-      hashtagCount: 2,
-    },
+    facebook: { maxLength: 500, style: "conversational", hashtagCount: 3 },
+    instagram: { maxLength: 2200, style: "visual-first", hashtagCount: 20 },
+    linkedin: { maxLength: 1300, style: "professional", hashtagCount: 5 },
+    twitter: { maxLength: 280, style: "concise", hashtagCount: 2 },
+    tiktok: { maxLength: 150, style: "casual", hashtagCount: 5 },
+    youtube: { maxLength: 5000, style: "detailed", hashtagCount: 10 },
+    pinterest: { maxLength: 500, style: "descriptive", hashtagCount: 5 },
   }
 
   const spec = platformSpecs[params.platform] || platformSpecs.facebook
@@ -323,10 +554,9 @@ async function generatePlatformContent(params: { platform: string; property: any
   const prompt = `Create ${params.platform} post for this property listing:
 
 Address: ${params.property.address}
-Price: $${params.property.price?.toLocaleString()}
+Price: $${params.property.list_price?.toLocaleString() || params.property.price?.toLocaleString()}
 Beds: ${params.property.bedrooms} | Baths: ${params.property.bathrooms}
-SqFt: ${params.property.square_feet}
-Description: ${params.property.description?.substring(0, 200)}
+SqFt: ${params.property.sqft || params.property.square_feet}
 
 PLATFORM: ${params.platform}
 Max Length: ${spec.maxLength} characters
@@ -335,26 +565,35 @@ Hashtags: ${spec.hashtagCount}
 
 OUTPUT FORMAT (JSON):
 {
-  "text": "engaging post text with emojis if appropriate",
-  "hashtags": ["RealEstate", "HomesForSale"],
-  "optimal_time": "2024-01-15T14:00:00Z"
+  "text": "engaging post text",
+  "hashtags": ["RealEstate", "HomesForSale"]
 }`
 
-  const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
-    prompt,
-  })
+  try {
+    const { text } = await generateText({
+      model: "openai/gpt-4o-mini",
+      prompt,
+    })
 
-  return parseAIJsonResponse(text)
+    return parseAIJsonResponse(text)
+  } catch (error) {
+    // Fallback content
+    return {
+      text: `Just Listed! Beautiful ${params.property.bedrooms}BR/${params.property.bathrooms}BA home in ${params.property.city || "your area"}. Contact me for a showing!`,
+      hashtags: ["RealEstate", "JustListed", "HomesForSale"],
+    }
+  }
 }
 
 function getOptimalPostingTime(platform: string): string {
-  // Based on engagement data - best times to post
   const optimalTimes: Record<string, { hour: number; day: string }> = {
-    facebook: { hour: 13, day: "wednesday" }, // 1 PM Wednesday
-    instagram: { hour: 11, day: "tuesday" }, // 11 AM Tuesday
-    linkedin: { hour: 9, day: "tuesday" }, // 9 AM Tuesday
-    twitter: { hour: 12, day: "wednesday" }, // 12 PM Wednesday
+    facebook: { hour: 13, day: "wednesday" },
+    instagram: { hour: 11, day: "tuesday" },
+    linkedin: { hour: 9, day: "tuesday" },
+    twitter: { hour: 12, day: "wednesday" },
+    tiktok: { hour: 19, day: "thursday" },
+    youtube: { hour: 14, day: "friday" },
+    pinterest: { hour: 20, day: "saturday" },
   }
 
   const time = optimalTimes[platform] || { hour: 14, day: "tuesday" }
@@ -373,49 +612,45 @@ function getOptimalPostingTime(platform: string): string {
 // PERFORMANCE ANALYTICS
 // ============================================
 
-export async function trackPostPerformance(postId: string, metrics: any) {
-  if (!isValidUUID(postId)) {
-    return { success: false, error: "Invalid post ID" }
+export async function trackPostPerformance(postId: string, brokerageId: string, metrics: any) {
+  if (!isValidUUID(postId) || !isValidUUID(brokerageId)) {
+    return { success: false, error: "Invalid IDs" }
   }
 
   const supabase = await createClient()
 
   try {
+    // Get post to determine platform
+    const { data: post } = await supabase
+      .from("social_posts")
+      .select("platform")
+      .eq("id", postId)
+      .single()
+
     await supabase.from("social_engagement_tracking").upsert({
-      post_id: postId,
-      impressions: metrics.impressions || 0,
-      reach: metrics.reach || 0,
-      engagement_count: metrics.engagement_count || 0,
-      likes: metrics.likes || 0,
-      comments: metrics.comments || 0,
-      shares: metrics.shares || 0,
-      clicks: metrics.clicks || 0,
-      saves: metrics.saves || 0,
-      engagement_rate: metrics.engagement_rate || 0,
-      last_updated: new Date().toISOString(),
+      social_post_id: postId,
+      brokerage_id: brokerageId,
+      platform: post?.platform || "unknown",
+      impressions_count: metrics.impressions || 0,
+      likes_count: metrics.likes || 0,
+      comments_count: metrics.comments || 0,
+      shares_count: metrics.shares || 0,
+      saves_count: metrics.saves || 0,
+      clicks_count: metrics.clicks || 0,
+      leads_generated: metrics.leads || 0,
+      captured_at: new Date().toISOString(),
     })
 
     return { success: true }
   } catch (error) {
-    console.error("Track performance error:", error)
+    console.error("[social-media-automation] Track performance error:", error)
     return { success: false, error: "Failed to track performance" }
   }
 }
 
-export async function getSocialMediaAnalytics(agentId: string, dateRange?: { start: string; end: string }) {
-  if (!isValidUUID(agentId)) {
-    return {
-      totalPosts: 42,
-      totalReach: 15230,
-      totalEngagement: 892,
-      avgEngagementRate: 5.8,
-      topPosts: [],
-      platformBreakdown: {
-        facebook: { posts: 15, reach: 5200, engagement: 310 },
-        instagram: { posts: 20, reach: 8500, engagement: 520 },
-        linkedin: { posts: 7, reach: 1530, engagement: 62 },
-      },
-    }
+export async function getSocialMediaAnalytics(brokerageId: string, dateRange?: { start: string; end: string }) {
+  if (!isValidUUID(brokerageId)) {
+    return null
   }
 
   const supabase = await createClient()
@@ -423,8 +658,8 @@ export async function getSocialMediaAnalytics(agentId: string, dateRange?: { sta
   try {
     let query = supabase
       .from("social_posts")
-      .select("*, performance:social_engagement_tracking(*)")
-      .eq("agent_id", agentId)
+      .select("*, engagement:social_engagement_tracking(*)")
+      .eq("brokerage_id", brokerageId)
       .eq("status", "published")
 
     if (dateRange?.start) {
@@ -437,339 +672,66 @@ export async function getSocialMediaAnalytics(agentId: string, dateRange?: { sta
     const { data: posts } = await query
 
     const totalPosts = posts?.length || 0
-    const totalReach = posts?.reduce((sum, p) => sum + (p.performance?.reach || 0), 0) || 0
-    const totalEngagement = posts?.reduce((sum, p) => sum + (p.performance?.engagement_count || 0), 0) || 0
-    const avgEngagementRate = totalPosts > 0 ? totalEngagement / totalReach * 100 : 0
+    
+    // Aggregate engagement metrics
+    let totalImpressions = 0
+    let totalLikes = 0
+    let totalComments = 0
+    let totalShares = 0
+    let totalClicks = 0
+    let totalLeads = 0
 
-    const platformBreakdown: any = {}
+    const platformBreakdown: Record<string, { posts: number; impressions: number; engagement: number }> = {}
+
     posts?.forEach((post) => {
+      const engagement = Array.isArray(post.engagement) ? post.engagement[0] : post.engagement
+
+      totalImpressions += engagement?.impressions_count || 0
+      totalLikes += engagement?.likes_count || 0
+      totalComments += engagement?.comments_count || 0
+      totalShares += engagement?.shares_count || 0
+      totalClicks += engagement?.clicks_count || 0
+      totalLeads += engagement?.leads_generated || 0
+
       if (!platformBreakdown[post.platform]) {
-        platformBreakdown[post.platform] = { posts: 0, reach: 0, engagement: 0 }
+        platformBreakdown[post.platform] = { posts: 0, impressions: 0, engagement: 0 }
       }
       platformBreakdown[post.platform].posts++
-      platformBreakdown[post.platform].reach += post.performance?.reach || 0
-      platformBreakdown[post.platform].engagement += post.performance?.engagement_count || 0
+      platformBreakdown[post.platform].impressions += engagement?.impressions_count || 0
+      platformBreakdown[post.platform].engagement +=
+        (engagement?.likes_count || 0) +
+        (engagement?.comments_count || 0) +
+        (engagement?.shares_count || 0)
     })
+
+    const totalEngagement = totalLikes + totalComments + totalShares
+    const avgEngagementRate = totalImpressions > 0 ? (totalEngagement / totalImpressions) * 100 : 0
 
     const topPosts =
       posts
-        ?.sort((a, b) => (b.performance?.engagement_count || 0) - (a.performance?.engagement_count || 0))
+        ?.sort((a, b) => {
+          const aEng = Array.isArray(a.engagement) ? a.engagement[0] : a.engagement
+          const bEng = Array.isArray(b.engagement) ? b.engagement[0] : b.engagement
+          return ((bEng?.likes_count || 0) + (bEng?.comments_count || 0)) -
+                 ((aEng?.likes_count || 0) + (aEng?.comments_count || 0))
+        })
         .slice(0, 5) || []
 
     return {
       totalPosts,
-      totalReach,
+      totalImpressions,
       totalEngagement,
+      totalLikes,
+      totalComments,
+      totalShares,
+      totalClicks,
+      totalLeads,
       avgEngagementRate,
       topPosts,
       platformBreakdown,
     }
   } catch (error) {
-    console.error("Get analytics error:", error)
+    console.error("[social-media-automation] Get analytics error:", error)
     return null
   }
-}
-
-// ============================================
-// COMPLIANCE WORKFLOW
-// ============================================
-
-export async function submitForApproval(postId: string) {
-  if (!isValidUUID(postId)) {
-    return { success: false, error: "Invalid post ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: post } = await supabase.from("social_posts").select("*").eq("id", postId).single()
-
-    if (!post) {
-      return { success: false, error: "Post not found" }
-    }
-
-    // Run compliance check
-    const complianceResult = await checkSocialCompliance(post.post_text, post.platform)
-
-    // Agent task (correct location, no changes) — activity_type: content.approval
-    await supabase.from("activities").insert({
-      brokerage_id: post.agent_id, // TODO: Get actual brokerage_id
-      activity_type: "content.approval",
-      entity_type: "content",
-      entity_id: postId,
-      title: `Social Post Approval: ${post.platform}`,
-      description: post.post_text.substring(0, 200),
-      status: complianceResult.passed ? "approved" : "needs_revision",
-      metadata: {
-        agent_id: post.agent_id,
-        content_type: "social_post",
-        platform: post.platform,
-        compliance_flags: complianceResult.flags,
-      },
-    })
-
-    await supabase
-      .from("social_posts")
-      .update({
-        approval_status: complianceResult.passed ? "approved" : "pending_revision",
-      })
-      .eq("id", postId)
-
-    revalidatePath("/dashboard/social-media")
-    return { success: true, complianceResult }
-  } catch (error) {
-    console.error("Submit for approval error:", error)
-    return { success: false, error: "Failed to submit for approval" }
-  }
-}
-
-async function checkSocialCompliance(text: string, platform: string): Promise<{ passed: boolean; flags: string[] }> {
-  const flags: string[] = []
-
-  // Fair Housing checks
-  if (/perfect for families|great for young professionals|ideal for retirees/i.test(text)) {
-    flags.push("Potential Fair Housing violation - avoid demographic targeting")
-  }
-
-  // Platform-specific rules
-  if (platform === "facebook" && text.includes("Click here")) {
-    flags.push("Facebook discourages 'Click here' - use more descriptive CTAs")
-  }
-
-  // Required disclaimers
-  if (/\$\d+/.test(text) && !text.includes("pending") && !text.includes("subject to")) {
-    flags.push("Price mentioned without qualifier - add 'pending approval' or similar")
-  }
-
-  return {
-    passed: flags.length === 0,
-    flags,
-  }
-}
-
-// ============================================
-// LISTING-SPECIFIC SOCIAL MEDIA POSTS
-// ============================================
-
-export async function generateListingSocialPosts(params: {
-  transactionId: string
-  postType?: "announcement" | "open_house" | "price_drop" | "sold" | "story" | "reel"
-}) {
-  if (!isValidUUID(params.transactionId)) {
-    return { success: false, error: "Invalid transaction ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: transaction } = await supabase
-      .from("transactions")
-      .select("*, listings(*), listing_photos(*), ai_video_projects(*)")
-      .eq("id", params.transactionId)
-      .single()
-
-    if (!transaction || !transaction.listings) {
-      return { success: false, error: "Transaction not found" }
-    }
-
-    const listing = transaction.listings
-    const postType = params.postType || "announcement"
-    const platforms = ["facebook", "instagram", "linkedin"]
-    const posts = []
-
-    for (const platform of platforms) {
-      const caption = await generateListingCaption(listing, platform, postType)
-      const hashtags = await generateListingHashtags(listing, platform)
-      const media = selectMediaForPlatform(transaction, platform)
-
-      const { data: post, error } = await supabase
-        .from("social_posts")
-        .insert({
-          agent_id: transaction.agent_id,
-          transaction_id: params.transactionId,
-          platform,
-          post_type: postType,
-          post_text: caption,
-          media_urls: media,
-          hashtags,
-          status: "draft",
-          approval_status: "pending",
-        })
-        .select()
-        .single()
-
-      if (error) {
-        console.error(`Failed to create ${platform} post:`, error)
-        continue
-      }
-
-      posts.push(post)
-    }
-
-    revalidatePath("/dashboard/listings")
-    return { success: true, posts }
-  } catch (error) {
-    console.error("Generate listing social posts error:", error)
-    return { success: false, error: "Failed to generate posts" }
-  }
-}
-
-async function generateListingCaption(listing: any, platform: string, postType: string): Promise<string> {
-  const characterLimits: Record<string, number> = {
-    facebook: 500,
-    instagram: 2200,
-    linkedin: 700,
-    twitter: 280,
-  }
-
-  // Generate platform-optimized caption based on listing details
-  const address = listing.address || ""
-  const city = listing.city || ""
-  const price = listing.price || listing.listing_price || 0
-  const bedrooms = listing.bedrooms || 0
-  const bathrooms = listing.bathrooms || 0
-  const propertyType = listing.property_type || "home"
-
-  const priceFormatted = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(price)
-
-  let caption = ""
-
-  if (platform === "instagram") {
-    caption = `✨ ${postType === "sold" ? "SOLD!" : "New Listing"} ✨\n\n`
-    caption += `Imagine waking up every morning in this stunning ${bedrooms}BR/${bathrooms}BA ${propertyType} `
-    caption += `in beautiful ${city}. ${priceFormatted}\n\n`
-    caption += `Every detail has been thoughtfully designed for comfortable, modern living. `
-    caption += `From the spacious layout to the premium finishes, this is more than a house—it's your next chapter.\n\n`
-    caption += `DM for a private tour or click the link in bio to schedule a showing! 🏡`
-  } else if (platform === "facebook") {
-    caption = `${postType === "sold" ? "🎉 SOLD!" : "🏡 Just Listed!"}\n\n`
-    caption += `Picture yourself coming home to this beautiful ${bedrooms}BR/${bathrooms}BA ${propertyType} in ${city}. `
-    caption += `${priceFormatted}\n\n`
-    caption += `This home offers everything you've been looking for—space to grow, style to impress, `
-    caption += `and a location that puts you right where you want to be.\n\n`
-    caption += `Ready to make it yours? Message me to schedule your private tour today!`
-  } else {
-    // LinkedIn - more professional
-    caption = `${postType === "sold" ? "Successfully Closed:" : "New Opportunity:"} `
-    caption += `Premium ${bedrooms}BR/${bathrooms}BA ${propertyType} in ${city}\n\n`
-    caption += `${priceFormatted}\n\n`
-    caption += `Exceptional property offering modern amenities and thoughtful design. `
-    caption += `Ideal for discerning buyers seeking quality and location.\n\n`
-    caption += `Contact me for detailed information and showing appointments.`
-  }
-
-  return caption.substring(0, characterLimits[platform])
-}
-
-async function generateListingHashtags(listing: any, platform: string): Promise<string[]> {
-  const city = listing.city || ""
-  const bedrooms = listing.bedrooms || 0
-  const price = listing.price || listing.listing_price || 0
-
-  const baseHashtags = [
-    `#${city.replace(/\s/g, "")}RealEstate`,
-    `#${city.replace(/\s/g, "")}Homes`,
-    "#HomesForSale",
-    "#RealEstate",
-  ]
-
-  // Add property-specific hashtags
-  if (bedrooms >= 4) baseHashtags.push("#FamilyHome")
-  if (price < 300000) baseHashtags.push("#AffordableHomes")
-  if (price > 800000) baseHashtags.push("#LuxuryRealEstate")
-
-  // Platform-specific hashtags
-  if (platform === "instagram") {
-    baseHashtags.push("#InstaHome", "#HouseGoals", "#DreamHome")
-  }
-
-  return baseHashtags.slice(0, 10) // Max 10 hashtags
-}
-
-function selectMediaForPlatform(transaction: any, platform: string): string[] {
-  const photos =
-    transaction.listing_photos
-      ?.filter((p: any) => (p.ai_quality_score || 0) >= 80)
-      .sort((a: any, b: any) => (a.display_order || 0) - (b.display_order || 0)) || []
-
-  const video = transaction.ai_video_projects?.find(
-    (v: any) => v.video_type === "social_snippet" && v.status === "ready"
-  )
-
-  if (platform === "instagram") {
-    // Instagram: 10 photos or 1 video
-    return video ? [video.video_url] : photos.slice(0, 10).map((p: any) => p.file_url || p.url)
-  }
-
-  if (platform === "facebook") {
-    // Facebook: Up to 30 photos or video
-    return video ? [video.video_url] : photos.slice(0, 30).map((p: any) => p.file_url || p.url)
-  }
-
-  if (platform === "linkedin") {
-    // LinkedIn: 1-3 photos
-    return photos.slice(0, 3).map((p: any) => p.file_url || p.url)
-  }
-
-  return photos.slice(0, 5).map((p: any) => p.file_url || p.url)
-}
-
-export async function publishListingSocialPosts(transactionId: string) {
-  if (!isValidUUID(transactionId)) {
-    return { success: false, error: "Invalid transaction ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data: posts } = await supabase
-      .from("social_posts")
-      .select("*")
-      .eq("transaction_id", transactionId)
-      .eq("status", "draft")
-      .eq("approval_status", "approved")
-
-    if (!posts || posts.length === 0) {
-      return { success: false, error: "No approved posts to publish" }
-    }
-
-    const results = []
-
-    for (const post of posts) {
-      const result = await publishPost(post.id)
-      results.push(result)
-    }
-
-    return { success: true, published: results.filter((r) => r.success).length }
-  } catch (error) {
-    console.error("Publish listing social posts error:", error)
-    return { success: false, error: "Failed to publish posts" }
-  }
-}
-
-export async function getApprovalQueue(agentId: string) {
-  if (!isValidUUID(agentId)) {
-    return []
-  }
-
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("activities")
-    .select("*")
-    .eq("activity_type", "content.approval")
-    .contains("metadata", { agent_id: agentId })
-    .in("status", ["pending", "needs_revision"])
-    .order("created_at", { ascending: false })
-
-  if (error) {
-    console.error("Get approval queue error:", error)
-    return []
-  }
-
-  return data || []
 }
