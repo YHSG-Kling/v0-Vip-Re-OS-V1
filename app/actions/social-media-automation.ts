@@ -136,7 +136,7 @@ export async function schedulePost(params: {
     }
 
     const { data: post, error } = await supabase
-      .from("social_media_posts")
+      .from("social_posts")
       .insert({
         agent_id: params.agentId,
         content_id: params.contentId,
@@ -153,15 +153,8 @@ export async function schedulePost(params: {
 
     if (error) throw error
 
-    // Add to posting calendar
-    await supabase.from("posting_schedule_calendar").insert({
-      agent_id: params.agentId,
-      post_id: post.id,
-      platform: params.platform,
-      scheduled_date: params.scheduledFor.split("T")[0],
-      scheduled_time: params.scheduledFor.split("T")[1]?.substring(0, 5),
-      status: "scheduled",
-    })
+    // Note: Scheduling is handled via social_posts.scheduled_for column
+    // No separate posting_schedule_calendar table needed
 
     revalidatePath("/dashboard/social-media")
     return { success: true, data: post }
@@ -179,7 +172,7 @@ export async function publishPost(postId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: post } = await supabase.from("social_media_posts").select("*").eq("id", postId).single()
+    const { data: post } = await supabase.from("social_posts").select("*").eq("id", postId).single()
 
     if (!post) {
       return { success: false, error: "Post not found" }
@@ -203,7 +196,7 @@ export async function publishPost(postId: string) {
 
     // Update post status
     await supabase
-      .from("social_media_posts")
+      .from("social_posts")
       .update({
         status: "published",
         published_at: new Date().toISOString(),
@@ -227,7 +220,7 @@ export async function getScheduledPosts(agentId: string, dateRange?: { start: st
   const supabase = await createClient()
 
   let query = supabase
-    .from("social_media_posts")
+    .from("social_posts")
     .select("*")
     .eq("agent_id", agentId)
     .in("status", ["scheduled", "draft"])
@@ -388,7 +381,7 @@ export async function trackPostPerformance(postId: string, metrics: any) {
   const supabase = await createClient()
 
   try {
-    await supabase.from("social_media_performance").upsert({
+    await supabase.from("social_engagement_tracking").upsert({
       post_id: postId,
       impressions: metrics.impressions || 0,
       reach: metrics.reach || 0,
@@ -429,8 +422,8 @@ export async function getSocialMediaAnalytics(agentId: string, dateRange?: { sta
 
   try {
     let query = supabase
-      .from("social_media_posts")
-      .select("*, performance:social_media_performance(*)")
+      .from("social_posts")
+      .select("*, performance:social_engagement_tracking(*)")
       .eq("agent_id", agentId)
       .eq("status", "published")
 
@@ -489,7 +482,7 @@ export async function submitForApproval(postId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: post } = await supabase.from("social_media_posts").select("*").eq("id", postId).single()
+    const { data: post } = await supabase.from("social_posts").select("*").eq("id", postId).single()
 
     if (!post) {
       return { success: false, error: "Post not found" }
@@ -516,7 +509,7 @@ export async function submitForApproval(postId: string) {
     })
 
     await supabase
-      .from("social_media_posts")
+      .from("social_posts")
       .update({
         approval_status: complianceResult.passed ? "approved" : "pending_revision",
       })
@@ -590,7 +583,7 @@ export async function generateListingSocialPosts(params: {
       const media = selectMediaForPlatform(transaction, platform)
 
       const { data: post, error } = await supabase
-        .from("social_media_posts")
+        .from("social_posts")
         .insert({
           agent_id: transaction.agent_id,
           transaction_id: params.transactionId,
@@ -734,7 +727,7 @@ export async function publishListingSocialPosts(transactionId: string) {
 
   try {
     const { data: posts } = await supabase
-      .from("social_media_posts")
+      .from("social_posts")
       .select("*")
       .eq("transaction_id", transactionId)
       .eq("status", "draft")
