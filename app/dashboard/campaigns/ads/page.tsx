@@ -1,5 +1,5 @@
 // app/dashboard/campaigns/ads/page.tsx
-// Layer 9.3 — Ads Management Page with Content Performance Predictor Widget
+// Layer 9.5 — Ads Management Page with Campaigns, Audiences, and Performance Tabs
 
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
@@ -7,7 +7,7 @@ import { AdsDashboardClient } from "./ads-dashboard-client"
 
 export const metadata = {
   title: "Ad Campaigns | Dashboard",
-  description: "Manage your ad campaigns and creative variations",
+  description: "Manage your ad campaigns, audiences, and creative variations",
 }
 
 export default async function AdsCampaignsPage() {
@@ -33,7 +33,7 @@ export default async function AdsCampaignsPage() {
     redirect("/onboarding")
   }
 
-  // Get ad campaigns
+  // Get ad campaigns with creatives
   const { data: campaigns } = await supabase
     .from("ad_campaigns")
     .select(`
@@ -45,7 +45,7 @@ export default async function AdsCampaignsPage() {
     .order("created_at", { ascending: false })
     .limit(50)
 
-  // Get ad performance data
+  // Get campaign IDs for performance query
   const campaignIds = campaigns?.map((c) => c.id) || []
   let performanceData: any[] = []
 
@@ -59,13 +59,35 @@ export default async function AdsCampaignsPage() {
     performanceData = performance || []
   }
 
+  // Get Facebook custom audiences with latest sync runs
+  const { data: audiences } = await supabase
+    .from("facebook_custom_audiences")
+    .select(`
+      *,
+      audience_sync_runs (
+        id,
+        run_status,
+        records_synced,
+        records_rejected,
+        completed_at
+      )
+    `)
+    .eq("brokerage_id", profile.brokerage_id)
+    .order("created_at", { ascending: false })
+    .limit(50)
+
+  // Get agent name for creative generation context
+  const agentName = `${profile.first_name || ""} ${profile.last_name || ""}`.trim()
+
   return (
     <AdsDashboardClient
       userId={user.id}
       brokerageId={profile.brokerage_id}
       userRole={profile.role || "agent"}
+      agentName={agentName}
       campaigns={campaigns || []}
       performanceData={performanceData}
+      audiences={audiences || []}
     />
   )
 }
