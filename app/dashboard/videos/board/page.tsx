@@ -1,11 +1,13 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import {
   Video,
   Plus,
@@ -20,62 +22,146 @@ import {
   Eye,
   Share2,
   Trash2,
+  Send,
+  Shield,
+  ExternalLink,
+  Download,
 } from "lucide-react"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
 
+// ─── TYPES ────────────────────────────────────────────────────────────────────
+
 interface VideoProject {
   id: string
-  project_name: string
+  title: string
   video_type: string
   status: string
   heygen_status?: string
-  client_name?: string
-  property_address?: string
+  script_content?: string
   created_at: string
   video_url?: string
-  thumbnail_url?: string
+  duration_seconds?: number
+  error_message?: string
   retry_count?: number
+  provider_metadata?: {
+    quality_preset?: string
+    output_orientation?: string
+    thumbnail_url?: string
+  }
+  video_metadata?: {
+    thumbnail_url?: string
+    published_at?: string
+    video_asset_id?: string
+  }
+  brokerage_id: string
+  agent_id: string
+}
+
+interface StreamingStatus {
+  video_project_id: string
+  stream_status: string
+  preview_url?: string
+  stream_url?: string
   error_message?: string
 }
 
+// ─── COLUMN CONFIGURATION ─────────────────────────────────────────────────────
+
 const COLUMNS = [
-  { id: "script_generating", title: "Script Generating", icon: FileText, color: "bg-blue-500" },
-  { id: "script_ready", title: "Script Ready", icon: CheckCircle, color: "bg-purple-500" },
-  { id: "video_generating", title: "Video Generating", icon: Loader2, color: "bg-amber-500" },
-  { id: "video_ready", title: "Video Ready", icon: Video, color: "bg-green-500" },
+  { id: "pending", title: "Queued", icon: Clock, color: "bg-gray-500" },
+  { id: "generating", title: "Generating", icon: Loader2, color: "bg-amber-500" },
+  { id: "preview_ready", title: "Preview Ready", icon: Eye, color: "bg-blue-500" },
+  { id: "published", title: "Published", icon: CheckCircle, color: "bg-green-500" },
   { id: "failed", title: "Failed", icon: AlertCircle, color: "bg-red-500" },
 ]
 
 function mapStatusToColumn(status: string, heygenStatus?: string): string {
-  if (status === "failed") return "failed"
-  if (status === "video_ready" || heygenStatus === "completed") return "video_ready"
-  if (status === "generating" || heygenStatus === "generating") return "video_generating"
-  if (status === "script_ready" || status === "script_approved") return "script_ready"
-  return "script_generating"
+  if (status === "failed" || heygenStatus === "failed") return "failed"
+  if (status === "published") return "published"
+  if (status === "preview_ready" || heygenStatus === "completed") return "preview_ready"
+  if (status === "generating" || heygenStatus === "generating" || heygenStatus === "processing") return "generating"
+  return "pending"
 }
+
+// ─── COMPONENT ────────────────────────────────────────────────────────────────
 
 export default function VideoKanbanBoard() {
   const router = useRouter()
-  const { user } = useAuth()
+  const { user, brokerage } = useAuth()
+  const supabase = createClient()
+
   const [videos, setVideos] = useState<VideoProject[]>([])
+  const [streamingStatuses, setStreamingStatuses] = useState<Record<string, StreamingStatus>>({})
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  const [pollingVideoIds, setPollingVideoIds] = useState<Set<string>>(new Set())
+
+  // Preview/Publish Dialog
+  const [previewDialog, setPreviewDialog] = useState<{ open: boolean; video: VideoProject | null }>({
+    open: false,
+    video: null,
+  })
+  const [publishing, setPublishing] = useState(false)
+
+  // ─── LOAD VIDEOS ────────────────────────────────────────────────────────────
+
+  const loadVideos = useCallback(async () => {
+    if (!brokerage?.id) return
+
+    try {
+      const { data, error } = await supabase
+        .from("ai_video_projects")
+        .select("*")
+        .eq("brokerage_id", brokerage.id)
+        .order("created_at", { ascending: false })
+        .limit(100)
+
+      if (data && !error) {
+        setVideos(data)
+
+        // Load streaming statuses for all videos
+        const videoIds = data.map(v => v.id)
+        const { data: statusData } = await supabase
+          .from("video_streaming_status")
+          .select("*")
+          .in("video_project_id", videoIds)
+
+        if (statusData) {
+          const statusMap: Record<string, StreamingStatus> = {}
+          statusData.forEach(s => {
+            statusMap[s.video_project_id] = s
+          })
+          setStreamingStatuses(statusMap)
+        }
+
+        // Identify videos that need polling
+        const needsPolling = data
+          .filter(v => ["generating", "pending"].includes(v.status) || ["generating", "processing", "pending"].includes(v.heygen_status || ""))
+          .map(v => v.id)
+        setPollingVideoIds(new Set(needsPolling))
+      }
+    } catch (error) {
+      console.error("Error loading videos:", error)
+    } finally {
+      setLoading(false)
+    }
+  }, [brokerage?.id, supabase])
 
   useEffect(() => {
     loadVideos()
-    
+
     // Set up real-time subscription
-    const supabase = createClient()
     const channel = supabase
-      .channel("video-updates")
+      .channel("video-board-updates")
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "ai_video_projects" },
@@ -83,9 +169,6 @@ export default function VideoKanbanBoard() {
           setVideos((prev) =>
             prev.map((v) => (v.id === payload.new.id ? { ...v, ...payload.new } : v))
           )
-          if (payload.new.status === "video_ready") {
-            // Could show toast notification here
-          }
         }
       )
       .on(
@@ -95,79 +178,52 @@ export default function VideoKanbanBoard() {
           setVideos((prev) => [payload.new as VideoProject, ...prev])
         }
       )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "video_streaming_status" },
+        (payload) => {
+          const newStatus = payload.new as StreamingStatus
+          setStreamingStatuses((prev) => ({
+            ...prev,
+            [newStatus.video_project_id]: newStatus,
+          }))
+        }
+      )
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
     }
-  }, [user?.id])
+  }, [loadVideos, supabase])
 
-  async function loadVideos() {
-    setLoading(true)
-    try {
-      const supabase = createClient()
-      const { data, error } = await supabase
-        .from("ai_video_projects")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(100)
+  // ─── STATUS POLLING ─────────────────────────────────────────────────────────
 
-      if (data && !error) {
-        setVideos(data)
-      } else {
-        // Demo data
-        setVideos([
-          {
-            id: "demo-1",
-            project_name: "Listing Tour - 123 Main St",
-            video_type: "listing_tour",
-            status: "video_ready",
-            client_name: "John Smith",
-            property_address: "123 Main Street",
-            created_at: new Date().toISOString(),
-            video_url: "#",
-          },
-          {
-            id: "demo-2",
-            project_name: "Market Update - January 2026",
-            video_type: "market_update",
-            status: "generating",
-            heygen_status: "generating",
-            created_at: new Date().toISOString(),
-          },
-          {
-            id: "demo-3",
-            project_name: "Personalized Video - Sarah Johnson",
-            video_type: "personalized",
-            status: "script_ready",
-            client_name: "Sarah Johnson",
-            created_at: new Date().toISOString(),
-          },
-          {
-            id: "demo-4",
-            project_name: "Agent Introduction",
-            video_type: "agent_intro",
-            status: "script_generating",
-            created_at: new Date().toISOString(),
-          },
-          {
-            id: "demo-5",
-            project_name: "Buyer Video - Michael Brown",
-            video_type: "buyer_followup",
-            status: "failed",
-            error_message: "HeyGen API timeout",
-            retry_count: 2,
-            client_name: "Michael Brown",
-            created_at: new Date().toISOString(),
-          },
-        ])
+  useEffect(() => {
+    if (pollingVideoIds.size === 0) return
+
+    const pollInterval = setInterval(async () => {
+      for (const videoId of pollingVideoIds) {
+        try {
+          const response = await fetch(`/api/heygen/check-status/${videoId}`)
+          const data = await response.json()
+
+          if (data.status === "completed" || data.status === "failed") {
+            setPollingVideoIds(prev => {
+              const next = new Set(prev)
+              next.delete(videoId)
+              return next
+            })
+          }
+        } catch (error) {
+          console.error(`Error polling video ${videoId}:`, error)
+        }
       }
-    } catch (error) {
-      console.error("Error loading videos:", error)
-    } finally {
-      setLoading(false)
-    }
-  }
+    }, 10000) // Poll every 10 seconds
+
+    return () => clearInterval(pollInterval)
+  }, [pollingVideoIds])
+
+  // ─── HANDLERS ───────────────────────────────────────────────────────────────
 
   async function handleRefresh() {
     setRefreshing(true)
@@ -176,13 +232,39 @@ export default function VideoKanbanBoard() {
   }
 
   async function handleRetry(videoId: string) {
+    const video = videos.find(v => v.id === videoId)
+    if (!video) return
+
     try {
-      const response = await fetch(`/api/heygen/generate-video`, {
+      // Reset status
+      await supabase
+        .from("ai_video_projects")
+        .update({
+          status: "pending",
+          heygen_status: "pending",
+          error_message: null,
+          retry_count: (video.retry_count || 0) + 1,
+        })
+        .eq("id", videoId)
+
+      // Re-submit to HeyGen
+      const response = await fetch("/api/heygen/generate-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoProjectId: videoId, retry: true }),
+        body: JSON.stringify({
+          script: video.script_content,
+          avatar_id: video.provider_metadata?.quality_preset ? "Angela-inblackskirt-20220820" : "Angela-inblackskirt-20220820",
+          voice_id: "en-US-JennyNeural",
+          video_project_id: videoId,
+          brokerage_id: video.brokerage_id,
+          user_id: user?.id,
+          quality_preset: video.provider_metadata?.quality_preset || "1080p",
+          output_orientation: video.provider_metadata?.output_orientation || "landscape",
+        }),
       })
+
       if (response.ok) {
+        setPollingVideoIds(prev => new Set(prev).add(videoId))
         await loadVideos()
       }
     } catch (error) {
@@ -190,9 +272,58 @@ export default function VideoKanbanBoard() {
     }
   }
 
+  async function handlePublish(video: VideoProject) {
+    setPublishing(true)
+
+    try {
+      const response = await fetch(`/api/heygen/check-status/${video.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: user?.id,
+          publish_metadata: {
+            published_by: user?.id,
+            published_at: new Date().toISOString(),
+          },
+        }),
+      })
+
+      const result = await response.json()
+
+      if (!response.ok) {
+        throw new Error(result.error || "Failed to publish video")
+      }
+
+      setPreviewDialog({ open: false, video: null })
+      await loadVideos()
+    } catch (error: any) {
+      console.error("Error publishing video:", error)
+      alert(error.message || "Failed to publish video")
+    } finally {
+      setPublishing(false)
+    }
+  }
+
+  async function handleDelete(videoId: string) {
+    if (!confirm("Are you sure you want to delete this video?")) return
+
+    try {
+      await supabase
+        .from("ai_video_projects")
+        .delete()
+        .eq("id", videoId)
+
+      setVideos(prev => prev.filter(v => v.id !== videoId))
+    } catch (error) {
+      console.error("Error deleting video:", error)
+    }
+  }
+
   const getColumnVideos = (columnId: string) => {
     return videos.filter((v) => mapStatusToColumn(v.status, v.heygen_status) === columnId)
   }
+
+  // ─── RENDER ─────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -208,7 +339,7 @@ export default function VideoKanbanBoard() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Video Pipeline</h1>
-          <p className="text-muted-foreground">Track your video generation progress</p>
+          <p className="text-muted-foreground">Track your video generation progress with kernel governance</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={handleRefresh} disabled={refreshing}>
@@ -222,6 +353,17 @@ export default function VideoKanbanBoard() {
         </div>
       </div>
 
+      {/* Polling indicator */}
+      {pollingVideoIds.size > 0 && (
+        <Alert>
+          <Loader2 className="h-4 w-4 animate-spin" />
+          <AlertTitle>Processing Videos</AlertTitle>
+          <AlertDescription>
+            {pollingVideoIds.size} video(s) are currently being generated. This page will update automatically.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Kanban Board */}
       <div className="flex gap-4 overflow-x-auto pb-4">
         {COLUMNS.map((column) => {
@@ -229,7 +371,7 @@ export default function VideoKanbanBoard() {
           const Icon = column.icon
 
           return (
-            <div key={column.id} className="min-w-[300px] flex-shrink-0">
+            <div key={column.id} className="min-w-[320px] flex-shrink-0">
               <div className="mb-3 flex items-center gap-2">
                 <div className={cn("h-2 w-2 rounded-full", column.color)} />
                 <h3 className="font-medium">{column.title}</h3>
@@ -238,98 +380,152 @@ export default function VideoKanbanBoard() {
                 </Badge>
               </div>
 
-              <div className="space-y-3 rounded-lg bg-muted/30 p-3 min-h-[400px]">
-                {columnVideos.map((video) => (
-                  <Card key={video.id} className="cursor-pointer hover:shadow-md transition-shadow">
-                    <CardContent className="p-4">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1 min-w-0">
-                          <h4 className="font-medium truncate">{video.project_name}</h4>
-                          <p className="text-sm text-muted-foreground truncate">
-                            {video.client_name || video.property_address || video.video_type}
-                          </p>
-                        </div>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            {video.video_url && (
-                              <>
-                                <DropdownMenuItem>
-                                  <Play className="mr-2 h-4 w-4" />
-                                  Preview
+              <div className="space-y-3 rounded-lg bg-muted/30 p-3 min-h-[500px]">
+                {columnVideos.map((video) => {
+                  const streamStatus = streamingStatuses[video.id]
+                  const thumbnailUrl = video.video_metadata?.thumbnail_url || video.provider_metadata?.thumbnail_url
+
+                  return (
+                    <Card key={video.id} className="cursor-pointer hover:shadow-md transition-shadow">
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-medium truncate">{video.title || `Video ${video.id.slice(0, 8)}`}</h4>
+                            <p className="text-sm text-muted-foreground truncate">
+                              {video.video_type?.replace(/_/g, " ")}
+                            </p>
+                          </div>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-8 w-8">
+                                <MoreVertical className="h-4 w-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              {(video.status === "preview_ready" || video.heygen_status === "completed") && (
+                                <>
+                                  <DropdownMenuItem onClick={() => setPreviewDialog({ open: true, video })}>
+                                    <Eye className="mr-2 h-4 w-4" />
+                                    Preview & Publish
+                                  </DropdownMenuItem>
+                                  {video.video_url && (
+                                    <DropdownMenuItem asChild>
+                                      <a href={video.video_url} target="_blank" rel="noopener noreferrer">
+                                        <ExternalLink className="mr-2 h-4 w-4" />
+                                        Open Video
+                                      </a>
+                                    </DropdownMenuItem>
+                                  )}
+                                  <DropdownMenuSeparator />
+                                </>
+                              )}
+                              {video.status === "published" && video.video_url && (
+                                <>
+                                  <DropdownMenuItem asChild>
+                                    <a href={video.video_url} target="_blank" rel="noopener noreferrer">
+                                      <Play className="mr-2 h-4 w-4" />
+                                      Play
+                                    </a>
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem asChild>
+                                    <a href={video.video_url} download>
+                                      <Download className="mr-2 h-4 w-4" />
+                                      Download
+                                    </a>
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem>
+                                    <Share2 className="mr-2 h-4 w-4" />
+                                    Share
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                </>
+                              )}
+                              {video.status === "failed" && (
+                                <DropdownMenuItem onClick={() => handleRetry(video.id)}>
+                                  <RefreshCw className="mr-2 h-4 w-4" />
+                                  Retry Generation
                                 </DropdownMenuItem>
-                                <DropdownMenuItem>
-                                  <Share2 className="mr-2 h-4 w-4" />
-                                  Share
-                                </DropdownMenuItem>
-                              </>
-                            )}
-                            <DropdownMenuItem>
-                              <Eye className="mr-2 h-4 w-4" />
-                              View Details
-                            </DropdownMenuItem>
-                            {video.status === "failed" && (
-                              <DropdownMenuItem onClick={() => handleRetry(video.id)}>
-                                <RefreshCw className="mr-2 h-4 w-4" />
-                                Retry
+                              )}
+                              <DropdownMenuItem
+                                onClick={() => handleDelete(video.id)}
+                                className="text-destructive"
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                Delete
                               </DropdownMenuItem>
-                            )}
-                            <DropdownMenuItem className="text-destructive">
-                              <Trash2 className="mr-2 h-4 w-4" />
-                              Delete
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-
-                      {/* Status-specific content */}
-                      {column.id === "video_generating" && (
-                        <div className="mt-3">
-                          <Progress value={65} className="h-1" />
-                          <p className="text-xs text-muted-foreground mt-1">Processing...</p>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
-                      )}
 
-                      {column.id === "failed" && video.error_message && (
-                        <div className="mt-3 p-2 bg-destructive/10 rounded text-xs text-destructive">
-                          {video.error_message}
-                          {video.retry_count && video.retry_count > 0 && (
-                            <span className="block mt-1">Retries: {video.retry_count}/3</span>
+                        {/* Status-specific content */}
+                        {column.id === "generating" && (
+                          <div className="mt-3">
+                            <Progress value={pollingVideoIds.has(video.id) ? 50 : 25} className="h-1" />
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {streamStatus?.stream_status === "processing" ? "Processing video..." : "Queued for generation..."}
+                            </p>
+                          </div>
+                        )}
+
+                        {column.id === "preview_ready" && (
+                          <div className="mt-3">
+                            <Button
+                              size="sm"
+                              className="w-full"
+                              onClick={() => setPreviewDialog({ open: true, video })}
+                            >
+                              <Eye className="mr-2 h-4 w-4" />
+                              Preview & Approve
+                            </Button>
+                          </div>
+                        )}
+
+                        {column.id === "failed" && video.error_message && (
+                          <div className="mt-3 p-2 bg-destructive/10 rounded text-xs text-destructive">
+                            {video.error_message}
+                            {video.retry_count && video.retry_count > 0 && (
+                              <span className="block mt-1">Retries: {video.retry_count}/3</span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Thumbnail for completed videos */}
+                        {(column.id === "preview_ready" || column.id === "published") && thumbnailUrl && (
+                          <div className="mt-3 relative aspect-video rounded overflow-hidden bg-muted">
+                            <img
+                              src={thumbnailUrl}
+                              alt={video.title || "Video thumbnail"}
+                              className="object-cover w-full h-full"
+                            />
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 hover:opacity-100 transition-opacity">
+                              <Play className="h-8 w-8 text-white" />
+                            </div>
+                            {video.duration_seconds && (
+                              <Badge className="absolute bottom-2 right-2 text-xs">
+                                {Math.floor(video.duration_seconds / 60)}:
+                                {(video.duration_seconds % 60).toString().padStart(2, "0")}
+                              </Badge>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                          <Clock className="h-3 w-3" />
+                          {new Date(video.created_at).toLocaleDateString()}
+                          {video.provider_metadata?.quality_preset && (
+                            <Badge variant="outline" className="ml-auto text-xs">
+                              {video.provider_metadata.quality_preset}
+                            </Badge>
                           )}
                         </div>
-                      )}
-
-                      {video.thumbnail_url && column.id === "video_ready" && (
-                        <div className="mt-3 relative aspect-video rounded overflow-hidden bg-muted">
-                          <img
-                            src={video.thumbnail_url || "/placeholder.svg"}
-                            alt={video.project_name}
-                            className="object-cover w-full h-full"
-                          />
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/30 opacity-0 hover:opacity-100 transition-opacity">
-                            <Play className="h-8 w-8 text-white" />
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-                        <Clock className="h-3 w-3" />
-                        {new Date(video.created_at).toLocaleDateString()}
-                        <Badge variant="outline" className="ml-auto text-xs">
-                          {video.video_type.replace(/_/g, " ")}
-                        </Badge>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
+                      </CardContent>
+                    </Card>
+                  )
+                })}
 
                 {columnVideos.length === 0 && (
                   <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-                    <Icon className="h-8 w-8 mb-2 opacity-50" />
+                    <Icon className={cn("h-8 w-8 mb-2 opacity-50", column.id === "generating" && "animate-spin")} />
                     <p className="text-sm">No videos</p>
                   </div>
                 )}
@@ -338,6 +534,92 @@ export default function VideoKanbanBoard() {
           )
         })}
       </div>
+
+      {/* Preview & Publish Dialog */}
+      <Dialog open={previewDialog.open} onOpenChange={(open) => setPreviewDialog({ open, video: previewDialog.video })}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Preview & Publish Video</DialogTitle>
+            <DialogDescription>
+              Review your video before publishing. Publishing will save it to your video assets.
+            </DialogDescription>
+          </DialogHeader>
+
+          {previewDialog.video && (
+            <div className="space-y-4">
+              {/* Video Preview */}
+              {previewDialog.video.video_url ? (
+                <div className="aspect-video bg-black rounded-lg overflow-hidden">
+                  <video
+                    src={previewDialog.video.video_url}
+                    controls
+                    className="w-full h-full"
+                  />
+                </div>
+              ) : (
+                <div className="aspect-video bg-muted rounded-lg flex items-center justify-center">
+                  <p className="text-muted-foreground">Video preview not available</p>
+                </div>
+              )}
+
+              {/* Video Details */}
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <p className="font-medium">Title</p>
+                  <p className="text-muted-foreground">{previewDialog.video.title}</p>
+                </div>
+                <div>
+                  <p className="font-medium">Type</p>
+                  <p className="text-muted-foreground">{previewDialog.video.video_type?.replace(/_/g, " ")}</p>
+                </div>
+                <div>
+                  <p className="font-medium">Duration</p>
+                  <p className="text-muted-foreground">
+                    {previewDialog.video.duration_seconds
+                      ? `${Math.floor(previewDialog.video.duration_seconds / 60)}:${(previewDialog.video.duration_seconds % 60).toString().padStart(2, "0")}`
+                      : "Unknown"}
+                  </p>
+                </div>
+                <div>
+                  <p className="font-medium">Quality</p>
+                  <p className="text-muted-foreground">{previewDialog.video.provider_metadata?.quality_preset || "1080p"}</p>
+                </div>
+              </div>
+
+              {/* Kernel Governance Notice */}
+              <Alert>
+                <Shield className="h-4 w-4" />
+                <AlertTitle>Kernel Governance</AlertTitle>
+                <AlertDescription>
+                  By publishing this video, you confirm it meets compliance requirements and branding guidelines.
+                </AlertDescription>
+              </Alert>
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPreviewDialog({ open: false, video: null })}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => previewDialog.video && handlePublish(previewDialog.video)}
+              disabled={publishing}
+            >
+              {publishing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Publishing...
+                </>
+              ) : (
+                <>
+                  <Send className="mr-2 h-4 w-4" />
+                  Approve & Publish
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

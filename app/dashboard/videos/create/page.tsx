@@ -12,6 +12,7 @@ import { Progress } from "@/components/ui/progress"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Video,
   Home,
@@ -32,12 +33,17 @@ import {
   CheckCircle2,
   Clock,
   Shield,
+  Mic,
+  Palette,
+  Monitor,
+  Smartphone,
+  Square,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
 
-// ─── SCRIPT TYPES ────────────────────────────────────────────────────────────
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
 const SCRIPT_TYPES = [
   {
@@ -77,25 +83,30 @@ const SCRIPT_TYPES = [
   },
 ]
 
-const BRAND_VOICE_TONES = [
-  { id: "professional", label: "Professional", description: "Authoritative and polished" },
-  { id: "friendly", label: "Friendly", description: "Warm and approachable" },
-  { id: "energetic", label: "Energetic", description: "Dynamic and enthusiastic" },
-  { id: "educational", label: "Educational", description: "Informative and patient" },
-  { id: "luxury", label: "Luxury", description: "Sophisticated and exclusive" },
+const QUALITY_PRESETS = [
+  { id: "720p", label: "720p HD", description: "Good quality, faster render" },
+  { id: "1080p", label: "1080p Full HD", description: "Recommended for most uses" },
+  { id: "4k", label: "4K Ultra HD", description: "Highest quality, slower render" },
 ]
 
-const DURATION_OPTIONS = [
-  { seconds: 30, label: "30 seconds", words: "~75 words" },
-  { seconds: 60, label: "1 minute", words: "~150 words" },
-  { seconds: 90, label: "90 seconds", words: "~225 words" },
-  { seconds: 120, label: "2 minutes", words: "~300 words" },
-  { seconds: 180, label: "3 minutes", words: "~450 words" },
+const OUTPUT_ORIENTATIONS = [
+  { id: "landscape", label: "Landscape", icon: Monitor, aspect: "16:9", description: "YouTube, Website" },
+  { id: "portrait", label: "Portrait", icon: Smartphone, aspect: "9:16", description: "TikTok, Reels, Stories" },
+  { id: "square", label: "Square", icon: Square, aspect: "1:1", description: "Instagram, Facebook" },
 ]
 
-// ─── COMPONENT ───────────────────────────────────────────────────────────────
+const BACKGROUND_STYLES = [
+  { id: "white", label: "Clean White", color: "#ffffff" },
+  { id: "light_gray", label: "Light Gray", color: "#f5f5f5" },
+  { id: "dark", label: "Dark", color: "#1a1a1a" },
+  { id: "gradient_blue", label: "Blue Gradient", color: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)" },
+  { id: "office", label: "Office Background", color: "office" },
+  { id: "modern", label: "Modern Interior", color: "modern" },
+]
 
-export default function VideoScriptCreatePage() {
+// ─── COMPONENT ────────────────────────────────────────────────────────────────
+
+export default function VideoCreatePage() {
   const router = useRouter()
   const { user, brokerage } = useAuth()
   const supabase = createClient()
@@ -103,70 +114,94 @@ export default function VideoScriptCreatePage() {
   // Wizard state
   const [currentStep, setCurrentStep] = useState(1)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Form state
-  const [scriptType, setScriptType] = useState<string>("")
-  const [selectedTemplate, setSelectedTemplate] = useState<string>("")
-  const [selectedListing, setSelectedListing] = useState<string>("")
-  const [selectedContact, setSelectedContact] = useState<string>("")
-  const [brandVoiceTone, setBrandVoiceTone] = useState<string>("professional")
-  const [durationTarget, setDurationTarget] = useState<number>(90)
-  const [customContext, setCustomContext] = useState<string>("")
-  const [title, setTitle] = useState<string>("")
+  // Step 1: Script Selection
+  const [scriptSource, setScriptSource] = useState<"library" | "custom">("library")
+  const [selectedScript, setSelectedScript] = useState<string>("")
+  const [customScript, setCustomScript] = useState<string>("")
+  const [scriptTitle, setScriptTitle] = useState<string>("")
 
-  // Generated script state
-  const [generatedScript, setGeneratedScript] = useState<string>("")
-  const [complianceIssues, setComplianceIssues] = useState<string[]>([])
-  const [approvalStatus, setApprovalStatus] = useState<string>("draft")
-  const [savedScriptId, setSavedScriptId] = useState<string | null>(null)
+  // Step 2: Avatar & Voice
+  const [selectedAvatar, setSelectedAvatar] = useState<string>("")
+  const [selectedVoice, setSelectedVoice] = useState<string>("")
 
-  // Data
-  const [templates, setTemplates] = useState<any[]>([])
-  const [listings, setListings] = useState<any[]>([])
-  const [contacts, setContacts] = useState<any[]>([])
+  // Step 3: Style & Output
+  const [backgroundStyle, setBackgroundStyle] = useState<string>("white")
+  const [qualityPreset, setQualityPreset] = useState<string>("1080p")
+  const [outputOrientation, setOutputOrientation] = useState<string>("landscape")
+  const [brandingPresetId, setBrandingPresetId] = useState<string>("")
+
+  // Data from DB
+  const [scripts, setScripts] = useState<any[]>([])
+  const [avatars, setAvatars] = useState<any[]>([])
+  const [voiceProfiles, setVoiceProfiles] = useState<any[]>([])
+  const [brandingPresets, setBrandingPresets] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
 
-  // Word count
-  const wordCount = generatedScript.split(/\s+/).filter(Boolean).length
+  // Word count helpers
+  const activeScript = scriptSource === "library" 
+    ? scripts.find(s => s.id === selectedScript)?.script_content || ""
+    : customScript
+  const wordCount = activeScript.split(/\s+/).filter(Boolean).length
   const estimatedDuration = Math.ceil(wordCount / 2.5)
 
-  // ─── Load Data ─────────────────────────────────────────────────────────────
+  // ─── Load Data ──────────────────────────────────────────────────────────────
 
   useEffect(() => {
     async function loadData() {
       if (!brokerage?.id) return
 
       try {
-        // Load templates
-        const { data: templatesData } = await supabase
-          .from("video_templates")
-          .select("*")
+        // Load approved scripts from library
+        const { data: scriptsData } = await supabase
+          .from("video_scripts_library")
+          .select("id, title, script_content, script_type, approval_status, duration_target_seconds")
+          .eq("brokerage_id", brokerage.id)
           .eq("is_active", true)
-          .order("sort_order")
-
-        setTemplates(templatesData || [])
-
-        // Load listings
-        const { data: listingsData } = await supabase
-          .from("listings")
-          .select("id, address, city, state, list_price")
-          .eq("brokerage_id", brokerage.id)
-          .in("status", ["active", "coming_soon", "pending"])
+          .eq("approval_status", "approved")
           .order("created_at", { ascending: false })
           .limit(50)
 
-        setListings(listingsData || [])
+        setScripts(scriptsData || [])
 
-        // Load contacts
-        const { data: contactsData } = await supabase
-          .from("contacts")
-          .select("id, first_name, last_name, contact_type")
-          .eq("brokerage_id", brokerage.id)
-          .order("created_at", { ascending: false })
-          .limit(50)
+        // Load agent voice profiles (maps to agents.id, not users.id)
+        // First get agent record for current user
+        const { data: agentData } = await supabase
+          .from("agents")
+          .select("id")
+          .eq("user_id", user?.id)
+          .maybeSingle()
 
-        setContacts(contactsData || [])
+        if (agentData?.id) {
+          const { data: voiceData } = await supabase
+            .from("agent_voice_profiles")
+            .select("*")
+            .eq("agent_id", agentData.id)
+            .eq("training_status", "completed")
+            .order("is_default", { ascending: false })
+
+          setVoiceProfiles(voiceData || [])
+        }
+
+        // Load branding presets
+        const { data: brandingData } = await supabase
+          .from("video_branding_presets")
+          .select("*")
+          .or(`agent_id.eq.${user?.id},is_default.eq.true`)
+          .order("is_default", { ascending: false })
+
+        setBrandingPresets(brandingData || [])
+
+        // Default avatars (HeyGen standard avatars) - in production, fetch from HeyGen API
+        setAvatars([
+          { id: "Angela-inblackskirt-20220820", name: "Angela", style: "Professional" },
+          { id: "Daisy-inskirt-20220818", name: "Daisy", style: "Friendly" },
+          { id: "Josh_lite3_20230714", name: "Josh", style: "Casual" },
+          { id: "Kristin_public_3_20240108", name: "Kristin", style: "Professional" },
+          { id: "Wayne_20240711", name: "Wayne", style: "Executive" },
+        ])
       } catch (err) {
         console.error("Error loading data:", err)
       } finally {
@@ -175,131 +210,117 @@ export default function VideoScriptCreatePage() {
     }
 
     loadData()
-  }, [brokerage?.id, supabase])
+  }, [brokerage?.id, user?.id, supabase])
 
-  // ─── Filter templates by script type ───────────────────────────────────────
+  // ─── Generate Video ─────────────────────────────────────────────────────────
 
-  const filteredTemplates = templates.filter(
-    (t) => !scriptType || t.recommended_for?.includes(scriptType)
-  )
+  async function handleGenerateVideo() {
+    if (!brokerage?.id || !user?.id) return
 
-  // ─── Prefill from template ─────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (selectedTemplate) {
-      const template = templates.find((t) => t.id === selectedTemplate)
-      if (template) {
-        if (template.duration_seconds) {
-          setDurationTarget(template.duration_seconds)
-        }
-        if (template.default_script) {
-          setCustomContext(template.default_script)
-        }
-      }
-    }
-  }, [selectedTemplate, templates])
-
-  // ─── Generate Script ───────────────────────────────────────────────────────
-
-  async function handleGenerateScript() {
-    if (!brokerage?.id || !scriptType) return
-
-    setIsGenerating(true)
+    setIsSubmitting(true)
     setError(null)
 
     try {
-      const response = await fetch("/api/ai/generate-video-script", {
+      const script = scriptSource === "library"
+        ? scripts.find(s => s.id === selectedScript)?.script_content
+        : customScript
+
+      if (!script) {
+        throw new Error("Script content is required")
+      }
+
+      // 1. Create ai_video_projects record
+      const { data: project, error: projectError } = await supabase
+        .from("ai_video_projects")
+        .insert({
+          agent_id: user.id,
+          brokerage_id: brokerage.id,
+          title: scriptTitle || `Video - ${new Date().toLocaleDateString()}`,
+          script_content: script,
+          video_type: scripts.find(s => s.id === selectedScript)?.script_type || "custom",
+          status: "pending",
+          heygen_status: "pending",
+          heygen_avatar_id: selectedAvatar,
+          heygen_voice_id: selectedVoice,
+          video_provider: "heygen",
+          provider_metadata: {
+            quality_preset: qualityPreset,
+            output_orientation: outputOrientation,
+            background_style: backgroundStyle,
+            branding_preset_id: brandingPresetId || null,
+          },
+        })
+        .select()
+        .single()
+
+      if (projectError) throw projectError
+
+      // 2. Submit to HeyGen via API
+      const response = await fetch("/api/heygen/generate-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          script_type: scriptType,
-          listing_id: selectedListing || null,
-          contact_id: selectedContact || null,
-          template_id: selectedTemplate || null,
-          agent_id: user?.id,
+          script,
+          avatar_id: selectedAvatar,
+          voice_id: selectedVoice,
+          video_project_id: project.id,
           brokerage_id: brokerage.id,
-          custom_context: customContext,
-          brand_voice_tone: brandVoiceTone,
-          duration_target_seconds: durationTarget,
-          save_to_library: true,
+          user_id: user.id,
+          script_id: scriptSource === "library" ? selectedScript : null,
+          branding_preset_id: brandingPresetId || null,
+          quality_preset: qualityPreset,
+          output_orientation: outputOrientation,
+          aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect || "16:9",
+          background: {
+            type: backgroundStyle.startsWith("linear") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
+            value: BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.color || "#ffffff",
+          },
         }),
       })
 
-      const data = await response.json()
+      const result = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error || "Failed to generate script")
+        // Update project status on failure
+        await supabase
+          .from("ai_video_projects")
+          .update({ status: "failed", error_message: result.error })
+          .eq("id", project.id)
+        throw new Error(result.error || "Failed to generate video")
       }
 
-      setGeneratedScript(data.script)
-      setComplianceIssues(data.compliance_issues || [])
-      setApprovalStatus(data.approval_status || "draft")
-      setSavedScriptId(data.script_id)
-      setCurrentStep(3)
+      // Redirect to board
+      router.push("/dashboard/videos/board")
     } catch (err: any) {
       setError(err.message)
     } finally {
-      setIsGenerating(false)
+      setIsSubmitting(false)
     }
   }
 
-  // ─── Regenerate Script ─────────────────────────────────────────────────────
-
-  async function handleRegenerateScript() {
-    setGeneratedScript("")
-    setComplianceIssues([])
-    setSavedScriptId(null)
-    await handleGenerateScript()
-  }
-
-  // ─── Save Edited Script ────────────────────────────────────────────────────
-
-  async function handleSaveScript() {
-    if (!savedScriptId) return
-
-    try {
-      const response = await fetch("/api/video-scripts", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: savedScriptId,
-          script_content: generatedScript,
-          title: title || `${scriptType.replace(/_/g, " ")} Script`,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error("Failed to save script")
-      }
-
-      router.push("/dashboard/videos/library")
-    } catch (err: any) {
-      setError(err.message)
-    }
-  }
-
-  // ─── Steps ─────────────────────────────────────────────────────────────────
+  // ─── Steps Configuration ────────────────────────────────────────────────────
 
   const steps = [
-    { number: 1, label: "Script Type" },
-    { number: 2, label: "Configure" },
-    { number: 3, label: "Review & Edit" },
+    { number: 1, label: "Select Script" },
+    { number: 2, label: "Avatar & Voice" },
+    { number: 3, label: "Style & Quality" },
+    { number: 4, label: "Review & Generate" },
   ]
 
   const canProceed = () => {
     switch (currentStep) {
       case 1:
-        return !!scriptType
+        return scriptSource === "library" ? !!selectedScript : customScript.trim().length > 20
       case 2:
-        const typeConfig = SCRIPT_TYPES.find((t) => t.id === scriptType)
-        if (typeConfig?.requiresListing && !selectedListing) return false
-        return true
+        return !!selectedAvatar && !!selectedVoice
+      case 3:
+        return !!backgroundStyle && !!qualityPreset && !!outputOrientation
       default:
         return true
     }
   }
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+  // ─── Render ─────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -318,9 +339,9 @@ export default function VideoScriptCreatePage() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back
           </Button>
-          <h1 className="text-3xl font-bold text-foreground">Create Video Script</h1>
+          <h1 className="text-3xl font-bold text-foreground">Create AI Video</h1>
           <p className="text-muted-foreground mt-1">
-            Generate AI-powered scripts with kernel compliance governance
+            Generate professional avatar videos with kernel governance
           </p>
         </div>
 
@@ -344,7 +365,7 @@ export default function VideoScriptCreatePage() {
                 {index < steps.length - 1 && (
                   <div
                     className={cn(
-                      "w-24 md:w-40 h-1 mx-2",
+                      "w-16 md:w-24 h-1 mx-2",
                       currentStep > step.number ? "bg-green-600" : "bg-muted"
                     )}
                   />
@@ -379,273 +400,447 @@ export default function VideoScriptCreatePage() {
         {/* Step Content */}
         <Card className="mb-6">
           <CardContent className="p-6">
-            {/* Step 1: Script Type Selection */}
+            {/* Step 1: Script Selection */}
             {currentStep === 1 && (
               <div className="space-y-6">
                 <div>
-                  <h2 className="text-xl font-semibold mb-2">Select Script Type</h2>
+                  <h2 className="text-xl font-semibold mb-2">Select Your Script</h2>
                   <p className="text-muted-foreground">
-                    Choose the type of video script you want to generate
+                    Choose an approved script from your library or write a custom one
                   </p>
                 </div>
 
-                <RadioGroup
-                  value={scriptType}
-                  onValueChange={setScriptType}
-                  className="grid grid-cols-1 md:grid-cols-2 gap-4"
-                >
-                  {SCRIPT_TYPES.map((type) => (
-                    <Label
-                      key={type.id}
-                      htmlFor={type.id}
-                      className={cn(
-                        "flex items-start gap-4 p-4 rounded-lg border-2 cursor-pointer transition-colors",
-                        scriptType === type.id
-                          ? "border-primary bg-primary/5"
-                          : "border-border hover:border-primary/50"
-                      )}
-                    >
-                      <RadioGroupItem value={type.id} id={type.id} className="mt-1" />
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <type.icon className="h-5 w-5 text-muted-foreground" />
-                          <span className="font-medium">{type.label}</span>
+                <Tabs value={scriptSource} onValueChange={(v) => setScriptSource(v as "library" | "custom")}>
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="library">
+                      <FileText className="h-4 w-4 mr-2" />
+                      Script Library
+                    </TabsTrigger>
+                    <TabsTrigger value="custom">
+                      <Wand2 className="h-4 w-4 mr-2" />
+                      Custom Script
+                    </TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="library" className="mt-4 space-y-4">
+                    {scripts.length === 0 ? (
+                      <Alert>
+                        <AlertTriangle className="h-4 w-4" />
+                        <AlertTitle>No Approved Scripts</AlertTitle>
+                        <AlertDescription>
+                          You need at least one approved script to generate a video.
+                          <Button variant="link" className="p-0 h-auto ml-1" onClick={() => router.push("/dashboard/videos/library")}>
+                            Go to Script Library
+                          </Button>
+                        </AlertDescription>
+                      </Alert>
+                    ) : (
+                      <Select value={selectedScript} onValueChange={setSelectedScript}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select an approved script" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {scripts.map((script) => (
+                            <SelectItem key={script.id} value={script.id}>
+                              <div className="flex items-center gap-2">
+                                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                                {script.title}
+                                <span className="text-muted-foreground text-xs">
+                                  ({script.duration_target_seconds || "~"}s)
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+
+                    {selectedScript && (
+                      <div className="p-4 bg-muted rounded-lg">
+                        <Label className="text-sm mb-2 block">Script Preview</Label>
+                        <p className="text-sm whitespace-pre-wrap line-clamp-6">
+                          {scripts.find(s => s.id === selectedScript)?.script_content}
+                        </p>
+                        <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
+                          <span>{wordCount} words</span>
+                          <span>~{estimatedDuration}s duration</span>
                         </div>
-                        <p className="text-sm text-muted-foreground mt-1">{type.description}</p>
-                        {type.requiresListing && (
-                          <Badge variant="secondary" className="mt-2 text-xs">
-                            Requires Listing
-                          </Badge>
-                        )}
                       </div>
-                    </Label>
-                  ))}
-                </RadioGroup>
+                    )}
+                  </TabsContent>
+
+                  <TabsContent value="custom" className="mt-4 space-y-4">
+                    <Alert>
+                      <Shield className="h-4 w-4" />
+                      <AlertTitle>Custom Script Notice</AlertTitle>
+                      <AlertDescription>
+                        Custom scripts bypass the approval workflow. Ensure your content meets compliance requirements.
+                      </AlertDescription>
+                    </Alert>
+
+                    <div className="space-y-2">
+                      <Label>Script Title</Label>
+                      <Input
+                        value={scriptTitle}
+                        onChange={(e) => setScriptTitle(e.target.value)}
+                        placeholder="Enter a title for this video"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label>Script Content</Label>
+                        <span className="text-xs text-muted-foreground">
+                          {wordCount} words / ~{estimatedDuration}s
+                        </span>
+                      </div>
+                      <Textarea
+                        value={customScript}
+                        onChange={(e) => setCustomScript(e.target.value)}
+                        placeholder="Write your video script here..."
+                        rows={10}
+                        className="font-mono text-sm"
+                      />
+                    </div>
+                  </TabsContent>
+                </Tabs>
               </div>
             )}
 
-            {/* Step 2: Configuration */}
+            {/* Step 2: Avatar & Voice */}
             {currentStep === 2 && (
               <div className="space-y-6">
                 <div>
-                  <h2 className="text-xl font-semibold mb-2">Configure Your Script</h2>
+                  <h2 className="text-xl font-semibold mb-2">Choose Avatar & Voice</h2>
                   <p className="text-muted-foreground">
-                    Customize the script generation settings
+                    Select who will present your video and which voice to use
                   </p>
                 </div>
 
-                {/* Template Selection */}
-                {filteredTemplates.length > 0 && (
-                  <div className="space-y-2">
-                    <Label>Template (Optional)</Label>
-                    <Select value={selectedTemplate} onValueChange={setSelectedTemplate}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Start from scratch or use a template" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="">No template - custom script</SelectItem>
-                        {filteredTemplates.map((template) => (
-                          <SelectItem key={template.id} value={template.id}>
-                            {template.template_name}
-                            {template.duration_seconds && (
-                              <span className="text-muted-foreground ml-2">
-                                ({template.duration_seconds}s)
-                              </span>
-                            )}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                {/* Avatar Selection */}
+                <div className="space-y-3">
+                  <Label>Avatar</Label>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    {avatars.map((avatar) => (
+                      <div
+                        key={avatar.id}
+                        onClick={() => setSelectedAvatar(avatar.id)}
+                        className={cn(
+                          "p-4 rounded-lg border-2 cursor-pointer transition-all text-center",
+                          selectedAvatar === avatar.id
+                            ? "border-primary bg-primary/5"
+                            : "border-border hover:border-primary/50"
+                        )}
+                      >
+                        <div className="w-16 h-16 rounded-full bg-muted mx-auto mb-2 flex items-center justify-center">
+                          <User className="h-8 w-8 text-muted-foreground" />
+                        </div>
+                        <p className="font-medium">{avatar.name}</p>
+                        <p className="text-xs text-muted-foreground">{avatar.style}</p>
+                      </div>
+                    ))}
                   </div>
-                )}
+                </div>
 
-                {/* Listing Selection */}
-                {SCRIPT_TYPES.find((t) => t.id === scriptType)?.requiresListing && (
-                  <div className="space-y-2">
-                    <Label>
-                      Select Listing <span className="text-red-500">*</span>
-                    </Label>
-                    <Select value={selectedListing} onValueChange={setSelectedListing}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Choose a listing" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {listings.map((listing) => (
-                          <SelectItem key={listing.id} value={listing.id}>
-                            {listing.address}, {listing.city} - $
-                            {listing.list_price?.toLocaleString()}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-
-                {/* Contact Selection (optional) */}
-                <div className="space-y-2">
-                  <Label>Target Contact (Optional)</Label>
-                  <Select value={selectedContact} onValueChange={setSelectedContact}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Personalize for a specific contact" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="">No specific contact</SelectItem>
-                      {contacts.map((contact) => (
-                        <SelectItem key={contact.id} value={contact.id}>
-                          {contact.first_name} {contact.last_name}
-                          {contact.contact_type && (
-                            <span className="text-muted-foreground ml-2">
-                              ({contact.contact_type})
-                            </span>
+                {/* Voice Selection */}
+                <div className="space-y-3">
+                  <Label>Voice</Label>
+                  {voiceProfiles.length > 0 ? (
+                    <div className="space-y-2">
+                      {voiceProfiles.map((voice) => (
+                        <div
+                          key={voice.id}
+                          onClick={() => setSelectedVoice(voice.heygen_voice_clone_id || voice.id)}
+                          className={cn(
+                            "p-4 rounded-lg border-2 cursor-pointer transition-all flex items-center gap-4",
+                            selectedVoice === (voice.heygen_voice_clone_id || voice.id)
+                              ? "border-primary bg-primary/5"
+                              : "border-border hover:border-primary/50"
                           )}
-                        </SelectItem>
+                        >
+                          <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center">
+                            <Mic className="h-6 w-6 text-muted-foreground" />
+                          </div>
+                          <div>
+                            <p className="font-medium">{voice.profile_name}</p>
+                            <div className="flex items-center gap-2">
+                              {voice.is_default && (
+                                <Badge variant="secondary" className="text-xs">Default</Badge>
+                              )}
+                              <span className="text-xs text-muted-foreground">
+                                Quality: {(voice.quality_score * 100).toFixed(0)}%
+                              </span>
+                            </div>
+                          </div>
+                        </div>
                       ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                    </div>
+                  ) : (
+                    <Alert>
+                      <Mic className="h-4 w-4" />
+                      <AlertTitle>No Voice Profiles</AlertTitle>
+                      <AlertDescription>
+                        You have not set up any voice profiles yet. Using default HeyGen voices.
+                      </AlertDescription>
+                    </Alert>
+                  )}
 
-                {/* Brand Voice Tone */}
-                <div className="space-y-2">
-                  <Label>Brand Voice Tone</Label>
-                  <Select value={brandVoiceTone} onValueChange={setBrandVoiceTone}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {BRAND_VOICE_TONES.map((tone) => (
-                        <SelectItem key={tone.id} value={tone.id}>
-                          {tone.label} - {tone.description}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Duration */}
-                <div className="space-y-2">
-                  <Label>Target Duration</Label>
-                  <Select
-                    value={durationTarget.toString()}
-                    onValueChange={(v) => setDurationTarget(parseInt(v))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {DURATION_OPTIONS.map((opt) => (
-                        <SelectItem key={opt.seconds} value={opt.seconds.toString()}>
-                          {opt.label} ({opt.words})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Custom Context */}
-                <div className="space-y-2">
-                  <Label>Additional Context (Optional)</Label>
-                  <Textarea
-                    value={customContext}
-                    onChange={(e) => setCustomContext(e.target.value)}
-                    placeholder="Add any specific details, talking points, or context you want included..."
-                    rows={4}
-                  />
+                  {/* Default HeyGen voices if no custom profiles */}
+                  {voiceProfiles.length === 0 && (
+                    <Select value={selectedVoice} onValueChange={setSelectedVoice}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a voice" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="en-US-JennyNeural">Jenny (Female, US)</SelectItem>
+                        <SelectItem value="en-US-GuyNeural">Guy (Male, US)</SelectItem>
+                        <SelectItem value="en-US-AriaNeural">Aria (Female, US)</SelectItem>
+                        <SelectItem value="en-US-DavisNeural">Davis (Male, US)</SelectItem>
+                        <SelectItem value="en-GB-SoniaNeural">Sonia (Female, UK)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
                 </div>
               </div>
             )}
 
-            {/* Step 3: Review & Edit */}
+            {/* Step 3: Style & Quality */}
             {currentStep === 3 && (
               <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h2 className="text-xl font-semibold mb-1">Review Your Script</h2>
-                    <p className="text-muted-foreground">
-                      Edit as needed before saving to your library
-                    </p>
-                  </div>
-                  <Badge
-                    variant={
-                      approvalStatus === "approved"
-                        ? "default"
-                        : approvalStatus === "pending_review"
-                          ? "secondary"
-                          : "outline"
-                    }
-                    className={cn(
-                      approvalStatus === "approved" && "bg-green-600",
-                      approvalStatus === "pending_review" && "bg-amber-500 text-white"
-                    )}
-                  >
-                    {approvalStatus === "approved" && <CheckCircle2 className="h-3 w-3 mr-1" />}
-                    {approvalStatus === "pending_review" && <Clock className="h-3 w-3 mr-1" />}
-                    {approvalStatus === "draft" && <Shield className="h-3 w-3 mr-1" />}
-                    {approvalStatus.replace(/_/g, " ")}
-                  </Badge>
+                <div>
+                  <h2 className="text-xl font-semibold mb-2">Style & Output Settings</h2>
+                  <p className="text-muted-foreground">
+                    Configure the look and quality of your video
+                  </p>
                 </div>
 
-                {/* Compliance Issues */}
-                {complianceIssues.length > 0 && (
-                  <Alert variant="destructive">
-                    <AlertTriangle className="h-4 w-4" />
-                    <AlertTitle>Compliance Review Required</AlertTitle>
-                    <AlertDescription>
-                      <ul className="list-disc list-inside mt-2 space-y-1">
-                        {complianceIssues.map((issue, i) => (
-                          <li key={i} className="text-sm">
-                            {issue}
-                          </li>
+                {/* Background Style */}
+                <div className="space-y-3">
+                  <Label>Background Style</Label>
+                  <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
+                    {BACKGROUND_STYLES.map((bg) => (
+                      <div
+                        key={bg.id}
+                        onClick={() => setBackgroundStyle(bg.id)}
+                        className={cn(
+                          "p-3 rounded-lg border-2 cursor-pointer transition-all text-center",
+                          backgroundStyle === bg.id
+                            ? "border-primary"
+                            : "border-border hover:border-primary/50"
+                        )}
+                      >
+                        <div
+                          className="w-full h-12 rounded mb-2"
+                          style={{
+                            background: bg.color.startsWith("linear") ? bg.color : bg.color,
+                            backgroundColor: !bg.color.startsWith("linear") ? bg.color : undefined,
+                          }}
+                        />
+                        <p className="text-xs font-medium truncate">{bg.label}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Output Orientation */}
+                <div className="space-y-3">
+                  <Label>Output Orientation</Label>
+                  <div className="grid grid-cols-3 gap-3">
+                    {OUTPUT_ORIENTATIONS.map((orientation) => {
+                      const Icon = orientation.icon
+                      return (
+                        <div
+                          key={orientation.id}
+                          onClick={() => setOutputOrientation(orientation.id)}
+                          className={cn(
+                            "p-4 rounded-lg border-2 cursor-pointer transition-all text-center",
+                            outputOrientation === orientation.id
+                              ? "border-primary bg-primary/5"
+                              : "border-border hover:border-primary/50"
+                          )}
+                        >
+                          <Icon className="h-8 w-8 mx-auto mb-2 text-muted-foreground" />
+                          <p className="font-medium">{orientation.label}</p>
+                          <p className="text-xs text-muted-foreground">{orientation.aspect}</p>
+                          <p className="text-xs text-muted-foreground">{orientation.description}</p>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {/* Quality Preset */}
+                <div className="space-y-3">
+                  <Label>Quality Preset</Label>
+                  <RadioGroup value={qualityPreset} onValueChange={setQualityPreset}>
+                    {QUALITY_PRESETS.map((preset) => (
+                      <Label
+                        key={preset.id}
+                        htmlFor={preset.id}
+                        className={cn(
+                          "flex items-center gap-4 p-4 rounded-lg border-2 cursor-pointer transition-colors",
+                          qualityPreset === preset.id
+                            ? "border-primary bg-primary/5"
+                            : "border-border hover:border-primary/50"
+                        )}
+                      >
+                        <RadioGroupItem value={preset.id} id={preset.id} />
+                        <div>
+                          <p className="font-medium">{preset.label}</p>
+                          <p className="text-sm text-muted-foreground">{preset.description}</p>
+                        </div>
+                        {preset.id === "1080p" && (
+                          <Badge variant="secondary" className="ml-auto">Recommended</Badge>
+                        )}
+                      </Label>
+                    ))}
+                  </RadioGroup>
+                </div>
+
+                {/* Branding Preset (optional) */}
+                {brandingPresets.length > 0 && (
+                  <div className="space-y-3">
+                    <Label>Branding Preset (Optional)</Label>
+                    <Select value={brandingPresetId} onValueChange={setBrandingPresetId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a branding preset" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="">No branding</SelectItem>
+                        {brandingPresets.map((preset) => (
+                          <SelectItem key={preset.id} value={preset.id}>
+                            <div className="flex items-center gap-2">
+                              <Palette className="h-4 w-4" />
+                              {preset.preset_name}
+                              {preset.is_default && <Badge variant="outline" className="text-xs">Default</Badge>}
+                            </div>
+                          </SelectItem>
                         ))}
-                      </ul>
-                    </AlertDescription>
-                  </Alert>
-                )}
-
-                {/* Title */}
-                <div className="space-y-2">
-                  <Label>Script Title</Label>
-                  <Input
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="Enter a title for this script"
-                  />
-                </div>
-
-                {/* Script Editor */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label>Script Content</Label>
-                    <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                      <span>{wordCount} words</span>
-                      <span>~{estimatedDuration}s</span>
-                    </div>
+                      </SelectContent>
+                    </Select>
                   </div>
-                  <Textarea
-                    value={generatedScript}
-                    onChange={(e) => setGeneratedScript(e.target.value)}
-                    rows={16}
-                    className="font-mono text-sm"
-                  />
+                )}
+              </div>
+            )}
+
+            {/* Step 4: Review & Generate */}
+            {currentStep === 4 && (
+              <div className="space-y-6">
+                <div>
+                  <h2 className="text-xl font-semibold mb-2">Review & Generate</h2>
+                  <p className="text-muted-foreground">
+                    Review your settings and generate your video
+                  </p>
                 </div>
 
-                {/* Actions */}
-                <div className="flex items-center gap-4">
-                  <Button variant="outline" onClick={handleRegenerateScript} disabled={isGenerating}>
-                    <RefreshCw className={cn("h-4 w-4 mr-2", isGenerating && "animate-spin")} />
-                    Regenerate
-                  </Button>
-                  <Button onClick={handleSaveScript} disabled={!generatedScript}>
-                    <Save className="h-4 w-4 mr-2" />
-                    Save to Library
-                  </Button>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Script Summary */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium flex items-center gap-2">
+                        <FileText className="h-4 w-4" />
+                        Script
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-sm line-clamp-4">{activeScript}</p>
+                      <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground">
+                        <span>{wordCount} words</span>
+                        <span>~{estimatedDuration}s</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* Avatar & Voice Summary */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium flex items-center gap-2">
+                        <User className="h-4 w-4" />
+                        Presenter
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-sm">
+                        <strong>Avatar:</strong> {avatars.find(a => a.id === selectedAvatar)?.name || selectedAvatar}
+                      </p>
+                      <p className="text-sm">
+                        <strong>Voice:</strong> {voiceProfiles.find(v => v.heygen_voice_clone_id === selectedVoice)?.profile_name || selectedVoice}
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  {/* Style Summary */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium flex items-center gap-2">
+                        <Palette className="h-4 w-4" />
+                        Style
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-sm">
+                        <strong>Background:</strong> {BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.label}
+                      </p>
+                      <p className="text-sm">
+                        <strong>Orientation:</strong> {OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.label} ({OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect})
+                      </p>
+                    </CardContent>
+                  </Card>
+
+                  {/* Quality Summary */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-medium flex items-center gap-2">
+                        <Monitor className="h-4 w-4" />
+                        Output
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <p className="text-sm">
+                        <strong>Quality:</strong> {QUALITY_PRESETS.find(q => q.id === qualityPreset)?.label}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        Estimated render time: 5-15 minutes
+                      </p>
+                    </CardContent>
+                  </Card>
                 </div>
+
+                {/* Compliance Notice */}
+                <Alert>
+                  <Shield className="h-4 w-4" />
+                  <AlertTitle>Kernel Governance</AlertTitle>
+                  <AlertDescription>
+                    Your video will be processed through kernel governance. Ensure your script is approved and branding assets are validated before generation.
+                  </AlertDescription>
+                </Alert>
+
+                {/* Generate Button */}
+                <Button
+                  onClick={handleGenerateVideo}
+                  disabled={isSubmitting}
+                  className="w-full"
+                  size="lg"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                      Submitting to HeyGen...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="h-5 w-5 mr-2" />
+                      Generate Video
+                    </>
+                  )}
+                </Button>
               </div>
             )}
           </CardContent>
         </Card>
 
         {/* Navigation */}
-        {currentStep < 3 && (
+        {currentStep < 4 && (
           <div className="flex items-center justify-between">
             <Button
               variant="outline"
@@ -656,26 +851,22 @@ export default function VideoScriptCreatePage() {
               Back
             </Button>
 
-            {currentStep === 2 ? (
-              <Button onClick={handleGenerateScript} disabled={!canProceed() || isGenerating}>
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Generating...
-                  </>
-                ) : (
-                  <>
-                    <Wand2 className="h-4 w-4 mr-2" />
-                    Generate Script
-                  </>
-                )}
-              </Button>
-            ) : (
-              <Button onClick={() => setCurrentStep((s) => s + 1)} disabled={!canProceed()}>
-                Next
-                <ArrowRight className="h-4 w-4 ml-2" />
-              </Button>
-            )}
+            <Button onClick={() => setCurrentStep((s) => s + 1)} disabled={!canProceed()}>
+              Next
+              <ArrowRight className="h-4 w-4 ml-2" />
+            </Button>
+          </div>
+        )}
+
+        {currentStep === 4 && (
+          <div className="flex items-center justify-start">
+            <Button
+              variant="outline"
+              onClick={() => setCurrentStep((s) => Math.max(1, s - 1))}
+            >
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back
+            </Button>
           </div>
         )}
       </div>

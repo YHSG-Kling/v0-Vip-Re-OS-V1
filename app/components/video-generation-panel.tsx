@@ -1,47 +1,238 @@
-'use client'
+"use client"
 
-import { useState, useEffect } from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
-import { Video, Play, Download, Share2, Eye, CheckCircle, Clock, XCircle } from 'lucide-react'
-import { generateListingVideo, publishVideoToPlatforms, getVideoProjects } from '@/app/actions/listing-video'
+import { useState, useEffect, useCallback } from "react"
+import { useRouter } from "next/navigation"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Progress } from "@/components/ui/progress"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import {
+  Video,
+  Play,
+  Download,
+  Share2,
+  Eye,
+  CheckCircle,
+  Clock,
+  XCircle,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Send,
+  Shield,
+  ExternalLink,
+} from "lucide-react"
+import { cn } from "@/lib/utils"
+import { createClient } from "@/lib/supabase/client"
+import { useAuth } from "@/lib/auth/client"
+
+// ─── TYPES ────────────────────────────────────────────────────────────────────
+
+interface VideoProject {
+  id: string
+  title: string
+  video_type: string
+  status: string
+  heygen_status?: string
+  script_content?: string
+  video_url?: string
+  duration_seconds?: number
+  created_at: string
+  error_message?: string
+  video_metadata?: {
+    thumbnail_url?: string
+    published_at?: string
+  }
+}
 
 interface VideoGenerationPanelProps {
   transactionId?: string
-  propertyId?: string
-  agentId: string
+  listingId?: string
+  agentId?: string
+  compactMode?: boolean
 }
 
-export function VideoGenerationPanel({ transactionId, propertyId, agentId }: VideoGenerationPanelProps) {
-  const [projects, setProjects] = useState<any[]>([])
-  const [generating, setGenerating] = useState(false)
+// ─── STATUS CONFIG ────────────────────────────────────────────────────────────
+
+const STATUS_CONFIG: Record<string, { icon: any; color: string; label: string }> = {
+  pending: { icon: Clock, color: "text-gray-600", label: "Pending" },
+  generating: { icon: Loader2, color: "text-amber-600", label: "Generating..." },
+  preview_ready: { icon: Eye, color: "text-blue-600", label: "Preview Ready" },
+  completed: { icon: CheckCircle, color: "text-green-600", label: "Ready" },
+  published: { icon: CheckCircle, color: "text-green-600", label: "Published" },
+  failed: { icon: XCircle, color: "text-red-600", label: "Failed" },
+}
+
+// ─── COMPONENT ────────────────────────────────────────────────────────────────
+
+export function VideoGenerationPanel({
+  transactionId,
+  listingId,
+  agentId,
+  compactMode = false,
+}: VideoGenerationPanelProps) {
+  const router = useRouter()
+  const { user, brokerage } = useAuth()
+  const supabase = createClient()
+
+  const [projects, setProjects] = useState<VideoProject[]>([])
   const [loading, setLoading] = useState(true)
+  const [pollingIds, setPollingIds] = useState<Set<string>>(new Set())
+
+  // ─── LOAD PROJECTS ──────────────────────────────────────────────────────────
+
+  const loadProjects = useCallback(async () => {
+    const effectiveAgentId = agentId || user?.id
+    if (!effectiveAgentId && !brokerage?.id) return
+
+    try {
+      let query = supabase
+        .from("ai_video_projects")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(10)
+
+      if (listingId) {
+        query = query.eq("listing_id", listingId)
+      } else if (transactionId) {
+        // Get listing from transaction first
+        const { data: txn } = await supabase
+          .from("transactions")
+          .select("listing_id")
+          .eq("id", transactionId)
+          .single()
+
+        if (txn?.listing_id) {
+          query = query.eq("listing_id", txn.listing_id)
+        }
+      } else if (effectiveAgentId) {
+        query = query.eq("agent_id", effectiveAgentId)
+      }
+
+      if (brokerage?.id) {
+        query = query.eq("brokerage_id", brokerage.id)
+      }
+
+      const { data, error } = await query
+
+      if (data && !error) {
+        setProjects(data)
+
+        // Track which videos need polling
+        const needsPolling = data
+          .filter(
+            (v) =>
+              ["pending", "generating"].includes(v.status) ||
+              ["pending", "generating", "processing"].includes(v.heygen_status || "")
+          )
+          .map((v) => v.id)
+        setPollingIds(new Set(needsPolling))
+      }
+    } catch (error) {
+      console.error("Error loading video projects:", error)
+    } finally {
+      setLoading(false)
+    }
+  }, [agentId, user?.id, brokerage?.id, listingId, transactionId, supabase])
 
   useEffect(() => {
     loadProjects()
-  }, [])
+  }, [loadProjects])
 
-  async function loadProjects() {
-    setLoading(true)
-    const data = await getVideoProjects(agentId)
-    setProjects(data)
-    setLoading(false)
+  // ─── STATUS POLLING ─────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (pollingIds.size === 0) return
+
+    const pollInterval = setInterval(async () => {
+      for (const videoId of pollingIds) {
+        try {
+          const response = await fetch(`/api/heygen/check-status/${videoId}`)
+          const data = await response.json()
+
+          if (data.status === "completed" || data.status === "failed" || data.preview_ready) {
+            setPollingIds((prev) => {
+              const next = new Set(prev)
+              next.delete(videoId)
+              return next
+            })
+            // Reload projects to get updated data
+            loadProjects()
+          }
+        } catch (error) {
+          console.error(`Error polling video ${videoId}:`, error)
+        }
+      }
+    }, 10000) // Poll every 10 seconds
+
+    return () => clearInterval(pollInterval)
+  }, [pollingIds, loadProjects])
+
+  // ─── REAL-TIME UPDATES ──────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const channel = supabase
+      .channel("video-panel-updates")
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "ai_video_projects" },
+        (payload) => {
+          setProjects((prev) =>
+            prev.map((p) => (p.id === payload.new.id ? { ...p, ...payload.new } : p))
+          )
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "ai_video_projects" },
+        (payload) => {
+          setProjects((prev) => [payload.new as VideoProject, ...prev].slice(0, 10))
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [supabase])
+
+  // ─── HANDLERS ───────────────────────────────────────────────────────────────
+
+  async function handlePublish(project: VideoProject) {
+    try {
+      const response = await fetch(`/api/heygen/check-status/${project.id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: user?.id,
+          publish_metadata: {
+            published_by: user?.id,
+            published_at: new Date().toISOString(),
+          },
+        }),
+      })
+
+      if (response.ok) {
+        loadProjects()
+      }
+    } catch (error) {
+      console.error("Error publishing video:", error)
+    }
   }
 
-  async function createVideo(videoType: 'full_tour' | 'social_snippet' | 'reel' | 'instagram_story') {
-    setGenerating(true)
-    const result = await generateListingVideo({
-      transactionId,
-      propertyId,
-      agentId,
-      videoType,
-    })
+  // ─── RENDER ─────────────────────────────────────────────────────────────────
 
-    if (result.success) {
-      await loadProjects()
-    }
-    setGenerating(false)
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="py-8">
+          <div className="flex items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (
@@ -49,79 +240,127 @@ export function VideoGenerationPanel({ transactionId, propertyId, agentId }: Vid
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
-            <CardTitle>AI Video Generation</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Video className="h-5 w-5" />
+              AI Video Generation
+            </CardTitle>
             <p className="text-sm text-muted-foreground mt-1">
-              Automatically create professional property videos with HeyGen AI
+              Create professional avatar videos with HeyGen AI
             </p>
           </div>
           <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => createVideo('full_tour')} disabled={generating}>
-              <Video className="h-4 w-4 mr-2" />
-              Full Tour
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => loadProjects()}
+              disabled={loading}
+            >
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
             </Button>
-            <Button size="sm" variant="outline" onClick={() => createVideo('social_snippet')} disabled={generating}>
-              30s Snippet
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => createVideo('reel')} disabled={generating}>
-              Reel
+            <Button
+              size="sm"
+              onClick={() => router.push("/dashboard/videos/create")}
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Create Video
             </Button>
           </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {loading ? (
-          <div className="text-center py-8">
-            <Clock className="h-8 w-8 text-muted-foreground mx-auto mb-3 animate-spin" />
-            <p className="text-sm text-muted-foreground">Loading videos...</p>
-          </div>
-        ) : projects.length === 0 ? (
+        {/* Polling Indicator */}
+        {pollingIds.size > 0 && (
+          <Alert>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <AlertDescription>
+              {pollingIds.size} video(s) generating. Updates will appear automatically.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Empty State */}
+        {projects.length === 0 && (
           <div className="text-center py-8">
             <Video className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">No videos generated yet. Click a button above to create one.</p>
+            <p className="text-sm text-muted-foreground mb-4">
+              No videos generated yet. Create your first AI video.
+            </p>
+            <Button onClick={() => router.push("/dashboard/videos/create")}>
+              <Plus className="h-4 w-4 mr-2" />
+              Create Video
+            </Button>
           </div>
-        ) : (
-          projects.map((project) => <VideoProjectCard key={project.id} project={project} onUpdate={loadProjects} />)
+        )}
+
+        {/* Video Projects List */}
+        {projects.map((project) => (
+          <VideoProjectCard
+            key={project.id}
+            project={project}
+            isPolling={pollingIds.has(project.id)}
+            onPublish={() => handlePublish(project)}
+            compactMode={compactMode}
+          />
+        ))}
+
+        {/* View All Link */}
+        {projects.length > 0 && (
+          <div className="text-center pt-2">
+            <Button variant="link" onClick={() => router.push("/dashboard/videos/board")}>
+              View All Videos
+              <ExternalLink className="h-4 w-4 ml-2" />
+            </Button>
+          </div>
         )}
       </CardContent>
     </Card>
   )
 }
 
-function VideoProjectCard({ project, onUpdate }: { project: any; onUpdate: () => void }) {
-  const [publishing, setPublishing] = useState(false)
+// ─── VIDEO PROJECT CARD ───────────────────────────────────────────────────────
 
-  const statusConfig: Record<string, any> = {
-    pending: { icon: Clock, color: 'text-gray-600', label: 'Pending' },
-    generating: { icon: Clock, color: 'text-blue-600', label: 'Creating Video...' },
-    completed: { icon: CheckCircle, color: 'text-green-600', label: 'Ready' },
-    failed: { icon: XCircle, color: 'text-red-600', label: 'Failed' },
-  }
+function VideoProjectCard({
+  project,
+  isPolling,
+  onPublish,
+  compactMode,
+}: {
+  project: VideoProject
+  isPolling: boolean
+  onPublish: () => void
+  compactMode: boolean
+}) {
+  const effectiveStatus = project.status === "preview_ready" || project.heygen_status === "completed"
+    ? "preview_ready"
+    : project.status || project.heygen_status || "pending"
 
-  const config = statusConfig[project.heygen_status || 'pending']
+  const config = STATUS_CONFIG[effectiveStatus] || STATUS_CONFIG.pending
   const Icon = config.icon
-
-  async function handlePublish() {
-    setPublishing(true)
-    await publishVideoToPlatforms({
-      projectId: project.id,
-      platforms: ['youtube', 'facebook', 'instagram'],
-    })
-    setPublishing(false)
-    onUpdate()
-  }
+  const thumbnailUrl = project.video_metadata?.thumbnail_url
 
   return (
-    <div className="flex items-center gap-4 p-4 border rounded-lg">
+    <div className={cn(
+      "flex items-center gap-4 p-4 border rounded-lg",
+      compactMode && "p-3"
+    )}>
       {/* Thumbnail */}
-      <div className="w-32 h-20 bg-muted rounded-lg flex items-center justify-center flex-shrink-0 relative overflow-hidden">
-        {project.thumbnail_url ? (
-          <img src={project.thumbnail_url || "/placeholder.svg"} className="w-full h-full object-cover" alt="Video thumbnail" />
+      <div className={cn(
+        "bg-muted rounded-lg flex items-center justify-center flex-shrink-0 relative overflow-hidden",
+        compactMode ? "w-24 h-16" : "w-32 h-20"
+      )}>
+        {thumbnailUrl ? (
+          <img
+            src={thumbnailUrl}
+            alt={project.title || "Video thumbnail"}
+            className="w-full h-full object-cover"
+          />
         ) : (
           <Video className="h-8 w-8 text-muted-foreground" />
         )}
         {project.duration_seconds && (
           <Badge className="absolute bottom-1 right-1 text-xs">
-            {Math.floor(project.duration_seconds / 60)}:{(project.duration_seconds % 60).toString().padStart(2, '0')}
+            {Math.floor(project.duration_seconds / 60)}:
+            {(project.duration_seconds % 60).toString().padStart(2, "0")}
           </Badge>
         )}
       </div>
@@ -129,29 +368,31 @@ function VideoProjectCard({ project, onUpdate }: { project: any; onUpdate: () =>
       {/* Info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-1">
-          <p className="font-medium capitalize">{project.video_type.replace('_', ' ')}</p>
-          <Icon className={`h-4 w-4 ${config.color}`} />
-          <Badge variant="outline" className="text-xs">
+          <p className="font-medium truncate">{project.title || `Video ${project.id.slice(0, 8)}`}</p>
+          <Icon className={cn("h-4 w-4 flex-shrink-0", config.color, isPolling && "animate-spin")} />
+          <Badge variant="outline" className="text-xs flex-shrink-0">
             {config.label}
           </Badge>
         </div>
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <span>
-            {project.video_type === 'full_tour' ? '16:9' : project.video_type === 'social_snippet' ? '1:1' : '9:16'}
-          </span>
-          {project.view_count > 0 && (
-            <span className="flex items-center gap-1">
-              <Eye className="h-3 w-3" />
-              {project.view_count} views
-            </span>
-          )}
-          {project.distributed_via?.length > 0 && (
-            <span>Published to {project.distributed_via.join(', ')}</span>
-          )}
-        </div>
+
+        <p className="text-sm text-muted-foreground">
+          {project.video_type?.replace(/_/g, " ")} - {new Date(project.created_at).toLocaleDateString()}
+        </p>
+
+        {/* Progress for generating videos */}
+        {(effectiveStatus === "generating" || effectiveStatus === "pending") && isPolling && (
+          <div className="mt-2">
+            <Progress value={effectiveStatus === "generating" ? 50 : 15} className="h-1" />
+          </div>
+        )}
+
+        {/* Error message */}
+        {effectiveStatus === "failed" && project.error_message && (
+          <p className="text-xs text-destructive mt-1 truncate">{project.error_message}</p>
+        )}
 
         {/* Script preview */}
-        {project.script_content && (
+        {!compactMode && project.script_content && (
           <div className="mt-2 p-2 bg-muted rounded text-xs">
             <p className="line-clamp-2">{project.script_content}</p>
           </div>
@@ -159,42 +400,42 @@ function VideoProjectCard({ project, onUpdate }: { project: any; onUpdate: () =>
       </div>
 
       {/* Actions */}
-      <div className="flex flex-col gap-2">
-        {project.heygen_status === 'completed' && (
-          <>
-            {project.video_url && (
-              <Button size="sm" variant="outline" asChild>
-                <a href={project.video_url} target="_blank" rel="noopener noreferrer">
-                  <Play className="h-4 w-4 mr-1" />
-                  Preview
-                </a>
-              </Button>
-            )}
-            {!project.distributed_via?.length && (
-              <Button size="sm" onClick={handlePublish} disabled={publishing}>
-                <Share2 className="h-4 w-4 mr-1" />
-                Publish
-              </Button>
-            )}
-          </>
-        )}
-
-        {project.heygen_status === 'completed' && project.video_url && (
-          <Button size="sm" variant="outline" asChild>
-            <a href={project.video_url} download>
-              <Download className="h-4 w-4 mr-1" />
-              Download
-            </a>
+      <div className="flex flex-col gap-2 flex-shrink-0">
+        {effectiveStatus === "preview_ready" && (
+          <Button size="sm" onClick={onPublish}>
+            <Send className="h-4 w-4 mr-1" />
+            Publish
           </Button>
         )}
 
-        {!project.compliance_approved && project.heygen_status === 'pending' && (
-          <Button size="sm">
-            <CheckCircle className="h-4 w-4 mr-1" />
-            Approve Script
+        {effectiveStatus === "published" && project.video_url && (
+          <>
+            <Button size="sm" variant="outline" asChild>
+              <a href={project.video_url} target="_blank" rel="noopener noreferrer">
+                <Play className="h-4 w-4 mr-1" />
+                Play
+              </a>
+            </Button>
+            <Button size="sm" variant="outline" asChild>
+              <a href={project.video_url} download>
+                <Download className="h-4 w-4 mr-1" />
+                Download
+              </a>
+            </Button>
+          </>
+        )}
+
+        {(effectiveStatus === "completed" || effectiveStatus === "preview_ready") && project.video_url && (
+          <Button size="sm" variant="outline" asChild>
+            <a href={project.video_url} target="_blank" rel="noopener noreferrer">
+              <Eye className="h-4 w-4 mr-1" />
+              Preview
+            </a>
           </Button>
         )}
       </div>
     </div>
   )
 }
+
+export default VideoGenerationPanel

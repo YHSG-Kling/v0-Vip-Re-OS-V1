@@ -204,4 +204,10 @@ export enum KernelEvent {
   SCRIPT_VARIATION_CREATED       = 'script_variation_created',
   SCRIPT_APPROVED                = 'script_approved',
   SCRIPT_REJECTED                = 'script_rejected',
+
+  // ── Layer 8.2 — Video Generation Engine ────────────────────────────────
+  VIDEO_GENERATION_REQUESTED     = 'video_generation_requested',
+  VIDEO_PREVIEW_READY            = 'video_preview_ready',
+  VIDEO_PUBLISHED                = 'video_published',
+  VIDEO_GENERATION_FAILED        = 'video_generation_failed',
 }
