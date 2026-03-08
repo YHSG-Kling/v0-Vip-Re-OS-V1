@@ -8,7 +8,7 @@ export async function GET() {
 
   const { data: videos, error } = await supabase
     .from("video_assets")
-    .select("*, script:video_scripts(*)")
+    .select("*, script:video_scripts_library(*)")
     .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
