@@ -13,7 +13,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   const { data: script, error } = await supabase
-    .from("video_scripts")
+    .from("video_scripts_library")
     .update({
       approval_status: "approved",
       approved_at: new Date().toISOString(),
