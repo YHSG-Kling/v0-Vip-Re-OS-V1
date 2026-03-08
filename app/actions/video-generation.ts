@@ -940,7 +940,7 @@ export async function getAgentVideoProfile(agentId: string) {
 
   const supabase = await createClient()
 
-  const { data, error } = await supabase.from("agent_video_profiles").select("*").eq("agent_id", agentId).maybeSingle()
+  const { data, error } = await supabase.from("agent_voice_profiles").select("*").eq("agent_id", agentId).maybeSingle()
 
   if (error) {
     console.error("Error fetching agent video profile:", error)
@@ -963,7 +963,7 @@ export async function updateAgentVideoProfile(data: {
   const supabase = await createClient()
 
   const { data: profile, error } = await supabase
-    .from("agent_video_profiles")
+    .from("agent_voice_profiles")
     .upsert({
       agent_id: data.agentId,
       heygen_avatar_id: data.heygenAvatarId,
@@ -1147,7 +1147,7 @@ export async function generateVideoFromScript(params: {
     }
 
     const { data: queueRecord, error: queueError } = await supabase
-      .from("video_content_queue")
+      .from("video_generation_queue")
       .insert({
         user_id: params.userId || null,
         title: params.title,
@@ -1167,7 +1167,7 @@ export async function generateVideoFromScript(params: {
 
     // Create video script record for backward compatibility
     const { data: scriptRecord, error: scriptError } = await supabase
-      .from("video_scripts")
+      .from("video_scripts_library")
       .insert({
         script_text: params.script,
         title: params.title,
@@ -1209,7 +1209,7 @@ export async function createAvatarVideo(params: {
 
     // Update script with video URL
     const { error } = await supabase
-      .from("video_scripts")
+      .from("video_scripts_library")
       .update({
         video_url: videoUrl,
         video_status: "completed",
