@@ -587,18 +587,20 @@ export default function VideoCreatePage() {
 
                   {/* Default HeyGen voices if no custom profiles */}
                   {voiceProfiles.length === 0 && (
-                    <Select value={selectedVoice} onValueChange={setSelectedVoice}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select a voice" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="en-US-JennyNeural">Jenny (Female, US)</SelectItem>
-                        <SelectItem value="en-US-GuyNeural">Guy (Male, US)</SelectItem>
-                        <SelectItem value="en-US-AriaNeural">Aria (Female, US)</SelectItem>
-                        <SelectItem value="en-US-DavisNeural">Davis (Male, US)</SelectItem>
-                        <SelectItem value="en-GB-SoniaNeural">Sonia (Female, UK)</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <Alert>
+                      <Mic className="h-4 w-4" />
+                      <AlertTitle>No Voice Profiles</AlertTitle>
+                      <AlertDescription>
+                        You have not set up any voice profiles yet. Using default HeyGen voices.
+                        <Button
+                          variant="link"
+                          className="p-0 h-auto ml-1"
+                          onClick={() => router.push("/dashboard/videos/voice")}
+                        >
+                          Create Voice Clone
+                        </Button>
+                      </AlertDescription>
+                    </Alert>
                   )}
                 </div>
               </div>

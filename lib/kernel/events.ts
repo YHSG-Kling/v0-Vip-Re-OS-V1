@@ -210,4 +210,13 @@ export enum KernelEvent {
   VIDEO_PREVIEW_READY            = 'video_preview_ready',
   VIDEO_PUBLISHED                = 'video_published',
   VIDEO_GENERATION_FAILED        = 'video_generation_failed',
+
+  // ── Layer 8.3 — Voice Clone Engine ────────────────────────────────────
+  VOICE_CLONE_PROFILE_CREATED    = 'voice_clone_profile_created',
+  VOICE_CLONE_SAMPLE_UPLOADED    = 'voice_clone_sample_uploaded',
+  VOICE_CLONE_TRAINING_STARTED   = 'voice_clone_training_started',
+  VOICE_CLONE_TRAINING_COMPLETED = 'voice_clone_training_completed',
+  VOICE_CLONE_TRAINING_FAILED    = 'voice_clone_training_failed',
+  VOICE_CLONE_READY              = 'voice_clone_ready',
+  VOICE_CLONE_DEFAULT_SET        = 'voice_clone_default_set',
 }
