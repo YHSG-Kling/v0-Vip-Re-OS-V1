@@ -71,7 +71,6 @@ import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } f
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
 import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
-import { TrendingUp } from "lucide-react"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
