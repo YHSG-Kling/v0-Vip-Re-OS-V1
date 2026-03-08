@@ -3,6 +3,13 @@
 import { createClient } from "@/lib/supabase/server"
 import { put } from "@vercel/blob"
 import { getAgentContext } from "@/lib/identity"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { resolveProvider } from "@/lib/kernel/providers"
+import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 /**
  * AI Podcast Generation Actions

@@ -3,6 +3,10 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { resolveProvider } from "@/lib/kernel/providers"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 // Generate AI script from URL
 export async function generateVideoScript(params: {

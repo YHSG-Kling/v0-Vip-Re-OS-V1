@@ -7,6 +7,12 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { AI_MODELS } from "@/lib/constants"
 import { generateContent } from "@/lib/services/content-generation.service"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { resolveProvider } from "@/lib/kernel/providers"
+import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 function parseAIJsonResponse(text: string) {
   let cleanText = text.trim()

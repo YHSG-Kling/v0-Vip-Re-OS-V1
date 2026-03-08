@@ -3,6 +3,10 @@
 import { createServerClient } from "@/lib/supabase/server"
 import { logVideoGenerated } from "@/lib/events"
 import { generateText } from "ai"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { resolveProvider } from "@/lib/kernel/providers"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 // =====================================================
 // VIDEO CONTENT GENERATION SERVER ACTIONS

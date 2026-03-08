@@ -6,6 +6,9 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { resolveProvider } from "@/lib/kernel/providers"
+import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 
 // ============================================
 // TYPES — Layer 8.1 AI Script Generator
