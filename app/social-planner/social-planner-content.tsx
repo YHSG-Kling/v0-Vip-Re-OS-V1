@@ -59,7 +59,6 @@ export default function SocialPlannerContent({ userId, userRole }: SocialPlanner
       setLoading(false)
     }
   }
-  }
 
   const loadPosts = async () => {
     try {
