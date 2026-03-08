@@ -12,7 +12,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const { error } = await supabase.from("video_scripts").update({ approval_status: "rejected" }).eq("id", id)
+  const { error } = await supabase.from("video_scripts_library").update({ approval_status: "rejected" }).eq("id", id)
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
