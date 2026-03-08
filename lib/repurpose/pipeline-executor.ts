@@ -3,8 +3,6 @@
 // Orchestrates content repurposing across multiple platforms with full kernel wiring.
 // REUSES existing tables: repurpose_pipelines, repurposed_content_log, video_snippets
 
-"use server"
-
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
