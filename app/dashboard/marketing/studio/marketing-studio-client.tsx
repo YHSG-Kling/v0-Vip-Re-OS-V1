@@ -69,6 +69,9 @@ import {
 } from "@/app/actions/marketing-studio"
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
+import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
+import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
+import { TrendingUp } from "lucide-react"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -166,6 +169,12 @@ export default function MarketingStudioClient() {
   // Registry data
   const [registryItems, setRegistryItems] = useState<ContentSourceItem[]>([])
   const [availableQrCodes, setAvailableQrCodes] = useState<any[]>([])
+  
+  // Prediction widget state
+  const [isPredictionDialogOpen, setIsPredictionDialogOpen] = useState(false)
+  const [selectedAssetForPrediction, setSelectedAssetForPrediction] = useState<Asset | null>(null)
+  const [currentPrediction, setCurrentPrediction] = useState<PredictionData | null>(null)
+  const [isPredicting, setIsPredicting] = useState(false)
 
   // Form states
   const [newCampaign, setNewCampaign] = useState({
@@ -341,6 +350,42 @@ export default function MarketingStudioClient() {
       setSelectedAssetForQr(null)
       loadAssets()
     }
+  }
+
+  async function handlePredictPerformance(asset: Asset) {
+    setSelectedAssetForPrediction(asset)
+    setIsPredictionDialogOpen(true)
+    setIsPredicting(true)
+    setCurrentPrediction(null)
+
+    const userContext = await getUserContextForPrediction()
+    if (!userContext.success || !userContext.userId || !userContext.brokerageId) {
+      setIsPredicting(false)
+      return
+    }
+
+    // Map asset_type to content_type
+    const contentTypeMap: Record<string, string> = {
+      social_post: "social_post",
+      email: "newsletter",
+      document: "blog_post",
+      image: "ad_creative",
+      video: "ad_creative",
+    }
+
+    const result = await predictPerformanceAction({
+      brokerageId: userContext.brokerageId,
+      userId: userContext.userId,
+      contentType: (contentTypeMap[asset.asset_type] || "ad_creative") as any,
+      sourceTable: "marketing_assets",
+      sourceId: asset.id,
+      contentText: asset.preview_text || asset.asset_name,
+    })
+
+    if (result.success && result.prediction) {
+      setCurrentPrediction(result.prediction)
+    }
+    setIsPredicting(false)
   }
 
   // ─── STATUS HELPERS ───────────────────────────────────────────────────────────
@@ -980,6 +1025,14 @@ export default function MarketingStudioClient() {
                         >
                           <QrCode className="h-4 w-4" />
                         </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handlePredictPerformance(asset)}
+                          title="Predict Performance"
+                        >
+                          <TrendingUp className="h-4 w-4" />
+                        </Button>
                       </div>
                     </CardContent>
                   </Card>
@@ -1203,6 +1256,39 @@ export default function MarketingStudioClient() {
             </Card>
           </TabsContent>
         </Tabs>
+
+        {/* Performance Prediction Dialog */}
+        <Dialog open={isPredictionDialogOpen} onOpenChange={setIsPredictionDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Performance Prediction</DialogTitle>
+              <DialogDescription>
+                AI-powered analysis of your content&apos;s potential performance
+              </DialogDescription>
+            </DialogHeader>
+            <div className="py-4">
+              {selectedAssetForPrediction && (
+                <div className="mb-4 p-3 bg-muted rounded-lg">
+                  <p className="font-medium">{selectedAssetForPrediction.asset_name}</p>
+                  {selectedAssetForPrediction.preview_text && (
+                    <p className="text-sm text-muted-foreground line-clamp-2 mt-1">
+                      {selectedAssetForPrediction.preview_text}
+                    </p>
+                  )}
+                  <Badge variant="outline" className="mt-2 text-xs capitalize">
+                    {selectedAssetForPrediction.asset_type.replace("_", " ")}
+                  </Badge>
+                </div>
+              )}
+              <PredictionWidget
+                prediction={currentPrediction}
+                isLoading={isPredicting}
+                onPredict={() => selectedAssetForPrediction && handlePredictPerformance(selectedAssetForPrediction)}
+                showPredictButton={!!currentPrediction}
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* QR Link Dialog */}
         <Dialog open={isQrLinkOpen} onOpenChange={setIsQrLinkOpen}>

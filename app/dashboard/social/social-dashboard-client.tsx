@@ -58,6 +58,9 @@ import {
   getSocialEngagement,
 } from "@/app/actions/social-media-automation"
 import { shareListingPost } from "@/app/actions/social-share"
+import { predictPerformanceAction } from "@/app/actions/content-prediction"
+import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
+import { BarChart3 } from "lucide-react"
 
 // Platform icons and colors
 const PLATFORM_CONFIG: Record<
@@ -111,6 +114,12 @@ export function SocialDashboardClient({
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  
+  // Prediction widget state
+  const [predictionDialogOpen, setPredictionDialogOpen] = useState(false)
+  const [selectedPostForPrediction, setSelectedPostForPrediction] = useState<any>(null)
+  const [currentPrediction, setCurrentPrediction] = useState<PredictionData | null>(null)
+  const [isPredicting, setIsPredicting] = useState(false)
 
   // Create post form state
   const [newPost, setNewPost] = useState({
@@ -196,6 +205,30 @@ export function SocialDashboardClient({
       alert(result.error || "Failed to share post")
     }
     setIsLoading(false)
+  }
+
+  // Handle predict performance
+  const handlePredictPerformance = async (post: any) => {
+    setSelectedPostForPrediction(post)
+    setPredictionDialogOpen(true)
+    setIsPredicting(true)
+    setCurrentPrediction(null)
+
+    const result = await predictPerformanceAction({
+      brokerageId,
+      userId,
+      contentType: "social_post",
+      sourceTable: "social_posts",
+      sourceId: post.id,
+      contentText: post.content || "",
+      platform: post.platform,
+      scheduledFor: post.scheduled_for,
+    })
+
+    if (result.success && result.prediction) {
+      setCurrentPrediction(result.prediction)
+    }
+    setIsPredicting(false)
   }
 
   // Handle create post
@@ -644,19 +677,30 @@ export function SocialDashboardClient({
                           </Button>
                         )}
 
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="sm">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem>View Details</DropdownMenuItem>
-                            <DropdownMenuItem>Edit Post</DropdownMenuItem>
-                            <DropdownMenuItem>Reschedule</DropdownMenuItem>
-                            <DropdownMenuItem className="text-red-600">Delete</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+{/* Predict Performance button */}
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => handlePredictPerformance(post)}
+                                          disabled={isLoading || isPredicting}
+                                          title="Predict Performance"
+                                        >
+                                          <BarChart3 className="h-4 w-4" />
+                                        </Button>
+
+                                        <DropdownMenu>
+                                          <DropdownMenuTrigger asChild>
+                                            <Button variant="ghost" size="sm">
+                                              <MoreVertical className="h-4 w-4" />
+                                            </Button>
+                                          </DropdownMenuTrigger>
+                                          <DropdownMenuContent align="end">
+                                            <DropdownMenuItem>View Details</DropdownMenuItem>
+                                            <DropdownMenuItem>Edit Post</DropdownMenuItem>
+                                            <DropdownMenuItem>Reschedule</DropdownMenuItem>
+                                            <DropdownMenuItem className="text-red-600">Delete</DropdownMenuItem>
+                                          </DropdownMenuContent>
+                                        </DropdownMenu>
                       </div>
                     </div>
                   </CardContent>
@@ -666,6 +710,34 @@ export function SocialDashboardClient({
           </TabsContent>
         ))}
       </Tabs>
+
+      {/* Performance Prediction Dialog */}
+      <Dialog open={predictionDialogOpen} onOpenChange={setPredictionDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Performance Prediction</DialogTitle>
+            <DialogDescription>
+              AI-powered analysis of your content&apos;s potential performance
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            {selectedPostForPrediction && (
+              <div className="mb-4 p-3 bg-muted rounded-lg">
+                <p className="text-sm line-clamp-2">{selectedPostForPrediction.content}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Platform: {selectedPostForPrediction.platform}
+                </p>
+              </div>
+            )}
+            <PredictionWidget
+              prediction={currentPrediction}
+              isLoading={isPredicting}
+              onPredict={() => selectedPostForPrediction && handlePredictPerformance(selectedPostForPrediction)}
+              showPredictButton={!!currentPrediction}
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Connected Accounts Summary */}
       {accounts.length === 0 && (
