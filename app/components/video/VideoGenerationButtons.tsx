@@ -1,17 +1,21 @@
 "use client"
 
 import { useState } from "react"
-import { Video, Mic, ShieldCheck, Loader2 } from "lucide-react"
+import { Video, Mic, ShieldCheck, Loader2, Scissors } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { generateVideoFromScript } from "@/app/actions/video-generation"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { QuickRepurposeButton } from "@/components/video/quick-repurpose-button"
 
 interface VideoGenerationButtonsProps {
   script: string
   title: string
   userId?: string
+  brokerageId?: string
+  videoProjectId?: string
+  showRepurpose?: boolean
   onSuccess?: () => void
   size?: "sm" | "md" | "lg"
   className?: string
@@ -21,6 +25,9 @@ export function VideoGenerationButtons({
   script,
   title,
   userId,
+  brokerageId,
+  videoProjectId,
+  showRepurpose = false,
   onSuccess,
   size = "md",
   className = "",
@@ -178,6 +185,17 @@ export function VideoGenerationButtons({
             <ShieldCheck className="h-3 w-3 mr-1" />
             Compliant
           </Badge>
+        )}
+
+        {showRepurpose && brokerageId && (
+          <QuickRepurposeButton
+            videoProjectId={videoProjectId}
+            brokerageId={brokerageId}
+            videoTitle={title}
+            userId={userId}
+            variant="outline"
+            size={size === "sm" ? "sm" : "default"}
+          />
         )}
       </div>
     </div>

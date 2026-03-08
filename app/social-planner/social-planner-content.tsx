@@ -14,13 +14,16 @@ import {
   Activity,
   TrendingUp,
   Clock,
+  Scissors,
 } from "lucide-react"
 import { getSocialPosts, deleteSocialPost } from "../actions/social-publishing"
+import { getVideoSnippets } from "../actions/video-repurposing"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
+import Link from "next/link"
 
 interface ComplianceEvent {
   id: string
@@ -39,12 +42,31 @@ interface SocialPlannerContentProps {
 export default function SocialPlannerContent({ userId, userRole }: SocialPlannerContentProps) {
   const [activeTab, setActiveTab] = useState("queue")
   const [posts, setPosts] = useState<any[]>([])
+  const [snippets, setSnippets] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [complianceLogs, setComplianceLogs] = useState<ComplianceEvent[]>([])
 
   useEffect(() => {
-    loadPosts()
+    loadData()
   }, [userId, userRole])
+
+  const loadData = async () => {
+    try {
+      setLoading(true)
+      const [postsData, snippetsData] = await Promise.all([
+        getSocialPosts({ userId, userRole }),
+        getVideoSnippets({ approvalStatus: "approved" }),
+      ])
+      setPosts(postsData)
+      setSnippets(snippetsData)
+    } catch (error) {
+      console.error("[v0] Failed to load social data:", error)
+      setPosts([])
+      setSnippets([])
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const loadPosts = async () => {
     try {
@@ -106,13 +128,20 @@ export default function SocialPlannerContent({ userId, userRole }: SocialPlanner
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-2 lg:grid-cols-4 gap-2 h-auto bg-muted/50 p-2 rounded-xl">
+        <TabsList className="grid w-full grid-cols-2 lg:grid-cols-5 gap-2 h-auto bg-muted/50 p-2 rounded-xl">
           <TabsTrigger
             value="queue"
             className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-background data-[state=active]:shadow-sm"
           >
             <Share2 className="h-5 w-5" />
             <span className="text-xs font-medium">Post Queue</span>
+          </TabsTrigger>
+          <TabsTrigger
+            value="snippets"
+            className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-background data-[state=active]:shadow-sm"
+          >
+            <Scissors className="h-5 w-5" />
+            <span className="text-xs font-medium">Video Snippets</span>
           </TabsTrigger>
           <TabsTrigger
             value="compliance"
@@ -225,7 +254,87 @@ export default function SocialPlannerContent({ userId, userRole }: SocialPlanner
           </Card>
         </TabsContent>
 
-        {/* Tab 2: Compliance Audit */}
+        {/* Tab 2: Video Snippets */}
+        <TabsContent value="snippets">
+          <Card className="border-2">
+            <CardHeader className="bg-muted/30">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Scissors className="h-5 w-5 text-primary" />
+                    Ready-to-Post Snippets
+                  </CardTitle>
+                  <CardDescription>Approved video clips ready to schedule across platforms</CardDescription>
+                </div>
+                <Link href="/dashboard/videos/snippets">
+                  <Button variant="outline" size="sm">
+                    Manage All Snippets
+                  </Button>
+                </Link>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-6">
+              {snippets.length === 0 ? (
+                <div className="text-center py-16 border-2 border-dashed rounded-xl">
+                  <div className="bg-muted rounded-full p-6 w-fit mx-auto mb-4">
+                    <Scissors className="h-12 w-12 text-muted-foreground" />
+                  </div>
+                  <h3 className="text-xl font-semibold mb-2">No approved snippets yet</h3>
+                  <p className="text-muted-foreground max-w-md mx-auto leading-relaxed mb-4">
+                    Create and approve video snippets to see them here
+                  </p>
+                  <Link href="/dashboard/videos/snippets">
+                    <Button>
+                      <Scissors className="h-4 w-4 mr-2" />
+                      Create Snippets
+                    </Button>
+                  </Link>
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  {snippets.map((snippet) => (
+                    <Card key={snippet.id} className="border-2 overflow-hidden hover:shadow-md transition-shadow">
+                      <div className="relative aspect-video bg-muted">
+                        {snippet.thumbnail_url ? (
+                          <img
+                            src={snippet.thumbnail_url}
+                            alt={snippet.snippet_title}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-purple-500/20 to-pink-500/20">
+                            <Scissors className="h-8 w-8 text-muted-foreground" />
+                          </div>
+                        )}
+                        <Badge className="absolute top-2 left-2 capitalize">
+                          {snippet.platform_target?.replace(/_/g, " ")}
+                        </Badge>
+                        <Badge className="absolute bottom-2 right-2 bg-black/70">
+                          <Clock className="h-3 w-3 mr-1" />
+                          {snippet.end_seconds - snippet.start_seconds}s
+                        </Badge>
+                      </div>
+                      <CardContent className="p-4">
+                        <h4 className="font-semibold truncate mb-1">{snippet.snippet_title}</h4>
+                        {snippet.caption_text && (
+                          <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
+                            {snippet.caption_text}
+                          </p>
+                        )}
+                        <Button className="w-full" size="sm">
+                          <Calendar className="h-4 w-4 mr-2" />
+                          Schedule Post
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Tab 3: Compliance Audit */}
         <TabsContent value="compliance">
           <Card className="border-2">
             <CardHeader className="bg-muted/30">

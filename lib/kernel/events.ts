@@ -219,4 +219,13 @@ export enum KernelEvent {
   VOICE_CLONE_TRAINING_FAILED    = 'voice_clone_training_failed',
   VOICE_CLONE_READY              = 'voice_clone_ready',
   VOICE_CLONE_DEFAULT_SET        = 'voice_clone_default_set',
+
+  // ── Layer 8.4 — Snippet & Repurposing Engine ────────────────────────────
+  SNIPPET_CREATED                = 'snippet_created',
+  SNIPPET_APPROVED               = 'snippet_approved',
+  SNIPPET_REJECTED               = 'snippet_rejected',
+  SNIPPET_SCHEDULED              = 'snippet_scheduled',
+  SNIPPET_PUBLISHED              = 'snippet_published',
+  CONTENT_REPURPOSED             = 'content_repurposed',
+  REPURPOSE_BATCH_COMPLETED      = 'repurpose_batch_completed',
 }

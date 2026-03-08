@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Sparkles,
   ArrowRight,
+  Scissors,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
@@ -318,11 +319,11 @@ export function VideosDashboard() {
         )}
 
         {/* Quick Links */}
-        <div className="flex gap-2 pt-2">
+        <div className="flex flex-wrap gap-2 pt-2">
           <Button
             variant="outline"
             size="sm"
-            className="flex-1 bg-transparent"
+            className="flex-1 min-w-[80px] bg-transparent"
             onClick={() => router.push("/dashboard/videos/library")}
           >
             Library
@@ -330,7 +331,15 @@ export function VideosDashboard() {
           <Button
             variant="outline"
             size="sm"
-            className="flex-1 bg-transparent"
+            className="flex-1 min-w-[80px] bg-transparent"
+            onClick={() => router.push("/dashboard/videos/snippets")}
+          >
+            Snippets
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1 min-w-[80px] bg-transparent"
             onClick={() => router.push("/dashboard/videos/board")}
           >
             Pipeline
@@ -338,7 +347,7 @@ export function VideosDashboard() {
           <Button
             variant="outline"
             size="sm"
-            className="flex-1 bg-transparent"
+            className="flex-1 min-w-[80px] bg-transparent"
             onClick={() => router.push("/dashboard/videos/analytics")}
           >
             Analytics
