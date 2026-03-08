@@ -50,7 +50,7 @@ export async function getContactVideoEngagement(contactId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("video_scripts")
+    .from("video_scripts_library")
     .select("*")
     .eq("target_contact_id", contactId)
     .order("created_at", { ascending: false })
