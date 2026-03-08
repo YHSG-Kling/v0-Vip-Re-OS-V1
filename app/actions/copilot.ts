@@ -275,7 +275,7 @@ export async function generateDailyGameplan(userId: string) {
 
   // Get approved content ready to post
   const { data: contentReady } = await supabase
-    .from("video_scripts")
+    .from("video_scripts_library")
     .select("*, generated_videos(*), contacts(*)")
     .eq("agent_id", userId)
     .eq("brokerage_id", profile.brokerage_id)
