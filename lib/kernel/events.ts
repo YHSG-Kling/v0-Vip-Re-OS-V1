@@ -233,4 +233,57 @@ export enum KernelEvent {
   VIDEO_PERFORMANCE_UPDATED      = 'video_performance_updated',
   VIDEO_HIGH_PERFORMER_DETECTED  = 'video_high_performer_detected',
   VIDEO_LOW_PERFORMER_DETECTED   = 'video_low_performer_detected',
+
+  // ── Layer 9 — Marketing & Automation ────────────────────────────────────
+  MARKETING_CAMPAIGN_CREATED         = 'marketing_campaign_created',
+  MARKETING_CAMPAIGN_APPROVED        = 'marketing_campaign_approved',
+  MARKETING_CAMPAIGN_LAUNCHED        = 'marketing_campaign_launched',
+  MARKETING_CAMPAIGN_PAUSED          = 'marketing_campaign_paused',
+  MARKETING_CAMPAIGN_ENDED           = 'marketing_campaign_ended',
+
+  // ── Layer 9.2 — Social ───────────────────────────────────────────────────
+  SOCIAL_POST_SCHEDULED              = 'social_post_scheduled',
+  SOCIAL_POST_PUBLISHED              = 'social_post_published',
+  SOCIAL_POST_FAILED                 = 'social_post_failed',
+  SOCIAL_POST_SHARED_BY_AGENT        = 'social_post_shared_by_agent',
+
+  // ── Layer 9.3 — Content Predictor ────────────────────────────────────────
+  CONTENT_PERFORMANCE_PREDICTED      = 'content_performance_predicted',
+
+  // ── Layer 9.4 — Competitive Monitor ─────────────────────────────────────
+  COMPETITOR_CONTENT_ALERTED         = 'competitor_content_alerted',
+
+  // ── Layer 9.5 — Ads & Audiences ──────────────────────────────────────────
+  AD_CAMPAIGN_CREATED                = 'ad_campaign_created',
+  AD_CAMPAIGN_LAUNCHED               = 'ad_campaign_launched',
+  RETARGETING_AUDIENCE_CREATED       = 'retargeting_audience_created',
+  RETARGETING_AUDIENCE_SYNCED        = 'retargeting_audience_synced',
+
+  // ── Layer 9.6 — SEO & Blog ───────────────────────────────────────────────
+  BLOG_POST_GENERATED                = 'blog_post_generated',
+  BLOG_POST_PUBLISHED                = 'blog_post_published',
+
+  // ── Layer 9.7 — Newsletter ───────────────────────────────────────────────
+  NEWSLETTER_SCHEDULED               = 'newsletter_scheduled',
+  NEWSLETTER_SENT                    = 'newsletter_sent',
+
+  // ── Layer 9.8 — Podcast ──────────────────────────────────────────────────
+  PODCAST_EPISODE_GENERATED          = 'podcast_episode_generated',
+  PODCAST_EPISODE_DISTRIBUTED        = 'podcast_episode_distributed',
+  PODCAST_EPISODE_FAILED             = 'podcast_episode_failed',
+
+  // ── Layer 9.9 — Direct Mail ──────────────────────────────────────────────
+  DIRECT_MAIL_CAMPAIGN_CREATED       = 'direct_mail_campaign_created',
+  DIRECT_MAIL_SENT                   = 'direct_mail_sent',
+
+  // ── Layer 9.10 — Listing Tier ────────────────────────────────────────────
+  LISTING_TIER_ASSIGNED              = 'listing_tier_assigned',
+
+  // ── Layer 9.11 — Omni-Presence ──────────────────────────────────────────
+  OMNIPRESENCE_PIPELINE_STARTED      = 'omnipresence_pipeline_started',
+  OMNIPRESENCE_PIPELINE_COMPLETED    = 'omnipresence_pipeline_completed',
+
+  // ── Layer 9.12 — ROI ─────────────────────────────────────────────────────
+  CAMPAIGN_ROI_UPDATED               = 'campaign_roi_updated',
+  QR_ATTACHED_TO_ASSET               = 'qr_attached_to_asset',
 }
