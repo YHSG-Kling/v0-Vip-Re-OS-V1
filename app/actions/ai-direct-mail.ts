@@ -6,6 +6,14 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import {
+  canAccessFeature,
+  incrementFeatureUsage,
+  applyBrandVoice,
+  evaluateOutbound,
+  KernelEvent,
+  processKernelEvent,
+} from "@/lib/kernel"
 
 // ============================================
 // AI DIRECT MAIL SYSTEM
@@ -47,6 +55,8 @@ const TEMPLATE_TYPES = [
 // ============================================
 export async function aiWritePostcardCopy(params: {
   agentId: string
+  brokerageId: string
+  teamId?: string
   templateType: string
   propertyData?: any
   targetAudience: "homeowners" | "renters" | "investors" | "expired" | "fsbo"
@@ -57,12 +67,18 @@ export async function aiWritePostcardCopy(params: {
       return { success: false, error: "Invalid agent ID" }
     }
 
+    // ── Kernel Gate: canAccessFeature ──
+    const access = await canAccessFeature(params.agentId, "direct_mail")
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Direct mail feature not available" }
+    }
+
     const supabase = await createClient()
 
     // Get agent's brand voice
     const { data: agent } = await supabase
       .from("users")
-      .select("first_name, last_name, phone, email")
+      .select("first_name, last_name, phone, email, brokerage_id, team_id")
       .eq("id", params.agentId)
       .single()
 
@@ -102,7 +118,30 @@ Rules:
 Create the primary copy plus 2 variants with different approaches.`,
     })
 
-    return { success: true, copy }
+    // ── Apply brand voice compliance ──
+    const brandResult = await applyBrandVoice({
+      brokerageId: params.brokerageId,
+      teamId: params.teamId,
+      actorUserId: params.agentId,
+      actorRole: "agent",
+      journeyType: "marketing",
+      persona: "seller",
+      messageType: "email",
+      content: `${copy.headline} ${copy.bodyText} ${copy.callToAction}`,
+    })
+
+    if (brandResult.blocked) {
+      return {
+        success: false,
+        error: "Brand voice compliance failed",
+        violations: brandResult.violations,
+      }
+    }
+
+    // ── Increment usage counter ──
+    await incrementFeatureUsage(params.agentId, "direct_mail")
+
+    return { success: true, copy, brandVoiceApplied: true }
   } catch (error) {
     console.error("[AI Direct Mail] Copywriter error:", error)
     return handleError(error, "aiWritePostcardCopy")
@@ -176,6 +215,7 @@ Consider:
 // ============================================
 export async function aiSelectTargetAudience(params: {
   agentId: string
+  brokerageId: string
   campaignGoal: "listings" | "buyers" | "farming" | "brand_awareness" | "past_clients"
   budget: number
   area: string
@@ -183,6 +223,12 @@ export async function aiSelectTargetAudience(params: {
   try {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
+    }
+
+    // ── Kernel Gate: canAccessFeature ──
+    const access = await canAccessFeature(params.agentId, "direct_mail")
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
 
     const supabase = await createClient()
@@ -255,6 +301,7 @@ Recommend targeting strategy with reasoning.`,
 // ============================================
 export async function aiPredictCampaignROI(params: {
   agentId: string
+  brokerageId: string
   mailType: string
   quantity: number
   targetSegment: string
@@ -263,6 +310,12 @@ export async function aiPredictCampaignROI(params: {
   try {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
+    }
+
+    // ── Kernel Gate: canAccessFeature ──
+    const access = await canAccessFeature(params.agentId, "direct_mail")
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
 
     const mailPiece = MAIL_TYPES[params.mailType] || MAIL_TYPES.postcard_4x6
@@ -346,16 +399,24 @@ export async function getDirectMailCampaigns(agentId: string) {
 
 export async function createDirectMailCampaign(params: {
   agentId: string
+  brokerageId: string
   campaignName: string
   targetAudience: string
   mailingType: "postcard" | "letter" | "brochure"
   designTemplate?: string
   budget?: number
   sendDate?: string
+  trackingEnabled?: boolean
 }) {
   try {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
+    }
+
+    // ── Kernel Gate: canAccessFeature ──
+    const access = await canAccessFeature(params.agentId, "direct_mail")
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
 
     const supabase = await createClient()
@@ -385,7 +446,21 @@ export async function createDirectMailCampaign(params: {
 
     if (error) throw error
 
+    // ── Increment usage counter ──
+    await incrementFeatureUsage(params.agentId, "direct_mail")
+
+    // ── Fire kernel event ──
+    await processKernelEvent({
+      event: KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED,
+      brokerageId: params.brokerageId,
+      entityType: "direct_mail_campaign",
+      entityId: campaign.id,
+    }).catch((err) => {
+      console.error("[AI Direct Mail] Event processing failed (non-blocking):", err)
+    })
+
     revalidatePath("/content-studio")
+    revalidatePath("/dashboard/campaigns/mail")
 
     return {
       success: true,
@@ -483,10 +558,16 @@ export async function validateMailingList(params: {
 // ============================================
 // 7. SUBMIT TO PRINT FULFILLMENT
 // ============================================
-export async function submitToPrintFulfillment(params: { campaignId: string; agentId: string }) {
+export async function submitToPrintFulfillment(params: { campaignId: string; agentId: string; brokerageId: string }) {
   try {
     if (!isValidUUID(params.campaignId) || !isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid IDs" }
+    }
+
+    // ── Kernel Gate: canAccessFeature ──
+    const access = await canAccessFeature(params.agentId, "direct_mail")
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
 
     const supabase = await createClient()
@@ -535,7 +616,18 @@ export async function submitToPrintFulfillment(params: { campaignId: string; age
       .update({ status: "submitted" })
       .eq("campaign_id", params.campaignId)
 
+    // ── Fire kernel event ──
+    await processKernelEvent({
+      event: KernelEvent.DIRECT_MAIL_SENT,
+      brokerageId: params.brokerageId,
+      entityType: "direct_mail_campaign",
+      entityId: params.campaignId,
+    }).catch((err) => {
+      console.error("[AI Direct Mail] Event processing failed (non-blocking):", err)
+    })
+
     revalidatePath("/content-studio")
+    revalidatePath("/dashboard/campaigns/mail")
 
     return {
       success: true,
@@ -632,10 +724,16 @@ export async function getDirectMailAnalytics(params: { agentId: string; campaign
 // ============================================
 // 10. AI CAMPAIGN PERFORMANCE ANALYZER
 // ============================================
-export async function aiAnalyzeCampaignPerformance(params: { agentId: string }) {
+export async function aiAnalyzeCampaignPerformance(params: { agentId: string; brokerageId: string }) {
   try {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
+    }
+
+    // ── Kernel Gate: canAccessFeature ──
+    const access = await canAccessFeature(params.agentId, "direct_mail")
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
 
     const supabase = await createClient()
