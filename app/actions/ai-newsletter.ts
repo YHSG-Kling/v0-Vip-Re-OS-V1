@@ -202,7 +202,7 @@ export async function aiOptimizeSendTime(params: {
 
     // Get historical email performance
     const { data: emailStats } = await supabase
-      .from("newsletter_sends")
+      .from("newsletter_scheduled_sends")
       .select("sent_at, open_rate, click_rate")
       .eq("agent_id", params.agentId)
       .order("sent_at", { ascending: false })
@@ -269,7 +269,7 @@ export async function aiPersonalizeNewsletter(params: {
 
     // Get newsletter content
     const { data: newsletter } = await supabase
-      .from("newsletters")
+      .from("newsletter_campaigns")
       .select("*")
       .eq("id", params.newsletterId)
       .single()
@@ -331,7 +331,7 @@ export async function createNewsletterCampaign(params: {
     const supabase = await createClient()
 
     const { data: newsletter, error } = await supabase
-      .from("newsletters")
+      .from("newsletter_campaigns")
       .insert({
         agent_id: params.agentId,
         title: params.title,
@@ -382,7 +382,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
 
     // Get newsletter and subscribers
     const { data: newsletter } = await supabase
-      .from("newsletters")
+      .from("newsletter_campaigns")
       .select("*")
       .eq("id", params.newsletterId)
       .single()
@@ -404,7 +404,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
 
     // Create send record
     const { data: sendRecord } = await supabase
-      .from("newsletter_sends")
+      .from("newsletter_scheduled_sends")
       .insert({
         newsletter_id: params.newsletterId,
         agent_id: params.agentId,
@@ -428,7 +428,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
 
     // Update newsletter status
     await supabase
-      .from("newsletters")
+      .from("newsletter_campaigns")
       .update({ status: "sent", sent_at: new Date().toISOString() })
       .eq("id", params.newsletterId)
 
@@ -457,7 +457,7 @@ export async function getNewsletterAnalytics(params: { newsletterId: string; age
     const supabase = await createClient()
 
     const { data: send } = await supabase
-      .from("newsletter_sends")
+      .from("newsletter_scheduled_sends")
       .select("*")
       .eq("newsletter_id", params.newsletterId)
       .order("sent_at", { ascending: false })
@@ -501,7 +501,7 @@ export async function aiAnalyzeNewsletterPerformance(params: { agentId: string; 
 
     // Get historical performance
     const { data: sends } = await supabase
-      .from("newsletter_sends")
+      .from("newsletter_scheduled_sends")
       .select("*, newsletter:newsletters(*)")
       .eq("agent_id", params.agentId)
       .order("sent_at", { ascending: false })
@@ -600,7 +600,7 @@ export async function getNewsletters(agentId: string) {
     const supabase = await createClient()
 
     const { data, error } = await supabase
-      .from("newsletters")
+      .from("newsletter_campaigns")
       .select("*")
       .eq("agent_id", agentId)
       .order("created_at", { ascending: false })
