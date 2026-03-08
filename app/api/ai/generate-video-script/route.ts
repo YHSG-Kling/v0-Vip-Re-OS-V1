@@ -1,289 +1,466 @@
+/**
+ * Layer 8.1 AI Script Generator — API Route
+ * 
+ * Generates video scripts using Claude API with kernel governance.
+ * 
+ * CRITICAL RULES:
+ * - Writes to public.video_scripts_library (canonical table)
+ * - Writes lifecycle_events row for every script generated
+ * - Runs kernel compliance check before finalizing approval_status
+ * - NEVER references public.video_scripts or public.script_templates
+ */
+
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 
-// Tone adjustments based on persona type
+// ─── SCRIPT TYPES ────────────────────────────────────────────────────────────
+
+const SCRIPT_TYPES = [
+  "property_tour",
+  "buyer_education", 
+  "market_update",
+  "agent_intro",
+  "listing_presentation",
+] as const
+
+type ScriptType = (typeof SCRIPT_TYPES)[number]
+
+// ─── COMPLIANCE SENSITIVE PHRASES ────────────────────────────────────────────
+
+const COMPLIANCE_RISK_PHRASES = [
+  // Fair Housing
+  "family-friendly neighborhood",
+  "great schools",
+  "safe area",
+  "exclusive community",
+  "up and coming",
+  // Investment advice
+  "guaranteed returns",
+  "sure investment",
+  "will appreciate",
+  "can't lose money",
+  // Misleading claims
+  "best deal",
+  "lowest price",
+  "won't last long",
+  "act now",
+  "limited time",
+]
+
+// ─── TONE ADJUSTMENTS ────────────────────────────────────────────────────────
+
 const TONE_ADJUSTMENTS: Record<string, string> = {
-  military_buyer: "professional, patriotic, emphasize stability and VA benefits",
-  first_time_buyer: "educational, patient, reassuring, avoid jargon",
-  luxury_buyer: "sophisticated, exclusive, emphasize investment and lifestyle",
-  investor: "data-driven, ROI-focused, market analysis heavy",
-  downsizer: "empathetic, emphasize simplification and life stage transition",
-  relocating: "informative, emphasize community and settling in support",
-  growing_family: "warm, family-focused, emphasize space and schools",
-  empty_nester: "understanding, focus on lifestyle change and new possibilities",
-  default: "professional but warm, client-focused",
+  professional: "authoritative, polished, industry-expert tone",
+  friendly: "warm, approachable, conversational tone",
+  energetic: "enthusiastic, dynamic, high-energy tone",
+  educational: "informative, patient, explanatory tone",
+  luxury: "sophisticated, exclusive, premium tone",
+  empathetic: "understanding, supportive, caring tone",
+  default: "professional but warm, client-focused tone",
 }
+
+// ─── MAIN HANDLER ────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
+    const serviceSupabase = createServiceClient()
     const body = await request.json()
 
-    const { video_type, client_id, property_id, agent_id, custom_context, template_id } = body
+    const {
+      script_type,
+      listing_id,
+      contact_id,
+      template_id,
+      agent_id,
+      brokerage_id,
+      custom_context,
+      brand_voice_tone,
+      duration_target_seconds,
+      save_to_library,
+    } = body
 
-    if (!video_type || !agent_id) {
-      return NextResponse.json({ error: "Missing required fields: video_type, agent_id" }, { status: 400 })
+    // Validate required fields
+    if (!script_type || !SCRIPT_TYPES.includes(script_type)) {
+      return NextResponse.json(
+        { error: `Invalid script_type. Must be one of: ${SCRIPT_TYPES.join(", ")}` },
+        { status: 400 }
+      )
     }
 
-    // Fetch agent info
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("*, users(*)")
-      .eq("id", agent_id)
-      .single()
-
-    // Fetch template if specified
-    let templatePrompt = ""
-    if (template_id) {
-      const { data: template } = await supabase.from("video_scripts_library").select("*").eq("id", template_id).single()
-
-      if (template) {
-        templatePrompt = template.base_prompt
-        // Increment usage count
-        await supabase
-          .from("video_scripts_library")
-          .update({ usage_count: (template.usage_count || 0) + 1 })
-          .eq("id", template_id)
-      }
+    if (!brokerage_id) {
+      return NextResponse.json({ error: "brokerage_id is required" }, { status: 400 })
     }
 
-    // Fetch persona and context based on video type
-    let persona: any = null
-    let property: any = null
-    let marketStats: any = null
-    let contextData: Record<string, any> = {}
-
-    if (client_id) {
-      // Try leads table first, then contacts
-      const { data: lead } = await supabase
-        .from("leads")
-        .select("*, client_detailed_personas(*)")
-        .eq("id", client_id)
+    // ── Fetch agent info ─────────────────────────────────────────────────────
+    let agentInfo: Record<string, any> = {}
+    if (agent_id) {
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("*, users(first_name, last_name, email)")
+        .eq("id", agent_id)
         .single()
 
-      if (lead) {
-        persona = lead.client_detailed_personas || {
-          persona_type: lead.persona_type || "default",
-          pain_points: lead.preferences_json?.pain_points || [],
-          buying_motivations: lead.preferences_json?.motivations || [],
-          communication_preferences: lead.preferences_json?.communication_style || "friendly",
-        }
-        contextData.client_name = lead.first_name || lead.name
-        contextData.client_email = lead.email
-        contextData.preferences = lead.preferences_json
-      } else {
-        const { data: contact } = await supabase.from("contacts").select("*").eq("id", client_id).single()
-
-        if (contact) {
-          contextData.client_name = contact.first_name
-          persona = { persona_type: contact.contact_type || "default" }
+      if (agent) {
+        agentInfo = {
+          name: `${agent.users?.first_name ?? ""} ${agent.users?.last_name ?? ""}`.trim(),
+          years_experience: agent.years_experience,
+          specializations: agent.specializations,
+          bio: agent.bio,
         }
       }
     }
 
-    if (property_id) {
-      const { data: prop } = await supabase.from("properties").select("*").eq("id", property_id).single()
+    // ── Fetch template if specified ──────────────────────────────────────────
+    let templateData: Record<string, any> | null = null
+    if (template_id) {
+      const { data: template } = await supabase
+        .from("video_templates")
+        .select("*")
+        .eq("id", template_id)
+        .single()
 
-      if (prop) {
-        property = prop
-        contextData.property_address = prop.address
-        contextData.beds = prop.bedrooms || prop.beds
-        contextData.baths = prop.bathrooms || prop.baths
-        contextData.sqft = prop.square_feet || prop.sqft
-        contextData.listing_price = prop.price || prop.listing_price
-        contextData.features_array = prop.features_json || prop.features || []
+      if (template) {
+        templateData = template
       }
     }
 
-    // Fetch market stats if needed
-    if (video_type === "market_update") {
-      const area = body.area || contextData.property_address?.split(",")[1]?.trim()
-      if (area) {
-        const { data: stats } = await supabase
-          .from("market_stats")
-          .select("*")
-          .ilike("area", `%${area}%`)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .single()
+    // ── Fetch listing if specified ───────────────────────────────────────────
+    let listingInfo: Record<string, any> = {}
+    if (listing_id) {
+      const { data: listing } = await supabase
+        .from("listings")
+        .select("*")
+        .eq("id", listing_id)
+        .single()
 
-        if (stats) {
-          marketStats = stats
-          contextData.avg_price = stats.avg_price
-          contextData.avg_dom = stats.days_on_market
-          contextData.inventory_count = stats.inventory_levels
-          contextData.price_change_percentage = stats.trends?.price_change || 0
+      if (listing) {
+        listingInfo = {
+          address: listing.address,
+          city: listing.city,
+          state: listing.state,
+          zip: listing.zip,
+          price: listing.list_price,
+          beds: listing.bedrooms,
+          baths: listing.bathrooms,
+          sqft: listing.sqft,
         }
       }
     }
 
-    // Build the AI prompt
-    const personaType = persona?.persona_type || "default"
-    const tone = TONE_ADJUSTMENTS[personaType] || TONE_ADJUSTMENTS.default
+    // ── Fetch contact if specified ───────────────────────────────────────────
+    let contactInfo: Record<string, any> = {}
+    if (contact_id) {
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("*")
+        .eq("id", contact_id)
+        .single()
 
-    let systemPrompt = `You are an expert real estate video script writer. Create engaging, authentic scripts that connect emotionally with the target audience.
+      if (contact) {
+        contactInfo = {
+          name: `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim(),
+          persona: contact.contact_persona,
+          buyer_stage: contact.buyer_stage,
+        }
+      }
+    }
 
-CRITICAL: THEM-FIRST CONTENT PHILOSOPHY
-- Write 80-90% about the client and their situation
-- Focus on THEIR needs, emotions, and goals
-- Use "you" and "your" extensively (15%+ of words)
-- Minimize "I", "me", "my" to under 10%
-- Start with THEIR situation/pain point, not agent introduction
+    // ── Fetch brand voice settings ───────────────────────────────────────────
+    let brandVoiceGuidance = ""
+    try {
+      const brandResult = await applyBrandVoice({
+        brokerageId: brokerage_id,
+        actorUserId: agent_id,
+        actorRole: "agent",
+        journeyType: script_type.includes("buyer") ? "buyer" : "seller",
+        persona: contactInfo.persona ?? "default",
+        messageType: "ai",
+        content: "",
+      })
+
+      if (brandResult.notes.length > 0) {
+        brandVoiceGuidance = `\n\nBRAND VOICE GUIDELINES:\n${brandResult.notes.join("\n")}`
+      }
+    } catch (err) {
+      console.warn("[generate-video-script] Brand voice fetch failed:", err)
+    }
+
+    // ── Build the AI prompt ──────────────────────────────────────────────────
+    const tone = TONE_ADJUSTMENTS[brand_voice_tone ?? "default"] ?? TONE_ADJUSTMENTS.default
+    const targetDuration = duration_target_seconds ?? (templateData?.duration_seconds ?? 90)
+    const wordCount = Math.round((targetDuration / 60) * 150) // ~150 words per minute
+
+    const systemPrompt = `You are an expert real estate video script writer creating content for professional agents.
+
+CRITICAL COMPLIANCE RULES:
+- NEVER use Fair Housing violation language (protected classes, steering, discriminatory phrases)
+- NEVER make investment guarantees or financial promises
+- NEVER use high-pressure sales tactics
+- ALWAYS focus on the property features, not the neighborhood demographics
+- Use "you" and "your" extensively — make it about the viewer
+- Avoid claims that can't be substantiated
+
+THEM-FIRST PHILOSOPHY:
+- Write 80%+ about the client's needs and situation
+- Minimize agent self-promotion
+- Start with THEIR pain point or aspiration
 - Show understanding of what THEY care about
-- Make it feel personal and specific to them`
+
+TARGET DURATION: ${targetDuration} seconds (~${wordCount} words)
+TONE: ${tone}
+${brandVoiceGuidance}`
 
     let userPrompt = ""
 
-    if (templatePrompt) {
-      // Use template and replace variables
-      userPrompt = templatePrompt
-      for (const [key, value] of Object.entries(contextData)) {
-        userPrompt = userPrompt.replace(new RegExp(`{{${key}}}`, "g"), String(value || ""))
-      }
-      userPrompt = userPrompt.replace(/{{persona_type}}/g, personaType)
-      userPrompt = userPrompt.replace(/{{tone_based_on_persona}}/g, tone)
-      userPrompt = userPrompt.replace(/{{pain_points}}/g, JSON.stringify(persona?.pain_points || []))
-      userPrompt = userPrompt.replace(/{{buying_priorities}}/g, JSON.stringify(persona?.buying_motivations || []))
-    } else {
-      // Build prompt based on video type
-      switch (video_type) {
-        case "listing_tour":
-          userPrompt = `Generate a 90-second video script for a listing tour.
+    switch (script_type as ScriptType) {
+      case "property_tour":
+        userPrompt = `Create a property tour video script.
 
-PROPERTY: ${contextData.property_address || "Property Address"}
-- ${contextData.beds || "N/A"} beds, ${contextData.baths || "N/A"} baths, ${contextData.sqft || "N/A"} sqft
-- Price: $${contextData.listing_price?.toLocaleString() || "N/A"}
-- Features: ${JSON.stringify(contextData.features_array || [])}
+PROPERTY DETAILS:
+${listingInfo.address ? `Address: ${listingInfo.address}, ${listingInfo.city}, ${listingInfo.state}` : "Address: [Property Address]"}
+${listingInfo.beds ? `Bedrooms: ${listingInfo.beds}` : ""}
+${listingInfo.baths ? `Bathrooms: ${listingInfo.baths}` : ""}
+${listingInfo.sqft ? `Square Feet: ${listingInfo.sqft.toLocaleString()}` : ""}
+${listingInfo.price ? `Price: $${listingInfo.price.toLocaleString()}` : ""}
 
-TARGET BUYER PERSONA: ${personaType}
-TONE: ${tone}
+${custom_context ? `ADDITIONAL CONTEXT:\n${custom_context}` : ""}
 
-Create sections: [INTRO], [LIFESTYLE], [FEATURES], [NEIGHBORHOOD], [CTA]
-Be specific and vivid. Focus on benefits, not just features.`
-          break
+Structure the script with:
+1. HOOK (5 seconds) - Grab attention with the most compelling feature
+2. LIFESTYLE (20 seconds) - Paint a picture of living there
+3. KEY FEATURES (30 seconds) - Highlight 3-4 standout features
+4. NEIGHBORHOOD BENEFITS (15 seconds) - Local amenities (no demographic mentions)
+5. CALL TO ACTION (10 seconds) - Next steps to learn more
 
-        case "personalized_buyer":
-          userPrompt = `Write a personalized video message for ${contextData.client_name || "the client"} about properties matching their search.
+Return ONLY the script text, ready to be read by a presenter.`
+        break
 
-CLIENT PROFILE:
-- Name: ${contextData.client_name}
-- Persona: ${personaType}
-- Preferences: ${JSON.stringify(contextData.preferences || {})}
+      case "buyer_education":
+        userPrompt = `Create an educational video script for home buyers.
 
-SCRIPT STRUCTURE:
-1. Personal greeting (5 sec)
-2. "I was thinking of you..." (10 sec)
-3. Why this matters to THEM (40 sec)
-4. Next steps (10 sec)
+TARGET AUDIENCE: ${contactInfo.persona ?? "Home buyers"}
+BUYER STAGE: ${contactInfo.buyer_stage ?? "Researching"}
 
-TONE: ${tone}
-Make them feel like you're truly thinking about THEIR needs.`
-          break
+${custom_context ? `TOPIC/FOCUS:\n${custom_context}` : "Focus on the home buying process overview"}
 
-        case "market_update":
-          userPrompt = `Create a 2-minute market update video script.
+Structure the script with:
+1. HOOK (5 seconds) - Common question or pain point
+2. THE CHALLENGE (15 seconds) - Acknowledge their concern
+3. EDUCATION (40 seconds) - Clear, actionable information
+4. EXPERT TIP (20 seconds) - Pro insight they won't find online
+5. NEXT STEP (10 seconds) - How to apply this knowledge
 
-MARKET DATA:
-- Area: ${body.area || contextData.property_address?.split(",")[1]?.trim() || "Local Market"}
-- Avg Price: $${contextData.avg_price?.toLocaleString() || "N/A"}
-- Days on Market: ${contextData.avg_dom || "N/A"}
-- Inventory: ${contextData.inventory_count || "N/A"} homes
+Return ONLY the script text, ready to be read by a presenter.`
+        break
 
-TARGET AUDIENCE: ${personaType}
-TONE: ${tone}
+      case "market_update":
+        userPrompt = `Create a market update video script.
 
-Create sections: [OPENING], [THE NUMBERS], [WHAT IT MEANS FOR THEM], [PREDICTIONS], [ACTION]
-Make data accessible and relevant to their decision-making.`
-          break
+${custom_context ? `MARKET/AREA:\n${custom_context}` : "Focus on general market trends"}
 
-        case "agent_intro":
-          userPrompt = `Write a 60-second agent introduction video script.
+Structure the script with:
+1. HOOK (5 seconds) - Surprising stat or trend
+2. THE DATA (25 seconds) - Key market metrics (prices, inventory, days on market)
+3. WHAT IT MEANS (30 seconds) - Interpret for buyers AND sellers
+4. PREDICTIONS (15 seconds) - Near-term outlook
+5. CALL TO ACTION (15 seconds) - How to take advantage of current conditions
 
-AGENT: ${agent?.first_name || "Agent"} ${agent?.last_name || ""}
-- Experience: ${agent?.years_experience || "N/A"} years
-- Specialties: ${JSON.stringify(agent?.specialties || [])}
-- Areas: ${JSON.stringify(agent?.areas_served || [])}
+Return ONLY the script text, ready to be read by a presenter.`
+        break
 
-TARGET AUDIENCE: ${personaType}
-TONE: ${tone}
+      case "agent_intro":
+        userPrompt = `Create an agent introduction video script.
 
-Create sections: [HOOK], [RELATABILITY], [EXPERTISE], [VALUE PROMISE], [CTA]
-Make it feel like a genuine conversation, not a rehearsed pitch.`
-          break
+AGENT INFO:
+${agentInfo.name ? `Name: ${agentInfo.name}` : ""}
+${agentInfo.years_experience ? `Experience: ${agentInfo.years_experience} years` : ""}
+${agentInfo.specializations ? `Specializations: ${agentInfo.specializations}` : ""}
 
-        case "memory_video":
-          userPrompt = `Create a heartfelt 2-minute video script helping a senior seller say goodbye to their home.
+${custom_context ? `PERSONAL NOTES:\n${custom_context}` : ""}
 
-Use the memories and details provided to create something deeply personal.
-Context: ${custom_context || "Long-time homeowner selling their beloved home"}
+Structure the script with:
+1. HOOK (5 seconds) - Why you got into real estate (relatable moment)
+2. YOUR WHY (20 seconds) - What drives you to help clients
+3. VALUE PROPOSITION (30 seconds) - What makes working with you different
+4. PROOF (20 seconds) - Brief success story or testimonial mention
+5. INVITATION (15 seconds) - Warm invitation to connect
 
-TONE: Warm, respectful, celebratory (not sad)
-Honor their journey while exciting them for what's next.`
-          break
+IMPORTANT: This is NOT a resume reading. Make it personal and relatable.
 
-        default:
-          userPrompt = `Generate a ${video_type} video script.
-Context: ${custom_context || "Real estate video content"}
-Target Audience: ${personaType}
-TONE: ${tone}`
-      }
+Return ONLY the script text, ready to be read by the agent.`
+        break
+
+      case "listing_presentation":
+        userPrompt = `Create a listing presentation video script for a seller.
+
+${listingInfo.address ? `PROPERTY: ${listingInfo.address}` : ""}
+${contactInfo.name ? `SELLER: ${contactInfo.name}` : ""}
+
+${custom_context ? `PRESENTATION FOCUS:\n${custom_context}` : ""}
+
+Structure the script with:
+1. PERSONAL GREETING (10 seconds) - Acknowledge the seller by name
+2. UNDERSTANDING THEIR GOALS (20 seconds) - Show you listened to their needs
+3. MARKETING PLAN OVERVIEW (35 seconds) - How you'll showcase their home
+4. PRICING STRATEGY (15 seconds) - Your approach to getting top dollar
+5. NEXT STEPS (10 seconds) - What happens if they choose you
+
+Return ONLY the script text, ready to be read by the agent.`
+        break
     }
 
-    // Generate script using AI
-    const { text: script } = await generateText({
-      model: "openai/gpt-4o-mini",
+    // Use template default_script as base if available
+    if (templateData?.default_script) {
+      userPrompt += `\n\nTEMPLATE STRUCTURE TO FOLLOW:\n${templateData.default_script}`
+    }
+
+    // ── Generate script using AI ─────────────────────────────────────────────
+    const { text: generatedScript } = await generateText({
+      model: "anthropic/claude-sonnet-4-20250514",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.7,
       maxTokens: 2000,
     })
 
-    // Calculate word count and estimated duration
-    const wordCount = script.split(/\s+/).length
-    const estimatedDuration = Math.ceil(wordCount / 150) * 60 // 150 words per minute
+    // ── Compliance check ─────────────────────────────────────────────────────
+    const scriptLower = generatedScript.toLowerCase()
+    const complianceIssues: string[] = []
 
-    // Create video project record
-    const { data: project, error: projectError } = await supabase
-      .from("ai_video_projects")
-      .insert({
-        lead_id: client_id,
-        contact_id: client_id,
-        agent_id,
-        video_type,
-        project_type: video_type,
-        script_content: script,
-        script_generated_by: "ai",
-        target_persona: personaType,
-        personalization_data: contextData,
-        persona_used: {
-          persona_type: personaType,
-          tone_applied: tone,
-          pain_points_addressed: persona?.pain_points || [],
-        },
-        heygen_status: "script_ready",
-        template_id,
-        duration_seconds: estimatedDuration,
+    for (const phrase of COMPLIANCE_RISK_PHRASES) {
+      if (scriptLower.includes(phrase.toLowerCase())) {
+        complianceIssues.push(`Contains risky phrase: "${phrase}"`)
+      }
+    }
+
+    // Determine approval status based on compliance
+    let approvalStatus: "draft" | "pending_review" | "approved" | "rejected" = "draft"
+    let complianceReviewNotes: string | null = null
+
+    if (complianceIssues.length > 0) {
+      approvalStatus = "pending_review"
+      complianceReviewNotes = `Auto-flagged for review: ${complianceIssues.join("; ")}`
+    }
+
+    // ── Brand voice check ────────────────────────────────────────────────────
+    try {
+      const brandCheck = await applyBrandVoice({
+        brokerageId: brokerage_id,
+        actorUserId: agent_id,
+        actorRole: "agent",
+        journeyType: script_type.includes("buyer") ? "buyer" : "seller",
+        persona: contactInfo.persona ?? "default",
+        messageType: "ai",
+        content: generatedScript,
       })
-      .select()
-      .single()
 
-    if (projectError) {
-      console.error("[v0] Project creation error:", projectError)
-      throw projectError
+      if (brandCheck.violations.length > 0) {
+        approvalStatus = "pending_review"
+        const brandIssues = brandCheck.violations.join("; ")
+        complianceReviewNotes = complianceReviewNotes 
+          ? `${complianceReviewNotes}. Brand voice: ${brandIssues}`
+          : `Brand voice issues: ${brandIssues}`
+      }
+    } catch (err) {
+      console.warn("[generate-video-script] Brand voice check failed:", err)
+    }
+
+    // ── Calculate word count and duration ────────────────────────────────────
+    const wordCountActual = generatedScript.split(/\s+/).length
+    const estimatedDuration = Math.ceil(wordCountActual / 2.5) // ~150 wpm = 2.5 wps
+
+    // ── Determine required brand assets ──────────────────────────────────────
+    const requiredBrandAssets: Record<string, boolean> = {
+      logo: true,
+      disclaimer: script_type === "market_update" || script_type === "listing_presentation",
+      contact_info: true,
+    }
+
+    // ── Save to library if requested ─────────────────────────────────────────
+    let savedScript: Record<string, any> | null = null
+
+    if (save_to_library !== false) {
+      const title = `${script_type.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())} - ${
+        listingInfo.address ?? contactInfo.name ?? new Date().toLocaleDateString()
+      }`
+
+      const { data: script, error: scriptError } = await serviceSupabase
+        .from("video_scripts_library")
+        .insert({
+          brokerage_id,
+          agent_id: agent_id ?? null,
+          listing_id: listing_id ?? null,
+          contact_id: contact_id ?? null,
+          template_id: template_id ?? null,
+          script_type,
+          title,
+          script_content: generatedScript,
+          duration_target_seconds: targetDuration,
+          brand_voice_tone: brand_voice_tone ?? null,
+          approval_status: approvalStatus,
+          compliance_review_notes: complianceReviewNotes,
+          required_brand_assets: requiredBrandAssets,
+          ai_generated: true,
+          is_active: true,
+          created_by: agent_id ?? null,
+        })
+        .select()
+        .single()
+
+      if (scriptError) {
+        console.error("[generate-video-script] Error saving to library:", scriptError)
+      } else {
+        savedScript = script
+
+        // Write lifecycle_events row
+        await serviceSupabase.from("lifecycle_events").insert({
+          entity_type: "video_script",
+          entity_id: script.id,
+          brokerage_id,
+          event_type: KernelEvent.SCRIPT_GENERATED,
+          actor_user_id: agent_id ?? null,
+          metadata: {
+            script_type,
+            ai_generated: true,
+            approval_status: approvalStatus,
+            word_count: wordCountActual,
+            compliance_issues: complianceIssues,
+          },
+        })
+
+        // Fire kernel event
+        await processKernelEvent({
+          event: KernelEvent.SCRIPT_GENERATED,
+          brokerageId: brokerage_id,
+          entityType: "video_script",
+          entityId: script.id,
+        }).catch(err => console.error("[generate-video-script] Kernel event failed:", err))
+      }
     }
 
     return NextResponse.json({
       success: true,
-      script,
-      project_id: project.id,
-      word_count: wordCount,
+      script: generatedScript,
+      script_id: savedScript?.id ?? null,
+      word_count: wordCountActual,
       estimated_duration_seconds: estimatedDuration,
-      persona_used: personaType,
-      tone_applied: tone,
+      approval_status: approvalStatus,
+      compliance_issues: complianceIssues,
+      compliance_review_notes: complianceReviewNotes,
+      required_brand_assets: requiredBrandAssets,
+      template_used: templateData?.template_name ?? null,
     })
   } catch (error: any) {
-    console.error("[v0] AI script generation error:", error)
-    return NextResponse.json({ error: "Failed to generate script", details: error.message }, { status: 500 })
+    console.error("[generate-video-script] Error:", error)
+    return NextResponse.json(
+      { error: "Failed to generate script", details: error.message },
+      { status: 500 }
+    )
   }
 }

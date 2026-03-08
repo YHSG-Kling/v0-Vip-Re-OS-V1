@@ -198,4 +198,10 @@ export enum KernelEvent {
   // ── Enrichment ───────────────────────────────────────────────────────────
   ENRICHMENT_COMPLETED           = 'enrichment_completed',
   ENRICHMENT_FAILED              = 'enrichment_failed',
+
+  // ── Layer 8 — Video / Content Generation ────────────────────────────────
+  SCRIPT_GENERATED               = 'script_generated',
+  SCRIPT_VARIATION_CREATED       = 'script_variation_created',
+  SCRIPT_APPROVED                = 'script_approved',
+  SCRIPT_REJECTED                = 'script_rejected',
 }

@@ -4,102 +4,409 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
-import { handleError } from "@/lib/errors"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 // ============================================
-// VIDEO SCRIPT LIBRARY
+// TYPES — Layer 8.1 AI Script Generator
+// ============================================
+
+export type ScriptType = 
+  | "property_tour"
+  | "buyer_education"
+  | "market_update"
+  | "agent_intro"
+  | "listing_presentation"
+
+export type ApprovalStatus = 
+  | "draft"
+  | "pending_review"
+  | "approved"
+  | "rejected"
+
+export interface VideoScript {
+  id: string
+  brokerage_id: string
+  agent_id: string | null
+  listing_id: string | null
+  contact_id: string | null
+  template_id: string | null
+  script_type: ScriptType
+  title: string
+  script_content: string
+  duration_target_seconds: number | null
+  brand_voice_tone: string | null
+  approval_status: ApprovalStatus
+  compliance_review_notes: string | null
+  required_brand_assets: Record<string, any> | null
+  ai_generated: boolean
+  is_active: boolean
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ScriptVariation {
+  id: string
+  script_library_id: string
+  brokerage_id: string
+  variation_label: string
+  variation_goal: string | null
+  script_content: string
+  call_to_action: string | null
+  audience_segment: string | null
+  is_ab_test: boolean
+  performance_notes: string | null
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
+// ============================================
+// VIDEO SCRIPT LIBRARY — CANONICAL TABLE
+// Table: public.video_scripts_library
 // ============================================
 
 export async function getVideoScriptLibrary(filters?: {
+  brokerageId?: string
   agentId?: string
-  userId?: string
-  scriptType?: string
-  category?: string
+  scriptType?: ScriptType
+  templateBacked?: boolean
+  approvalStatus?: ApprovalStatus
+  includeVariationCount?: boolean
 }) {
-  if (filters?.agentId && !isValidUUID(filters.agentId)) {
-    return []
-  }
-
   const supabase = await createClient()
 
-  let query = supabase.from("video_scripts_library").select("*").eq("is_active", true).order("created_at", { ascending: false })
+  let query = supabase
+    .from("video_scripts_library")
+    .select(`
+      *,
+      video_templates(id, template_name, category),
+      script_variations(id)
+    `)
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
 
+  if (filters?.brokerageId) {
+    query = query.eq("brokerage_id", filters.brokerageId)
+  }
   if (filters?.agentId) {
-    query = query.or(`agent_id.eq.${filters.agentId},is_template.eq.true`)
+    query = query.eq("agent_id", filters.agentId)
   }
   if (filters?.scriptType) {
     query = query.eq("script_type", filters.scriptType)
   }
-  if (filters?.category) {
-    query = query.eq("category", filters.category)
+  if (filters?.templateBacked === true) {
+    query = query.not("template_id", "is", null)
+  } else if (filters?.templateBacked === false) {
+    query = query.is("template_id", null)
+  }
+  if (filters?.approvalStatus) {
+    query = query.eq("approval_status", filters.approvalStatus)
   }
 
   const { data, error } = await query
 
   if (error) {
-    console.error("Error fetching video scripts:", error)
+    console.error("[video-generation] Error fetching video scripts:", error)
     return []
   }
 
-  return data || []
+  // Map variation count
+  return (data || []).map(script => ({
+    ...script,
+    variation_count: script.script_variations?.length ?? 0,
+    template: script.video_templates ?? null,
+  }))
+}
+
+export async function getVideoScriptById(scriptId: string) {
+  if (!isValidUUID(scriptId)) return null
+
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from("video_scripts_library")
+    .select(`
+      *,
+      video_templates(id, template_name, category, default_script, duration_seconds),
+      script_variations(*)
+    `)
+    .eq("id", scriptId)
+    .single()
+
+  if (error) {
+    console.error("[video-generation] Error fetching script:", error)
+    return null
+  }
+
+  return data
 }
 
 export async function saveVideoScript(data: {
-  agentId: string
-  scriptName: string
-  scriptType: string
-  category: string
+  brokerageId: string
+  agentId?: string
+  listingId?: string
+  contactId?: string
+  templateId?: string
+  scriptType: ScriptType
+  title: string
   scriptContent: string
-  duration?: number
-  targetAudience?: string
-  callToAction?: string
-  isTemplate?: boolean
+  durationTargetSeconds?: number
+  brandVoiceTone?: string
+  approvalStatus?: ApprovalStatus
+  complianceReviewNotes?: string
+  requiredBrandAssets?: Record<string, any>
+  aiGenerated?: boolean
+  createdBy?: string
 }) {
   const supabase = await createClient()
 
   const { data: script, error } = await supabase
     .from("video_scripts_library")
     .insert({
-      agent_id: data.agentId,
-      script_name: data.scriptName,
+      brokerage_id: data.brokerageId,
+      agent_id: data.agentId ?? null,
+      listing_id: data.listingId ?? null,
+      contact_id: data.contactId ?? null,
+      template_id: data.templateId ?? null,
       script_type: data.scriptType,
-      category: data.category,
+      title: data.title,
       script_content: data.scriptContent,
-      estimated_duration_seconds: data.duration,
-      target_audience: data.targetAudience,
-      call_to_action: data.callToAction,
-      is_template: data.isTemplate || false,
+      duration_target_seconds: data.durationTargetSeconds ?? null,
+      brand_voice_tone: data.brandVoiceTone ?? null,
+      approval_status: data.approvalStatus ?? "draft",
+      compliance_review_notes: data.complianceReviewNotes ?? null,
+      required_brand_assets: data.requiredBrandAssets ?? null,
+      ai_generated: data.aiGenerated ?? false,
+      is_active: true,
+      created_by: data.createdBy ?? null,
     })
     .select()
     .single()
 
-  if (error) throw error
+  if (error) {
+    console.error("[video-generation] Error saving script:", error)
+    throw error
+  }
+
+  // Write lifecycle_events row
+  await supabase.from("lifecycle_events").insert({
+    entity_type: "video_script",
+    entity_id: script.id,
+    brokerage_id: data.brokerageId,
+    event_type: KernelEvent.SCRIPT_GENERATED,
+    actor_user_id: data.createdBy ?? null,
+    metadata: {
+      script_type: data.scriptType,
+      ai_generated: data.aiGenerated ?? false,
+      approval_status: data.approvalStatus ?? "draft",
+    },
+  })
+
+  // Fire kernel event
+  await processKernelEvent({
+    event: KernelEvent.SCRIPT_GENERATED,
+    brokerageId: data.brokerageId,
+    entityType: "video_script",
+    entityId: script.id,
+  }).catch(err => console.error("[video-generation] Kernel event failed:", err))
 
   revalidatePath("/dashboard/videos")
+  revalidatePath("/dashboard/videos/library")
+  return script
+}
+
+export async function updateScriptApprovalStatus(
+  scriptId: string,
+  brokerageId: string,
+  approvalStatus: ApprovalStatus,
+  complianceReviewNotes?: string,
+  actorUserId?: string
+) {
+  if (!isValidUUID(scriptId)) throw new Error("Invalid script ID")
+
+  const supabase = await createClient()
+
+  const { data: script, error } = await supabase
+    .from("video_scripts_library")
+    .update({
+      approval_status: approvalStatus,
+      compliance_review_notes: complianceReviewNotes ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", scriptId)
+    .eq("brokerage_id", brokerageId)
+    .select()
+    .single()
+
+  if (error) {
+    console.error("[video-generation] Error updating approval status:", error)
+    throw error
+  }
+
+  // Write lifecycle event
+  const eventType = approvalStatus === "approved" 
+    ? KernelEvent.SCRIPT_APPROVED 
+    : approvalStatus === "rejected" 
+      ? KernelEvent.SCRIPT_REJECTED 
+      : KernelEvent.SCRIPT_GENERATED
+
+  await supabase.from("lifecycle_events").insert({
+    entity_type: "video_script",
+    entity_id: scriptId,
+    brokerage_id: brokerageId,
+    event_type: eventType,
+    actor_user_id: actorUserId ?? null,
+    metadata: {
+      approval_status: approvalStatus,
+      compliance_review_notes: complianceReviewNotes,
+    },
+  })
+
+  revalidatePath("/dashboard/videos/library")
   return script
 }
 
 // ============================================
-// VIDEO TEMPLATES
+// VIDEO TEMPLATES — CANONICAL TABLE
+// Table: public.video_templates
 // ============================================
 
-export async function getVideoTemplates(category?: string) {
+export async function getVideoTemplates(filters?: {
+  category?: string
+  scriptType?: ScriptType
+}) {
   const supabase = await createClient()
 
-  let query = supabase.from("video_templates").select("*").eq("is_active", true).order("sort_order")
+  let query = supabase
+    .from("video_templates")
+    .select("*")
+    .eq("is_active", true)
+    .order("sort_order")
 
-  if (category) {
-    query = query.eq("category", category)
+  if (filters?.category) {
+    query = query.eq("category", filters.category)
+  }
+  if (filters?.scriptType) {
+    query = query.contains("recommended_for", [filters.scriptType])
   }
 
   const { data, error } = await query
 
   if (error) {
-    console.error("Error fetching video templates:", error)
+    console.error("[video-generation] Error fetching video templates:", error)
     return []
   }
 
   return data || []
+}
+
+export async function getVideoTemplateById(templateId: string) {
+  if (!isValidUUID(templateId)) return null
+
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from("video_templates")
+    .select("*")
+    .eq("id", templateId)
+    .single()
+
+  if (error) {
+    console.error("[video-generation] Error fetching template:", error)
+    return null
+  }
+
+  return data
+}
+
+// ============================================
+// SCRIPT VARIATIONS — CANONICAL TABLE
+// Table: public.script_variations
+// ============================================
+
+export async function getScriptVariations(scriptLibraryId: string) {
+  if (!isValidUUID(scriptLibraryId)) return []
+
+  const supabase = await createClient()
+
+  const { data, error } = await supabase
+    .from("script_variations")
+    .select("*")
+    .eq("script_library_id", scriptLibraryId)
+    .order("created_at", { ascending: false })
+
+  if (error) {
+    console.error("[video-generation] Error fetching variations:", error)
+    return []
+  }
+
+  return data || []
+}
+
+export async function createScriptVariation(data: {
+  scriptLibraryId: string
+  brokerageId: string
+  variationLabel: string
+  variationGoal?: string
+  scriptContent: string
+  callToAction?: string
+  audienceSegment?: string
+  isAbTest?: boolean
+  createdBy?: string
+}) {
+  if (!isValidUUID(data.scriptLibraryId)) {
+    throw new Error("Invalid script library ID")
+  }
+
+  const supabase = await createClient()
+
+  const { data: variation, error } = await supabase
+    .from("script_variations")
+    .insert({
+      script_library_id: data.scriptLibraryId,
+      brokerage_id: data.brokerageId,
+      variation_label: data.variationLabel,
+      variation_goal: data.variationGoal ?? null,
+      script_content: data.scriptContent,
+      call_to_action: data.callToAction ?? null,
+      audience_segment: data.audienceSegment ?? null,
+      is_ab_test: data.isAbTest ?? false,
+      created_by: data.createdBy ?? null,
+    })
+    .select()
+    .single()
+
+  if (error) {
+    console.error("[video-generation] Error creating variation:", error)
+    throw error
+  }
+
+  // Write lifecycle event
+  await supabase.from("lifecycle_events").insert({
+    entity_type: "script_variation",
+    entity_id: variation.id,
+    brokerage_id: data.brokerageId,
+    event_type: KernelEvent.SCRIPT_VARIATION_CREATED,
+    actor_user_id: data.createdBy ?? null,
+    metadata: {
+      script_library_id: data.scriptLibraryId,
+      variation_label: data.variationLabel,
+      is_ab_test: data.isAbTest ?? false,
+    },
+  })
+
+  // Fire kernel event for variation
+  await processKernelEvent({
+    event: KernelEvent.SCRIPT_VARIATION_CREATED,
+    brokerageId: data.brokerageId,
+    entityType: "script_variation",
+    entityId: variation.id,
+  }).catch(err => console.error("[video-generation] Kernel event failed:", err))
+
+  revalidatePath("/dashboard/videos/library")
+  return variation
 }
 
 // ============================================
