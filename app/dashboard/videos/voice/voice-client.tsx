@@ -39,10 +39,12 @@ import {
   startVoiceCloneTraining,
   setDefaultVoiceProfile,
   VOICE_CLONE_SAMPLE_PHRASES,
-  type VoiceProfile,
-  type SampleManifest,
-  type SamplePhrase,
 } from "@/app/actions/video-voice"
+import type {
+  VoiceProfile,
+  SampleManifest,
+  SamplePhrase,
+} from "@/app/actions/video-voice.types"
 
 // ─── PROPS ───────────────────────────────────────────────────────────────────
 

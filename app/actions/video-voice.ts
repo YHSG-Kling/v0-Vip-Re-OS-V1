@@ -11,89 +11,34 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-
-// ============================================
-// TYPES
-// ============================================
-
-export type VoiceTrainingStatus = 
-  | "pending"
-  | "queued"
-  | "collecting_samples"
-  | "processing"
-  | "completed"
-  | "failed"
-
-export interface VoiceProfile {
-  id: string
-  brokerage_id: string
-  agent_id: string
-  profile_name: string
-  training_status: VoiceTrainingStatus
-  sample_count: number
-  heygen_voice_clone_id: string | null
-  quality_score: number | null
-  is_default: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface VoiceTrainingJob {
-  id: string
-  voice_profile_id: string
-  brokerage_id: string
-  training_job_id: string | null
-  provider: string
-  status: VoiceTrainingStatus
-  sample_manifest: SampleManifest | null
-  provider_response: Record<string, any> | null
-  started_at: string | null
-  completed_at: string | null
-  error_message: string | null
-  created_at: string
-}
-
-export interface SampleManifest {
-  phrases: SamplePhrase[]
-  total_duration_seconds?: number
-  sample_quality_score?: number
-}
-
-export interface SamplePhrase {
-  phrase_id: string
-  phrase_text: string
-  audio_url?: string
-  duration_seconds?: number
-  recorded_at?: string
-  status: "pending" | "recorded" | "validated" | "rejected"
-}
+import type { VoiceTrainingStatus, VoiceProfile, VoiceTrainingJob, SampleManifest, UploadedSample } from "./video-voice.types"
 
 // Required sample phrases for voice cloning
-export const VOICE_CLONE_SAMPLE_PHRASES: Omit<SamplePhrase, "audio_url" | "duration_seconds" | "recorded_at">[] = [
+export const VOICE_CLONE_SAMPLE_PHRASES = [
   {
     phrase_id: "intro_1",
     phrase_text: "Hi, I'm excited to help you find your perfect home. Let me guide you through this amazing property.",
-    status: "pending",
+    status: "pending" as const,
   },
   {
     phrase_id: "market_1",
     phrase_text: "The local real estate market has been showing strong growth, with properties selling quickly in this neighborhood.",
-    status: "pending",
+    status: "pending" as const,
   },
   {
     phrase_id: "features_1",
     phrase_text: "This home features an open floor plan, natural lighting throughout, and a beautifully landscaped backyard.",
-    status: "pending",
+    status: "pending" as const,
   },
   {
     phrase_id: "cta_1",
     phrase_text: "I'd love to schedule a showing for you. Give me a call or send me a message to get started.",
-    status: "pending",
+    status: "pending" as const,
   },
   {
     phrase_id: "education_1",
     phrase_text: "When buying a home, it's important to consider factors like location, school districts, and future appreciation potential.",
-    status: "pending",
+    status: "pending" as const,
   },
 ]
 
