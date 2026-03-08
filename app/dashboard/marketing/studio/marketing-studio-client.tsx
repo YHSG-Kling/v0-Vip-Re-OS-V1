@@ -175,6 +175,14 @@ export default function MarketingStudioClient() {
   const [currentPrediction, setCurrentPrediction] = useState<PredictionData | null>(null)
   const [isPredicting, setIsPredicting] = useState(false)
 
+  // Newsletter state
+  const [newsletterCampaigns, setNewsletterCampaigns] = useState<any[]>([])
+  const [scheduledSends, setScheduledSends] = useState<any[]>([])
+  const [subscriberCount, setSubscriberCount] = useState(0)
+  const [newsletterTemplates, setNewsletterTemplates] = useState<any[]>([])
+  const [localContent, setLocalContent] = useState<any[]>([])
+  const [isNewsletterLoading, setIsNewsletterLoading] = useState(false)
+
   // Form states
   const [newCampaign, setNewCampaign] = useState({
     campaignName: "",
@@ -208,6 +216,7 @@ export default function MarketingStudioClient() {
     if (activeTab === "campaigns") loadCampaigns()
     if (activeTab === "assets") loadAssets()
     if (activeTab === "calendar") loadCalendarEvents()
+    if (activeTab === "newsletters") loadNewsletterData()
   }, [activeTab, statusFilter])
 
   async function loadInitialData() {
@@ -255,6 +264,60 @@ export default function MarketingStudioClient() {
   async function loadQrCodes() {
     const result = await listAvailableQrCodes()
     if (result.success) setAvailableQrCodes(result.qrCodes)
+  }
+
+  async function loadNewsletterData() {
+    setIsNewsletterLoading(true)
+    try {
+      const supabase = (await import("@/lib/supabase/client")).createClient()
+      
+      // Get newsletter campaigns
+      const { data: campaigns } = await supabase
+        .from("newsletter_campaigns")
+        .select("*")
+        .eq("brokerage_id", brokerageId)
+        .order("created_at", { ascending: false })
+        .limit(10)
+      setNewsletterCampaigns(campaigns || [])
+
+      // Get scheduled sends
+      const { data: sends } = await supabase
+        .from("newsletter_scheduled_sends")
+        .select("*, newsletter:newsletter_campaigns(campaign_name)")
+        .eq("agent_id", userId)
+        .order("sent_at", { ascending: false })
+        .limit(10)
+      setScheduledSends(sends || [])
+
+      // Get subscriber count
+      const { count } = await supabase
+        .from("newsletter_subscribers")
+        .select("*", { count: "exact", head: true })
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "subscribed")
+      setSubscriberCount(count || 0)
+
+      // Get templates
+      const { data: templates } = await supabase
+        .from("newsletter_brokers_templates")
+        .select("*")
+        .eq("brokerage_id", brokerageId)
+        .limit(5)
+      setNewsletterTemplates(templates || [])
+
+      // Get local content
+      const { data: content } = await supabase
+        .from("newsletter_local_content")
+        .select("*")
+        .eq("brokerage_id", brokerageId)
+        .order("created_at", { ascending: false })
+        .limit(5)
+      setLocalContent(content || [])
+    } catch (error) {
+      console.error("[v0] Failed to load newsletter data:", error)
+    } finally {
+      setIsNewsletterLoading(false)
+    }
   }
 
   // ─── HANDLERS ─────────────────────────────────────────────────────────────────
@@ -586,7 +649,7 @@ export default function MarketingStudioClient() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-3 md:grid-cols-6 gap-2 h-auto bg-muted p-2 rounded-xl">
+          <TabsList className="grid w-full grid-cols-4 md:grid-cols-7 gap-2 h-auto bg-muted p-2 rounded-xl">
             <TabsTrigger
               value="overview"
               className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
@@ -614,6 +677,13 @@ export default function MarketingStudioClient() {
             >
               <CalendarIcon className="h-4 w-4" />
               <span className="text-xs">Calendar</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="newsletters"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Mail className="h-4 w-4" />
+              <span className="text-xs">Newsletters</span>
             </TabsTrigger>
             <TabsTrigger
               value="registry"
@@ -1153,6 +1223,170 @@ export default function MarketingStudioClient() {
                 </Card>
               ))}
             </div>
+          </TabsContent>
+
+          {/* Newsletters Tab */}
+          <TabsContent value="newsletters" className="space-y-6">
+            {isNewsletterLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {/* Subscriber Count Card */}
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm text-muted-foreground">Total Subscribers</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex items-center gap-2">
+                      <span className="text-3xl font-bold">{subscriberCount.toLocaleString()}</span>
+                      <Badge variant="outline" className="text-green-600">Active</Badge>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Recent Campaigns */}
+                <Card className="md:col-span-2">
+                  <CardHeader>
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="flex items-center gap-2">
+                        <Mail className="h-5 w-5 text-violet-600" />
+                        Recent Campaigns
+                      </CardTitle>
+                      <Button variant="outline" size="sm" asChild>
+                        <a href="/newsletters">Manage Newsletters</a>
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    {newsletterCampaigns.length === 0 ? (
+                      <p className="text-muted-foreground text-center py-8">No newsletter campaigns yet</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {newsletterCampaigns.map((campaign) => (
+                          <div key={campaign.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                            <div>
+                              <p className="font-medium">{campaign.campaign_name || campaign.subject_line}</p>
+                              <p className="text-sm text-muted-foreground">
+                                {campaign.send_date
+                                  ? format(new Date(campaign.send_date), "MMM d, yyyy")
+                                  : "Not scheduled"}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge className={getStatusColor(campaign.status || "draft")}>
+                                {campaign.status || "draft"}
+                              </Badge>
+                              {campaign.open_rate && (
+                                <span className="text-xs text-muted-foreground">
+                                  {(campaign.open_rate * 100).toFixed(1)}% open
+                                </span>
+                              )}
+                              {campaign.click_rate && (
+                                <span className="text-xs text-muted-foreground">
+                                  {(campaign.click_rate * 100).toFixed(1)}% CTR
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Scheduled Sends */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Clock className="h-5 w-5 text-violet-600" />
+                      Scheduled Sends
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {scheduledSends.length === 0 ? (
+                      <p className="text-muted-foreground text-center py-4">No scheduled sends</p>
+                    ) : (
+                      <ScrollArea className="h-[200px]">
+                        <div className="space-y-2">
+                          {scheduledSends.map((send) => (
+                            <div key={send.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/30 text-sm">
+                              <div>
+                                <p className="font-medium truncate max-w-[150px]">
+                                  {send.newsletter?.campaign_name || "Newsletter"}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {send.sent_at
+                                    ? format(new Date(send.sent_at), "MMM d, h:mm a")
+                                    : "Pending"}
+                                </p>
+                              </div>
+                              <Badge variant="outline" className="text-xs">
+                                {send.recipient_count} recipients
+                              </Badge>
+                            </div>
+                          ))}
+                        </div>
+                      </ScrollArea>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Templates */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <FileText className="h-5 w-5 text-violet-600" />
+                      Templates
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {newsletterTemplates.length === 0 ? (
+                      <p className="text-muted-foreground text-center py-4">No templates available</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {newsletterTemplates.map((template) => (
+                          <div key={template.id} className="flex items-center justify-between p-2 rounded-lg bg-muted/30">
+                            <span className="text-sm font-medium">{template.template_name || template.name}</span>
+                            <Button variant="ghost" size="sm">
+                              <ChevronRight className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Local Content Blocks */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Sparkles className="h-5 w-5 text-violet-600" />
+                      Local Content
+                    </CardTitle>
+                    <CardDescription>Recent local content blocks for newsletters</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {localContent.length === 0 ? (
+                      <p className="text-muted-foreground text-center py-4">No local content</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {localContent.map((content) => (
+                          <div key={content.id} className="p-2 rounded-lg bg-muted/30">
+                            <p className="text-sm font-medium">{content.content_type || "Content"}</p>
+                            <p className="text-xs text-muted-foreground line-clamp-2">
+                              {content.content_text || content.description}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            )}
           </TabsContent>
 
           {/* Registry Tab */}

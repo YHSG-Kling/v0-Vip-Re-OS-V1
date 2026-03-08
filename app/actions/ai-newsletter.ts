@@ -6,6 +6,12 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 // ============================================
 // AI NEWSLETTER SYSTEM
@@ -65,6 +71,7 @@ const NEWSLETTER_TEMPLATES: NewsletterTemplate[] = [
 // ============================================
 export async function aiGenerateSubjectLines(params: {
   agentId: string
+  brokerageId: string
   newsletterTopic: string
   audience: "all" | "buyers" | "sellers" | "investors" | "past_clients"
   tone: "professional" | "friendly" | "urgent" | "curious"
@@ -73,6 +80,12 @@ export async function aiGenerateSubjectLines(params: {
   try {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
+    }
+
+    // Kernel: Feature access check
+    const access = await canAccessFeature("newsletter_engine", params.brokerageId, params.agentId)
+    if (!access.allowed) {
+      return { success: false, error: access.reason || "Feature not available" }
     }
 
     const { object: subjectLines } = await generateObject({
@@ -127,6 +140,7 @@ Best practices:
 // ============================================
 export async function aiWriteNewsletterContent(params: {
   agentId: string
+  brokerageId: string
   template: string
   topic: string
   featuredListings?: any[]
@@ -136,6 +150,12 @@ export async function aiWriteNewsletterContent(params: {
   try {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
+    }
+
+    // Kernel: Feature access check
+    const access = await canAccessFeature("newsletter_engine", params.brokerageId, params.agentId)
+    if (!access.allowed) {
+      return { success: false, error: access.reason || "Feature not available" }
     }
 
     const supabase = await createClient()
@@ -178,7 +198,35 @@ Write engaging content for each section. Keep paragraphs short and scannable.
 Include clear CTAs where appropriate.`,
     })
 
-    return { success: true, content }
+    // Apply brand voice to generated content
+    const brandedSections = await Promise.all(
+      content.sections.map(async (section: any) => {
+        const branded = await applyBrandVoice({
+          brokerageId: params.brokerageId,
+          agentId: params.agentId,
+          content: section.content,
+          contentType: "newsletter",
+        })
+        return { ...section, content: branded.brandedContent || section.content }
+      })
+    )
+
+    // Run compliance check on all content
+    for (const section of brandedSections) {
+      const compliance = await evaluateOutbound({
+        brokerageId: params.brokerageId,
+        channel: "email",
+        contentText: section.content,
+        contentType: "marketing",
+      })
+      if (!compliance.approved) {
+        return { success: false, error: `Compliance violation in ${section.type}: ${compliance.reason}` }
+      }
+    }
+
+    await incrementFeatureUsage("newsletter_engine", params.brokerageId, params.agentId)
+
+    return { success: true, content: { ...content, sections: brandedSections } }
   } catch (error) {
     console.error("[AI Newsletter] Content error:", error)
     return handleError(error, "aiWriteNewsletterContent")
@@ -315,6 +363,7 @@ Create personalized elements that will resonate with this specific contact.`,
 // ============================================
 export async function createNewsletterCampaign(params: {
   agentId: string
+  brokerageId: string
   title: string
   subjectLine: string
   preheaderText: string
@@ -326,6 +375,12 @@ export async function createNewsletterCampaign(params: {
   try {
     if (!isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid agent ID" }
+    }
+
+    // Kernel: Feature access check
+    const access = await canAccessFeature("newsletter_engine", params.brokerageId, params.agentId)
+    if (!access.allowed) {
+      return { success: false, error: access.reason || "Feature not available" }
     }
 
     const supabase = await createClient()
@@ -356,7 +411,22 @@ export async function createNewsletterCampaign(params: {
       .eq("segment", params.audienceSegment)
       .eq("subscribed", true)
 
+    // Kernel: Fire NEWSLETTER_SCHEDULED if scheduled
+    if (params.scheduledAt && newsletter) {
+      processKernelEvent(KernelEvent.NEWSLETTER_SCHEDULED, {
+        brokerageId: params.brokerageId,
+        agentId: params.agentId,
+        newsletterId: newsletter.id,
+        campaignName: params.title,
+        scheduledAt: params.scheduledAt,
+        recipientCount: count || 0,
+      }).catch((err) => console.error("[Kernel] NEWSLETTER_SCHEDULED error:", err))
+    }
+
+    await incrementFeatureUsage("newsletter_engine", params.brokerageId, params.agentId)
+
     revalidatePath("/content-studio")
+    revalidatePath("/dashboard/marketing/studio")
 
     return {
       success: true,
@@ -372,10 +442,16 @@ export async function createNewsletterCampaign(params: {
 // ============================================
 // 6. SEND NEWSLETTER
 // ============================================
-export async function sendNewsletter(params: { newsletterId: string; agentId: string }) {
+export async function sendNewsletter(params: { newsletterId: string; agentId: string; brokerageId: string }) {
   try {
     if (!isValidUUID(params.newsletterId) || !isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid IDs" }
+    }
+
+    // Kernel: Feature access check
+    const access = await canAccessFeature("newsletter_engine", params.brokerageId, params.agentId)
+    if (!access.allowed) {
+      return { success: false, error: access.reason || "Feature not available" }
     }
 
     const supabase = await createClient()
@@ -389,6 +465,16 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
 
     if (!newsletter) {
       return { success: false, error: "Newsletter not found" }
+    }
+
+    // Kernel: Brand compliance check before send
+    const compliance = await checkBrandCompliance({
+      contentType: "newsletter",
+      contentId: params.newsletterId,
+      brokerageId: params.brokerageId,
+    })
+    if (!compliance.passed) {
+      return { success: false, error: `Brand compliance failed: ${compliance.violations?.join(", ")}` }
     }
 
     const { data: subscribers } = await supabase
@@ -432,7 +518,18 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
       .update({ status: "sent", sent_at: new Date().toISOString() })
       .eq("id", params.newsletterId)
 
+    // Kernel: Fire NEWSLETTER_SENT event
+    processKernelEvent(KernelEvent.NEWSLETTER_SENT, {
+      brokerageId: params.brokerageId,
+      agentId: params.agentId,
+      newsletterId: params.newsletterId,
+      sendId: sendRecord?.id,
+      recipientCount: subscribers.length,
+      sentAt: new Date().toISOString(),
+    }).catch((err) => console.error("[Kernel] NEWSLETTER_SENT error:", err))
+
     revalidatePath("/content-studio")
+    revalidatePath("/dashboard/marketing/studio")
 
     return {
       success: true,
@@ -502,7 +599,7 @@ export async function aiAnalyzeNewsletterPerformance(params: { agentId: string; 
     // Get historical performance
     const { data: sends } = await supabase
       .from("newsletter_scheduled_sends")
-      .select("*, newsletter:newsletters(*)")
+      .select("*, newsletter:newsletter_campaigns(*)")
       .eq("agent_id", params.agentId)
       .order("sent_at", { ascending: false })
       .limit(20)
