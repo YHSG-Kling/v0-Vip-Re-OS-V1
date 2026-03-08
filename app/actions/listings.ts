@@ -2,6 +2,9 @@
 
 import { revalidatePath } from "next/cache"
 import { getListingsService, createListingService } from "@/lib/application/listings"
+import { createClient } from "@/lib/supabase/server"
+import { handleError } from "@/lib/errors"
+import { assignTierToListing } from "@/lib/listings/tier-assigner"
 
 /**
  * CRUD operations for listings
@@ -57,9 +60,29 @@ export async function createListing(params: {
   return result
 }
 
-export async function updateListing(listingId: string, updates: any) {
+export async function updateListing(listingId: string, updates: any, actorUserId?: string) {
   try {
     const supabase = await createClient()
+
+    // Check if price is being updated (for tier assignment)
+    const priceUpdated = updates.list_price !== undefined || updates.price !== undefined
+
+    // Get current listing to check brokerage and current price
+    let brokerageId: string | null = null
+    let currentPrice: number | null = null
+
+    if (priceUpdated && actorUserId) {
+      const { data: currentListing } = await supabase
+        .from("listings")
+        .select("brokerage_id, list_price")
+        .eq("id", listingId)
+        .single()
+
+      if (currentListing) {
+        brokerageId = currentListing.brokerage_id
+        currentPrice = currentListing.list_price
+      }
+    }
 
     const { data, error } = await supabase
       .from("listings")
@@ -70,8 +93,17 @@ export async function updateListing(listingId: string, updates: any) {
 
     if (error) throw error
 
+    // Trigger tier assignment ONLY when price changes
+    const newPrice = updates.list_price ?? updates.price
+    if (priceUpdated && actorUserId && brokerageId && newPrice !== currentPrice) {
+      await assignTierToListing(listingId, brokerageId, actorUserId).catch((err) => {
+        console.error("[updateListing] Tier assignment failed (non-blocking):", err)
+      })
+    }
+
     revalidatePath("/listings")
     revalidatePath(`/listings/${listingId}`)
+    revalidatePath(`/dashboard/listings/${listingId}/marketing-tier`)
 
     return { success: true, listing: data }
   } catch (error) {
