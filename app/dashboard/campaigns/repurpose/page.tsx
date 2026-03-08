@@ -2,10 +2,11 @@
 // Layer 9.11 — Omni-Presence Repurposer Dashboard
 // Two-panel UI: Pipeline Builder (left) + Source Picker (right)
 
+import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
-import { redirect } from "next/navigation"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { RepurposeDashboardClient } from "./repurpose-dashboard-client"
-import { getPipelines, getRepurposeHistory } from "@/lib/repurpose/pipeline-executor"
+import { getPipelines, getRepurposeHistory } from "@/lib/repurpose/actions"
 
 export const metadata = {
   title: "Omni-Presence Repurposer | Dashboard",
@@ -13,82 +14,85 @@ export const metadata = {
 }
 
 export default async function RepurposePage() {
-  const supabase = await createClient()
+  try {
+    const agentContext = await getAgentContext()
+    const { userId, brokerageId, teamId } = agentContext
+    const supabase = await createClient()
 
-  // Get current user
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+    // Get user profile with role
+    const { data: profile } = await supabase
+      .from("users")
+      .select("role, first_name, last_name, user_type")
+      .eq("id", userId)
+      .single()
 
-  if (!user) {
-    redirect("/login")
+    // Fetch pipelines and history in parallel
+    const [pipelinesResult, historyResult] = await Promise.all([
+      getPipelines(brokerageId),
+      getRepurposeHistory(brokerageId),
+    ])
+
+    // Fetch available source content
+    const [videoProjects, blogPosts, podcastEpisodes, scripts] = await Promise.all([
+      supabase
+        .from("ai_video_projects")
+        .select("id, title, video_url, status, duration_seconds, created_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "completed")
+        .order("created_at", { ascending: false })
+        .limit(20),
+      supabase
+        .from("blog_posts")
+        .select("id, title, publish_status, created_at")
+        .eq("brokerage_id", brokerageId)
+        .in("publish_status", ["published", "draft"])
+        .order("created_at", { ascending: false })
+        .limit(20),
+      supabase
+        .from("podcast_episodes")
+        .select("id, title, status, duration_seconds, created_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "completed")
+        .order("created_at", { ascending: false })
+        .limit(20),
+      supabase
+        .from("video_scripts_library")
+        .select("id, title, script_type, created_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("is_active", true)
+        .order("created_at", { ascending: false })
+        .limit(20),
+    ])
+
+    const sources = {
+      video_project: videoProjects.data || [],
+      blog_post: blogPosts.data || [],
+      podcast_episode: podcastEpisodes.data || [],
+      script: scripts.data || [],
+    }
+
+    return (
+      <Suspense fallback={<div>Loading...</div>}>
+        <RepurposeDashboardClient
+          userId={userId}
+          brokerageId={brokerageId}
+          teamId={teamId}
+          userRole={profile?.role || "agent"}
+          pipelines={pipelinesResult.success ? pipelinesResult.pipelines : []}
+          history={historyResult.success ? historyResult.history : []}
+          sources={sources}
+        />
+      </Suspense>
+    )
+  } catch (error) {
+    console.error("[Repurpose] Page error:", error)
+    return (
+      <div className="flex flex-col gap-6 p-6">
+        <h1 className="text-3xl font-bold">Omnipresence Repurposer</h1>
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+          Error loading dashboard. Please try again.
+        </div>
+      </div>
+    )
   }
-
-  // Get user profile with brokerage
-  const { data: profile } = await supabase
-    .from("users")
-    .select("id, brokerage_id, team_id, role, first_name, last_name, user_type")
-    .eq("id", user.id)
-    .single()
-
-  if (!profile?.brokerage_id) {
-    redirect("/onboarding")
-  }
-
-  // Fetch pipelines
-  const pipelines = await getPipelines(profile.brokerage_id)
-
-  // Fetch repurpose history
-  const history = await getRepurposeHistory(profile.brokerage_id, 50)
-
-  // Fetch available source content
-  const [videoProjects, blogPosts, podcastEpisodes, scripts] = await Promise.all([
-    supabase
-      .from("ai_video_projects")
-      .select("id, title, video_url, status, duration_seconds, created_at")
-      .eq("brokerage_id", profile.brokerage_id)
-      .eq("status", "completed")
-      .order("created_at", { ascending: false })
-      .limit(20),
-    supabase
-      .from("blog_posts")
-      .select("id, title, publish_status, created_at")
-      .eq("brokerage_id", profile.brokerage_id)
-      .in("publish_status", ["published", "draft"])
-      .order("created_at", { ascending: false })
-      .limit(20),
-    supabase
-      .from("podcast_episodes")
-      .select("id, title, status, duration_seconds, created_at")
-      .eq("brokerage_id", profile.brokerage_id)
-      .eq("status", "completed")
-      .order("created_at", { ascending: false })
-      .limit(20),
-    supabase
-      .from("video_scripts_library")
-      .select("id, title, script_type, created_at")
-      .eq("brokerage_id", profile.brokerage_id)
-      .eq("is_active", true)
-      .order("created_at", { ascending: false })
-      .limit(20),
-  ])
-
-  const sources = {
-    video_project: videoProjects.data || [],
-    blog_post: blogPosts.data || [],
-    podcast_episode: podcastEpisodes.data || [],
-    script: scripts.data || [],
-  }
-
-  return (
-    <RepurposeDashboardClient
-      userId={user.id}
-      brokerageId={profile.brokerage_id}
-      teamId={profile.team_id}
-      userRole={profile.role || "agent"}
-      pipelines={pipelines}
-      history={history}
-      sources={sources}
-    />
-  )
 }

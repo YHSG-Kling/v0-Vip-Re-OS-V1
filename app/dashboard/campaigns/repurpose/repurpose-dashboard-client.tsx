@@ -69,13 +69,10 @@ import {
 } from "lucide-react"
 import {
   executePipeline,
-  savePipeline,
-  togglePipelineActive,
-  deletePipeline,
-  type SourceType,
-  type OutputFormat,
-  OUTPUT_FORMAT_CONFIG,
-} from "@/lib/repurpose/pipeline-executor"
+  createRepurposePipeline,
+} from "@/lib/repurpose/actions"
+import { OUTPUT_FORMAT_CONFIG } from "@/lib/repurpose/types"
+import type { SourceType, OutputFormat } from "@/lib/repurpose/types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -224,17 +221,15 @@ export function RepurposeDashboardClient({
     }
 
     setIsLoading(true)
-    const result = await savePipeline(
-      userId,
-      brokerageId,
-      {
-        pipelineName: newPipeline.pipelineName,
-        sourceType: newPipeline.sourceType,
-        outputFormats: newPipeline.outputFormats,
-        autoApprove: newPipeline.autoApprove,
-      },
-      teamId || undefined
-    )
+    const result = await createRepurposePipeline({
+      pipelineName: newPipeline.pipelineName,
+      sourceType: newPipeline.sourceType,
+      sourceId: newPipeline.sourceId || "",
+      outputFormats: newPipeline.outputFormats,
+      brokerageId: brokerageId,
+      agentUserId: userId,
+      teamId: teamId || undefined,
+    })
 
     if (result.success) {
       setIsCreateDialogOpen(false)
@@ -286,10 +281,7 @@ export function RepurposeDashboardClient({
 
     const result = await executePipeline({
       pipelineId: selectedPipeline.id,
-      sourceId: selectedSource.id,
       brokerageId,
-      userId,
-      teamId: teamId || undefined,
     })
 
     setExecutionResult(result)
