@@ -70,6 +70,13 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'BUYER_DISENGAGED':            KernelEvent.BUYER_DISENGAGED,
   'BUYER_CLOSED':                KernelEvent.DEAL_CLOSED,
   'BUYER_LIFETIME':              KernelEvent.LIFETIME_CUSTOMER,
+
+  // ── Marketing Campaign ────────────────────────────────────────────────────
+  'marketing_campaign_draft':          KernelEvent.MARKETING_CAMPAIGN_CREATED,
+  'marketing_campaign_approved':       KernelEvent.MARKETING_CAMPAIGN_APPROVED,
+  'marketing_campaign_live':           KernelEvent.MARKETING_CAMPAIGN_LAUNCHED,
+  'marketing_campaign_paused':         KernelEvent.MARKETING_CAMPAIGN_PAUSED,
+  'marketing_campaign_ended':          KernelEvent.MARKETING_CAMPAIGN_ENDED,
 }
 
 // ─── ENTITY → TABLE + STATE COLUMN MAP ───────────────────────────────────────
@@ -96,6 +103,8 @@ const ENTITY_MAP: Record<
   lead:        { table: "leads",          stateColumn: "lifecycle_state" },
   journey:     { table: "journey_states", stateColumn: "current_stage" },
   showing:     { table: "showings",       stateColumn: "status"        },
+  // ── Layer 9 — Marketing Campaign State Machine ───────────────────────────
+  marketing_campaign_machine: { table: 'marketing_campaigns', stateColumn: 'status' },
 }
 
 // ─── MAIN FUNCTION ────────────────────────────────────────────────────────────
