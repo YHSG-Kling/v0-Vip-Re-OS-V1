@@ -38,8 +38,8 @@ import {
   updateVoiceProfileSamples,
   startVoiceCloneTraining,
   setDefaultVoiceProfile,
-  VOICE_CLONE_SAMPLE_PHRASES,
 } from "@/app/actions/video-voice"
+import { VOICE_CLONE_SAMPLE_PHRASES } from "@/app/actions/video-voice.constants"
 import type {
   VoiceProfile,
   SampleManifest,
