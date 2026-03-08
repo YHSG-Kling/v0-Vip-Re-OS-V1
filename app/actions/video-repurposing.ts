@@ -7,6 +7,7 @@ import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateText } from "ai"
+import { getPlatformConfig, getAllPlatformConfigs, validateSnippetForPlatform } from "./video-repurposing.utils"
 
 // ============================================
 // TYPES — Layer 8.4 Snippet & Repurposing Generator
@@ -703,39 +704,4 @@ Make each variation unique with different:
       tone: params.tone || "professional",
     }]
   }
-}
-
-// ============================================
-// PLATFORM UTILITIES
-// ============================================
-
-export function getPlatformConfig(platform: PlatformTarget) {
-  return PLATFORM_CONFIGS[platform]
-}
-
-export function getAllPlatformConfigs() {
-  return PLATFORM_CONFIGS
-}
-
-export function validateSnippetForPlatform(
-  duration: number,
-  platform: PlatformTarget
-): { valid: boolean; message?: string } {
-  const config = PLATFORM_CONFIGS[platform]
-  
-  if (duration > config.maxDuration) {
-    return {
-      valid: false,
-      message: `Duration (${duration}s) exceeds ${config.displayName} limit of ${config.maxDuration}s`
-    }
-  }
-  
-  if (duration < 3) {
-    return {
-      valid: false,
-      message: "Snippet must be at least 3 seconds long"
-    }
-  }
-  
-  return { valid: true }
 }
