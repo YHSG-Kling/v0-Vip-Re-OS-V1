@@ -377,7 +377,7 @@ async function getDashboardSuggestions(agentId: string) {
 
   // Check for pending video approvals
   const { data: pendingVideos, count: videoCount } = await supabase
-    .from("video_scripts")
+    .from("video_scripts_library")
     .select("*", { count: "exact" })
     .eq("agent_id", agentId)
     .eq("approval_status", "pending")
