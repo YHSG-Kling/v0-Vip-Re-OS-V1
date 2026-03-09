@@ -1,64 +1,145 @@
-import { streamText, convertToModelMessages } from 'ai'
+import { streamText, convertToModelMessages, appendResponseMessages, type Message } from 'ai'
 import { createClient } from '@/lib/supabase/server'
-import { getAgentContext } from '@/lib/identity/get-agent-context'
-import { fireAssistantEvent } from '@/app/actions/onboarding/assistant'
-import { buildRAGContext, searchKnowledge } from '@/app/actions/knowledge/search'
+import { KernelEvent } from '@/lib/kernel/events'
 
 export async function POST(request: Request) {
   try {
-    const { messages, currentStep, agentOnboardingId } = await request.json()
+    const body = await request.json()
+    const { messages, brokerageId, agentId } = body as {
+      messages: Message[]
+      brokerageId: string
+      agentId: string
+    }
 
     const supabase = await createClient()
-    const { agentId, brokerageId } = await getAgentContext()
 
-    // Extract the user's latest query for semantic search
-    const userMessages = messages.filter((m: { role: string }) => m.role === 'user')
+    // Extract the user's latest query for KB search
+    const userMessages = messages.filter((m) => m.role === 'user')
     const latestQuery = userMessages.length > 0
-      ? userMessages[userMessages.length - 1].content
-      : currentStep
+      ? String(userMessages[userMessages.length - 1].content)
+      : ''
 
-    // Use semantic search to find relevant knowledge
-    const ragContext = await buildRAGContext(latestQuery, {
-      maxTokens: 3000,
-      maxResults: 5,
-      category: mapStepToCategory(currentStep),
+    // Knowledge base search using ILIKE (per prompt specification)
+    // NOTE: vector search will replace this in L12-P03. Use ILIKE for now.
+    const { data: kbResults, error: kbError } = await supabase
+      .from('help_topics_kb')
+      .select('*')
+      .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
+      .eq('is_active', true)
+      .or(`title.ilike.%${latestQuery}%,content.ilike.%${latestQuery}%`)
+      .limit(5)
+
+    if (kbError) {
+      console.error('[v0] KB search error:', kbError.message)
+    }
+
+    // Also check if query matches any tags
+    const { data: tagResults } = await supabase
+      .from('help_topics_kb')
+      .select('*')
+      .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
+      .eq('is_active', true)
+      .contains('tags', [latestQuery.toLowerCase()])
+      .limit(3)
+
+    // Combine results, deduplicating by id
+    const allResults = [...(kbResults || []), ...(tagResults || [])]
+    const uniqueResults = Array.from(
+      new Map(allResults.map((item) => [item.id, item])).values()
+    ).slice(0, 5)
+
+    // Build context string from KB results (max 2000 chars)
+    let kbContext = ''
+    for (const topic of uniqueResults) {
+      const entry = `## ${topic.title}\n${topic.content}\n\n`
+      if ((kbContext + entry).length <= 2000) {
+        kbContext += entry
+      } else {
+        break
+      }
+    }
+
+    // Fire SETUP_ASSISTANT_QUERY_MADE kernel event
+    await supabase.from('lifecycle_events').insert({
+      brokerage_id: brokerageId,
+      entity_type: 'agent',
+      entity_id: agentId,
+      event_type: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
+      actor_user_id: agentId,
+      metadata: {
+        query: latestQuery,
+        kb_results_count: uniqueResults.length,
+        timestamp: new Date().toISOString(),
+      },
     })
 
-    // Fire query made event
-    await fireAssistantEvent(agentId, 'query_made', currentStep)
+    // Build system prompt
+    const systemPrompt = `You are a helpful setup assistant for a real estate platform called VIP Real Estate OS. Answer questions about platform setup, onboarding, and features. Use the provided knowledge base context. If you don't know, say so and escalate. Keep answers under 150 words.
 
-    // Build system prompt with agent context and help topics
-    const systemPrompt = `You are an AI Setup Assistant for the VIP Real Estate AI OS - a comprehensive platform for real estate agents.
+Context:
+${kbContext || 'No specific documentation found for this query.'}`
 
-Your role is to provide friendly, helpful guidance during agent onboarding. You help agents:
-- Upload and verify their real estate license
-- Configure their brand (colors, logo, voice, tone)
-- Connect required integrations (email, SMS, CRM, calendar)
-- Complete training videos and certifications
-- Understand platform features and best practices
-
-Current Onboarding Step: ${currentStep}
-
-Relevant Knowledge (found via semantic search):
-${ragContext || 'No specific knowledge found for this query.'}
-
-Guidelines:
-1. Be conversational and encouraging - agents are often new to the platform
-2. Provide step-by-step guidance when explaining processes
-3. Anticipate common questions related to the current step
-4. If asked something outside your knowledge, offer to escalate to a human
-5. Always maintain brand voice: Professional, warm, and helpful
-6. Suggest next steps to help agents make progress through onboarding
-
-Important: If an agent mentions they want to escalate, suggest using the "Escalate to Support" button for complex issues.`
-
-    // Stream response
+    // Stream response using anthropic/claude-sonnet-4-20250514
     const result = streamText({
-      model: 'openai/gpt-4o-mini',
+      model: 'anthropic/claude-sonnet-4-20250514',
       system: systemPrompt,
       messages: await convertToModelMessages(messages),
       temperature: 0.7,
-      maxTokens: 1024,
+      maxTokens: 500,
+      onFinish: async ({ response }) => {
+        // Get the final assistant response
+        const finalMessages = appendResponseMessages({
+          messages,
+          responseMessages: response.messages,
+        })
+        const assistantMessage = finalMessages.find(
+          (m) => m.role === 'assistant' && typeof m.content === 'string'
+        )
+        const aiResponse = assistantMessage
+          ? String(assistantMessage.content)
+          : ''
+
+        // INSERT onboarding_ai_chats
+        await supabase.from('onboarding_ai_chats').insert({
+          brokerage_id: brokerageId,
+          agent_id: agentId,
+          question: latestQuery,
+          ai_response: aiResponse,
+        })
+
+        // Check if escalation needed
+        const noKBResults = uniqueResults.length === 0
+        const uncertainResponse =
+          aiResponse.toLowerCase().includes("i don't know") ||
+          aiResponse.toLowerCase().includes("i'm not sure") ||
+          aiResponse.toLowerCase().includes('not certain')
+
+        if (noKBResults || uncertainResponse) {
+          // Fire SETUP_ASSISTANT_ESCALATED kernel event
+          await supabase.from('lifecycle_events').insert({
+            brokerage_id: brokerageId,
+            entity_type: 'agent',
+            entity_id: agentId,
+            event_type: KernelEvent.SETUP_ASSISTANT_ESCALATED,
+            actor_user_id: agentId,
+            metadata: {
+              query: latestQuery,
+              reason: noKBResults ? 'no_kb_results' : 'uncertain_response',
+              timestamp: new Date().toISOString(),
+            },
+          })
+
+          // INSERT smart_assistant_suggestions for admin review
+          await supabase.from('smart_assistant_suggestions').insert({
+            agent_id: agentId,
+            title: 'Setup question needs admin review',
+            description: latestQuery,
+            context_type: 'onboarding_setup',
+            priority: 'medium',
+            status: 'pending',
+          })
+        }
+      },
     })
 
     return result.toUIMessageStreamResponse()
@@ -69,25 +150,4 @@ Important: If an agent mentions they want to escalate, suggest using the "Escala
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     )
   }
-}
-
-/**
- * Map onboarding step to knowledge category for better semantic search
- */
-function mapStepToCategory(step: string): string | undefined {
-  const stepCategoryMap: Record<string, string> = {
-    'license-upload': 'license',
-    'license-verification': 'license',
-    'brand-setup': 'brand',
-    'brand-colors': 'brand',
-    'brand-voice': 'brand',
-    'integrations': 'tech_stack',
-    'email-setup': 'tech_stack',
-    'calendar-setup': 'tech_stack',
-    'crm-setup': 'tech_stack',
-    'training-videos': 'training',
-    'certification': 'certification',
-  }
-
-  return stepCategoryMap[step] || undefined
 }
