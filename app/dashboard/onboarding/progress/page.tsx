@@ -4,6 +4,8 @@ import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 import { getAgentProgress } from "@/app/actions/onboarding/progress"
 import { ProgressDashboardClient } from "./progress-dashboard-client"
 
+export const dynamic = 'force-dynamic'
+
 export const metadata = {
   title: "Training Progress | VIP Real Estate AI OS",
   description: "Track your onboarding progress and certifications",

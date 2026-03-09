@@ -1,6 +1,7 @@
 import { AISetupAssistant } from '@/components/onboarding/AISetupAssistant'
-import { createClient } from '@/lib/supabase/server'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
+
+export const dynamic = 'force-dynamic'
 
 export default async function OnboardingLayout({
   children,

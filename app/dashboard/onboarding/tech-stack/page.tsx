@@ -9,6 +9,8 @@ import { createClient } from "@/lib/supabase/server"
 import { getIntegrationStatus } from "@/app/actions/onboarding/tech-stack"
 import { TechStackClient } from "./tech-stack-client"
 
+export const dynamic = 'force-dynamic'
+
 export const metadata = {
   title: "Tech Stack Setup | VIP Real Estate AI OS",
   description: "Configure your third-party integrations for SMS, email, e-signatures, and more",

@@ -9,6 +9,8 @@ import { createClient } from "@/lib/supabase/server"
 import { getBrandSetupStatus } from "@/app/actions/onboarding/brand"
 import { BrandSetupClient } from "./brand-setup-client"
 
+export const dynamic = 'force-dynamic'
+
 export const metadata = {
   title: "Brand Setup | VIP Real Estate AI OS",
   description: "Configure your brand colors, typography, voice, and templates",

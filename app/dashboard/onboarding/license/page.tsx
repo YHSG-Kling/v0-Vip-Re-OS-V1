@@ -9,6 +9,8 @@ import { redirect } from "next/navigation"
 import { getAgentLicenseStatus } from "@/app/actions/onboarding/license"
 import { LicenseIntakeClient } from "./license-intake-client"
 
+export const dynamic = 'force-dynamic'
+
 export const metadata = {
   title: "License Intake | Agent Onboarding",
   description: "Complete your license verification and compliance requirements",

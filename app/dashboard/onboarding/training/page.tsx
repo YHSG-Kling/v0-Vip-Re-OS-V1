@@ -9,6 +9,8 @@ import { createClient } from "@/lib/supabase/server"
 import { getTrainingVideos } from "@/app/actions/onboarding/training"
 import { TrainingLibraryClient } from "./training-library-client"
 
+export const dynamic = 'force-dynamic'
+
 export const metadata = {
   title: "Training Library | VIP Real Estate AI OS",
   description: "Complete your required training videos to unlock full platform access",

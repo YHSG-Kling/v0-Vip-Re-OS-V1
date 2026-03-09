@@ -9,6 +9,8 @@ import { createClient } from "@/lib/supabase/server"
 import { getVideoWithProgress } from "@/app/actions/onboarding/training"
 import { VideoPlayerClient } from "./video-player-client"
 
+export const dynamic = 'force-dynamic'
+
 export async function generateMetadata({
   params,
 }: {
