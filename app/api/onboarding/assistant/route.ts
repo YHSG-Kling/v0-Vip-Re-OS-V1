@@ -1,7 +1,8 @@
 import { streamText, convertToModelMessages } from 'ai'
 import { createClient } from '@/lib/supabase/server'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
-import { getHelpTopics, searchHelpTopics, fireAssistantEvent } from '@/app/actions/onboarding/assistant'
+import { fireAssistantEvent } from '@/app/actions/onboarding/assistant'
+import { buildRAGContext, searchKnowledge } from '@/app/actions/knowledge/search'
 
 export async function POST(request: Request) {
   try {
@@ -10,12 +11,18 @@ export async function POST(request: Request) {
     const supabase = await createClient()
     const { agentId, brokerageId } = await getAgentContext()
 
-    // Fetch help topics for RAG context
-    const helpTopics = await getHelpTopics()
-    const ragContext = helpTopics
-      .slice(0, 10)
-      .map((t: any) => `${t.title}: ${t.content}`)
-      .join('\n\n')
+    // Extract the user's latest query for semantic search
+    const userMessages = messages.filter((m: { role: string }) => m.role === 'user')
+    const latestQuery = userMessages.length > 0
+      ? userMessages[userMessages.length - 1].content
+      : currentStep
+
+    // Use semantic search to find relevant knowledge
+    const ragContext = await buildRAGContext(latestQuery, {
+      maxTokens: 3000,
+      maxResults: 5,
+      category: mapStepToCategory(currentStep),
+    })
 
     // Fire query made event
     await fireAssistantEvent(agentId, 'query_made', currentStep)
@@ -32,8 +39,8 @@ Your role is to provide friendly, helpful guidance during agent onboarding. You 
 
 Current Onboarding Step: ${currentStep}
 
-Available Knowledge Base:
-${ragContext}
+Relevant Knowledge (found via semantic search):
+${ragContext || 'No specific knowledge found for this query.'}
 
 Guidelines:
 1. Be conversational and encouraging - agents are often new to the platform
@@ -62,4 +69,25 @@ Important: If an agent mentions they want to escalate, suggest using the "Escala
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     )
   }
+}
+
+/**
+ * Map onboarding step to knowledge category for better semantic search
+ */
+function mapStepToCategory(step: string): string | undefined {
+  const stepCategoryMap: Record<string, string> = {
+    'license-upload': 'license',
+    'license-verification': 'license',
+    'brand-setup': 'brand',
+    'brand-colors': 'brand',
+    'brand-voice': 'brand',
+    'integrations': 'tech_stack',
+    'email-setup': 'tech_stack',
+    'calendar-setup': 'tech_stack',
+    'crm-setup': 'tech_stack',
+    'training-videos': 'training',
+    'certification': 'certification',
+  }
+
+  return stepCategoryMap[step] || undefined
 }
