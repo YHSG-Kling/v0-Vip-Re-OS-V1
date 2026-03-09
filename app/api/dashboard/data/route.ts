@@ -89,7 +89,7 @@ export async function GET(request: NextRequest) {
 
       case "reviews":
         const { data: reviews } = await supabase
-          .from("reviews")
+          .from("agent_reviews")
           .select("*, contacts(*)")
           .eq("agent_id", agentId)
           .order("created_at", { ascending: false })
@@ -98,7 +98,7 @@ export async function GET(request: NextRequest) {
 
       case "expenses":
         const { data: expenses } = await supabase
-          .from("expenses")
+          .from("business_expenses")
           .select("*")
           .eq("agent_id", agentId)
           .order("expense_date", { ascending: false })
@@ -107,7 +107,7 @@ export async function GET(request: NextRequest) {
 
       case "commissions":
         const { data: commissions } = await supabase
-          .from("commission_records")
+          .from("commissions")
           .select("*, transactions(*)")
           .eq("agent_id", agentId)
           .order("created_at", { ascending: false })
@@ -146,7 +146,7 @@ export async function GET(request: NextRequest) {
 
       case "documents":
         const { data: documents } = await supabase
-          .from("documents")
+          .from("transaction_documents")
           .select("*, transactions(*)")
           .eq("uploaded_by", agentId)
           .order("created_at", { ascending: false })
@@ -194,7 +194,7 @@ export async function GET(request: NextRequest) {
       case "communications":
         const contactId = searchParams.get("contact_id")
         let commQuery = supabase
-          .from("communications")
+          .from("messages")
           .select("*, contacts(*)")
           .order("created_at", { ascending: false })
           .limit(100)

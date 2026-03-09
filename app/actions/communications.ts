@@ -210,7 +210,7 @@ export async function getCommunicationStats(params?: { agentId?: string; startDa
     const supabase = await createClient()
     
     let query = supabase
-      .from("communications")
+      .from("messages")
       .select("*")
 
     if (params?.agentId) query = query.eq("agent_id", params.agentId)
@@ -245,7 +245,7 @@ export async function getRecentCommunications(contactId: string, limit = 20) {
     const supabase = await createClient()
 
     const { data, error } = await supabase
-      .from("communications")
+      .from("messages")
       .select("*")
       .eq("contact_id", contactId)
       .order("sent_at", { ascending: false })

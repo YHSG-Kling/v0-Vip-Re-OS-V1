@@ -1442,7 +1442,7 @@ export const supabaseService = {
   async getCommunicationHistory(contactId?: string) {
     try {
       const supabase = getSupabaseAdmin()
-      let query = supabase.from("communications").select("*, contacts(*)")
+      let query = supabase.from("messages").select("*, contacts(*)")
 
       if (contactId) {
         query = query.eq("contact_id", contactId)
@@ -1465,7 +1465,7 @@ export const supabaseService = {
   async getDocuments(entityId?: string) {
     try {
       const supabase = getSupabaseAdmin()
-      let query = supabase.from("documents").select("*, transactions(*)")
+      let query = supabase.from("transaction_documents").select("*, transactions(*)")
 
       if (entityId) {
         query = query.or(`contact_id.eq.${entityId},transaction_id.eq.${entityId}`)

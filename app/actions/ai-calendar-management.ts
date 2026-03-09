@@ -715,11 +715,11 @@ export async function generateWeeklyPlan(params: {
 
     // Get all relevant data for the week
     const { data: appointments } = await supabase
-      .from("appointments")
+      .from("showings")
       .select("*")
       .eq("agent_id", params.agentId)
-      .gte("start_time", startDate.toISOString())
-      .lt("start_time", endDate.toISOString())
+      .gte("scheduled_at", startDate.toISOString())
+      .lt("scheduled_at", endDate.toISOString())
 
     const { data: tasks } = await supabase
       .from("tasks")

@@ -62,7 +62,7 @@ export async function reviewContract(params: {
   try {
     // Get document content
     const { data: document } = await supabase
-      .from("documents")
+      .from("transaction_documents")
       .select("*, transactions(*)")
       .eq("id", params.documentId)
       .single()
@@ -204,7 +204,7 @@ export async function reviewTransactionDocuments(params: {
 
   try {
     const { data: documents } = await supabase
-      .from("documents")
+      .from("transaction_documents")
       .select("*")
       .eq("transaction_id", params.transactionId)
 
@@ -256,8 +256,8 @@ export async function compareContractVersions(params: {
 
   try {
     const [{ data: doc1 }, { data: doc2 }] = await Promise.all([
-      supabase.from("documents").select("*").eq("id", params.documentId1).single(),
-      supabase.from("documents").select("*").eq("id", params.documentId2).single(),
+      supabase.from("transaction_documents").select("*").eq("id", params.documentId1).single(),
+      supabase.from("transaction_documents").select("*").eq("id", params.documentId2).single(),
     ])
 
     if (!doc1 || !doc2) {
@@ -302,7 +302,7 @@ export async function generateDocumentChecklist(params: {
   try {
     // Get existing documents
     const { data: existingDocs } = await supabase
-      .from("documents")
+      .from("transaction_documents")
       .select("document_type, name")
       .eq("transaction_id", params.transactionId)
 

@@ -384,7 +384,7 @@ export async function syncQuickBooksExpense(params: {
     }
 
     const { data: expense } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("*")
       .eq("id", params.expenseId)
       .single()
@@ -428,7 +428,7 @@ export async function syncQuickBooksExpense(params: {
     // Update expense with QB ID
     if (qbData.Purchase?.Id) {
       await supabase
-        .from("expenses")
+        .from("business_expenses")
         .update({ quickbooks_id: qbData.Purchase.Id })
         .eq("id", params.expenseId)
     }
@@ -463,7 +463,7 @@ export async function syncQuickBooksCommission(params: {
     }
 
     const { data: commission } = await supabase
-      .from("commission_records")
+      .from("commissions")
       .select("*, transactions(*)")
       .eq("id", params.commissionId)
       .single()
@@ -505,7 +505,7 @@ export async function syncQuickBooksCommission(params: {
 
     if (qbData.SalesReceipt?.Id) {
       await supabase
-        .from("commission_records")
+        .from("commissions")
         .update({ quickbooks_id: qbData.SalesReceipt.Id })
         .eq("id", params.commissionId)
     }

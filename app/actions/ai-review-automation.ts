@@ -401,7 +401,7 @@ export async function aiExtractTestimonials(params: {
   try {
     // Get positive reviews/feedback
     const { data: reviews } = await supabase
-      .from("reviews")
+      .from("agent_reviews")
       .select("*")
       .eq("agent_id", params.agentId)
       .gte("rating", 4)

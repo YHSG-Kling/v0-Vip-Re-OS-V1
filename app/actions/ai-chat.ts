@@ -53,7 +53,7 @@ export async function createChatSession(data: {
   }
 
   const { data: session, error } = await supabase
-    .from("chat_sessions")
+    .from("conversations")
     .insert({
       agent_id: data.agentId,
       lead_id: data.leadId && isValidUUID(data.leadId) ? data.leadId : null,
@@ -100,7 +100,7 @@ export async function sendChatMessage(data: {
 
     // Update session with new temperature
     await supabase
-      .from("chat_sessions")
+      .from("conversations")
       .update({
         lead_temperature: temperatureAnalysis.temperature,
         temperature_analysis: {
@@ -144,7 +144,7 @@ export async function sendChatMessage(data: {
 
   // Update session activity
   await supabase
-    .from("chat_sessions")
+    .from("conversations")
     .update({
       last_activity_at: new Date().toISOString(),
       them_first_score: themFirstAnalysis.score,
@@ -247,7 +247,7 @@ async function checkMessageCompliance(message: string, sessionId: string): Promi
   const supabase = await createClient()
 
   // Get session context to check lead temperature
-  const { data: session } = await supabase.from("chat_sessions").select("*, contacts(*)").eq("id", sessionId).single()
+  const { data: session } = await supabase.from("conversations").select("*, contacts(*)").eq("id", sessionId).single()
 
   const issues: any[] = []
 
@@ -297,7 +297,7 @@ async function generateAiResponse(sessionId: string, userMessage: string): Promi
 
   // Get session context
   const { data: session } = await supabase
-    .from("chat_sessions")
+    .from("conversations")
     .select(`
       *,
       contacts (*,
@@ -541,7 +541,7 @@ export async function getChatSession(sessionId: string) {
   const supabase = await createClient()
 
   const { data: session, error } = await supabase
-    .from("chat_sessions")
+    .from("conversations")
     .select(`
       *,
       contacts (*,
@@ -567,7 +567,7 @@ export async function getAgentChatSessions(agentId: string) {
   }
 
   const { data, error } = await supabase
-    .from("chat_sessions")
+    .from("conversations")
     .select(
       `
       *,
@@ -597,7 +597,7 @@ export async function endChatSession(sessionId: string) {
   const supabase = await createClient()
 
   const { error } = await supabase
-    .from("chat_sessions")
+    .from("conversations")
     .update({
       session_status: "completed",
       ended_at: new Date().toISOString(),
@@ -675,7 +675,7 @@ export async function useChatTemplate(templateId: string, sessionId: string) {
     .eq("id", templateId)
 
   // Get session context for personalization
-  const { data: session } = await supabase.from("chat_sessions").select("*, contacts(*)").eq("id", sessionId).single()
+  const { data: session } = await supabase.from("conversations").select("*, contacts(*)").eq("id", sessionId).single()
 
   // Personalize template
   let personalizedContent = template.template_content

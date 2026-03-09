@@ -420,7 +420,7 @@ export async function suggestNextActions(agentId: string) {
 
   // Get agent's recent activity
   const { data: recentActivity } = await supabase
-    .from("communications")
+    .from("messages")
     .select("*, contacts(*)")
     .eq("agent_id", agentId)
     .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())

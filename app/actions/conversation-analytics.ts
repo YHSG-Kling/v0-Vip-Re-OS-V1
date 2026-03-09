@@ -341,7 +341,7 @@ export async function runWeeklyAIAudit() {
     for (const conv of conversations || []) {
       // Get conversation messages from communications table
       const { data: messages } = await supabase
-        .from("communications")
+        .from("messages")
         .select("message, created_at, direction")
         .eq("contact_id", conv.contact_id)
         .gte("created_at", weekAgo)

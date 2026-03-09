@@ -275,7 +275,7 @@ export class GHLIntegration {
       let sessionId: string
 
       const { data: existingSession } = await supabase
-        .from("chat_sessions")
+        .from("conversations")
         .select("id")
         .eq("contact_id", contact.id)
         .eq("status", "active")
@@ -285,7 +285,7 @@ export class GHLIntegration {
         sessionId = existingSession.id
       } else {
         const { data: newSession } = await supabase
-          .from("chat_sessions")
+          .from("conversations")
           .insert({
             contact_id: contact.id,
             agent_id: webhookData.agentId || null,

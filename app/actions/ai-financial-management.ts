@@ -55,7 +55,7 @@ export async function aiCategorizeExpense(params: {
   try {
     // Get agent's expense history for pattern matching
     const { data: recentExpenses } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("category, vendor, description")
       .eq("agent_id", params.agentId)
       .order("created_at", { ascending: false })
@@ -141,7 +141,7 @@ export async function createExpense(params: ExpenseEntry) {
 
     // Create expense record
     const { data: expense, error } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .insert({
         agent_id: params.agentId,
         amount: params.amount,
@@ -194,7 +194,7 @@ export async function getExpenses(params?: {
 
   try {
     let query = supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("*")
       .order("expense_date", { ascending: false })
 
@@ -431,7 +431,7 @@ export async function aiGenerateProfitLossReport(params: {
 
     // Get all expenses for period
     const { data: expenses } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("*")
       .eq("agent_id", params.agentId)
       .gte("expense_date", params.startDate)
@@ -728,7 +728,7 @@ export async function aiCreateBudget(params: {
     // Get historical data
     const lastYear = params.year - 1
     const { data: lastYearExpenses } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("category, amount")
       .eq("agent_id", params.agentId)
       .gte("expense_date", `${lastYear}-01-01`)

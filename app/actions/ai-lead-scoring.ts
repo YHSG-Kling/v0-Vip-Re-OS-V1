@@ -33,7 +33,7 @@ export async function scoreLeadWithAI(params: {
 
     // Get interaction history
     const { data: interactions } = await supabase
-      .from("communications")
+      .from("messages")
       .select("*")
       .eq("contact_id", params.contactId)
       .order("created_at", { ascending: false })

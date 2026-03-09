@@ -12,7 +12,7 @@ export async function getDocuments(params?: { contactId?: string; transactionId?
     const supabase = await createClient()
     
     let query = supabase
-      .from("documents")
+      .from("transaction_documents")
       .select("*, uploaded_by_agent:agents!documents_uploaded_by_fkey(first_name, last_name)")
       .order("uploaded_at", { ascending: false })
 
@@ -35,7 +35,7 @@ export async function deleteDocument(documentId: string) {
     
     // Get document to delete blob
     const { data: doc } = await supabase
-      .from("documents")
+      .from("transaction_documents")
       .select("file_url")
       .eq("id", documentId)
       .single()
@@ -50,7 +50,7 @@ export async function deleteDocument(documentId: string) {
 
     // Delete from database
     const { error } = await supabase
-      .from("documents")
+      .from("transaction_documents")
       .delete()
       .eq("id", documentId)
 
@@ -68,7 +68,7 @@ export async function analyzeDocument(documentId: string) {
     const supabase = await createClient()
     
     const { data: document, error } = await supabase
-      .from("documents")
+      .from("transaction_documents")
       .select("*")
       .eq("id", documentId)
       .single()
@@ -95,7 +95,7 @@ Provide detailed analysis including document type classification, key informatio
 
     // Save analysis
     await supabase
-      .from("documents")
+      .from("transaction_documents")
       .update({ ai_analysis: analysis, analyzed_at: new Date().toISOString() })
       .eq("id", documentId)
 
