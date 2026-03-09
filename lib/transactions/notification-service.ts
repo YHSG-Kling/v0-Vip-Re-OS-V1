@@ -34,7 +34,7 @@ export class NotificationService {
 
     // Get recipient profiles for SMS eligibility (phone + consent)
     const { data: profiles } = await this.supabase
-      .from("profiles")
+      .from("users")
       .select("id, email, full_name, phone, communication_preferences")
       .in("id", params.recipientIds)
 
@@ -135,7 +135,7 @@ export class NotificationService {
     let recipientProfiles = profiles
     if (!recipientProfiles) {
       const { data } = await this.supabase
-        .from("profiles")
+        .from("users")
         .select("id, email, full_name")
         .in("id", params.recipientIds)
       recipientProfiles = data ?? []

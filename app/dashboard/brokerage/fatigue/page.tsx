@@ -27,7 +27,7 @@ export default async function BrokerageFatiguePage() {
 
   // Validate broker/admin role
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id, role")
     .eq("id", user.id)
     .single()

@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Check all agent certifications
-    const { data: agents } = await supabase.from("profiles").select("id").eq("role", "agent")
+    const { data: agents } = await supabase.from("users").select("id").eq("role", "agent")
 
     for (const agent of agents || []) {
       const status = await trackCertificationExpiration(agent.id)

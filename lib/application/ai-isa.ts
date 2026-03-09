@@ -96,7 +96,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
   }
 
   const { data: agent } = await supabase
-    .from("profiles")
+    .from("users")
     .select("first_name, last_name, phone, brokerage:brokerages(name)")
     .eq("id", loginId)
     .single()

@@ -21,7 +21,7 @@ export async function searchVendors(filters: {
   if (!user) throw new Error("Not authenticated")
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -94,7 +94,7 @@ export async function getSuggestedVendorsByStage(stage: string) {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -159,7 +159,7 @@ export async function createVendorBooking(data: {
   if (!user) throw new Error("Not authenticated")
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -221,7 +221,7 @@ export async function getCompletedBookingsForRating() {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -282,7 +282,7 @@ export async function rateVendorBooking(data: {
   if (!user) throw new Error("Not authenticated")
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -397,7 +397,7 @@ export async function getVendorReviews(vendorId: string) {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id, role")
     .eq("id", user.id)
     .maybeSingle()
@@ -433,7 +433,7 @@ export async function getVendorCostComparison(serviceType: string) {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -496,7 +496,7 @@ export async function getAllVendorBookings(limit: number = 50) {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()

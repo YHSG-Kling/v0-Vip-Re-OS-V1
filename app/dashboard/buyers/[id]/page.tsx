@@ -53,7 +53,7 @@ export default async function BuyerDetailPage({ params }: PageProps) {
         .maybeSingle(),
       // Load agent profile for agentName
       supabase
-        .from("profiles")
+        .from("users")
         .select("full_name, first_name, last_name")
         .eq("id", user.id)
         .maybeSingle(),

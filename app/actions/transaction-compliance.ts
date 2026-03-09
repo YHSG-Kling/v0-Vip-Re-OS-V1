@@ -327,7 +327,7 @@ export async function getAllTransactionComplianceLogs(filters?: {
 
   // Get user's brokerage
   const { data: profile } = await serverClient
-    .from("profiles")
+    .from("users")
     .select("brokerage_id, role")
     .eq("id", user.id)
     .maybeSingle()

@@ -19,7 +19,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
 
   // Get user profile with brokerage
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("id, role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()

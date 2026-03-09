@@ -18,7 +18,7 @@ export default async function VendorsPage() {
   if (!user) redirect("/login")
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("id, role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()

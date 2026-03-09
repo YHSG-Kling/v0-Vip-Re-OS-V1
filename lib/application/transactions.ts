@@ -104,7 +104,7 @@ export async function createTransaction(transactionData: {
     if (transactionData.commissionPercentage != null) {
       const { data: userData } = await supabase.auth.getUser()
       const { data: profile } = await supabase
-        .from("profiles")
+        .from("users")
         .select("brokerage_id")
         .eq("id", userData.user?.id)
         .single()
@@ -1994,7 +1994,7 @@ export async function updateTransactionStage(transactionId: string, targetStage:
   if (!user) return { success: false, error: "Not authenticated" }
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id, role")
     .eq("id", user.id)
     .single()

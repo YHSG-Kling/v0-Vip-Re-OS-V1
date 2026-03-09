@@ -11,7 +11,7 @@ export default async function TransactionPipelinePage() {
   if (!user) redirect("/login")
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id, role")
     .eq("id", user.id)
     .single()
