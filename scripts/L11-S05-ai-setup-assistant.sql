@@ -13,7 +13,6 @@ CREATE TABLE IF NOT EXISTS help_topics_kb (
   category TEXT NOT NULL CHECK (category IN ('license', 'brand', 'tech_stack', 'training', 'certification', 'general')),
   tags TEXT[] DEFAULT '{}',
   is_active BOOLEAN DEFAULT true,
-  content_embedding VECTOR(1536), -- Activated in L12 RAG sprint
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
