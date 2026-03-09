@@ -486,7 +486,7 @@ async function initiateCall(contactId: string, agentId: string) {
   
   // Create call log entry
   const { data: callLog, error } = await supabase
-    .from("call_logs")
+    .from("voice_calls")
     .insert({
       contact_id: contactId,
       agent_id: agentId,

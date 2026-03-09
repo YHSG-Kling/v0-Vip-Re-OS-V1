@@ -160,7 +160,7 @@ export async function aiGenerateDripCampaign(params: {
       .single()
 
     const { data: agent } = await supabase
-      .from("agent_profiles")
+      .from("agents")
       .select("*")
       .eq("id", params.agentId)
       .single()
@@ -220,7 +220,7 @@ Make content warm and personal, not salesy.`,
 
     // Save campaign
     const { data: savedCampaign, error } = await supabase
-      .from("drip_campaigns")
+      .from("campaign_sequences")
       .insert({
         agent_id: params.agentId,
         contact_id: params.contactId,
@@ -349,7 +349,7 @@ export async function aiDistributeLead(params: {
     // Get team agents
     const { data: agents } = await supabase
       .from("team_members")
-      .select("*, agent_profiles(*)")
+      .select("*, agents(*)")
       .eq("team_id", params.teamId)
       .eq("status", "active")
 
@@ -402,9 +402,9 @@ LEAD:
 AVAILABLE AGENTS:
 ${agentMetrics.map((a) => `
 - ID: ${a.user_id}
-- Name: ${a.agent_profiles?.first_name} ${a.agent_profiles?.last_name}
-- Specialties: ${a.agent_profiles?.specialties?.join(", ") || "General"}
-- Areas: ${a.agent_profiles?.service_areas?.join(", ") || "All areas"}
+- Name: ${a.agents?.first_name} ${a.agents?.last_name}
+- Specialties: ${a.agents?.specialties?.join(", ") || "General"}
+- Areas: ${a.agents?.service_areas?.join(", ") || "All areas"}
 - Closed Deals (12mo): ${a.closedDeals}
 - Active Leads: ${a.activeLeads}
 `).join("\n")}

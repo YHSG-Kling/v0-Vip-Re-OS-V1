@@ -27,7 +27,7 @@ export async function createEmailCampaign(params: {
 
   try {
     const { data: campaign, error } = await supabase
-      .from("email_campaigns")
+      .from("newsletter_campaigns")
       .insert({
         agent_id: params.agentId,
         campaign_name: params.campaignName,
@@ -59,7 +59,7 @@ export async function sendCampaign(campaignId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: campaign } = await supabase.from("email_campaigns").select("*").eq("id", campaignId).single()
+    const { data: campaign } = await supabase.from("newsletter_campaigns").select("*").eq("id", campaignId).single()
 
     if (!campaign) {
       return { success: false, error: "Campaign not found" }
@@ -91,7 +91,7 @@ export async function sendCampaign(campaignId: string) {
 
     // Update campaign status
     await supabase
-      .from("email_campaigns")
+      .from("newsletter_campaigns")
       .update({
         status: "sending",
         sent_at: new Date().toISOString(),
@@ -132,7 +132,7 @@ export async function createDripSequence(params: {
   try {
     // Create sequence
     const { data: sequence, error: seqError } = await supabase
-      .from("email_drip_sequences")
+      .from("campaign_sequences")
       .insert({
         agent_id: params.agentId,
         sequence_name: params.sequenceName,
@@ -236,7 +236,7 @@ export async function triggerBehavioralEmail(params: {
   try {
     // Find matching drip sequences for this trigger
     const { data: sequences } = await supabase
-      .from("email_drip_sequences")
+      .from("campaign_sequences")
       .select("*")
       .eq("trigger_event", params.triggerEvent)
       .eq("is_active", true)
@@ -623,7 +623,7 @@ export async function prepareListingEmailCampaign(params: {
 
     // Create campaign
     const { data: campaign, error } = await supabase
-      .from("email_campaigns")
+      .from("newsletter_campaigns")
       .insert({
         agent_id: transaction.agent_id,
         campaign_name: `${params.campaignType} - ${listing.address}`,
@@ -657,7 +657,7 @@ export async function prepareListingEmailCampaign(params: {
       .single()
 
     if (template) {
-      await supabase.from("email_campaigns").update({ template_id: template.id }).eq("id", campaign.id)
+      await supabase.from("newsletter_campaigns").update({ template_id: template.id }).eq("id", campaign.id)
     }
 
     // Link recipients

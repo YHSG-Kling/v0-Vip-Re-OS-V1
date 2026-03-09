@@ -205,7 +205,7 @@ export async function startSmartDrip(leadId: string, dripType: string, agentId: 
       return { success: false, error: "Lead not found" }
     }
 
-    await supabaseService.createRecord("drip_campaigns", {
+    await supabaseService.createRecord("campaign_sequences", {
       contact_id: leadId,
       agent_id: agentId,
       campaign_type: dripType,
