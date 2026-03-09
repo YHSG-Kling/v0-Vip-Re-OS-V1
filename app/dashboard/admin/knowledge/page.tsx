@@ -2,6 +2,8 @@ import { Suspense } from 'react'
 import { getKnowledgeArticles, getHelpTopicsAdmin, getEmbeddingQueueStatus } from '@/app/actions/knowledge/search'
 import { KnowledgeManagementClient } from './knowledge-client'
 
+export const dynamic = 'force-dynamic'
+
 export const metadata = {
   title: 'Knowledge Management | Admin',
   description: 'Manage knowledge base articles and help topics',
