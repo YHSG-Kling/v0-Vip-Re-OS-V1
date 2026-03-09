@@ -33,7 +33,7 @@ import {
   claimCertification, 
   dismissCelebration,
   getAdminOnboardingOverview,
-} from '@/app/actions/onboarding/certification-actions'
+} from '@/app/actions/onboarding/progress'
 import { completeMyOnboardingStep } from '@/app/actions/onboarding/agent-onboarding-actions'
 import type { OnboardingStepRow } from '@/lib/kernel'
 

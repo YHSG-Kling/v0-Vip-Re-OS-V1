@@ -1,4 +1,4 @@
-import { streamText, convertToModelMessages, appendResponseMessages, type Message } from 'ai'
+import { streamText, convertToModelMessages, type Message } from 'ai'
 import { createClient } from '@/lib/supabase/server'
 import { KernelEvent } from '@/lib/kernel/events'
 
@@ -86,18 +86,8 @@ ${kbContext || 'No specific documentation found for this query.'}`
       messages: await convertToModelMessages(messages),
       temperature: 0.7,
       maxTokens: 500,
-      onFinish: async ({ response }) => {
-        // Get the final assistant response
-        const finalMessages = appendResponseMessages({
-          messages,
-          responseMessages: response.messages,
-        })
-        const assistantMessage = finalMessages.find(
-          (m) => m.role === 'assistant' && typeof m.content === 'string'
-        )
-        const aiResponse = assistantMessage
-          ? String(assistantMessage.content)
-          : ''
+      onFinish: async ({ text: aiResponse }) => {
+        // aiResponse is the final streamed text
 
         // INSERT onboarding_ai_chats
         await supabase.from('onboarding_ai_chats').insert({
