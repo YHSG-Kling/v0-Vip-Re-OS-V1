@@ -319,4 +319,14 @@ export enum KernelEvent {
   CERTIFICATION_AWARDED              = 'certification_awarded',
   ONBOARDING_COMPLETED               = 'onboarding_completed',
   ONBOARDING_STALLED                 = 'onboarding_stalled',
+
+  // ── Layer 12 — AI Intelligence Mesh ─────────────────────────────────────────
+  DAILY_BRIEFING_GENERATED           = 'daily_briefing_generated',
+  DEAL_HEALTH_SCORE_UPDATED          = 'deal_health_score_updated',
+  DEAL_AT_RISK_DETECTED              = 'deal_at_risk_detected',
+  INTENT_CLASSIFIED                  = 'intent_classified',
+  COACHING_REPORT_GENERATED          = 'coaching_report_generated',
+  PROACTIVE_INTERVENTION_TRIGGERED   = 'proactive_intervention_triggered',
+  KB_ARTICLE_EMBEDDED                = 'kb_article_embedded',
+  MEMORY_CONTEXT_UPDATED             = 'memory_context_updated',
 }
