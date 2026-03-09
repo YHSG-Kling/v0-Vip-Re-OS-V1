@@ -77,6 +77,16 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'marketing_campaign_live':           KernelEvent.MARKETING_CAMPAIGN_LAUNCHED,
   'marketing_campaign_paused':         KernelEvent.MARKETING_CAMPAIGN_PAUSED,
   'marketing_campaign_ended':          KernelEvent.MARKETING_CAMPAIGN_ENDED,
+
+  // ── Layer 11: Agent Onboarding & Education ────────────────────────────────
+  'license_submitted':         KernelEvent.AGENT_LICENSE_SUBMITTED,
+  'license_verified':          KernelEvent.AGENT_LICENSE_VERIFIED,
+  'brand_configured':          KernelEvent.BRAND_SETUP_COMPLETED,
+  'integrations_configured':   KernelEvent.INTEGRATION_CONNECTED,
+  'training_in_progress':      KernelEvent.TRAINING_COURSE_ENROLLED,
+  'certification_pending':     KernelEvent.TRAINING_COURSE_COMPLETED,
+  'onboarding_completed':      KernelEvent.ONBOARDING_COMPLETED,
+  'onboarding_stalled':        KernelEvent.ONBOARDING_STALLED,
 }
 
 // ─── ENTITY → TABLE + STATE COLUMN MAP ───────────────────────────────────────
@@ -105,6 +115,9 @@ const ENTITY_MAP: Record<
   showing:     { table: "showings",       stateColumn: "status"        },
   // ── Layer 9 — Marketing Campaign State Machine ───────────────────────────
   marketing_campaign_machine: { table: 'marketing_campaigns', stateColumn: 'status' },
+
+  // ── Layer 11 — Agent Onboarding State Machine ────────────────────────────
+  agent_onboarding_machine: { table: 'agent_onboarding', stateColumn: 'status' },
 }
 
 // ─── MAIN FUNCTION ────────────────────────────────────────────────────────────
