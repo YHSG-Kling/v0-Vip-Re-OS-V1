@@ -329,4 +329,12 @@ export enum KernelEvent {
   PROACTIVE_INTERVENTION_TRIGGERED   = 'proactive_intervention_triggered',
   KB_ARTICLE_EMBEDDED                = 'kb_article_embedded',
   MEMORY_CONTEXT_UPDATED             = 'memory_context_updated',
+
+  // ── Layer 12 — Multi-Agent Coordination ─────────────────────────────────────
+  AGENT_SESSION_STARTED              = 'agent_session_started',
+  AGENT_TASK_DISPATCHED              = 'agent_task_dispatched',
+  AGENT_HANDOFF_INITIATED            = 'agent_handoff_initiated',
+  AGENT_HANDOFF_COMPLETED            = 'agent_handoff_completed',
+  AGENT_ESCALATED_TO_HUMAN           = 'agent_escalated_to_human',
+  AGENT_SESSION_ENDED                = 'agent_session_ended',
 }
