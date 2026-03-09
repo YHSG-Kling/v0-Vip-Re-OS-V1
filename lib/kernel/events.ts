@@ -337,4 +337,8 @@ export enum KernelEvent {
   AGENT_HANDOFF_COMPLETED            = 'agent_handoff_completed',
   AGENT_ESCALATED_TO_HUMAN           = 'agent_escalated_to_human',
   AGENT_SESSION_ENDED                = 'agent_session_ended',
+
+  // ── Layer 12 — Market Intelligence ──────────────────────────────────────────
+  MARKET_INSIGHT_GENERATED           = 'market_insight_generated',
+  MARKET_DATA_REFRESHED              = 'market_data_refreshed',
 }

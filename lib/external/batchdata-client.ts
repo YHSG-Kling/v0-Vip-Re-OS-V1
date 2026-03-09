@@ -126,3 +126,52 @@ export async function enrichPropertyWithBatchData(address: string): Promise<{
     cost: 0.03,
   }
 }
+
+// ─── Market Stats (for Market Insight Generator) ─────────────────────────────
+export interface BatchDataMarketStats {
+  median_sale_price: number
+  avg_days_on_market: number
+  active_listings: number
+  sold_last_30d: number
+  list_to_sale_ratio: number
+  months_supply: number
+}
+
+export async function fetchBatchDataMarketStats(
+  city: string,
+  state: string,
+  zipCode?: string
+): Promise<BatchDataMarketStats | null> {
+  if (!process.env.BATCHDATA_API_KEY) return null
+
+  try {
+    const body = zipCode ? { zip: zipCode } : { city, state }
+    const response = await fetch(`${BATCHDATA_API_URL}/market-stats`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${BATCHDATA_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+
+    if (!response.ok) {
+      console.error(`[BatchData] Market stats error: ${response.status}`)
+      return null
+    }
+
+    const data = await response.json()
+
+    return {
+      median_sale_price: data.median_sale_price ?? 0,
+      avg_days_on_market: data.avg_days_on_market ?? 0,
+      active_listings: data.active_listings ?? 0,
+      sold_last_30d: data.sold_last_30d ?? 0,
+      list_to_sale_ratio: data.list_to_sale_ratio ?? 0,
+      months_supply: data.months_supply ?? 0,
+    }
+  } catch (error) {
+    console.error('[BatchData] Market stats fetch error:', error)
+    return null
+  }
+}
