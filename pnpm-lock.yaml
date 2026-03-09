@@ -158,6 +158,9 @@ importers:
       bufferutil:
         specifier: 4.1.0
         version: 4.1.0
+      canvas-confetti:
+        specifier: ^1.9.3
+        version: 1.9.4
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -2444,6 +2447,9 @@ packages:
 
   caniuse-lite@1.0.30001766:
     resolution: {integrity: sha512-4C0lfJ0/YPjJQHagaE9x2Elb69CIqEPZeG0anQt9SIvIoOH4a4uaRl73IavyO+0qZh6MDLH//DrXThEYKHkmYA==}
+
+  canvas-confetti@1.9.4:
+    resolution: {integrity: sha512-yxQbJkAVrFXWNbTUjPqjF7G+g6pDotOUHGbkZq2NELZUMDpiJ85rIEazVb8GTaAptNW2miJAXbs1BtioA251Pw==}
 
   chokidar@4.0.3:
     resolution: {integrity: sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA==}
@@ -5961,6 +5967,8 @@ snapshots:
   camelcase@5.3.1: {}
 
   caniuse-lite@1.0.30001766: {}
+
+  canvas-confetti@1.9.4: {}
 
   chokidar@4.0.3:
     dependencies:
