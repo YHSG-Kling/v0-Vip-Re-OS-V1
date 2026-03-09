@@ -286,4 +286,24 @@ export enum KernelEvent {
   // ── Layer 9.12 — ROI ─────────────────────────────────────────────────────
   CAMPAIGN_ROI_UPDATED               = 'campaign_roi_updated',
   QR_ATTACHED_TO_ASSET               = 'qr_attached_to_asset',
+
+  // ── Layer 11: Agent Onboarding & Education ─────────────────────────────────
+  AGENT_LICENSE_SUBMITTED            = 'agent_license_submitted',
+  AGENT_LICENSE_VERIFIED             = 'agent_license_verified',
+  AGENT_LICENSE_FAILED               = 'agent_license_failed',
+  CONTRACT_SENT_FOR_SIGNATURE        = 'contract_sent_for_signature',
+  CONTRACT_SIGNED                    = 'contract_signed',
+  BRAND_SETUP_STARTED                = 'brand_setup_started',
+  BRAND_SETUP_COMPLETED              = 'brand_setup_completed',
+  INTEGRATION_CONNECTED              = 'integration_connected',
+  INTEGRATION_FAILED                 = 'integration_failed',
+  TRAINING_VIDEO_STARTED             = 'training_video_started',
+  TRAINING_VIDEO_COMPLETED           = 'training_video_completed',
+  TRAINING_COURSE_ENROLLED           = 'training_course_enrolled',
+  TRAINING_COURSE_COMPLETED          = 'training_course_completed',
+  SETUP_ASSISTANT_QUERY_MADE         = 'setup_assistant_query_made',
+  SETUP_ASSISTANT_ESCALATED          = 'setup_assistant_escalated',
+  CERTIFICATION_AWARDED              = 'certification_awarded',
+  ONBOARDING_COMPLETED               = 'onboarding_completed',
+  ONBOARDING_STALLED                 = 'onboarding_stalled',
 }
