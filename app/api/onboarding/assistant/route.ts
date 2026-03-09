@@ -1,6 +1,7 @@
 import { streamText, convertToModelMessages, type Message } from 'ai'
 import { createClient } from '@/lib/supabase/server'
 import { KernelEvent } from '@/lib/kernel/events'
+import { searchKB } from '@/lib/intelligence/kb-search'
 
 export async function POST(request: Request) {
   try {
@@ -19,34 +20,9 @@ export async function POST(request: Request) {
       ? String(userMessages[userMessages.length - 1].content)
       : ''
 
-    // Knowledge base search using ILIKE (per prompt specification)
-    // NOTE: vector search will replace this in L12-P03. Use ILIKE for now.
-    const { data: kbResults, error: kbError } = await supabase
-      .from('help_topics_kb')
-      .select('*')
-      .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
-      .eq('is_active', true)
-      .or(`title.ilike.%${latestQuery}%,content.ilike.%${latestQuery}%`)
-      .limit(5)
-
-    if (kbError) {
-      console.error('[v0] KB search error:', kbError.message)
-    }
-
-    // Also check if query matches any tags
-    const { data: tagResults } = await supabase
-      .from('help_topics_kb')
-      .select('*')
-      .or(`brokerage_id.eq.${brokerageId},brokerage_id.is.null`)
-      .eq('is_active', true)
-      .contains('tags', [latestQuery.toLowerCase()])
-      .limit(3)
-
-    // Combine results, deduplicating by id
-    const allResults = [...(kbResults || []), ...(tagResults || [])]
-    const uniqueResults = Array.from(
-      new Map(allResults.map((item) => [item.id, item])).values()
-    ).slice(0, 5)
+    // Knowledge base search using vector similarity (L12-P03 upgrade)
+    const kbResults = await searchKB(latestQuery, brokerageId, 5)
+    const uniqueResults = kbResults
 
     // Build context string from KB results (max 2000 chars)
     let kbContext = ''
