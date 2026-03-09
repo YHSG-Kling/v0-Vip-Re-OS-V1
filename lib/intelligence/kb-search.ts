@@ -11,9 +11,16 @@ export interface KBResult {
   tags?: string[]
 }
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-})
+// Lazy initialization to avoid build-time errors when OPENAI_API_KEY is not set
+let _openai: OpenAI | null = null
+function getOpenAI(): OpenAI {
+  if (!_openai) {
+    _openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    })
+  }
+  return _openai
+}
 
 /**
  * Search the knowledge base using vector similarity with ILIKE fallback
@@ -27,7 +34,7 @@ export async function searchKB(
 
   try {
     // Step 1: Generate embedding for query
-    const embeddingResponse = await openai.embeddings.create({
+    const embeddingResponse = await getOpenAI().embeddings.create({
       model: 'text-embedding-3-small',
       input: query,
     })
@@ -121,7 +128,7 @@ export async function embedAndStore(topicId: string): Promise<void> {
   }
 
   // Generate embedding
-  const embeddingResponse = await openai.embeddings.create({
+  const embeddingResponse = await getOpenAI().embeddings.create({
     model: 'text-embedding-3-small',
     input: `${topic.title}\n\n${topic.content}`,
   })
