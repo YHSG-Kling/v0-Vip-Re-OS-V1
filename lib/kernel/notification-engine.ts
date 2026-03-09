@@ -194,15 +194,15 @@ async function resolveRecipients(params: {
         // Resolve seller user_id via listing_agreements → contacts → user
         const { data: listingAgreement } = await supabase
           .from("listing_agreements")
-          .select("contact_id")
+          .select("seller_contact_id")
           .eq("listing_id", params.entityId)
           .maybeSingle()
 
-        if (listingAgreement?.contact_id) {
+        if (listingAgreement?.seller_contact_id) {
           const { data: contact } = await supabase
             .from("contacts")
             .select("user_id")
-            .eq("id", listingAgreement.contact_id)
+            .eq("id", listingAgreement.seller_contact_id)
             .maybeSingle()
 
           if (contact?.user_id) {
