@@ -568,13 +568,25 @@ Provide comprehensive analysis:
 async function syncExpenseToQuickBooks(expense: any) {
   const supabase = await createClient()
 
+  // Resolve agent_id to brokerage_id
+  const { data: agent } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", expense.agent_id)
+    .single()
+
+  if (!agent?.brokerage_id) {
+    console.log("[v0] Agent brokerage not found, skipping sync")
+    return { synced: false }
+  }
+
   // Check if QuickBooks is connected
   const { data: integration } = await supabase
-    .from("integrations")
+    .from("integration_credentials")
     .select("*")
-    .eq("agent_id", expense.agent_id)
-    .eq("provider", "quickbooks")
-    .eq("status", "active")
+    .eq("brokerage_id", agent.brokerage_id)
+    .eq("provider_name", "quickbooks")
+    .eq("is_active", true)
     .single()
 
   if (!integration) {
@@ -621,13 +633,25 @@ async function syncExpenseToQuickBooks(expense: any) {
 async function syncCommissionToQuickBooks(commission: any) {
   const supabase = await createClient()
 
+  // Resolve agent_id to brokerage_id
+  const { data: agent } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", commission.agent_id)
+    .single()
+
+  if (!agent?.brokerage_id) {
+    console.log("[v0] Agent brokerage not found, skipping sync")
+    return { synced: false }
+  }
+
   // Check if QuickBooks is connected
   const { data: integration } = await supabase
-    .from("integrations")
+    .from("integration_credentials")
     .select("*")
-    .eq("agent_id", commission.agent_id)
-    .eq("provider", "quickbooks")
-    .eq("status", "active")
+    .eq("brokerage_id", agent.brokerage_id)
+    .eq("provider_name", "quickbooks")
+    .eq("is_active", true)
     .single()
 
   if (!integration) {
