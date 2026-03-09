@@ -31,7 +31,7 @@ export async function logEventAndTrigger(eventInput: EventInput): Promise<Event>
   // Check for duplicate if dedupe_key provided
   if (eventInput.dedupe_key) {
     const { data: existingEvent } = await supabase
-      .from("events")
+      .from("lifecycle_events")
       .select("id")
       .eq("dedupe_key", eventInput.dedupe_key)
       .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
@@ -44,7 +44,7 @@ export async function logEventAndTrigger(eventInput: EventInput): Promise<Event>
   }
 
   // Insert event
-  const { data: event, error } = await supabase.from("events").insert([eventInput]).select().single()
+  const { data: event, error } = await supabase.from("lifecycle_events").insert([eventInput]).select().single()
 
   if (error) {
     console.error("[v0] Error inserting event:", error)
