@@ -20,16 +20,16 @@ export async function getAppointments(params?: { agentId?: string; contactId?: s
   try {
     const supabase = await createClient()
     
-    // Query appointments without joins first to avoid foreign key errors
+    // Query showings without joins first to avoid foreign key errors
     let query = supabase
-      .from("appointments")
+      .from("showings")
       .select("*")
-      .order("start_time", { ascending: true })
+      .order("scheduled_at", { ascending: true })
 
     if (params?.agentId) query = query.eq("agent_id", params.agentId)
     if (params?.contactId) query = query.eq("contact_id", params.contactId)
-    if (params?.startDate) query = query.gte("start_time", params.startDate)
-    if (params?.endDate) query = query.lte("start_time", params.endDate)
+    if (params?.startDate) query = query.gte("scheduled_at", params.startDate)
+    if (params?.endDate) query = query.lte("scheduled_at", params.endDate)
 
     const { data: appointments, error } = await query
 
@@ -89,18 +89,20 @@ export async function createAppointment(params: {
   try {
     const supabase = await createClient()
 
+    // Calculate duration in minutes from start/end times
+    const durationMinutes = params.endTime && params.startTime
+      ? Math.round((new Date(params.endTime).getTime() - new Date(params.startTime).getTime()) / 60000)
+      : 30
+
     const { data, error } = await supabase
-      .from("appointments")
+      .from("showings")
       .insert({
         agent_id: params.agentId,
         contact_id: params.contactId,
         listing_id: params.listingId,
-        title: params.title,
-        start_time: params.startTime,
-        end_time: params.endTime,
-        location: params.location,
-        notes: params.notes,
-        appointment_type: params.type || "general",
+        notes: params.title + (params.notes ? ` - ${params.notes}` : ""),
+        scheduled_at: params.startTime,
+        duration_minutes: durationMinutes,
         status: "scheduled",
       })
       .select()
@@ -121,9 +123,19 @@ export async function updateAppointment(appointmentId: string, updates: any) {
   try {
     const supabase = await createClient()
 
+    // Remap appointment columns to showings columns
+    const showingUpdates: any = { updated_at: new Date().toISOString() }
+    if (updates.start_time) showingUpdates.scheduled_at = updates.start_time
+    if (updates.title) showingUpdates.notes = updates.title
+    if (updates.notes) showingUpdates.notes = (showingUpdates.notes || "") + " - " + updates.notes
+    if (updates.agent_id) showingUpdates.agent_id = updates.agent_id
+    if (updates.contact_id) showingUpdates.contact_id = updates.contact_id
+    if (updates.listing_id) showingUpdates.listing_id = updates.listing_id
+    if (updates.status) showingUpdates.status = updates.status
+
     const { data, error } = await supabase
-      .from("appointments")
-      .update({ ...updates, updated_at: new Date().toISOString() })
+      .from("showings")
+      .update(showingUpdates)
       .eq("id", appointmentId)
       .select()
       .single()
@@ -144,10 +156,10 @@ export async function cancelAppointment(appointmentId: string, reason?: string) 
     const supabase = await createClient()
 
     const { data, error } = await supabase
-      .from("appointments")
+      .from("showings")
       .update({
         status: "cancelled",
-        cancellation_reason: reason,
+        notes: reason ? `Cancelled: ${reason}` : "Cancelled",
         updated_at: new Date().toISOString(),
       })
       .eq("id", appointmentId)
@@ -182,16 +194,16 @@ export async function optimizeDailySchedule(params: {
 
     // Get all scheduled items for the day
     const { data: appointments } = await supabase
-      .from("appointments")
+      .from("showings")
       .select(`
         *,
         contacts(*),
         listings(*)
       `)
       .eq("agent_id", params.agentId)
-      .gte("start_time", targetDate.toISOString())
-      .lt("start_time", new Date(targetDate.getTime() + 24 * 60 * 60 * 1000).toISOString())
-      .order("start_time")
+      .gte("scheduled_at", targetDate.toISOString())
+      .lt("scheduled_at", new Date(targetDate.getTime() + 24 * 60 * 60 * 1000).toISOString())
+      .order("scheduled_at")
 
     const { data: tasks } = await supabase
       .from("tasks")
@@ -250,7 +262,7 @@ export async function optimizeDailySchedule(params: {
 Date: ${params.date}
 
 Appointments:
-${appointments?.map((a: any) => `- ${a.start_time}: ${a.title} at ${a.location || 'TBD'} (${a.appointment_type})`).join('\n') || 'None'}
+${appointments?.map((a: any) => `- ${a.scheduled_at}: ${a.notes} at ${a.location || 'TBD'}`).join('\n') || 'None'}
 
 Showings:
 ${showings?.map((s: any) => `- ${s.showing_time}: ${s.listings?.address} for ${s.contacts?.first_name}`).join('\n') || 'None'}
@@ -301,16 +313,16 @@ export async function suggestAppointmentSlots(params: {
       .eq("id", params.agentId)
       .single()
 
-    // Get existing appointments for next 2 weeks
+    // Get existing showings for next 2 weeks
     const startDate = new Date()
     const endDate = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000)
 
     const { data: existingAppointments } = await supabase
-      .from("appointments")
-      .select("start_time, end_time, appointment_type")
+      .from("showings")
+      .select("scheduled_at, duration_minutes")
       .eq("agent_id", params.agentId)
-      .gte("start_time", startDate.toISOString())
-      .lte("start_time", endDate.toISOString())
+      .gte("scheduled_at", startDate.toISOString())
+      .lte("scheduled_at", endDate.toISOString())
 
     // Get contact preferences
     const { data: contact } = await supabase
@@ -357,7 +369,7 @@ Contact Preference: ${contact?.preferred_contact_time || 'Any time'}
 Contact Time Zone: ${contact?.time_zone || 'Same as agent'}
 
 Existing Appointments (next 2 weeks):
-${existingAppointments?.map((a: any) => `- ${a.start_time} to ${a.end_time}: ${a.appointment_type}`).join('\n') || 'None'}
+${existingAppointments?.map((a: any) => `- ${a.scheduled_at} (${a.duration_minutes} min)`).join('\n') || 'None'}
 
 Consider:
 1. Optimal times for ${params.appointmentType}
@@ -486,13 +498,13 @@ export async function suggestMeetingTimes(params: {
     const duration = params.duration; // Declare the duration variable
     const daysAhead = params.preferences?.daysAhead || 7
 
-    // Get existing appointments
+    // Get existing showings
     const { data: existingAppointments } = await supabase
-      .from("appointments")
-      .select("start_time, end_time")
+      .from("showings")
+      .select("scheduled_at, duration_minutes")
       .eq("agent_id", params.agentId)
-      .gte("start_time", new Date().toISOString())
-      .lte("start_time", new Date(Date.now() + daysAhead * 24 * 60 * 60 * 1000).toISOString())
+      .gte("scheduled_at", new Date().toISOString())
+      .lte("scheduled_at", new Date(Date.now() + daysAhead * 24 * 60 * 60 * 1000).toISOString())
 
     const { object: suggestions } = await generateObject({
       model: "openai/gpt-4o-mini",
@@ -588,7 +600,7 @@ export async function prepareMeetingBrief(params: {
     const supabase = await createClient()
 
     const { data: appointment } = await supabase
-      .from("appointments")
+      .from("showings")
       .select(`
         *,
         contacts(*),
@@ -644,10 +656,9 @@ export async function prepareMeetingBrief(params: {
       }),
       prompt: `Prepare a comprehensive meeting brief:
 
-Appointment: ${appointment.title}
-Type: ${appointment.appointment_type}
-Date/Time: ${appointment.start_time}
-Location: ${appointment.location || 'TBD'}
+Appointment: ${appointment.notes}
+Date/Time: ${appointment.scheduled_at}
+Duration: ${appointment.duration_minutes} minutes
 
 Client: ${appointment.contacts?.first_name} ${appointment.contacts?.last_name}
 Contact Type: ${appointment.contacts?.contact_type}

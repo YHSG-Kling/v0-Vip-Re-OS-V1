@@ -52,11 +52,11 @@ export async function GET(request: NextRequest) {
 
       case "appointments":
         const { data: appointments } = await supabase
-          .from("appointments")
+          .from("showings")
           .select("*")
           .eq("agent_id", agentId)
-          .gte("start_time", new Date().toISOString())
-          .order("start_time", { ascending: true })
+          .gte("scheduled_at", new Date().toISOString())
+          .order("scheduled_at", { ascending: true })
         data = appointments || []
         break
 

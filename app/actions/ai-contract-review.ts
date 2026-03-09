@@ -74,7 +74,7 @@ export async function reviewContract(params: {
     // Get transaction context
     const { data: transaction } = await supabase
       .from("transactions")
-      .select("*, listings(*), contacts!transactions_buyer_contact_id_fkey(*)")
+      .select("*, listings(*), contacts:contact_id(*)")
       .eq("id", params.transactionId)
       .single()
 
