@@ -341,4 +341,14 @@ export enum KernelEvent {
   // ── Layer 12 — Market Intelligence ──────────────────────────────────────────
   MARKET_INSIGHT_GENERATED           = 'market_insight_generated',
   MARKET_DATA_REFRESHED              = 'market_data_refreshed',
+
+  // ── 12.11 — Behavioral Patterns ──────────────────────────────────────────────
+  BEHAVIORAL_PATTERN_DETECTED        = 'behavioral_pattern_detected',
+  PREDICTION_CREATED                 = 'prediction_created',
+  PREDICTION_OUTCOME_RECORDED        = 'prediction_outcome_recorded',
+
+  // ── 12.12 — Continuous Learning ──────────────────────────────────────────────
+  AI_FEEDBACK_RECEIVED               = 'ai_feedback_received',
+  AI_METRICS_COMPUTED                = 'ai_metrics_computed',
+  PROMPT_CALIBRATION_UPDATED         = 'prompt_calibration_updated',
 }
