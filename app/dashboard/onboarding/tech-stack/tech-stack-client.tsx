@@ -6,8 +6,8 @@
 // ============================================================
 // Provider cards in responsive grid with slide-over configuration panel
 
-import { useState, useCallback, useMemo } from "react"
-import { useRouter } from "next/navigation"
+import { useState, useCallback, useMemo, useEffect } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import useSWR from "swr"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -40,6 +40,7 @@ import {
   Home,
   Send,
   Target,
+  ExternalLink,
 } from "lucide-react"
 import {
   getIntegrationStatus,
@@ -90,6 +91,7 @@ export function TechStackClient({
   initialStatus,
 }: TechStackClientProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [configureProvider, setConfigureProvider] = useState<ProviderName | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<ProviderName | null>(null)
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({})
@@ -97,7 +99,37 @@ export function TechStackClient({
   const [isTesting, setIsTesting] = useState<ProviderName | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isCompleting, setIsCompleting] = useState(false)
+  const [isOAuthConnecting, setIsOAuthConnecting] = useState<ProviderName | null>(null)
   const [expandedGroups, setExpandedGroups] = useState<string[]>(["required", "recommended"])
+
+  // Handle OAuth callback parameters
+  useEffect(() => {
+    const oauthSuccess = searchParams.get("oauth_success")
+    const oauthError = searchParams.get("oauth_error")
+    const oauthProvider = searchParams.get("provider")
+
+    if (oauthSuccess && oauthProvider) {
+      toast.success(`${oauthProvider} connected successfully`)
+      mutate() // Refresh integration status
+      // Clean URL params
+      router.replace("/dashboard/onboarding/tech-stack")
+    } else if (oauthError) {
+      toast.error(oauthError || "OAuth connection failed")
+      router.replace("/dashboard/onboarding/tech-stack")
+    }
+  }, [searchParams, router])
+
+  // Initiate OAuth flow
+  const handleOAuthConnect = useCallback(async (provider: ProviderName) => {
+    setIsOAuthConnecting(provider)
+    try {
+      // Open OAuth flow in same window - will redirect back
+      window.location.href = `/api/integrations/oauth/${provider}`
+    } catch (error) {
+      toast.error("Failed to initiate OAuth connection")
+      setIsOAuthConnecting(null)
+    }
+  }, [])
 
   // SWR for real-time status updates
   const { data: status, mutate } = useSWR(
@@ -196,10 +228,10 @@ export function TechStackClient({
   const handleTest = async (provider: ProviderName) => {
     setIsTesting(provider)
     try {
-      const response = await fetch("/api/onboarding/integrations/test", {
+      const response = await fetch(`/api/integrations/test/${provider}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, brokerage_id: brokerageId }),
+        body: JSON.stringify({ brokerage_id: brokerageId }),
       })
 
       const result = await response.json()
@@ -493,10 +525,35 @@ export function TechStackClient({
                     <p className="text-sm text-muted-foreground">
                       Click the button below to connect your{" "}
                       {PROVIDER_METADATA[configureProvider].displayName} account.
+                      You will be redirected to {PROVIDER_METADATA[configureProvider].displayName} to authorize access.
                     </p>
-                    <Button className="w-full">
-                      Connect {PROVIDER_METADATA[configureProvider].displayName} Account
+                    <Button 
+                      className="w-full"
+                      onClick={() => handleOAuthConnect(configureProvider)}
+                      disabled={isOAuthConnecting === configureProvider}
+                    >
+                      {isOAuthConnecting === configureProvider ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Connecting...
+                        </>
+                      ) : (
+                        <>
+                          <ExternalLink className="mr-2 h-4 w-4" />
+                          Connect {PROVIDER_METADATA[configureProvider].displayName} Account
+                        </>
+                      )}
                     </Button>
+                    
+                    {/* Show existing connection status */}
+                    {status?.providers.find(p => p.provider === configureProvider)?.status === "connected" && (
+                      <div className="flex items-center gap-2 rounded-lg border border-green-200 bg-green-50 p-3">
+                        <Check className="h-4 w-4 text-green-600" />
+                        <span className="text-sm text-green-700">
+                          Already connected - reconnect to refresh tokens
+                        </span>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   // Standard credential fields
