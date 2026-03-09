@@ -185,7 +185,7 @@ async function resolveRecipients(params: {
       KernelEvent.LISTING_REPAIR_FAILED,
     ].includes(params.event)) {
       const { data: policy } = await supabase
-        .from("brokerage_settings")
+        .from("global_settings")
         .select("seller_notification_enabled")
         .eq("brokerage_id", params.brokerageId)
         .maybeSingle()
