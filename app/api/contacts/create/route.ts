@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createContact } from "@/lib/services"
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import type { ContactFormData } from "@/types/contact"
 import { enrichContact } from "@/app/actions/contact-enrichment"
 import { handleError } from "@/lib/errors"
@@ -41,7 +42,14 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const agentId = userRole?.toLowerCase() === "agent" ? user.id : body.agent_id || user.id
+    // Resolve agent ID - never use user.id for agent_id column
+    const resolvedAgentId = await resolveAgentId(supabase, user.id)
+    const agentId = userRole?.toLowerCase() === "agent" 
+      ? resolvedAgentId 
+      : body.agent_id || resolvedAgentId
+    if (!agentId) {
+      return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
+    }
 
     // Use consolidated contact management service
     const result = await createContact({

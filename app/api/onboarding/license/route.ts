@@ -7,6 +7,7 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getAgentLicenseStatus, getContractStatus } from "@/app/actions/onboarding/license"
 
 export async function GET(request: NextRequest) {
@@ -40,8 +41,11 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // Default: Get full license status
-    const agentId = searchParams.get("agent_id") || user.id
+    // Default: Get full license status - resolve agent ID properly
+    const agentId = searchParams.get("agent_id") || await resolveAgentId(supabase, user.id)
+    if (!agentId) {
+      return NextResponse.json({ error: "Agent profile not found" }, { status: 403 })
+    }
     const result = await getAgentLicenseStatus(agentId)
 
     if (result.error) {

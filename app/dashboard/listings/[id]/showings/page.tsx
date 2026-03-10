@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { notFound } from "next/navigation"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import {
   resolveShowingMode,
   getShowingRequests,
@@ -38,7 +39,9 @@ export default async function ShowingsPage({ params }: Props) {
 
   if (!listing) notFound()
 
-  const agentUserId = listing.agent_id ?? user.id
+  // Resolve agent ID - use listing's agent_id or resolve from current user
+  const agentUserId = listing.agent_id ?? await resolveAgentId(supabase, user.id)
+  if (!agentUserId) notFound()
 
   const [mode, requests, showings, analytics, feedbackCards] = await Promise.all([
     resolveShowingMode({ listingId, agentUserId, brokerageId }),

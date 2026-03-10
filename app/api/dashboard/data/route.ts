@@ -2,6 +2,7 @@
 
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 
 // Consolidated API endpoint for fetching dashboard data
 // Reduces duplicate API routes and centralizes data fetching
@@ -17,7 +18,11 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url)
     const dataType = searchParams.get("type")
-    const agentId = searchParams.get("agent_id") || user.id
+    // Resolve agent ID - never use user.id for agent_id
+    const agentId = searchParams.get("agent_id") || await resolveAgentId(supabase, user.id)
+    if (!agentId) {
+      return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
+    }
 
     let data: any = null
 
