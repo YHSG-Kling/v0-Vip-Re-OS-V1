@@ -134,7 +134,7 @@ export async function getAgentLicenseStatus(
 
     // Get completed steps
     const { data: completedStepsData } = await supabase
-      .from("agent_step_completion")
+      .from("agent_step_completions")
       .select("step_id, completed")
       .eq("agent_id", agentId)
       .eq("brokerage_id", agent.brokerage_id)
@@ -276,7 +276,7 @@ export async function submitLicenseDetails(
       .single()
 
     if (stepRecord) {
-      await supabase.from("agent_step_completion").upsert({
+      await supabase.from("agent_step_completions").upsert({
         agent_id: user.id,
         brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
@@ -399,7 +399,7 @@ export async function submitEOInsurance(
       .single()
 
     if (stepRecord) {
-      await supabase.from("agent_step_completion").upsert({
+      await supabase.from("agent_step_completions").upsert({
         agent_id: user.id,
         brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
@@ -603,12 +603,12 @@ export async function markContractSignedManually(
       .single()
 
     if (stepRecord) {
-      await supabase.from("agent_step_completion").upsert({
-        agent_id: contract.agent_id,
-        brokerage_id: contract.brokerage_id,
+      await supabase.from("agent_step_completions").upsert({
+        agent_id: user.id,
+        brokerage_id: agent.brokerage_id,
         step_id: stepRecord.id,
         completed: true,
-        completed_at: now,
+        completed_at: new Date().toISOString(),
       }, {
         onConflict: "agent_id,step_id",
       })
@@ -688,7 +688,7 @@ export async function markComplianceComplete(
         .single()
 
     if (stepRecord) {
-      await supabase.from("agent_step_completion").upsert({
+      await supabase.from("agent_step_completions").upsert({
         agent_id: agentId,
         brokerage_id: agent.brokerage_id,
           step_id: stepRecord.id,

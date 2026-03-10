@@ -121,7 +121,7 @@ export async function getAgentProgress(
 
   // Get completed steps
   const { data: completedSteps } = await supabase
-    .from('agent_step_completion')
+    .from('agent_step_completions')
     .select('step_id, completed_at, completed')
     .eq('agent_id', targetAgentId)
     .eq('completed', true)

@@ -199,7 +199,7 @@ export async function saveCredentials(
   }
 }
 
-// ─── DELETE CREDENTIALS ───────────────────────────────────────────────────────
+// ─── DELETE CREDENTIALS ──────────────────────────────────��────────────────────
 
 export async function deleteCredentials(
   provider: ProviderName,
@@ -291,9 +291,9 @@ export async function markTechStackComplete(
       return { success: false, error: "Required integrations not complete" }
     }
 
-    // Insert agent_step_completion
+    // Insert agent_step_completions
     const { error: stepError } = await supabase
-      .from("agent_step_completion")
+      .from("agent_step_completions")
       .upsert({
         brokerage_id: brokerageId,
         agent_id: user.id,

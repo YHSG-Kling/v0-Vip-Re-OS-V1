@@ -84,7 +84,7 @@ async function checkPlatformFundamentalsEligibility(
 
   if (platformTourSteps && platformTourSteps.length > 0) {
     const { data: completedSteps } = await supabase
-      .from('agent_step_completion')
+      .from('agent_step_completions')
       .select('step_id')
       .eq('agent_id', agentId)
       .eq('completed', true)
@@ -146,7 +146,7 @@ async function checkComplianceBasicsEligibility(
 
   if (complianceSteps && complianceSteps.length > 0) {
     const { data: completedSteps } = await supabase
-      .from('agent_step_completion')
+      .from('agent_step_completions')
       .select('step_id')
       .eq('agent_id', agentId)
       .eq('completed', true)
