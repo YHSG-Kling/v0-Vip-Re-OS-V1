@@ -26,6 +26,7 @@ import {
   MapPin,
 } from "lucide-react"
 import SellerHome from "./seller-home"
+import LifetimeHome from "./lifetime-home"
 
 export default async function PortalHomePage({
   params,
@@ -43,10 +44,9 @@ export default async function PortalHomePage({
     return <SellerHome contactId={contactId} />
   }
 
-  // Lifetime view redirects to lifetime dashboard (future)
+  // Render lifetime home if lifetime view
   if (portalView === "lifetime") {
-    // For now, show buyer view as fallback
-    // TODO: Create lifetime dashboard
+    return <LifetimeHome contactId={contactId} />
   }
 
   // Fetch contact basic info
