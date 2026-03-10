@@ -1,27 +1,228 @@
 import { createClient } from "@/lib/supabase/server"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { redirect } from "next/navigation"
+import Link from "next/link"
+import { determinePortalView } from "@/lib/kernel/portal"
+import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
+import { Button } from "@/app/components/ui/button"
+import { Badge } from "@/app/components/ui/badge"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs"
 import { NetSheetCalculator } from "@/components/portal/NetSheetCalculator"
 import { analyzeMultipleOffers } from "@/app/actions/offer-management"
-import { CheckCircle2, Clock } from "lucide-react"
+import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, Filter, DollarSign, Calendar, Home } from "lucide-react"
+import { cn } from "@/lib/utils"
+
+// Buyer offer card component
+function OfferCard({ offer, contactId }: { offer: any; contactId: string }) {
+  const status = STATUS_CONFIG[offer.status] || STATUS_CONFIG.draft
+  const address = offer.listing?.address || offer.listing?.property_address || "Property"
+  const listPrice = offer.listing?.list_price
+
+  return (
+    <Card className="hover:border-primary/50 transition-colors">
+      <CardContent className="p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-4">
+            <div className="h-12 w-12 rounded-lg bg-muted flex items-center justify-center shrink-0">
+              <Home className="h-6 w-6 text-muted-foreground" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="font-semibold">{address}</h3>
+              <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+                <span className="flex items-center gap-1">
+                  <DollarSign className="h-3.5 w-3.5" />
+                  {formatCurrency(offer.offer_amount)}
+                </span>
+                {listPrice && offer.offer_amount && (
+                  <span className={cn(
+                    offer.offer_amount > listPrice ? "text-green-600" : "text-amber-600"
+                  )}>
+                    {offer.offer_amount > listPrice ? "+" : ""}
+                    {(((offer.offer_amount - listPrice) / listPrice) * 100).toFixed(1)}% vs list
+                  </span>
+                )}
+                <span className="flex items-center gap-1">
+                  <Calendar className="h-3.5 w-3.5" />
+                  {new Date(offer.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                </span>
+              </div>
+              {offer.expiration_date && new Date(offer.expiration_date) > new Date() && (
+                <p className="text-xs text-amber-600">
+                  Expires: {new Date(offer.expiration_date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <Badge variant="secondary" className={cn("shrink-0", status.color)}>
+              {status.label}
+            </Badge>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+// Status badge config
+const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+  draft: { label: "Draft", color: "bg-gray-100 text-gray-700" },
+  submitted: { label: "Submitted", color: "bg-blue-100 text-blue-800" },
+  pending: { label: "Pending", color: "bg-amber-100 text-amber-800" },
+  under_review: { label: "Under Review", color: "bg-purple-100 text-purple-800" },
+  countered: { label: "Countered", color: "bg-purple-100 text-purple-800" },
+  accepted: { label: "Accepted", color: "bg-green-100 text-green-800" },
+  rejected: { label: "Rejected", color: "bg-red-100 text-red-800" },
+  expired: { label: "Expired", color: "bg-slate-100 text-slate-600" },
+  withdrawn: { label: "Withdrawn", color: "bg-slate-100 text-slate-600" },
+}
+
+function formatCurrency(amount: number | null): string {
+  if (amount === null || amount === undefined) return "N/A"
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(amount)
+}
 
 export default async function OffersPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
   const supabase = await createClient()
 
-  let contact: any = null
+  // Check portal view
+  const portalView = await determinePortalView(supabase, contactId)
+
+  // Get contact
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, name, contact_type")
+    .eq("id", contactId)
+    .single()
+
+  if (!contact || contactError) {
+    redirect("/portal?error=contact_not_found")
+  }
+
+  // BUYER VIEW: Show offers the buyer has submitted
+  if (portalView === "buyer") {
+    const { data: buyerOffers } = await supabase
+      .from("offers")
+      .select("id, listing_id, transaction_id, offer_amount, status, created_at, expiration_date, listing:listings(id, address, property_address, list_price)")
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
+
+    const offers = buyerOffers ?? []
+    const acceptedOffer = offers.find((o) => o.status === "accepted")
+    const activeOffers = offers.filter((o) => ["submitted", "pending", "under_review", "countered"].includes(o.status))
+    const pastOffers = offers.filter((o) => ["accepted", "rejected", "expired", "withdrawn"].includes(o.status))
+
+    return (
+      <div className="space-y-6">
+        {/* Header */}
+        <div>
+          <Button variant="ghost" size="sm" className="mb-2" asChild>
+            <Link href={`/portal/${contactId}`}>
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back to Dashboard
+            </Link>
+          </Button>
+          <h1 className="text-3xl font-bold">Your Offers</h1>
+          <p className="text-muted-foreground mt-1">Track the status of offers you have submitted</p>
+        </div>
+
+        {/* Accepted Offer Banner */}
+        {acceptedOffer && (
+          <Card className="bg-green-50 border-green-200">
+            <CardContent className="py-6">
+              <div className="flex items-start gap-4">
+                <PartyPopper className="h-8 w-8 text-green-600 shrink-0" />
+                <div className="space-y-2">
+                  <h3 className="text-lg font-semibold text-green-800">
+                    Congratulations! Your offer was accepted!
+                  </h3>
+                  <p className="text-green-700">
+                    {acceptedOffer.listing?.address || acceptedOffer.listing?.property_address || "Property"} - {formatCurrency(acceptedOffer.offer_amount)}
+                  </p>
+                  <Button className="bg-green-600 hover:bg-green-700" asChild>
+                    <Link href={`/portal/${contactId}/journey`}>
+                      View Your Transaction Journey
+                    </Link>
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Tabs for filtering */}
+        <Tabs defaultValue="all" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="all">All ({offers.length})</TabsTrigger>
+            <TabsTrigger value="active">Active ({activeOffers.length})</TabsTrigger>
+            <TabsTrigger value="past">Past ({pastOffers.length})</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="all" className="space-y-3">
+            {offers.length === 0 ? (
+              <Card>
+                <CardContent className="py-12 text-center">
+                  <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold mb-2">No offers yet</h3>
+                  <p className="text-muted-foreground">
+                    When you find a home and submit an offer, it will appear here
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              offers.map((offer: any) => (
+                <OfferCard key={offer.id} offer={offer} contactId={contactId} />
+              ))
+            )}
+          </TabsContent>
+
+          <TabsContent value="active" className="space-y-3">
+            {activeOffers.length === 0 ? (
+              <Card>
+                <CardContent className="py-8 text-center">
+                  <p className="text-muted-foreground">No active offers</p>
+                </CardContent>
+              </Card>
+            ) : (
+              activeOffers.map((offer: any) => (
+                <OfferCard key={offer.id} offer={offer} contactId={contactId} />
+              ))
+            )}
+          </TabsContent>
+
+          <TabsContent value="past" className="space-y-3">
+            {pastOffers.length === 0 ? (
+              <Card>
+                <CardContent className="py-8 text-center">
+                  <p className="text-muted-foreground">No past offers</p>
+                </CardContent>
+              </Card>
+            ) : (
+              pastOffers.map((offer: any) => (
+                <OfferCard key={offer.id} offer={offer} contactId={contactId} />
+              ))
+            )}
+          </TabsContent>
+        </Tabs>
+      </div>
+    )
+  }
+
+  // SELLER VIEW: Original logic for receiving offers on listing
   let listing: any = null
   let offers: any[] = []
 
-  try {
-    const { data } = await supabase.from("contacts").select("*, listings(*)").eq("id", contactId).single()
-    contact = data
-  } catch (e) {
-    // Continue with null contact
-  }
+  const { data: contactWithListings } = await supabase
+    .from("contacts")
+    .select("*, listings(*)")
+    .eq("id", contactId)
+    .single()
 
-  if (!contact?.listings || contact.listings.length === 0) {
+  if (!contactWithListings?.listings || contactWithListings.listings.length === 0) {
     return (
       <div className="space-y-6">
         <h2 className="text-3xl font-bold">Offers</h2>
@@ -36,22 +237,16 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     )
   }
 
-  listing = contact.listings[0]
+  listing = contactWithListings.listings[0]
 
-  try {
-    const { data } = await supabase
-      .from("offers")
-      .select("*, buyer:contacts(*)")
-      .eq("listing_id", listing.id)
-      .in("status", ["pending", "submitted", "under_review", "countered"])
-      .order("offer_amount", { ascending: false })
+  const { data: sellerOffers } = await supabase
+    .from("offers")
+    .select("*, buyer:contacts(*)")
+    .eq("listing_id", listing.id)
+    .in("status", ["pending", "submitted", "under_review", "countered"])
+    .order("offer_amount", { ascending: false })
 
-    if (data) {
-      offers = data
-    }
-  } catch (e) {
-    // Continue with empty offers array
-  }
+  offers = sellerOffers ?? []
 
   if (!offers || offers.length === 0) {
     return (
@@ -61,7 +256,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
           <CardContent className="py-12 text-center">
             <Clock className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
             <h3 className="text-lg font-semibold mb-2">No offers yet</h3>
-            <p className="text-muted-foreground">When you receive offers, they'll appear here</p>
+            <p className="text-muted-foreground">When you receive offers, they will appear here</p>
           </CardContent>
         </Card>
       </div>
