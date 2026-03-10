@@ -4,7 +4,7 @@ import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Plus } from "lucide-react"
-import { addRecruitingCost } from "@/app/actions/recruiting-roi"
+import { addRecruitingCost } from "@/actions/recruiting-roi"
 import { useTransition } from "react"
 
 interface Props {

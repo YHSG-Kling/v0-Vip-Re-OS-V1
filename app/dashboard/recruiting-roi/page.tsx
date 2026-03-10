@@ -10,7 +10,7 @@ import {
   getRecruitingCostBreakdown,
   getBreakEvenAnalysis,
   getRecruitingAnalyticsByYear,
-} from "@/app/actions/recruiting-roi"
+} from "@/actions/recruiting-roi"
 import { YearlyRevenueChart } from "./yearly-revenue-chart"
 import { BreakEvenChart } from "./breakeven-chart"
 import { LTVScatterChart } from "./ltv-scatter-chart"
