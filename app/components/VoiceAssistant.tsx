@@ -6,6 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Mic, MicOff, Volume2, Settings, X } from "lucide-react"
 import { useAuth } from "@/lib/auth/client"
+import { createClient } from "@/lib/supabase/client"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processVoiceCommand, startVoiceSession, endVoiceSession, getVoiceConfig } from "@/app/actions"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
@@ -22,29 +24,35 @@ export function VoiceAssistant() {
   const [config, setConfig] = useState<any>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [minimized, setMinimized] = useState(true)
+  const [agentId, setAgentId] = useState<string | null>(null)
 
   const recognitionRef = useRef<any>(null)
 
   useEffect(() => {
     if (user) {
-      loadConfig()
+      loadAgentAndConfig()
     }
   }, [user])
 
-  async function loadConfig() {
+  async function loadAgentAndConfig() {
     if (!user?.id) return
-    const result = await getVoiceConfig(user.id)
-    if (result.success) {
-      setConfig(result.config)
+    const supabase = createClient()
+    const resolvedAgentId = await resolveAgentId(supabase, user.id)
+    setAgentId(resolvedAgentId)
+    if (resolvedAgentId) {
+      const result = await getVoiceConfig(resolvedAgentId)
+      if (result.success) {
+        setConfig(result.config)
+      }
     }
   }
 
   async function startListening() {
-    if (!user?.id) return
+    if (!agentId) return
 
     // Start session if not already started
     if (!sessionId) {
-      const sessionResult = await startVoiceSession(user.id, {
+      const sessionResult = await startVoiceSession(agentId, {
         location: "mobile",
         timestamp: new Date().toISOString(),
       })
@@ -100,14 +108,14 @@ export function VoiceAssistant() {
   }
 
   async function handleVoiceCommand(text: string) {
-    if (!user?.id) return
+    if (!agentId) return
 
     setTranscript(text)
     setSpeaking(true)
 
     // Process command via server action
     const result = await processVoiceCommand({
-      agentId: user.id,
+      agentId,
       commandText: text,
       sessionId: sessionId || undefined,
       context: {

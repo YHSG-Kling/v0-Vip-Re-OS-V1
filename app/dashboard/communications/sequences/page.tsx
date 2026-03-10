@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import SequencesClient from "./SequencesClient"
 
 export const metadata = {
@@ -30,13 +31,8 @@ export default async function SequencesPage({
 
   const brokerageId = profile.brokerage_id
 
-  const { data: agentRow } = await service
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-
-  const agentId = agentRow?.id ?? user.id
+  const agentId = await resolveAgentId(service, user.id)
+  if (!agentId) redirect("/onboarding")
 
   // Fetch existing campaign sequences for this brokerage
   // Table: campaign_sequences (NOT drip_campaigns — that table does not exist)

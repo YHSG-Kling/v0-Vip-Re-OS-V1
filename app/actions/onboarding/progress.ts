@@ -6,6 +6,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { generateText } from "ai"
 import {
   checkCertificationEligibility as checkCertEligibilityEngine,
@@ -82,7 +83,11 @@ export async function getAgentProgress(
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || user!.id
+  // Resolve agent ID properly - never use user.id as agentId fallback
+  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  if (!targetAgentId) {
+    return { success: false, error: 'Agent profile not found' }
+  }
 
   // Get user's brokerage
   const { data: userData } = await supabase
@@ -283,7 +288,10 @@ export async function checkCertEligibility(
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || user!.id
+  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  if (!targetAgentId) {
+    return { success: false, error: 'Agent profile not found' }
+  }
 
   const { data: userData } = await supabase
     .from('users')
@@ -319,7 +327,10 @@ export async function claimCertification(
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || user!.id
+  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  if (!targetAgentId) {
+    return { success: false, error: 'Agent profile not found' }
+  }
 
   const { data: userData } = await supabase
     .from('users')
@@ -356,11 +367,14 @@ export async function generatePerformanceReport(
     return { success: false, error: 'Not authenticated' }
   }
 
-  const targetAgentId = agentId || user!.id
+  const targetAgentId = agentId || (user ? await resolveAgentId(supabase, user.id) : null)
+  if (!targetAgentId) {
+    return { success: false, error: 'Agent profile not found' }
+  }
 
   const { data: userData } = await supabase
     .from('users')
-    .select('brokerage_id, first_name, last_name')
+    .select('brokerage_id')
     .eq('id', targetAgentId)
     .single()
 

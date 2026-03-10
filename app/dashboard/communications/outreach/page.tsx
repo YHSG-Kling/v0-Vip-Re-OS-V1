@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { listISACampaigns, getEngagementFeed, getQualificationOutcomes, getGhostRecoveryQueue } from "@/app/actions/ai-isa"
 import OutreachClient from "./OutreachClient"
 
@@ -26,13 +27,8 @@ export default async function OutreachPage() {
 
   const brokerageId = profile.brokerage_id
 
-  const { data: agentRow } = await service
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-
-  const agentId = agentRow?.id ?? user.id
+  const agentId = await resolveAgentId(service, user.id)
+  if (!agentId) redirect("/onboarding")
 
   // Parallel fetch all outreach data
   const [campaignsResult, engagementResult, qualificationsResult, ghostResult] = await Promise.all([

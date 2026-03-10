@@ -7,6 +7,7 @@
 // All server actions verify session, enforce RLS, and return typed { data, error }.
 
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { resolveProvider } from "@/lib/kernel/providers"
@@ -202,11 +203,17 @@ export async function submitLicenseDetails(
       return { success: false, error: "Unauthorized" }
     }
 
+    // Resolve the proper agent ID
+    const agentId = await resolveAgentId(supabase, user.id)
+    if (!agentId) {
+      return { success: false, error: "Agent profile not found" }
+    }
+
     // Get agent's brokerage
     const { data: agent, error: agentError } = await supabase
-      .from("users")
+      .from("agents")
       .select("id, brokerage_id")
-      .eq("id", user.id)
+      .eq("id", agentId)
       .single()
 
     if (agentError || !agent?.brokerage_id) {
@@ -218,7 +225,7 @@ export async function submitLicenseDetails(
     const { data: onboarding } = await supabase
       .from("agent_onboarding")
       .select("id, status")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", agent.brokerage_id)
       .single()
 
@@ -256,7 +263,7 @@ export async function submitLicenseDetails(
         license_expiry: data.expiryDate,
         updated_at: new Date().toISOString(),
       })
-      .eq("user_id", user.id)
+      .eq("id", agentId)
 
     // Get or create step completion record
     const { data: stepRecord } = await supabase
@@ -303,7 +310,7 @@ export async function submitLicenseDetails(
     // Trigger async verification (non-blocking)
     runLicenseVerification({
       agentLicenseId: licenseRecord.id,
-      agentId: user.id,
+      agentId,
       brokerageId: agent.brokerage_id,
       onboardingId: onboarding.id,
       licenseNumber: data.licenseNumber,
@@ -680,10 +687,10 @@ export async function markComplianceComplete(
         .limit(1)
         .single()
 
-      if (stepRecord) {
-        await supabase.from("agent_step_completion").upsert({
-          agent_id: agentId,
-          brokerage_id: agent.brokerage_id,
+    if (stepRecord) {
+      await supabase.from("agent_step_completion").upsert({
+        agent_id: agentId,
+        brokerage_id: agent.brokerage_id,
           step_id: stepRecord.id,
           completed: true,
           completed_at: now,
