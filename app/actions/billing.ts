@@ -1,6 +1,7 @@
+"use server"
+
 import { createClient } from "@/lib/supabase/server"
-import { stripe } from "@/lib/stripe"
-import { headers } from "next/headers"
+import { KernelEvent } from "@/lib/kernel/events"
 
 // ─── GET SUBSCRIPTION TIERS ──────────────────────────────────────────────────
 export async function getSubscriptionTiers() {
@@ -113,6 +114,7 @@ export async function startSubscriptionCheckout(
 
   // Create customer if not exists
   if (!customerId) {
+    const { stripe } = await import("@/lib/stripe")
     const customer = await stripe.customers.create({
       email: brokerage.email || undefined,
       name: brokerage.name,
@@ -127,6 +129,8 @@ export async function startSubscriptionCheckout(
     ? tier.annual_price_cents 
     : tier.monthly_price_cents
 
+  const { stripe } = await import("@/lib/stripe")
+  const { headers } = await import("next/headers")
   const headersList = await headers()
   const origin = headersList.get("origin") || "http://localhost:3000"
 
@@ -180,6 +184,7 @@ export async function cancelSubscription(subscriptionId: string) {
   }
 
   // Cancel at period end in Stripe
+  const { stripe } = await import("@/lib/stripe")
   await stripe.subscriptions.update(subscription.stripe_subscription_id, {
     cancel_at_period_end: true,
   })
