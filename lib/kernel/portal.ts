@@ -229,6 +229,7 @@ export function buildPortalNav(
     { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
   ]
   return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
+}
 
 // ─── PORTAL MILESTONE ─────────────────────────────────────────────────────────
 
