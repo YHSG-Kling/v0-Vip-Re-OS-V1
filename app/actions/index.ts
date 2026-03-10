@@ -88,7 +88,7 @@ export {
 export {
   startAgentOnboarding,
   getOnboardingStatus,
-  completeOnboardingStep,
+  completeAISessionStep,
   matchMentor,
   verifyAgentLicense,
   generateWelcomeMessage,

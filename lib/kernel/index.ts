@@ -97,7 +97,7 @@ export {
 
 export {
   getAgentOnboardingDashboard,
-  completeOnboardingStep,
+  completeAISessionStep,
   listOnboardingSteps,
   createOnboardingStepForBrokerage,
   updateOnboardingStepForBrokerage,

@@ -394,7 +394,7 @@ export async function completeAISessionStep(params: {
     }
   } catch (error) {
     console.error("Complete step error:", error)
-    return handleError(error, "completeOnboardingStep")
+    return handleError(error, "completeAISessionStep")
   }
 }
 
