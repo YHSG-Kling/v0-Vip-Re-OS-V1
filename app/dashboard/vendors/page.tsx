@@ -1,13 +1,19 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { Suspense } from "react"
+import Link from "next/link"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { VendorDirectoryClient } from "./vendor-directory-client"
 import {
   searchVendors,
   getAllVendorBookings,
   getCompletedBookingsForRating,
   getVendorCostComparison,
+  getAgentAssignedVendors,
+  getVendorReviews,
 } from "@/app/actions/vendor-marketplace"
+import { Store, FileText, Star, CheckCircle2 } from "lucide-react"
 
 export const dynamic = "force-dynamic"
 
@@ -25,14 +31,16 @@ export default async function VendorsPage() {
 
   if (!profile?.brokerage_id) redirect("/onboarding")
 
-  // Fetch initial data
+  // Fetch parallel data for all tabs
   const [
     vendors,
     recentBookings,
     pendingRatings,
     transactions,
+    assignedVendors,
+    preferredVendors,
   ] = await Promise.all([
-    searchVendors({ limit: 50 }),
+    searchVendors({ limit: 100 }),
     getAllVendorBookings(20),
     getCompletedBookingsForRating(),
     supabase
@@ -43,24 +51,256 @@ export default async function VendorsPage() {
       .order("created_at", { ascending: false })
       .limit(50)
       .then(r => r.data || []),
+    getAgentAssignedVendors(50),
+    supabase
+      .from("vendor_directory")
+      .select(`
+        id,
+        vendor_id,
+        category,
+        is_featured,
+        vendors:vendor_id(id, business_name, vendor_type, phone, email, website_url, rating_avg, is_verified)
+      `)
+      .eq("brokerage_id", profile.brokerage_id)
+      .order("is_featured", { ascending: false })
+      .then(r => r.data || []),
   ])
 
-  // Get unique service types from vendors
   const serviceTypes = [...new Set(vendors.map(v => v.category).filter(Boolean))]
+  const assignedCount = assignedVendors?.length || 0
+  const pendingRatingsCount = pendingRatings?.length || 0
 
   return (
-    <div className="container mx-auto p-6">
-      <Suspense fallback={<div className="animate-pulse">Loading vendor directory...</div>}>
-        <VendorDirectoryClient
-          initialVendors={vendors}
-          recentBookings={recentBookings}
-          pendingRatings={pendingRatings}
-          transactions={transactions}
-          serviceTypes={serviceTypes}
-          brokerageId={profile.brokerage_id}
-          userRole={profile.role ?? "agent"}
-        />
-      </Suspense>
+    <div className="container mx-auto p-6 space-y-6">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Vendor Management</h1>
+        <p className="text-muted-foreground mt-1">
+          Browse vendors, manage assignments, and track service bookings
+        </p>
+      </div>
+
+      <Tabs defaultValue="marketplace" className="space-y-6">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="marketplace" className="flex items-center gap-2">
+            <Store className="h-4 w-4" />
+            <span className="hidden sm:inline">Marketplace</span>
+          </TabsTrigger>
+          <TabsTrigger value="assigned" className="flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4" />
+            <span className="hidden sm:inline">Assigned</span>
+            {assignedCount > 0 && (
+              <span className="ml-1 inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800">
+                {assignedCount}
+              </span>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="preferred" className="flex items-center gap-2">
+            <Star className="h-4 w-4" />
+            <span className="hidden sm:inline">Preferred</span>
+          </TabsTrigger>
+          <TabsTrigger value="reviews" className="flex items-center gap-2">
+            <FileText className="h-4 w-4" />
+            <span className="hidden sm:inline">Reviews</span>
+            {pendingRatingsCount > 0 && (
+              <span className="ml-1 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                {pendingRatingsCount}
+              </span>
+            )}
+          </TabsTrigger>
+        </TabsList>
+
+        {/* Tab 1: Marketplace */}
+        <TabsContent value="marketplace" className="space-y-4">
+          <Suspense fallback={<div className="animate-pulse">Loading vendor directory...</div>}>
+            <VendorDirectoryClient
+              initialVendors={vendors}
+              recentBookings={recentBookings}
+              pendingRatings={pendingRatings}
+              transactions={transactions}
+              serviceTypes={serviceTypes}
+              brokerageId={profile.brokerage_id}
+              userRole={profile.role ?? "agent"}
+            />
+          </Suspense>
+        </TabsContent>
+
+        {/* Tab 2: Assigned Vendors */}
+        <TabsContent value="assigned" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>My Assigned Vendors</CardTitle>
+              <CardDescription>
+                Vendors assigned to your active transactions
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {assignedVendors && assignedVendors.length > 0 ? (
+                <div className="space-y-4">
+                  {assignedVendors.map((assignment: any) => (
+                    <div
+                      key={assignment.id}
+                      className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium">
+                            {assignment.vendors?.business_name || "Unknown Vendor"}
+                          </p>
+                          <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
+                            {assignment.assignment_type}
+                          </span>
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          {assignment.transactions?.property_address || "Transaction"}
+                        </p>
+                        {assignment.scheduled_date && (
+                          <p className="text-xs text-muted-foreground">
+                            Scheduled: {new Date(assignment.scheduled_date).toLocaleDateString()}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-3 py-1 rounded-full text-xs font-medium ${
+                            assignment.status === "completed"
+                              ? "bg-green-100 text-green-800"
+                              : "bg-amber-100 text-amber-800"
+                          }`}
+                        >
+                          {assignment.status}
+                        </span>
+                        <Link
+                          href={`/dashboard/transactions/${assignment.transaction_id}`}
+                          className="text-blue-600 hover:underline text-sm"
+                        >
+                          View
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground">No vendors assigned yet</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Tab 3: Preferred Vendors (Brokerage Curated) */}
+        <TabsContent value="preferred" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Preferred Vendors</CardTitle>
+              <CardDescription>
+                Your brokerage's curated vendor list
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {preferredVendors && preferredVendors.length > 0 ? (
+                <div className="space-y-3">
+                  {preferredVendors.map((dirEntry: any) => (
+                    <div
+                      key={dirEntry.id}
+                      className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium">
+                            {dirEntry.vendors?.business_name || "Vendor"}
+                          </p>
+                          {dirEntry.is_featured && (
+                            <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                          )}
+                        </div>
+                        <p className="text-sm text-muted-foreground">
+                          {dirEntry.category}
+                        </p>
+                        <div className="flex gap-4 text-sm">
+                          {dirEntry.vendors?.phone && (
+                            <a href={`tel:${dirEntry.vendors.phone}`} className="text-blue-600 hover:underline">
+                              {dirEntry.vendors.phone}
+                            </a>
+                          )}
+                          {dirEntry.vendors?.website_url && (
+                            <a 
+                              href={dirEntry.vendors.website_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline"
+                            >
+                              Website
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                      {dirEntry.vendors?.rating_avg && (
+                        <div className="text-right">
+                          <div className="flex items-center gap-1">
+                            <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                            <span className="font-medium">{dirEntry.vendors.rating_avg.toFixed(1)}</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground">No preferred vendors set up yet</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Tab 4: Reviews */}
+        <TabsContent value="reviews" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Vendor Reviews</CardTitle>
+              <CardDescription>
+                Rate your vendor experiences and view pending reviews
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {pendingRatings && pendingRatings.length > 0 ? (
+                <div className="space-y-3">
+                  {pendingRatings.map((booking: any) => (
+                    <div
+                      key={booking.id}
+                      className="p-4 border rounded-lg"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">{booking.vendors?.name || "Vendor"}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {booking.transactions?.property_address}
+                          </p>
+                          <p className="text-sm text-muted-foreground mt-1">
+                            Service: {booking.service_type}
+                          </p>
+                        </div>
+                        <Link
+                          href={`/dashboard/vendors?review=${booking.id}`}
+                          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
+                        >
+                          Write Review
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8">
+                  <p className="text-muted-foreground">No pending reviews</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
