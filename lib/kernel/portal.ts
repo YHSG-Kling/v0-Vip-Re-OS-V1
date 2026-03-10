@@ -5,7 +5,230 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getEducationDelivery } from "./education"
+import { processKernelEvent } from "./notification-engine"
+import { KernelEvent } from "./events"
 import type { AgeSegment } from "./education"
+import type { SupabaseClient } from "@supabase/supabase-js"
+
+// ─── PORTAL VIEW TYPES ────────────────────────────────────────────────────────
+
+export type PortalView = 'buyer' | 'seller' | 'lifetime'
+
+export interface NavItem {
+  label: string
+  href: string
+  icon?: string
+}
+
+// ─── PORTAL SHELL KERNEL FUNCTIONS ────────────────────────────────────────────
+
+/**
+ * Determines the portal view type for a contact.
+ * Decision logic:
+ * 1. If buyer_stage = 'BUYER_LIFETIME' → 'lifetime'
+ * 2. Else if contact has closed transaction AND no active transaction → 'lifetime'
+ * 3. Else if contact_type = 'seller' OR contact has active listing → 'seller'
+ * 4. Else → 'buyer'
+ */
+export async function determinePortalView(
+  supabase: SupabaseClient,
+  contactId: string
+): Promise<PortalView> {
+  try {
+    // Fetch contact with related data
+    const { data: contact, error: contactError } = await supabase
+      .from("contacts")
+      .select("contact_type, buyer_stage, agent_id")
+      .eq("id", contactId)
+      .single()
+
+    if (contactError || !contact) {
+      console.error("[Portal] Contact not found:", contactId)
+      return 'buyer' // Default fallback
+    }
+
+    // Check for lifetime status via buyer_stage
+    if (contact.buyer_stage === 'BUYER_LIFETIME') {
+      return 'lifetime'
+    }
+
+    // Check for closed transaction with no active transaction
+    const { data: transactions } = await supabase
+      .from("transactions")
+      .select("id, status")
+      .or(`buyer_contact_id.eq.${contactId},seller_contact_id.eq.${contactId}`)
+
+    const hasClosedTransaction = transactions?.some(t => 
+      t.status === 'closed' || t.status === 'completed'
+    )
+    const hasActiveTransaction = transactions?.some(t => 
+      t.status !== 'closed' && t.status !== 'completed' && t.status !== 'cancelled'
+    )
+
+    if (hasClosedTransaction && !hasActiveTransaction) {
+      return 'lifetime'
+    }
+
+    // Check for seller status
+    if (contact.contact_type === 'seller') {
+      return 'seller'
+    }
+
+    // Check for active listing
+    const { data: listings } = await supabase
+      .from("listings")
+      .select("id, listing_status")
+      .eq("contact_id", contactId)
+      .in("listing_status", ["active", "pending", "coming_soon"])
+
+    if (listings && listings.length > 0) {
+      return 'seller'
+    }
+
+    return 'buyer'
+  } catch (error) {
+    console.error("[Portal] Error determining portal view:", error)
+    return 'buyer' // Default fallback on error
+  }
+}
+
+/**
+ * Determines which portal modules are enabled for a contact.
+ * Reads from contact_portal_modules table if available.
+ * Returns all modules enabled as graceful fallback if table not accessible.
+ */
+export async function determinePortalModules(
+  supabase: SupabaseClient,
+  contactId: string
+): Promise<Record<string, boolean>> {
+  try {
+    const { data: modules, error } = await supabase
+      .from("contact_portal_modules")
+      .select("module_key, is_enabled")
+      .eq("contact_id", contactId)
+
+    if (error) {
+      // Table may not exist yet — graceful fallback
+      console.warn("[Portal] contact_portal_modules not accessible, enabling all modules")
+      return {}
+    }
+
+    if (!modules || modules.length === 0) {
+      return {} // No specific overrides, all enabled by default
+    }
+
+    const moduleMap: Record<string, boolean> = {}
+    for (const m of modules) {
+      moduleMap[m.module_key] = m.is_enabled
+    }
+    return moduleMap
+  } catch (error) {
+    console.warn("[Portal] Error fetching portal modules:", error)
+    return {} // All enabled by default
+  }
+}
+
+/**
+ * Logs portal access to portal_access_logs table.
+ * Emits PORTAL_ACCESSED kernel event.
+ * Fails silently if table not accessible.
+ */
+export async function logPortalAccess(
+  supabase: SupabaseClient,
+  contactId: string,
+  moduleKey: string,
+  action: string,
+  agentId?: string
+): Promise<void> {
+  try {
+    // Insert access log
+    await supabase
+      .from("portal_access_logs")
+      .insert({
+        contact_id: contactId,
+        module_key: moduleKey,
+        action,
+        agent_id: agentId,
+        accessed_at: new Date().toISOString(),
+      })
+
+    // Emit kernel event
+    await processKernelEvent({
+      eventType: KernelEvent.PORTAL_ACCESSED,
+      entityType: "contact",
+      entityId: contactId,
+      agentId: agentId ?? null,
+      brokerageId: null,
+      metadata: { moduleKey, action },
+    }).catch(() => {}) // Non-blocking
+  } catch (error) {
+    // Fail silently — portal_access_logs table may not exist yet
+    console.warn("[Portal] Unable to log portal access:", error)
+  }
+}
+
+/**
+ * Builds the navigation items for a portal view.
+ * Respects module enable/disable settings.
+ */
+export function buildPortalNav(
+  view: PortalView,
+  modules: Record<string, boolean>,
+  contactId: string
+): NavItem[] {
+  const isEnabled = (key: string) => modules[key] !== false
+
+  const basePath = `/portal/${contactId}`
+
+  if (view === 'buyer') {
+    const items: NavItem[] = [
+      { label: "Home", href: basePath, icon: "home" },
+      { label: "My Journey", href: `${basePath}/journey`, icon: "route" },
+      { label: "Messages", href: `${basePath}/messages`, icon: "message-square" },
+      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar" },
+      { label: "Documents", href: `${basePath}/documents`, icon: "file-text" },
+      { label: "Properties", href: `${basePath}/properties`, icon: "building" },
+      { label: "Smart Search", href: `${basePath}/search`, icon: "search" },
+      { label: "Showings", href: `${basePath}/showings`, icon: "eye" },
+      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign" },
+      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap" },
+      { label: "My Team", href: `${basePath}/team`, icon: "users" },
+      { label: "Vendors", href: `${basePath}/vendors`, icon: "briefcase" },
+      { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
+    ]
+    return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
+  }
+
+  if (view === 'seller') {
+    const items: NavItem[] = [
+      { label: "Home", href: basePath, icon: "home" },
+      { label: "My Journey", href: `${basePath}/journey`, icon: "route" },
+      { label: "Messages", href: `${basePath}/messages`, icon: "message-square" },
+      { label: "Calendar", href: `${basePath}/calendar`, icon: "calendar" },
+      { label: "Documents", href: `${basePath}/documents`, icon: "file-text" },
+      { label: "My Listing", href: `${basePath}/listing`, icon: "home" },
+      { label: "Offers", href: `${basePath}/offers`, icon: "dollar-sign" },
+      { label: "Insights", href: `${basePath}/insights`, icon: "bar-chart" },
+      { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap" },
+      { label: "My Team", href: `${basePath}/team`, icon: "users" },
+      { label: "Vendors", href: `${basePath}/vendors`, icon: "briefcase" },
+      { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
+    ]
+    return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
+  }
+
+  // Lifetime view
+  const items: NavItem[] = [
+    { label: "Home", href: basePath, icon: "home" },
+    { label: "My History", href: `${basePath}/history`, icon: "clock" },
+    { label: "Market Updates", href: `${basePath}/market-updates`, icon: "trending-up" },
+    { label: "Resources", href: `${basePath}/resources`, icon: "book-open" },
+    { label: "Referrals", href: `${basePath}/referrals`, icon: "share-2" },
+    { label: "Documents", href: `${basePath}/documents`, icon: "file-text" },
+    { label: "Learn", href: `${basePath}/learn`, icon: "graduation-cap" },
+    { label: "Help", href: `${basePath}/help`, icon: "help-circle" },
+  ]
+  return items.filter(item => isEnabled(item.label.toLowerCase().replace(/ /g, '_')))
 
 // ─── PORTAL MILESTONE ─────────────────────────────────────────────────────────
 

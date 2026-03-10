@@ -1,33 +1,43 @@
 import type React from "react"
+import { Suspense } from "react"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { FileText, Home, DollarSign, Users, Calendar, Route, Share2 } from "lucide-react"
+import {
+  determinePortalView,
+  determinePortalModules,
+  logPortalAccess,
+  buildPortalNav,
+  type PortalView,
+} from "@/lib/kernel/portal"
 import PortalNav from "@/components/portal/PortalNav"
 import PortalUserMenu from "@/components/portal/PortalUserMenu"
 import PortalAIAssistant from "@/components/portal/PortalAIAssistant"
+import { Badge } from "@/components/ui/badge"
+import { Skeleton } from "@/components/ui/skeleton"
 
-// Helper function for persona taglines
-function getPersonaTagline(persona: string) {
-  const taglines: Record<string, string> = {
-    first_time_buyer: "Your Real Estate Portal - First Home Journey",
-    military_buyer: "Your Real Estate Portal - Serving Those Who Serve",
-    luxury_buyer: "Your Real Estate Portal - Distinctive Properties",
-    investor: "Your Real Estate Portal - Investment Dashboard",
-    first_time_seller: "Your Real Estate Portal - Selling Made Simple",
-    motivated_seller: "Your Real Estate Portal - Fast Track Sale",
-    luxury_seller: "Your Real Estate Portal - Premium Marketing",
-    divorce: "Your Real Estate Portal - Neutral Support",
-    probate: "Your Real Estate Portal - Estate Guidance",
-    senior: "Your Real Estate Portal - Thoughtful Transition",
-    relocating: "Your Real Estate Portal - Relocation Guide",
-    fsbo: "Your Real Estate Portal - Professional Support",
-    expired: "Your Real Estate Portal - Fresh Start",
-    empty_nester: "Your Real Estate Portal - Right-Sizing",
-    upsizers: "Your Real Estate Portal - More Space Awaits",
-    remote_seller: "Your Real Estate Portal - Remote Management",
-    other: "Your Real Estate Portal",
-  }
-  return taglines[persona] || "Your Real Estate Portal"
+// View badge labels
+const VIEW_LABELS: Record<PortalView, string> = {
+  buyer: "Buyer",
+  seller: "Seller",
+  lifetime: "Homeowner",
+}
+
+// View badge colors
+const VIEW_COLORS: Record<PortalView, string> = {
+  buyer: "bg-blue-100 text-blue-800",
+  seller: "bg-green-100 text-green-800",
+  lifetime: "bg-purple-100 text-purple-800",
+}
+
+// Loading skeleton for nav
+function NavSkeleton() {
+  return (
+    <div className="flex gap-2 p-4 border-b">
+      {[...Array(6)].map((_, i) => (
+        <Skeleton key={i} className="h-10 w-24" />
+      ))}
+    </div>
+  )
 }
 
 export default async function PortalLayout({
@@ -40,102 +50,60 @@ export default async function PortalLayout({
   const { contactId } = await params
   const supabase = await createClient()
 
-  // Fetch persona for personalized navigation
-  const { data: contact } = await supabase.from("contacts").select("*, listings(*)").eq("id", contactId).single()
+  // Fetch contact with agent info
+  const { data: contact, error: contactError } = await supabase
+    .from("contacts")
+    .select("*, agent:agents(id, full_name)")
+    .eq("id", contactId)
+    .single()
 
-  if (!contact) {
-    redirect("/")
+  if (contactError || !contact) {
+    redirect("/portal?error=contact_not_found")
   }
 
-  const isSeller = contact.listings && contact.listings.length > 0
-  const isBuyer = contact.contact_type === "buyer" || !isSeller
+  // Kernel-driven portal view determination
+  const [view, modules] = await Promise.all([
+    determinePortalView(supabase, contactId),
+    determinePortalModules(supabase, contactId),
+  ])
+
+  // Build nav from kernel function
+  const navItems = buildPortalNav(view, modules, contactId)
+
+  // Log portal access (non-blocking)
+  logPortalAccess(supabase, contactId, "layout", "view", contact.agent?.id).catch(() => {})
+
+  // Derive display values
+  const contactName = contact.first_name || contact.name || "Guest"
+  const agentName = contact.agent?.full_name || "Your Agent"
+  const isBuyer = view === "buyer"
+  const isSeller = view === "seller"
   const persona = contact.contact_persona || "other"
-
-  const navItems = [
-    {
-      label: "Dashboard",
-      href: `/portal/${contactId}`,
-      icon: Home,
-    },
-    {
-      label: "My Journey",
-      href: `/portal/${contactId}/journey`,
-      icon: Route,
-    },
-    {
-      label: "Calendar",
-      href: `/portal/${contactId}/calendar`,
-      icon: Calendar,
-    },
-    {
-      label: "Documents",
-      href: `/portal/${contactId}/documents`,
-      icon: FileText,
-    },
-  ]
-
-  // Personas that support family/collaborative search
-  const familySearchPersonas = ["first_time_buyer", "military_buyer", "upsizing", "relocating", "repeat_buyer"]
-  const showFamilySearch = familySearchPersonas.includes(persona)
-
-  if (isBuyer) {
-    navItems.push({
-      label: "Properties",
-      href: `/portal/${contactId}/properties`,
-      icon: Home,
-    })
-    
-    // Only show Family Search for family-oriented personas
-    if (showFamilySearch) {
-      navItems.push({
-        label: "Family Search",
-        href: `/portal/${contactId}/search`,
-        icon: Users,
-      })
-    }
-    
-    navItems.push(
-      {
-        label: "My Offer",
-        href: `/portal/${contactId}/my-offer`,
-        icon: DollarSign,
-      },
-    )
-  }
-
-  if (isSeller) {
-    navItems.push(
-      {
-        label: "My Listing",
-        href: `/portal/${contactId}/listing`,
-        icon: Home,
-      },
-      {
-        label: "Social Posts",
-        href: `/portal/${contactId}/social`,
-        icon: Share2,
-      },
-      {
-        label: "Offers",
-        href: `/portal/${contactId}/offers`,
-        icon: DollarSign,
-      },
-    )
-  }
 
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">Welcome, {contact.first_name || contact.name}</h1>
-            <p className="text-sm text-muted-foreground">{getPersonaTagline(persona)}</p>
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-foreground">
+                Welcome, {contactName}
+              </h1>
+              <Badge className={VIEW_COLORS[view]} variant="secondary">
+                {VIEW_LABELS[view]}
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Your agent: {agentName}
+            </p>
           </div>
           <PortalUserMenu contact={contact} contactId={contactId} />
         </div>
       </header>
 
-      <PortalNav items={navItems} />
+      <Suspense fallback={<NavSkeleton />}>
+        <PortalNav items={navItems} />
+      </Suspense>
 
       <main className="container mx-auto px-4 py-8">{children}</main>
 
