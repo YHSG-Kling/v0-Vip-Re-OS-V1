@@ -1565,7 +1565,7 @@ export const supabaseService = {
 
       if (type === "marketing") {
         const { data, error } = await supabase
-          .from("agent_expenses")
+          .from("business_expenses")
           .select("*")
           .order("created_at", { ascending: false })
 
