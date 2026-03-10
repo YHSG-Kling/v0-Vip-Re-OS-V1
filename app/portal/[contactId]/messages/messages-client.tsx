@@ -1,5 +1,8 @@
+"use client"
+
 import { useState, useEffect, useRef, useCallback } from "react"
-import useSWR, { mutate } from "swr"
+import useSWR from "swr"
+import { mutate } from "swr"
 import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
 import { Badge } from "@/app/components/ui/badge"
 import { Card } from "@/app/components/ui/card"
