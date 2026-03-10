@@ -21,6 +21,8 @@ import { HandoffQueuePanel } from "./handoff-queue-panel"
 import { ContactHistorySheet } from "./contact-history-sheet"
 import { ISAConfigSummary } from "./isa-config-summary"
 
+export const dynamic = "force-dynamic"
+
 export const metadata = {
   title: "Voice ISA Dashboard | VIP-OS",
   description: "AI Inside Sales Agent call management and monitoring",
