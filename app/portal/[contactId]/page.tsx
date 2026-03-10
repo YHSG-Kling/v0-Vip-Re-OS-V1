@@ -25,6 +25,7 @@ import {
   Bell,
   MapPin,
 } from "lucide-react"
+import SellerHome from "./seller-home"
 
 export default async function PortalHomePage({
   params,
@@ -34,10 +35,18 @@ export default async function PortalHomePage({
   const { contactId } = await params
   const supabase = await createClient()
 
-  // Verify portal view is buyer
+  // Determine portal view from kernel
   const portalView = await determinePortalView(supabase, contactId)
-  if (portalView !== "buyer") {
-    redirect(`/portal/${contactId}`)
+
+  // Render seller home if seller view
+  if (portalView === "seller") {
+    return <SellerHome contactId={contactId} />
+  }
+
+  // Lifetime view redirects to lifetime dashboard (future)
+  if (portalView === "lifetime") {
+    // For now, show buyer view as fallback
+    // TODO: Create lifetime dashboard
   }
 
   // Fetch contact basic info
