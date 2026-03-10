@@ -1,5 +1,4 @@
 import { createClient } from "@/lib/supabase/server"
-import { revalidatePath } from "next/cache"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // ============================================
@@ -259,10 +258,10 @@ export async function markBookingComplete(bookingId: string) {
 
   if (error) throw error
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath("/dashboard/vendors")
-  if (booking?.transactions?.id) {
-    revalidatePath(`/dashboard/transactions/${booking.transactions.id}`)
-  }
+  revalidatePath(`/dashboard/transactions/${booking.transactions.id}`)
   return booking
 }
 
@@ -321,6 +320,8 @@ export async function rateVendorBooking(data: {
   // Recalculate vendor_ratings aggregate
   await recalculateVendorRatings(booking.vendor_id, booking.brokerage_id)
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath("/dashboard/vendors")
   return { success: true }
 }
@@ -592,6 +593,8 @@ export async function assignVendorToTransaction(data: {
     created_at: new Date().toISOString(),
   })
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/dashboard/transactions/${data.transactionId}`)
   revalidatePath("/dashboard/vendors")
   return assignment
@@ -650,6 +653,8 @@ export async function createVendorBookingWithKernelEvent(data: {
     created_at: new Date().toISOString(),
   })
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/dashboard/transactions/${data.transactionId}`)
   revalidatePath("/dashboard/vendors")
   return booking
