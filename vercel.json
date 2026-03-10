@@ -117,6 +117,26 @@
     {
       "path": "/api/cron/prompt-calibration",
       "schedule": "0 8 * * 2"
+    },
+    {
+      "path": "/api/cron/earnings-rollup",
+      "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/cron/seller-updates",
+      "schedule": "0 8 * * 1"
+    },
+    {
+      "path": "/api/cron/referral-asks",
+      "schedule": "0 10 * * 2"
+    },
+    {
+      "path": "/api/cron/engagement-scores",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/team-heatmap-snapshot",
+      "schedule": "0 6 * * *"
     }
   ]
 }
