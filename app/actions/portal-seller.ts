@@ -5,7 +5,7 @@
 // All queries scoped to contactId for security.
 
 import { createClient } from "@/lib/supabase/server"
-import { processKernelEvent, KernelEvent } from "@/lib/kernel/events"
+import { KernelEvent } from "@/lib/kernel/events"
 import {
   resolveSellerContext,
   getShowingStats,
