@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createClient }              from "@/lib/supabase/server"
 import { createServiceClient }       from "@/lib/supabase/service"
+import { resolveAgentId }            from "@/lib/kernel/agent-identity"
 import { updatePreferencesFromSignal } from "@/lib/behavior-learning/preference-updater"
 import { generateBuyerPredictions }    from "@/lib/behavior-learning/prediction-engine"
 
@@ -48,9 +49,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Resolve brokerageId — body takes precedence, fallback to user profile
+    const svc = createServiceClient()
     let resolvedBrokerageId: string = brokerageId ?? ""
     if (!resolvedBrokerageId) {
-      const svc = createServiceClient()
       const { data: profile } = await svc
         .from("user_profiles")
         .select("brokerage_id")
@@ -59,10 +60,16 @@ export async function POST(req: NextRequest) {
       resolvedBrokerageId = profile?.brokerage_id ?? ""
     }
 
+    // Resolve agent ID - never use user.id for agent_id column
+    const resolvedAgentId = agentId ?? await resolveAgentId(svc, user.id)
+    if (!resolvedAgentId) {
+      return NextResponse.json({ error: "Agent profile not found" }, { status: 403 })
+    }
+
     // Step 2 — call updatePreferencesFromSignal (inserts log + updates prefs)
     const prefResult = await updatePreferencesFromSignal({
       contactId,
-      agentId:    agentId ?? user.id,
+      agentId:    resolvedAgentId,
       brokerageId: resolvedBrokerageId,
       signal,
       property,
@@ -73,7 +80,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Step 3 — every 10th signal today: trigger generateBuyerPredictions (non-blocking)
-    const svc = createServiceClient()
     const todayStart = new Date()
     todayStart.setHours(0, 0, 0, 0)
 
@@ -88,7 +94,7 @@ export async function POST(req: NextRequest) {
       // Fire-and-forget — do not await in the hot path
       generateBuyerPredictions({
         contactId,
-        agentId:    agentId ?? user.id,
+        agentId:    resolvedAgentId,
         brokerageId: resolvedBrokerageId,
       }).catch(() => {})
     }

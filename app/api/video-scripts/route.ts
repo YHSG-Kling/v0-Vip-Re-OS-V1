@@ -12,6 +12,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
@@ -161,12 +162,18 @@ export async function POST(req: Request) {
       )
     }
 
+    // Resolve agent ID - never use user.id for agent_id column
+    const resolvedAgentId = agent_id ?? await resolveAgentId(supabase, user.id)
+    if (!resolvedAgentId) {
+      return NextResponse.json({ error: "Agent profile not found" }, { status: 403 })
+    }
+
     // Insert into video_scripts_library
     const { data: script, error } = await supabase
       .from("video_scripts_library")
       .insert({
         brokerage_id: userRecord.brokerage_id,
-        agent_id: agent_id ?? user.id,
+        agent_id: resolvedAgentId,
         listing_id: listing_id ?? null,
         contact_id: contact_id ?? null,
         template_id: template_id ?? null,

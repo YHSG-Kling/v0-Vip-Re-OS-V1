@@ -5,6 +5,7 @@ import { logVideoGenerated } from "@/lib/events"
 import { generateText } from "ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
@@ -31,6 +32,10 @@ export async function generateVideoScript(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
+  // Resolve agent ID - never use user.id for agent_id column
+  const agentId = await resolveAgentId(supabase, user.id)
+  if (!agentId) throw new Error("Agent profile not found")
+
   // Generate script using AI
   const { text: script } = await generateText({
     model: "openai/gpt-4o-mini",
@@ -48,7 +53,7 @@ Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
     .from("video_assets")
     .insert({
       brokerage_id: profile.brokerage_id,
-      agent_id: user.id,
+      agent_id: agentId,
       video_type: params.video_type,
       context_type: params.context_type,
       context_id: params.context_id,
