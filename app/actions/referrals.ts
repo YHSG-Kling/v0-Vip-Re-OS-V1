@@ -12,7 +12,7 @@ export async function getReferralPartnerStats() {
       return { success: false, error: "Not authenticated" }
     }
 
-    // Get partner profile
+    // Get partner profile (user_id for auth-scoped queries per kernel column usage rule)
     const { data: partner } = await supabase
       .from("referral_partners")
       .select("*")
@@ -62,7 +62,7 @@ export async function getPartnerReferrals() {
       return { success: false, error: "Not authenticated" }
     }
 
-    // Get partner profile
+    // Get partner profile (user_id for auth-scoped queries per kernel column usage rule)
     const { data: partner } = await supabase
       .from("referral_partners")
       .select("id")
@@ -122,7 +122,7 @@ export async function submitReferral(data: {
       return { success: false, error: "Not authenticated" }
     }
 
-    // Get partner profile
+    // Get partner profile (user_id for auth-scoped queries per kernel column usage rule)
     const { data: partner } = await supabase
       .from("referral_partners")
       .select("id, company_name")
