@@ -1,5 +1,4 @@
 import { createClient } from "@/lib/supabase/server"
-import { revalidatePath } from "next/cache"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // ─── LENDER MILESTONES (visible to lender portal) ────────────────────────────
@@ -218,6 +217,8 @@ export async function issueClearToClose(data: {
     created_at: new Date().toISOString(),
   })
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }
 }
@@ -288,6 +289,8 @@ export async function flagLenderIssue(data: {
     created_at: new Date().toISOString(),
   })
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }
 }
@@ -321,6 +324,8 @@ export async function updateLenderLoanStatus(data: {
 
   if (error) throw error
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return { success: true }
 }

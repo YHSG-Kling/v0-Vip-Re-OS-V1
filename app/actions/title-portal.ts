@@ -1,5 +1,4 @@
 import { createClient } from "@/lib/supabase/server"
-import { revalidatePath } from "next/cache"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // ─── TITLE MILESTONES (visible to title portal) ──────────────────────────────
@@ -241,6 +240,8 @@ export async function uploadTitleDocument(data: {
 
   if (error) throw error
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
   return document
 }
@@ -306,6 +307,8 @@ export async function updateTitleStatus(data: {
     }, { onConflict: "transaction_id,milestone_name" })
   }
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
   return { success: true }
 }
@@ -357,6 +360,8 @@ export async function updateClosingPrepItem(data: {
 
   if (error) throw error
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
   return { success: true }
 }
@@ -404,6 +409,8 @@ export async function sendTitleMessageToAgent(data: {
 
   if (error) throw error
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/title/${data.transactionId}`)
   return { success: true }
 }
