@@ -1,14 +1,12 @@
-"use client"
-
 import { useState, useEffect, useRef, useCallback } from "react"
 import useSWR, { mutate } from "swr"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Badge } from "@/components/ui/badge"
-import { Card } from "@/components/ui/card"
+import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
+import { Badge } from "@/app/components/ui/badge"
+import { Card } from "@/app/components/ui/card"
 import { Phone, Mail, MessageSquare, AlertCircle } from "lucide-react"
-import { MessageBubble, DateSeparator, getDateLabel } from "@/components/portal/MessageBubble"
-import { MessageComposer } from "@/components/portal/MessageComposer"
-import { AIDraftSuggestion } from "@/components/portal/AIDraftSuggestion"
+import { MessageBubble, DateSeparator, getDateLabel } from "@/app/components/portal/MessageBubble"
+import { MessageComposer } from "@/app/components/portal/MessageComposer"
+import { AIDraftSuggestion } from "@/app/components/portal/AIDraftSuggestion"
 import type { PortalMessage } from "@/app/actions/portal-messages"
 
 interface MessagesClientProps {
