@@ -1,409 +1,492 @@
 "use client"
 
-import { useState, useEffect, Suspense } from "react"
+import { useEffect, useState, Suspense } from "react"
 import { useRouter } from "next/navigation"
-import { useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { Checkbox } from "@/components/ui/checkbox"
+import { Button } from "@/components/ui/button"
+import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import {
-  Video,
-  Plus,
-  Search,
-  Filter,
-  Grid,
-  List,
-  Play,
-  Download,
-  Share2,
-  Trash2,
-  Copy,
-  MoreVertical,
-  Eye,
-  Clock,
   TrendingUp,
-  CheckCircle,
-  AlertCircle,
-  Loader2,
+  Users,
+  DollarSign,
+  CheckCircle2,
   Calendar,
-  BarChart3,
-  RefreshCw,
+  Phone,
+  Mail,
+  Home,
+  Clock,
+  Target,
+  AlertCircle,
+  ArrowRight,
+  Sparkles,
+  Loader2,
 } from "lucide-react"
-import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
-import { createClient } from "@/lib/supabase/client"
+import Link from "next/link"
 
-interface VideoItem {
+interface AgentStats {
+  activeListings: number
+  pendingOffers: number
+  closingsThisMonth: number
+  totalVolume: number
+  activeClients: number
+  upcomingShowings: number
+  pendingTasks: number
+  unreadMessages: number
+}
+
+interface ActionItem {
   id: string
+  type: "call" | "showing" | "followup" | "task"
   title: string
-  video_type: string
-  status: "generating" | "ready" | "failed"
-  thumbnail_url?: string
-  video_url?: string
-  duration_seconds?: number
-  created_at: string
-  views?: number
-  completion_rate?: number
-  client_name?: string
-  property_address?: string
+  time?: string
+  priority: "high" | "medium" | "low"
+  contact?: string
 }
 
 const Loading = () => (
   <div className="flex items-center justify-center h-96">
-    <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
   </div>
 )
 
-// ✅ INNER COMPONENT: Contains useSearchParams
-function VideoLibraryContent() {
+function DashboardContent() {
   const router = useRouter()
-  const searchParams = useSearchParams()
-  const { user } = useAuth()
-  const [videos, setVideos] = useState<VideoItem[]>([])
+  const { user, brokerage } = useAuth()
+  const [stats, setStats] = useState<AgentStats>({
+    activeListings: 0,
+    pendingOffers: 0,
+    closingsThisMonth: 0,
+    totalVolume: 0,
+    activeClients: 0,
+    upcomingShowings: 0,
+    pendingTasks: 0,
+    unreadMessages: 0,
+  })
   const [loading, setLoading] = useState(true)
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
-  const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<string>("all")
-  const [typeFilter, setTypeFilter] = useState<string>("all")
-  const [sortBy, setSortBy] = useState<string>("date")
-  const [selectedVideos, setSelectedVideos] = useState<string[]>([])
+  const [actionItems, setActionItems] = useState<ActionItem[]>([])
 
   useEffect(() => {
-    loadVideos()
-  }, [user?.id])
+    const fetchDashboardData = async () => {
+      setLoading(true)
+      try {
+        // Mock data for dashboard
+        setStats({
+          activeListings: 12,
+          pendingOffers: 4,
+          closingsThisMonth: 3,
+          totalVolume: 2450000,
+          activeClients: 18,
+          upcomingShowings: 6,
+          pendingTasks: 8,
+          unreadMessages: 5,
+        })
 
-  async function loadVideos() {
-    setLoading(true)
-    try {
-      const supabase = createClient()
-      const { data, error } = await supabase
-        .from("ai_video_projects")
-        .select("*")
-        .order("created_at", { ascending: false })
-
-      if (data && !error) {
-        setVideos(data.map((v: any) => ({
-          id: v.id,
-          title: v.project_name || `${v.video_type} Video`,
-          video_type: v.video_type,
-          status: v.status === "video_ready" ? "ready" : v.status === "failed" ? "failed" : "generating",
-          thumbnail_url: v.thumbnail_url,
-          video_url: v.video_url,
-          duration_seconds: v.video_metadata?.duration_seconds,
-          created_at: v.created_at,
-          views: Math.floor(Math.random() * 200),
-          completion_rate: Math.floor(Math.random() * 40) + 60,
-          client_name: v.client_name,
-          property_address: v.property_address,
-        })))
-      } else {
-        // Demo data
-        setVideos([
-          { id: "1", title: "Listing Tour - 123 Main St", video_type: "listing_tour", status: "ready", created_at: new Date().toISOString(), views: 145, completion_rate: 78, property_address: "123 Main St, Miami" },
-          { id: "2", title: "Market Update - Miami Beach", video_type: "market_update", status: "ready", created_at: new Date(Date.now() - 86400000).toISOString(), views: 89, completion_rate: 65 },
-          { id: "3", title: "Welcome Video - John Smith", video_type: "personalized_buyer", status: "generating", created_at: new Date(Date.now() - 3600000).toISOString(), client_name: "John Smith" },
-          { id: "4", title: "Agent Introduction", video_type: "agent_intro", status: "ready", created_at: new Date(Date.now() - 172800000).toISOString(), views: 234, completion_rate: 82 },
-          { id: "5", title: "Open House Promo", video_type: "open_house", status: "failed", created_at: new Date(Date.now() - 259200000).toISOString() },
+        // Mock action items for today
+        setActionItems([
+          {
+            id: "1",
+            type: "call",
+            title: "Follow up with Sarah Johnson",
+            time: "10:00 AM",
+            priority: "high",
+            contact: "Sarah Johnson",
+          },
+          {
+            id: "2",
+            type: "showing",
+            title: "Property showing at 123 Main St",
+            time: "2:00 PM",
+            priority: "high",
+            contact: "Mike Chen",
+          },
+          {
+            id: "3",
+            type: "followup",
+            title: "Send CMA to potential seller",
+            time: "4:30 PM",
+            priority: "medium",
+            contact: "David Martinez",
+          },
+          {
+            id: "4",
+            type: "task",
+            title: "Review and approve marketing materials",
+            priority: "medium",
+          },
         ])
+      } catch (error) {
+        console.error("[v0] Error fetching dashboard data:", error)
+      } finally {
+        setLoading(false)
       }
-    } catch (error) {
-      console.error("Error loading videos:", error)
-    } finally {
-      setLoading(false)
+    }
+
+    fetchDashboardData()
+  }, [])
+
+  const statCards = [
+    {
+      title: "Active Listings",
+      value: stats.activeListings,
+      icon: Home,
+      color: "text-blue-600",
+      bgColor: "bg-blue-50",
+      change: "+2 this week",
+    },
+    {
+      title: "Active Clients",
+      value: stats.activeClients,
+      icon: Users,
+      color: "text-emerald-600",
+      bgColor: "bg-emerald-50",
+      change: "+5 this month",
+    },
+    {
+      title: "Pending Offers",
+      value: stats.pendingOffers,
+      icon: Target,
+      color: "text-amber-600",
+      bgColor: "bg-amber-50",
+      change: "2 need review",
+    },
+    {
+      title: "Volume (MTD)",
+      value: `$${(stats.totalVolume / 1000000).toFixed(1)}M`,
+      icon: DollarSign,
+      color: "text-purple-600",
+      bgColor: "bg-purple-50",
+      change: "+18% vs last month",
+    },
+    {
+      title: "Closings This Month",
+      value: stats.closingsThisMonth,
+      icon: CheckCircle2,
+      color: "text-green-600",
+      bgColor: "bg-green-50",
+      change: "3 in next 7 days",
+    },
+    {
+      title: "Upcoming Showings",
+      value: stats.upcomingShowings,
+      icon: Calendar,
+      color: "text-indigo-600",
+      bgColor: "bg-indigo-50",
+      change: "Next: Today 2pm",
+    },
+  ]
+
+  const getActionIcon = (type: ActionItem["type"]) => {
+    switch (type) {
+      case "call":
+        return Phone
+      case "showing":
+        return Home
+      case "followup":
+        return Mail
+      case "task":
+        return CheckCircle2
+      default:
+        return Clock
     }
   }
 
-  const filteredVideos = videos.filter((video) => {
-    const matchesSearch = video.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      video.client_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      video.property_address?.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesStatus = statusFilter === "all" || video.status === statusFilter
-    const matchesType = typeFilter === "all" || video.video_type === typeFilter
-    return matchesSearch && matchesStatus && matchesType
-  })
-
-  const sortedVideos = [...filteredVideos].sort((a, b) => {
-    switch (sortBy) {
-      case "title":
-        return a.title.localeCompare(b.title)
-      case "status":
-        return a.status.localeCompare(b.status)
-      case "date":
+  const getPriorityColor = (priority: ActionItem["priority"]) => {
+    switch (priority) {
+      case "high":
+        return "bg-red-100 text-red-700 border-red-200"
+      case "medium":
+        return "bg-amber-100 text-amber-700 border-amber-200"
+      case "low":
+        return "bg-slate-100 text-slate-700 border-slate-200"
       default:
-        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        return "bg-slate-100 text-slate-700 border-slate-200"
     }
-  })
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case "ready":
-        return <Badge className="bg-green-600/20 text-green-400 border-green-600/30"><CheckCircle className="h-3 w-3 mr-1" />Ready</Badge>
-      case "generating":
-        return <Badge className="bg-blue-600/20 text-blue-400 border-blue-600/30"><Loader2 className="h-3 w-3 mr-1 animate-spin" />Generating</Badge>
-      case "failed":
-        return <Badge className="bg-red-600/20 text-red-400 border-red-600/30"><AlertCircle className="h-3 w-3 mr-1" />Failed</Badge>
-      default:
-        return <Badge variant="secondary">{status}</Badge>
-    }
-  }
-
-  const getTypeBadge = (type: string) => {
-    const typeNames: Record<string, string> = {
-      listing_tour: "Listing Tour",
-      market_update: "Market Update",
-      personalized_buyer: "Buyer Video",
-      personalized_seller: "Seller Video",
-      agent_intro: "Agent Intro",
-      open_house: "Open House",
-      client_testimonial: "Testimonial",
-      property_walkthrough: "Walkthrough",
-    }
-    return typeNames[type] || type.replace(/_/g, " ")
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-white mb-1">Video Library</h1>
-          <p className="text-slate-400">Manage and organize your video content</p>
-        </div>
-        <Button onClick={() => router.push("/dashboard/videos/create")} className="gap-2">
-          <Plus className="h-4 w-4" />
-          Create Video
-        </Button>
-      </div>
-
-      {/* Search and Filters */}
-      <Card className="bg-slate-900 border-slate-800">
-        <CardHeader>
-          <CardTitle className="text-white">Search & Filter</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <Input
-            placeholder="Search by title, client name, or address..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="bg-slate-800 border-slate-700 text-white placeholder:text-slate-500"
-          />
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
-                <SelectValue placeholder="Filter by status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
-                <SelectItem value="ready">Ready</SelectItem>
-                <SelectItem value="generating">Generating</SelectItem>
-                <SelectItem value="failed">Failed</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
-                <SelectValue placeholder="Filter by type" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Types</SelectItem>
-                <SelectItem value="listing_tour">Listing Tour</SelectItem>
-                <SelectItem value="market_update">Market Update</SelectItem>
-                <SelectItem value="agent_intro">Agent Intro</SelectItem>
-                <SelectItem value="open_house">Open House</SelectItem>
-              </SelectContent>
-            </Select>
-
-            <Select value={sortBy} onValueChange={setSortBy}>
-              <SelectTrigger className="bg-slate-800 border-slate-700 text-white">
-                <SelectValue placeholder="Sort by" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="date">Date Created</SelectItem>
-                <SelectItem value="title">Title</SelectItem>
-                <SelectItem value="status">Status</SelectItem>
-              </SelectContent>
-            </Select>
+    <div className="min-h-screen bg-background p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Welcome back! Here's what's happening today.
+            </p>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* View Controls */}
-      <div className="flex items-center justify-between">
-        <p className="text-slate-400 text-sm">{sortedVideos.length} videos found</p>
-        <div className="flex gap-2">
-          <Button
-            variant={viewMode === "grid" ? "default" : "outline"}
-            size="icon"
-            onClick={() => setViewMode("grid")}
-          >
-            <Grid className="h-4 w-4" />
-          </Button>
-          <Button
-            variant={viewMode === "list" ? "default" : "outline"}
-            size="icon"
-            onClick={() => setViewMode("list")}
-          >
-            <List className="h-4 w-4" />
-          </Button>
+          <div className="flex items-center gap-3">
+            <Badge variant="outline" className="px-3 py-1">
+              <Clock className="h-3 w-3 mr-1" />
+              {new Date().toLocaleDateString("en-US", {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+              })}
+            </Badge>
+          </div>
         </div>
-      </div>
 
-      {/* Videos Content */}
-      <div>
-        {loading ? (
-          <Loading />
-        ) : sortedVideos.length === 0 ? (
-          <Card className="bg-slate-900 border-slate-800 text-center py-12">
-            <Video className="h-12 w-12 text-slate-600 mx-auto mb-4" />
-            <p className="text-slate-400">No videos found. Create one to get started!</p>
-          </Card>
-        ) : viewMode === "grid" ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {sortedVideos.map((video) => (
-              <Card key={video.id} className="bg-slate-900 border-slate-800 overflow-hidden hover:border-blue-600/50 transition-colors cursor-pointer" onClick={() => router.push(`/dashboard/videos/${video.id}`)}>
-                <div className="aspect-video bg-slate-800 relative overflow-hidden">
-                  {video.thumbnail_url ? (
-                    <img src={video.thumbnail_url} alt={video.title} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-slate-800 to-slate-900">
-                      <Video className="h-12 w-12 text-slate-600" />
-                    </div>
-                  )}
-                  {video.status === "ready" && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 hover:opacity-100 transition-opacity">
-                      <Play className="h-12 w-12 text-white fill-white" />
-                    </div>
-                  )}
-                </div>
+        {/* Approvals Banner - Prominent Position */}
+        <ApprovalsBanner />
 
-                <CardContent className="p-4">
-                  <h3 className="font-semibold text-white mb-2 line-clamp-2">{video.title}</h3>
-
-                  <div className="space-y-2 mb-4">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-slate-400">{getTypeBadge(video.video_type)}</span>
-                      {getStatusBadge(video.status)}
+        {/* Quick Stats Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {loading ? (
+            <>
+              {[...Array(6)].map((_, i) => (
+                <Card key={i} className="animate-pulse">
+                  <CardContent className="p-6">
+                    <div className="h-20 bg-muted rounded" />
+                  </CardContent>
+                </Card>
+              ))}
+            </>
+          ) : (
+            statCards.map((stat, index) => (
+              <Card
+                key={index}
+                className="hover:shadow-lg transition-all cursor-pointer border-border"
+              >
+                <CardContent className="p-6">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-muted-foreground mb-1">
+                        {stat.title}
+                      </p>
+                      <p className="text-3xl font-bold text-foreground mb-2">{stat.value}</p>
+                      <p className="text-xs text-muted-foreground">{stat.change}</p>
                     </div>
-                    <div className="flex items-center gap-4 text-xs text-slate-500">
-                      <div className="flex items-center gap-1">
-                        <Eye className="h-3 w-3" />
-                        {video.views || 0} views
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Clock className="h-3 w-3" />
-                        {new Date(video.created_at).toLocaleDateString()}
-                      </div>
+                    <div className={`p-3 rounded-lg ${stat.bgColor}`}>
+                      <stat.icon className={`h-6 w-6 ${stat.color}`} />
                     </div>
-                  </div>
-
-                  {video.completion_rate && (
-                    <div className="mb-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs text-slate-400">Completion</span>
-                        <span className="text-xs text-slate-400">{video.completion_rate}%</span>
-                      </div>
-                      <div className="w-full bg-slate-800 rounded-full h-2">
-                        <div
-                          className="bg-blue-600 h-2 rounded-full transition-all"
-                          style={{ width: `${video.completion_rate}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" className="flex-1 border-slate-700">
-                      <Play className="h-3 w-3 mr-1" />
-                      Play
-                    </Button>
-                    <Button variant="outline" size="sm" className="flex-1 border-slate-700">
-                      <Share2 className="h-3 w-3 mr-1" />
-                      Share
-                    </Button>
                   </div>
                 </CardContent>
               </Card>
-            ))}
+            ))
+          )}
+        </div>
+
+        {/* Two Column Layout */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Today's Action Items */}
+          <div className="lg:col-span-2">
+            <Card className="border-border">
+              <CardHeader className="border-b border-border">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="flex items-center gap-2">
+                    <Target className="h-5 w-5 text-primary" />
+                    Today's Action Items
+                  </CardTitle>
+                  <Badge variant="secondary">{actionItems.length} items</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                {loading ? (
+                  <div className="p-6 space-y-4">
+                    {[...Array(4)].map((_, i) => (
+                      <div key={i} className="h-16 bg-muted rounded animate-pulse" />
+                    ))}
+                  </div>
+                ) : actionItems.length === 0 ? (
+                  <div className="p-12 text-center">
+                    <CheckCircle2 className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-foreground font-medium">All caught up!</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      No action items for today
+                    </p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border">
+                    {actionItems.map((item) => {
+                      const Icon = getActionIcon(item.type)
+                      return (
+                        <div
+                          key={item.id}
+                          className="p-4 hover:bg-accent transition-colors cursor-pointer group"
+                        >
+                          <div className="flex items-center gap-4">
+                            <div className="p-2 bg-muted rounded-lg group-hover:bg-background">
+                              <Icon className="h-5 w-5 text-muted-foreground" />
+                            </div>
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <p className="font-medium text-foreground">{item.title}</p>
+                                <Badge
+                                  variant="outline"
+                                  className={`text-xs ${getPriorityColor(item.priority)}`}
+                                >
+                                  {item.priority}
+                                </Badge>
+                              </div>
+                              <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                                {item.time && (
+                                  <span className="flex items-center gap-1">
+                                    <Clock className="h-3 w-3" />
+                                    {item.time}
+                                  </span>
+                                )}
+                                {item.contact && <span>{item.contact}</span>}
+                              </div>
+                            </div>
+                            <Button variant="ghost" size="sm" className="opacity-0 group-hover:opacity-100">
+                              <ArrowRight className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </div>
-        ) : (
-          <Card className="bg-slate-900 border-slate-800">
-            <div className="overflow-x-auto">
-              {sortedVideos.map((video) => (
-                <div key={video.id} className="flex items-center gap-4 p-4 border-b border-slate-800 last:border-b-0 hover:bg-slate-800/50 transition-colors cursor-pointer" onClick={() => router.push(`/dashboard/videos/${video.id}`)}>
-                  <Checkbox />
-                  <div className="flex-shrink-0 w-20 h-20">
-                    {video.thumbnail_url ? (
-                      <img src={video.thumbnail_url} alt={video.title} className="w-full h-full object-cover rounded" />
-                    ) : (
-                      <div className="w-full h-full bg-slate-800 rounded flex items-center justify-center">
-                        <Video className="h-8 w-8 text-slate-600" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold text-white truncate">{video.title}</h3>
-                    <p className="text-sm text-slate-400">{video.client_name || video.property_address || "-"}</p>
-                  </div>
-                  <div className="w-32">
-                    <Badge variant="secondary">{getTypeBadge(video.video_type)}</Badge>
-                  </div>
-                  <div className="w-24">{getStatusBadge(video.status)}</div>
-                  <div className="w-20 text-slate-600">{video.views || "-"}</div>
-                  <div className="w-24 text-sm text-slate-500">
-                    {new Date(video.created_at).toLocaleDateString()}
-                  </div>
-                  <div className="w-20">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem>
-                          <Play className="h-4 w-4 mr-2" />
-                          Play
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Download className="h-4 w-4 mr-2" />
-                          Download
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Share2 className="h-4 w-4 mr-2" />
-                          Share
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="text-red-600">
-                          <Trash2 className="h-4 w-4 mr-2" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+
+          {/* Quick Actions & Alerts */}
+          <div className="space-y-6">
+            {/* Quick Actions */}
+            <Card className="border-border">
+              <CardHeader className="border-b border-border">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  Quick Actions
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-4 space-y-2">
+                <Link href="/offer-lab">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <Target className="h-4 w-4 mr-2" />
+                    Create New Offer
+                  </Button>
+                </Link>
+                <Link href="/listings/new">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <Home className="h-4 w-4 mr-2" />
+                    Add New Listing
+                  </Button>
+                </Link>
+                <Link href="/crm">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <Users className="h-4 w-4 mr-2" />
+                    Add New Contact
+                  </Button>
+                </Link>
+                <Link href="/calendar">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <Calendar className="h-4 w-4 mr-2" />
+                    Schedule Showing
+                  </Button>
+                </Link>
+              </CardContent>
+            </Card>
+
+            {/* Alerts & Notifications */}
+            <Card className="border-border">
+              <CardHeader className="border-b border-border">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <AlertCircle className="h-4 w-4 text-amber-600" />
+                  Alerts
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-4 space-y-3">
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <p className="text-sm font-medium text-amber-900">2 offers expiring soon</p>
+                  <p className="text-xs text-amber-700 mt-1">Review before end of day</p>
+                </div>
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                  <p className="text-sm font-medium text-blue-900">New lead assigned</p>
+                  <p className="text-xs text-blue-700 mt-1">Contact within 15 minutes</p>
+                </div>
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+                  <p className="text-sm font-medium text-emerald-900">
+                    Compliance docs ready
+                  </p>
+                  <p className="text-xs text-emerald-700 mt-1">3 listings need review</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Performance Snapshot */}
+            <Card className="border-border">
+              <CardHeader className="border-b border-border">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <TrendingUp className="h-4 w-4 text-primary" />
+                  This Month
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-4 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Showings</span>
+                  <span className="text-sm font-semibold text-foreground">24</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Offers Submitted</span>
+                  <span className="text-sm font-semibold text-foreground">8</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">New Clients</span>
+                  <span className="text-sm font-semibold text-foreground">5</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-sm text-muted-foreground">Closings</span>
+                  <span className="text-sm font-semibold text-foreground">
+                    {stats.closingsThisMonth}
+                  </span>
+                </div>
+                <div className="pt-3 border-t border-border">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm font-medium text-foreground">Total Volume</span>
+                    <span className="text-lg font-bold text-primary">
+                      ${(stats.totalVolume / 1000000).toFixed(2)}M
+                    </span>
                   </div>
                 </div>
-              ))}
-            </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+
+        {/* Additional Stats Bar */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card className="border-border">
+            <CardContent className="p-4 text-center">
+              <Mail className="h-5 w-5 text-muted-foreground mx-auto mb-2" />
+              <p className="text-2xl font-bold text-foreground">{stats.unreadMessages}</p>
+              <p className="text-xs text-muted-foreground mt-1">Unread Messages</p>
+            </CardContent>
           </Card>
-        )}
+          <Card className="border-border">
+            <CardContent className="p-4 text-center">
+              <CheckCircle2 className="h-5 w-5 text-muted-foreground mx-auto mb-2" />
+              <p className="text-2xl font-bold text-foreground">{stats.pendingTasks}</p>
+              <p className="text-xs text-muted-foreground mt-1">Pending Tasks</p>
+            </CardContent>
+          </Card>
+          <Card className="border-border">
+            <CardContent className="p-4 text-center">
+              <Phone className="h-5 w-5 text-muted-foreground mx-auto mb-2" />
+              <p className="text-2xl font-bold text-foreground">12</p>
+              <p className="text-xs text-muted-foreground mt-1">Calls Scheduled</p>
+            </CardContent>
+          </Card>
+          <Card className="border-border">
+            <CardContent className="p-4 text-center">
+              <TrendingUp className="h-5 w-5 text-muted-foreground mx-auto mb-2" />
+              <p className="text-2xl font-bold text-foreground">94%</p>
+              <p className="text-xs text-muted-foreground mt-1">Response Rate</p>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   )
 }
 
-// ✅ OUTER COMPONENT: Wraps content in Suspense
-export default function VideoLibraryPage() {
+export default function DashboardPage() {
   return (
     <Suspense fallback={<Loading />}>
-      <VideoLibraryContent />
+      <DashboardContent />
     </Suspense>
   )
-}
-
-export const unstable_settings = {
-  suspense: true,
 }
