@@ -6,7 +6,7 @@ import { collectError } from "@/lib/errors/collect-error"
 /**
  * GET /api/cron/retry-errors
  * Cron job that runs every 30 minutes to retry scheduled errors
- * Add to vercel.json: { "path": "/api/cron/retry-errors", "schedule": "*/30 * * * *" }
+ * Add to vercel.json: { "path": "/api/cron/retry-errors", "schedule": "0 *\/30 * * * *" }
  */
 export async function GET(request: NextRequest) {
   const startTime = Date.now()
