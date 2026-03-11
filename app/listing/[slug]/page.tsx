@@ -8,9 +8,9 @@ import {
   calculateDaysOnMarket,
   formatPrice,
 } from "@/app/actions/listing-landing"
-import { ListingHero } from "@/components/listing-landing/ListingHero"
-import { NeighborhoodWidget } from "@/components/listing-landing/NeighborhoodWidget"
-import { ShowingRequestForm } from "@/components/listing-landing/ShowingRequestForm"
+import { ListingHero } from "@/app/components/listing-landing/ListingHero"
+import { NeighborhoodWidget } from "@/app/components/listing-landing/NeighborhoodWidget"
+import { ShowingRequestForm } from "@/app/components/listing-landing/ShowingRequestForm"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
