@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
-import { emitKernelEvent, KernelEvent } from "@/lib/kernel/events"
+import { KernelEvent } from "@/lib/kernel/events"
 
 /**
  * Log a touchpoint for a past client
@@ -41,15 +41,20 @@ export async function logTouchpoint({
     return { success: false, error: error.message }
   }
 
-  // Emit kernel event
-  await emitKernelEvent({
-    eventType: KernelEvent.PAST_CLIENT_TOUCHPOINT_SENT,
-    entityType: "contact",
-    entityId: contactId,
-    agentId,
-    brokerageId,
-    payload: { touchpointType, notes },
-  })
+  // Record activity with kernel event reference
+  await supabase.from("activities").insert({
+    brokerage_id: brokerageId,
+    user_id: agentId,
+    contact_id: contactId,
+    activity_type: "past_client_touchpoint_sent",
+    status: "completed",
+    metadata: {
+      touchpoint_type: touchpointType,
+      channel,
+      notes,
+      kernel_event: KernelEvent.PAST_CLIENT_TOUCHPOINT_SENT,
+    },
+  }).catch(err => console.error("Error recording activity:", err))
 
   return { success: true, touchpoint: data }
 }
@@ -104,15 +109,19 @@ export async function sendMarketUpdate({
     console.error("Error logging touchpoint:", touchpointError)
   }
 
-  // Emit kernel event
-  await emitKernelEvent({
-    eventType: KernelEvent.MARKET_UPDATE_SENT,
-    entityType: "contact",
-    entityId: contactId,
-    agentId,
-    brokerageId,
-    payload: { messageId: message.id },
-  })
+  // Record activity with kernel event reference
+  await supabase.from("activities").insert({
+    brokerage_id: brokerageId,
+    user_id: agentId,
+    contact_id: contactId,
+    activity_type: "market_update_sent",
+    status: "completed",
+    metadata: {
+      message_id: message.id,
+      message_preview: messageBody.substring(0, 100),
+      kernel_event: KernelEvent.MARKET_UPDATE_SENT,
+    },
+  }).catch(err => console.error("Error recording activity:", err))
 
   return { success: true, message }
 }
