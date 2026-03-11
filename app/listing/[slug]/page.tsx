@@ -5,9 +5,8 @@ import {
   getNeighborhoodData,
   getSimilarListings,
   logLandingSession,
-  calculateDaysOnMarket,
-  formatPrice,
 } from "@/app/actions/listing-landing"
+import { calculateDaysOnMarket, formatPrice } from "@/app/lib/listing-utils"
 import { ListingHero } from "@/app/components/listing-landing/ListingHero"
 import { NeighborhoodWidget } from "@/app/components/listing-landing/NeighborhoodWidget"
 import { ShowingRequestForm } from "@/app/components/listing-landing/ShowingRequestForm"
