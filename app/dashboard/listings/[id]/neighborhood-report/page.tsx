@@ -34,15 +34,9 @@ import {
   CheckCircle,
   Star,
 } from "lucide-react"
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts"
+
+// Import chart component as a separate client component
+import { PriceHistoryChart } from "@/app/components/neighborhood-report/PriceHistoryChart"
 
 export const dynamic = "force-dynamic"
 
@@ -202,38 +196,10 @@ function NeighborhoodReportContent({
         <CardContent>
           {priceHistory.length > 1 ? (
             <div className="h-64">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={priceHistory}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis
-                    dataKey="generated_at"
-                    tickFormatter={(value) => new Date(value).toLocaleDateString("en-US", { month: "short", year: "2-digit" })}
-                    className="text-xs"
-                  />
-                  <YAxis
-                    tickFormatter={(value) => `$${value}`}
-                    className="text-xs"
-                  />
-                  <Tooltip
-                    formatter={(value: number) => [`$${value.toFixed(0)}`, "Price/Sqft"]}
-                    labelFormatter={(label) => new Date(label).toLocaleDateString()}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="price_per_sqft"
-                    stroke="hsl(var(--primary))"
-                    strokeWidth={2}
-                    dot={{ fill: "hsl(var(--primary))" }}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
+              <PriceHistoryChart data={priceHistory} />
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center h-48 text-center text-muted-foreground">
-              <AlertCircle className="h-8 w-8 mb-2" />
-              <p>Only one data point available.</p>
-              <p className="text-sm">More data accumulates over time.</p>
-            </div>
+            <p className="text-sm text-muted-foreground">No historical price data available</p>
           )}
         </CardContent>
       </Card>
