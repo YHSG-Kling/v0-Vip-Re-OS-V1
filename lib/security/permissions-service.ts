@@ -286,6 +286,7 @@ export const ROLE_NAVIGATION: Record<UserRole, string[]> = {
     "oh-manager", "showings", "buyer-tours", "feedback-log", "map-intelligence", "knowledge-base",
     "ai-tools", "offer-lab", "documents", "events", "sphere", "listing-intake", "cma",
     "closing-dashboard", "compliance", "notifications", "ai-chat",
+    "past-clients", "referrals",
   ],
   agent: [
     "agent-dashboard", "crm", "transactions", "calendar", "inbox",
@@ -295,6 +296,7 @@ export const ROLE_NAVIGATION: Record<UserRole, string[]> = {
     "ai-tools", "lead-intelligence", "lead-scoring", "ai-isa", "ai-chat", "voice-call-bridge", "dashboard-voice",
     "documents", "sphere", "map-intelligence", "knowledge-base", "events",
     "agent-onboarding", "financials",
+    "past-clients", "referrals",
   ],
   isa: [
     "agent-dashboard", "crm", "lead-intelligence", "lead-scoring", "ai-isa", "ai-chat",

@@ -44,6 +44,7 @@ import {
   Target,
   TrendingUp,
   Sliders,
+  Gift,
   CalendarDays, // Import CalendarDays
   Bell, // Import Bell
   ClipboardList, // Import ClipboardList
@@ -103,6 +104,8 @@ const ALL_NAV_ITEMS: Record<string, { label: string; icon: any }> = {
   "oh-manager": { label: "Open Houses", icon: Home },
   "closing-dashboard": { label: "Closing", icon: Key },
   cma: { label: "CMA Tool", icon: TrendingUp },
+  "past-clients": { label: "Past Clients", icon: Heart },
+  "referrals": { label: "Referrals", icon: Gift },
   partners: { label: "Partners", icon: Handshake },
   compliance: { label: "Compliance", icon: ShieldCheck },
   notifications: { label: "Notifications", icon: Bell },
@@ -145,7 +148,8 @@ const Sidebar: React.FC<SidebarProps> = ({ role, onLogout }) => {
     "Client Tools": ["offer-lab", "cma", "closing-dashboard"],
     "Marketing & Content": ["content-studio", "social-planner", "shareable-assets"],
     "AI & Intelligence": ["ai-tools", "lead-intelligence", "ai-isa", "ai-chat", "voice-call-bridge", "dashboard-voice"],
-    "Resources": ["documents", "sphere", "map-intelligence", "knowledge-base", "events"],
+    "Client Relationships": ["past-clients", "referrals", "sphere"],
+    "Resources": ["documents", "map-intelligence", "knowledge-base", "events"],
     "Personal": ["agent-onboarding", "financials"],
   }
 
@@ -222,8 +226,13 @@ const Sidebar: React.FC<SidebarProps> = ({ role, onLogout }) => {
           } else {
             const Icon = item.icon
             const isActive = currentView === item.id
+            // Special route mappings for routes that don't follow the kebab-to-slash pattern
+            const SPECIAL_ROUTES: Record<string, string> = {
+              "past-clients": "/past-clients",
+              "referrals": "/referrals",
+            }
             // Convert kebab-case to path (e.g., agent-dashboard -> /agent/dashboard)
-            const href = `/${item.id!.replace(/-/g, '/')}`
+            const href = SPECIAL_ROUTES[item.id!] || `/${item.id!.replace(/-/g, '/')}`
             return (
               <Link
                 key={item.id}
