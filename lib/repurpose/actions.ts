@@ -202,6 +202,7 @@ export async function executePipeline(params: {
             generated_content: generatedContent,
             status: "pending_approval",
             created_at: new Date().toISOString(),
+            compliance_approved: false,
           })
           .select()
           .single()

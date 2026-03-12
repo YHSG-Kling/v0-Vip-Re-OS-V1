@@ -409,6 +409,7 @@ Return ONLY the script text, ready to be read by the agent.`
           ai_generated: true,
           is_active: true,
           created_by: agent_id ?? null,
+          compliance_approved: false,
         })
         .select()
         .single()

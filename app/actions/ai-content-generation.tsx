@@ -203,6 +203,7 @@ export async function createGeneratedContent(data: {
       target_audience: data.targetAudience,
       metadata: data.metadata,
       scheduled_for: data.scheduledFor,
+      compliance_approved: false,
     })
     .select()
     .single()
@@ -537,6 +538,7 @@ export async function logContentGeneration(data: {
       error_message: data.errorMessage,
       is_log: true,
     },
+    compliance_approved: false,
   })
 
   if (error) {
@@ -636,6 +638,7 @@ export async function generateListingDescription(params: {
         ai_model_used: response.model,
         compliance_status: result.compliance_status || "pending",
         seo_keywords: result.seo_keywords_used,
+        compliance_approved: false,
       })
       .select()
       .single()
@@ -813,6 +816,7 @@ export async function generateBlogPost(params: {
         ai_model_used: response.model,
         compliance_status: "pending",
         seo_keywords: result.seo_keywords_used,
+        compliance_approved: false,
       })
       .select()
       .single()
@@ -1839,6 +1843,7 @@ Keep same information, change how it's presented.`,
         ab_test_variant: "B",
         original_content_id: baseContent.id,
       },
+      compliance_approved: false,
     })
     .select()
     .single()
@@ -2527,6 +2532,7 @@ export async function trackContentUsage(params: {
       performance_score: params.performanceScore,
       tracked_at: new Date().toISOString(),
     },
+    compliance_approved: false,
   })
 
   return { success: true }

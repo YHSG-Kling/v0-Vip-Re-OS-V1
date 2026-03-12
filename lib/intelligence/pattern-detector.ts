@@ -209,6 +209,7 @@ export async function scanEntityForPatterns(
           pattern_type: pattern.pattern_type,
           status: "active",
           expires_at: expiresAt.toISOString(),
+          compliance_approved: false,
         })
         .select()
         .single()
@@ -231,6 +232,7 @@ export async function scanEntityForPatterns(
           predicted_within_days: 7,
           probability: evaluation.confidence,
           recommended_action: pattern.recommended_action,
+          compliance_approved: false,
         })
         .select()
         .single()

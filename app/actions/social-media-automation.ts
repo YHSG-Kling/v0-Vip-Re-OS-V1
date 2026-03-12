@@ -230,6 +230,7 @@ export async function scheduleSocialPost(params: {
         brand_compliance_passed: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+        compliance_approved: false,
       })
       .select()
       .single()

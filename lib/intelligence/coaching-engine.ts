@@ -199,6 +199,7 @@ Generate actionable coaching focused on improving conversion and client service.
       top_recommendation: report.top_recommendation,
       deal_focus: report.deal_focus,
     },
+    compliance_approved: false,
   })
 
   if (insertError) {

@@ -141,6 +141,7 @@ export async function generateAIResponse(params: {
     channel: "ai_auto",
     is_ai_generated: true,
     sent_at: new Date().toISOString(),
+    compliance_approved: false,
   })
 
   return { success: true, response: aiResponse }

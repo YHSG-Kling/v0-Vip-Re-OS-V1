@@ -142,6 +142,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
       publish_status: "draft",
       visibility_scope: params.agentUserId ? "agent" : "brokerage",
       created_by: userId,
+      compliance_approved: false,
     })
     .select("id")
     .single()
@@ -385,7 +386,7 @@ export async function publishToWordPress(
   }
 }
 
-// ─── getBlogPosts ─────────────────────────────────────────────────────────────
+// ─── getBlogPosts ──────────��──────────────────────────────────────────────────
 
 export async function getBlogPosts(
   brokerageId: string,

@@ -492,6 +492,7 @@ Format as JSON with keys: summary (string), recommendations (array of 3 strings)
       metrics,
       ai_summary: fullSummary,
       recommendations: parsed.recommendations,
+      compliance_approved: false,
     })
     .select('id')
     .single()

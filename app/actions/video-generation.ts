@@ -184,6 +184,7 @@ export async function saveVideoScript(data: {
       ai_generated: data.aiGenerated ?? false,
       is_active: true,
       created_by: data.createdBy ?? null,
+      compliance_approved: false,
     })
     .select()
     .single()
@@ -377,6 +378,7 @@ export async function createScriptVariation(data: {
       audience_segment: data.audienceSegment ?? null,
       is_ab_test: data.isAbTest ?? false,
       created_by: data.createdBy ?? null,
+      compliance_approved: false,
     })
     .select()
     .single()
@@ -439,6 +441,7 @@ export async function queueVideoGeneration(data: {
       priority: data.priority || 5,
       scheduled_for: data.scheduledFor,
       metadata: data.metadata,
+      compliance_approved: false,
     })
     .select()
     .single()

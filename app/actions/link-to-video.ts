@@ -61,6 +61,7 @@ Return ONLY the script text, no formatting or labels.`,
         ai_generated_script: response.text,
         edited_script: response.text,
         script_status: "pending",
+        compliance_approved: false,
       })
       .select()
       .single()

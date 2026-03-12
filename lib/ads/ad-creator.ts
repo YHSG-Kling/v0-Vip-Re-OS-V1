@@ -243,6 +243,7 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
           description: variation.description,
           call_to_action: variation.callToAction,
           approval_status: approvalStatus,
+          compliance_approved: false,
         })
         .select("id")
         .single()

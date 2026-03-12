@@ -67,6 +67,7 @@ Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
       audience_segment: params.audience_segment,
       script,
       status: "draft",
+      compliance_approved: false,
     })
     .select()
     .single()

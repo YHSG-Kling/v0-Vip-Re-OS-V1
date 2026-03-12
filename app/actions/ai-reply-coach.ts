@@ -222,6 +222,7 @@ ${includeSubject ? "- Start your reply with SUBJECT: <subject line> on the first
         edit_delta:        null,
         acted_at:          null,
         sent_message_id:   null,
+        compliance_approved: false,
       })
       .select("id")
       .single()

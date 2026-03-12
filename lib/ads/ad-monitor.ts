@@ -390,6 +390,7 @@ Be specific to real estate marketing. Identify patterns like:
         insight_type: insight.insightType,
         insight_summary: insight.insightSummary,
         confidence_score: insight.confidenceScore,
+        compliance_approved: false,
       })
 
       if (insertError) {
