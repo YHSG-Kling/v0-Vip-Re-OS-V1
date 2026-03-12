@@ -32,18 +32,47 @@ export const PUBLIC_ROUTES = [
   '/reset-password',
   '/forgot-password',
   '/api/auth',
-  '/api/auth/callback',
-  '/api/auth/logout',
-  '/public',
+  '/api/public',
+  '/api/open-house',
+  '/api/qr',
+  '/api/showings/feedback',
+  '/api/providers/inbound',
+  '/api/billing/webhook',
 ];
 
 export const PROTECTED_ROUTES = [
+  // ── Core dashboard + data routes ─────────────────────────────────
   '/dashboard',
+  '/portal',
+  '/admin',
+  // ── API routes requiring session auth ────────────────────────────
   '/api/contacts',
   '/api/leads',
   '/api/listings',
   '/api/transactions',
-  '/portal',
+  '/api/accounting',
+  '/api/admin',
+  '/api/ai',
+  '/api/approvals',
+  '/api/behavior',
+  '/api/dashboard',
+  '/api/forms',
+  '/api/heygen',
+  '/api/integrations',
+  '/api/intelligence',
+  '/api/offers',
+  '/api/onboarding',
+  '/api/track',
+  '/api/video-scripts',
+  '/api/video',
+  '/api/videos',
+  '/api/voice',
+  // ── Public routes stay outside (QR, webhook, token-gated handled internally) ──
+  // /api/open-house/attend   — intentionally public
+  // /api/qr/scan            — intentionally public
+  // /api/qr/submit          — intentionally public
+  // /api/showings/feedback  — token-gated inside
+  // /api/providers/inbound  — webhook signature inside
 ];
 
 // ============================================
