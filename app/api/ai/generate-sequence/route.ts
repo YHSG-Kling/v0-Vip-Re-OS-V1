@@ -42,12 +42,22 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const { text } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
-      system: SYSTEM_PROMPT,
-      prompt: prompt.trim(),
+    // Get actor context for governance
+    const agentCtx = await getAgentContext()
+    const actorContext = agentCtx
+      ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
+      : undefined
+
+    const response = await generateAIResponse({
+      prompt: `${SYSTEM_PROMPT}\n\n${prompt.trim()}`,
       maxTokens: 4000,
+      metadata: {
+        userId: user.id,
+        brokerageId: actorContext?.brokerageId,
+        feature: "sequence_step_content",
+      },
     })
+    const text = response.text
 
     // Parse and validate JSON
     let steps: any[]
