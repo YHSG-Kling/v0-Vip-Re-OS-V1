@@ -128,7 +128,7 @@ Respond ONLY with valid JSON (no markdown):
       }
 
       try {
-        parsed = JSON.parse(text.trim())
+        parsed = JSON.parse(response.text.trim())
       } catch {
         // Skip malformed responses
         continue
