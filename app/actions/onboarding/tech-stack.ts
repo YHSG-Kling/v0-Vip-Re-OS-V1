@@ -11,6 +11,7 @@ import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import { KernelEvent } from "@/lib/kernel/events"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { PROVIDER_METADATA, type ProviderName } from "@/lib/onboarding/integration-tester"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -291,12 +292,15 @@ export async function markTechStackComplete(
       return { success: false, error: "Required integrations not complete" }
     }
 
+    // Resolve agent ID
+    const agentId = await resolveAgentId(supabase, user.id)
+
     // Insert agent_step_completions
     const { error: stepError } = await supabase
       .from("agent_step_completions")
       .upsert({
         brokerage_id: brokerageId,
-        agent_id: user.id,
+        agent_id: agentId,
         step_id: null, // Will be linked via step_key lookup
         completed: true,
         completed_at: new Date().toISOString(),
@@ -314,7 +318,7 @@ export async function markTechStackComplete(
     const { data: onboarding } = await supabase
       .from("agent_onboarding")
       .select("id, status")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .maybeSingle()
 

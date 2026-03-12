@@ -14,20 +14,16 @@ export async function createReferral(params: {
   potentialValue?: number
   notes?: string
 }) {
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) throw new Error("Not authenticated")
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: userProfile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
 
   const { data, error } = await supabase
     .from("referrals")
     .insert({
       referring_contact_id: params.referringContactId,
-      agent_id: user.id,
-      brokerage_id: userProfile?.brokerage_id,
+      agent_id: agentId,
+      brokerage_id: brokerageId,
       referred_name: params.referredName,
       referred_phone: params.referredPhone,
       referred_email: params.referredEmail,
@@ -193,19 +189,15 @@ export async function createReferralPartner(params: {
   phone?: string
   agreementType?: string
 }) {
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) throw new Error("Not authenticated")
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  const { data: userProfile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
 
   const { data, error } = await supabase
     .from("referral_partners")
     .insert({
-      agent_id: user.id,
-      brokerage_id: userProfile?.brokerage_id,
+      agent_id: agentId,
+      brokerage_id: brokerageId,
       ...params,
     })
     .select()

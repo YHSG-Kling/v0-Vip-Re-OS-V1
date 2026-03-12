@@ -131,10 +131,11 @@ export async function generateAIResponse(params: {
   const aiResponse = await generateSmartReply(context)
 
   // Log the AI response
+  const { agentId } = await getAgentContext()
   await supabase.from("messages").insert({
     conversation_id: params.conversationId,
     contact_id: params.contactId,
-    agent_id: user.id,
+    agent_id: agentId,
     content: aiResponse,
     direction: "outbound",
     channel: "ai_auto",

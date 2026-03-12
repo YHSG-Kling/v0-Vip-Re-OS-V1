@@ -69,18 +69,12 @@ export async function saveServiceCredential(params: {
   config?: Record<string, any>
 }) {
   const supabase = await createClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) throw new Error("Not authenticated")
-
-  // Get brokerage_id from user
-  const { data: userData } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
+  const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId) throw new Error("Not authenticated")
 
   const credential = {
-    agent_id: user.id,
-    brokerage_id: userData?.brokerage_id,
+    agent_id: agentId,
+    brokerage_id: brokerageId,
     service_name: params.serviceName,
     service_type: params.serviceType,
     api_key: params.apiKey,

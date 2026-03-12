@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { extractOfferFromPdf } from "@/lib/offers/offer-extractor"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 
 export async function POST(req: NextRequest) {
   const supabase = await createClient()
@@ -14,11 +15,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  // Resolve agent ID from auth user
+  const agentId = await resolveAgentId(supabase, user.id)
+  if (!agentId) {
+    return NextResponse.json({ error: "Agent not found" }, { status: 403 })
+  }
+
   // Get brokerage_id for the authenticated agent
   const { data: agentRow } = await supabase
-    .from("users")
+    .from("agents")
     .select("brokerage_id")
-    .eq("id", user.id)
+    .eq("id", agentId)
     .single()
 
   const brokerageId = agentRow?.brokerage_id
@@ -74,8 +81,8 @@ export async function POST(req: NextRequest) {
       listing_id:           listingId,
       contact_id:           contactId,
       brokerage_id:         brokerageId,
-      agent_id:             user.id,
-      uploaded_by:          user.id,
+      agent_id:             agentId,
+      uploaded_by:          agentId,
       offer_price:          0,               // placeholder until extraction completes
       offer_document_url:   publicUrl,
       offer_document_name:  file.name,

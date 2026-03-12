@@ -529,13 +529,14 @@ export async function dismissCelebration(): Promise<{ success: boolean; error?: 
     return { success: false, error: 'No brokerage found' }
   }
 
+  const agentId = await resolveAgentId(supabase, user.id)
   const { error } = await supabase
     .from('agent_onboarding')
     .update({
       additional_data: { celebration_dismissed: true },
       updated_at: new Date().toISOString(),
     })
-    .eq('agent_id', user.id)
+    .eq('agent_id', agentId)
     .eq('brokerage_id', userData.brokerage_id)
 
   if (error) {
@@ -558,10 +559,11 @@ export async function retakeCourse(
   }
 
   // Delete the agent_courses record to allow retake
+  const agentId = await resolveAgentId(supabase, user.id)
   const { error } = await supabase
     .from('agent_courses')
     .delete()
-    .eq('agent_id', user.id)
+    .eq('agent_id', agentId)
     .eq('training_course_id', courseId)
 
   if (error) {

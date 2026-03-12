@@ -85,14 +85,14 @@ export async function createImportRecord(params: {
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) throw new Error('Unauthorized')
 
-  const { brokerageId } = await getAgentContext(user.id)
+  const { agentId, brokerageId } = await getAgentContext()
 
   const serviceClient = createServiceClient()
   const { data, error } = await serviceClient
     .from('lead_imports')
     .insert({
       brokerage_id: brokerageId,
-      agent_id: user.id,
+      agent_id: agentId,
       file_name: params.fileName,
       total_rows: params.totalRows,
       field_map: params.fieldMap,

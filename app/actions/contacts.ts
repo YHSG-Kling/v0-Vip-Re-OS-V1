@@ -81,11 +81,8 @@ export async function createContact(contactData: {
 }) {
   try {
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
+    const { agentId, brokerageId } = await getAgentContext()
+    if (!agentId) {
       return { success: false, error: "Not authenticated" }
     }
 
@@ -93,7 +90,8 @@ export async function createContact(contactData: {
       .from("contacts")
       .insert({
         ...contactData,
-        agent_id: user.id,
+        agent_id: agentId,
+        brokerage_id: brokerageId,
       })
       .select()
       .single()
