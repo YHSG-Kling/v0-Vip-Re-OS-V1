@@ -292,7 +292,6 @@ export enum KernelEvent {
   AGENT_LICENSE_VERIFIED             = 'agent_license_verified',
   AGENT_LICENSE_FAILED               = 'agent_license_failed',
   CONTRACT_SENT_FOR_SIGNATURE        = 'contract_sent_for_signature',
-  CONTRACT_SIGNED                    = 'contract_signed',
   BRAND_SETUP_STARTED                = 'brand_setup_started',
   BRAND_SETUP_COMPLETED              = 'brand_setup_completed',
   INTEGRATION_CONNECTED              = 'integration_connected',
@@ -422,4 +421,11 @@ export enum KernelEvent {
   TEAM_HEATMAP_SNAPSHOT_TAKEN        = 'team_heatmap_snapshot_taken',
   TERRITORY_ALERT_TRIGGERED          = 'territory_alert_triggered',
   RECRUITING_TERRITORY_SCORED        = 'recruiting_territory_scored',
+
+  // ── Vendor / Integration / Sync Events ─────────────────────────────────
+  DOCUMENT_UPLOADED                  = 'document_uploaded',
+  INTEGRATION_DEACTIVATED            = 'integration_deactivated',
+  MESSAGE_CREATED                    = 'message_created',
+  SYSTEM_SYNC_TRIGGERED              = 'system_sync_triggered',
+  SYSTEM_SYNC_COMPLETED              = 'system_sync_completed',
 }
