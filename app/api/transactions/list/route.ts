@@ -1,12 +1,19 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { supabaseService } from "@/services/supabaseService"
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url)
-    const agentId = searchParams.get("agent_id") || undefined
-
-    console.log("[v0] API /api/transactions/list called with agentId:", agentId)
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
+    }
+    const agentId = await resolveAgentId(supabase, user.id)
+    if (!agentId) {
+      return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
+    }
 
     const transactions = await supabaseService.getTransactions(agentId)
 

@@ -1,10 +1,21 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { generateText } from "ai"
-import { supabase } from "@/services/supabase"
+import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { analyzeContentQuality } from "@/lib/quality-checker"
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+    const agentId = await resolveAgentId(supabase, user.id)
+    if (!agentId) {
+      return NextResponse.json({ error: "Agent profile not found" }, { status: 403 })
+    }
+
     const body = await request.json()
     const { audienceSegment, platform } = body
 
