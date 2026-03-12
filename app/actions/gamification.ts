@@ -149,8 +149,10 @@ export async function awardBadge(data: {
 
   if (error) throw error
 
-  // Emit kernel event
-  await supabase.from("kernel_event_log").insert({
+  // Emit kernel event - get brokerage_id from agent
+  const { data: agentData } = await supabase.from("agents").select("brokerage_id").eq("id", data.agentId).single()
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: agentData?.brokerage_id,
     event_type: KernelEvent.GAMIFICATION_BADGE_AWARDED,
     entity_type: "agent_badge",
     entity_id: newBadge.id,

@@ -204,8 +204,10 @@ export async function issueClearToClose(data: {
     })
   }
 
-  // Log kernel event
-  await supabase.from("kernel_event_log").insert({
+  // Log kernel event - get brokerage from transaction
+  const { data: txn } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).single()
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: txn?.brokerage_id,
     event_type: KernelEvent.MILESTONE_COMPLETED,
     entity_type: "transaction",
     entity_id: data.transactionId,
@@ -276,8 +278,10 @@ export async function flagLenderIssue(data: {
 
   if (messageError) throw messageError
 
-  // Log kernel event
-  await supabase.from("kernel_event_log").insert({
+  // Log kernel event - get brokerage from transaction
+  const { data: txnForEvent } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).single()
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: txnForEvent?.brokerage_id,
     event_type: KernelEvent.PORTAL_MODULE_VIEWED,
     entity_type: "transaction",
     entity_id: data.transactionId,

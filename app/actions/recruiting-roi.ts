@@ -144,10 +144,12 @@ export async function addRecruitingCost(
   
   // Emit kernel event
   await client
-    .from("kernel_events")
+    .from("lifecycle_events")
     .insert({
       brokerage_id: brokerageId,
       event_type: "RECRUITING_COST_ADDED",
+      entity_type: "recruiting_cost",
+      entity_id: data?.[0]?.id,
       metadata: {
         recruited_agent_id: recruitedAgentId,
         cost_type: costType,

@@ -524,15 +524,18 @@ export async function logContentGeneration(data: {
 }) {
   const supabase = await createClient()
 
-  const { error } = await supabase.from("content_generation_logs").insert({
+  const { error } = await supabase.from("ai_generated_content").insert({
     agent_id: data.agentId,
     content_type: data.contentType,
-    prompt: data.prompt,
-    model: data.model,
-    tokens_used: data.tokensUsed,
-    generation_time_ms: data.generationTime,
-    success: data.success,
-    error_message: data.errorMessage,
+    content: data.prompt,
+    metadata: {
+      model: data.model,
+      tokens_used: data.tokensUsed,
+      generation_time_ms: data.generationTime,
+      success: data.success,
+      error_message: data.errorMessage,
+      is_log: true,
+    },
   })
 
   if (error) {
@@ -552,7 +555,7 @@ export async function getContentGenerationStats(agentId: string, dateRange?: { s
 
   const supabase = await createClient()
 
-  let query = supabase.from("content_generation_logs").select("*").eq("agent_id", agentId)
+  let query = supabase.from("ai_generated_content").select("*").eq("agent_id", agentId).eq("metadata->>is_log", "true")
 
   if (dateRange) {
     query = query.gte("created_at", dateRange.start).lte("created_at", dateRange.end)

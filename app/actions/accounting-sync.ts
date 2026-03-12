@@ -74,10 +74,12 @@ export async function disconnectProvider(data: {
   if (error) throw error
 
   // Log kernel event
-  await supabase.from("kernel_event_log").insert({
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: data.brokerageId,
     event_type: KernelEvent.INTEGRATION_DEACTIVATED,
     entity_type: "integration_credentials",
     entity_id: data.brokerageId,
+    actor_user_id: user.id,
     metadata: {
       provider: data.provider,
       disconnected_by: user.id,
@@ -190,10 +192,12 @@ export async function retrySyncError(data: {
   if (deleteError) throw deleteError
 
   // Log that we're re-queuing this record
-  await supabase.from("kernel_event_log").insert({
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: data.brokerageId,
     event_type: KernelEvent.SYSTEM_SYNC_TRIGGERED,
     entity_type: "sync_errors",
     entity_id: data.errorId,
+    actor_user_id: user.id,
     metadata: {
       record_type: errorRecord.record_type,
       record_id: errorRecord.record_id,

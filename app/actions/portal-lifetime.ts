@@ -136,8 +136,10 @@ export async function submitReferral(data: {
     created_at: new Date().toISOString(),
   })
 
-  // Emit kernel event
-  await supabase.from("kernel_event_log").insert({
+  // Emit kernel event - get brokerage from agent
+  const { data: agentData } = await supabase.from("agents").select("brokerage_id").eq("id", contact.agent_id).single()
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: agentData?.brokerage_id,
     event_type: KernelEvent.REFERRAL_ASK_SENT,
     entity_type: "referral",
     entity_id: referral.id,

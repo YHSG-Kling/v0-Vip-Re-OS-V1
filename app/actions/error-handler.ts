@@ -14,7 +14,7 @@ export async function getErrorGroups(filters?: {
 
   let query = supabase
     .from("automation_errors")
-    .select("*, error_groups!inner(*)")
+    .select("*")
     .eq("brokerage_id", brokerageId)
 
   if (filters?.severity) {
@@ -48,21 +48,8 @@ export async function getErrorGroupDetails(groupId: string) {
   const { brokerageId } = await getAgentContext()
 
   const { data, error } = await supabase
-    .from("error_groups")
-    .select(
-      `
-      *,
-      automation_errors (
-        id,
-        error_message,
-        stack_trace,
-        context,
-        status,
-        retry_count,
-        created_at
-      )
-    `
-    )
+    .from("automation_errors")
+    .select("*")
     .eq("brokerage_id", brokerageId)
     .eq("id", groupId)
     .single()
@@ -81,7 +68,7 @@ export async function dismissErrorGroup(groupId: string, reason: string) {
 
   // Update error group status
   const { error: updateError } = await supabase
-    .from("error_groups")
+    .from("automation_errors")
     .update({
       status: "dismissed",
       dismissed_at: new Date().toISOString(),
@@ -116,7 +103,7 @@ export async function resolveErrorGroup(groupId: string, solution: string) {
   const { brokerageId, userId } = await getAgentContext()
 
   const { error: updateError } = await supabase
-    .from("error_groups")
+    .from("automation_errors")
     .update({
       status: "resolved",
       resolved_at: new Date().toISOString(),
@@ -150,7 +137,7 @@ export async function assignErrorGroup(groupId: string, assigneeId: string) {
   const { brokerageId, userId } = await getAgentContext()
 
   const { error } = await supabase
-    .from("error_groups")
+    .from("automation_errors")
     .update({
       assigned_to: assigneeId,
       assigned_at: new Date().toISOString(),
@@ -180,7 +167,7 @@ export async function getErrorMetrics() {
 
   // Get top error types
   const { data: topErrors } = await supabase
-    .from("error_groups")
+    .from("automation_errors")
     .select("error_type, error_count")
     .eq("brokerage_id", brokerageId)
     .order("error_count", { ascending: false })

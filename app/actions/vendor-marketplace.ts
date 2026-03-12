@@ -580,10 +580,12 @@ export async function assignVendorToTransaction(data: {
   if (jobError) throw jobError
 
   // Emit kernel event
-  await supabase.from("kernel_event_log").insert({
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: profile?.brokerage_id,
     event_type: KernelEvent.VENDOR_ASSIGNED_TO_TRANSACTION,
     entity_type: "vendor_assignment",
     entity_id: assignment.id,
+    actor_user_id: user.id,
     metadata: {
       vendor_id: data.vendorId,
       transaction_id: data.transactionId,
@@ -640,10 +642,12 @@ export async function createVendorBookingWithKernelEvent(data: {
   if (error) throw error
 
   // Emit kernel event
-  await supabase.from("kernel_event_log").insert({
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: profile?.brokerage_id,
     event_type: KernelEvent.VENDOR_BOOKING_CREATED,
     entity_type: "vendor_booking",
     entity_id: booking.id,
+    actor_user_id: user.id,
     metadata: {
       vendor_id: data.vendorId,
       transaction_id: data.transactionId,

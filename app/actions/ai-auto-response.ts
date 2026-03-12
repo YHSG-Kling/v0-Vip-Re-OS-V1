@@ -187,10 +187,10 @@ export async function trackBehavioralEvent(params: {
     return { success: false, error: "Not authenticated" }
   }
 
-  const { error } = await supabase.from("behavioral_events").insert({
+  const { error } = await supabase.from("behavioral_patterns").insert({
     contact_id: params.contactId,
-    event_type: params.eventType,
-    event_data: params.eventData || {},
+    pattern_type: params.eventType,
+    pattern_data: params.eventData || {},
     points_awarded: params.pointsAwarded || 0,
     tracked_at: new Date().toISOString(),
   })
@@ -212,7 +212,7 @@ export async function calculateLeadScore(contactId: string) {
 
   // Get all behavioral events for this contact
   const { data: events } = await supabase
-    .from("behavioral_events")
+    .from("behavioral_patterns")
     .select("*")
     .eq("contact_id", contactId)
     .order("tracked_at", { ascending: false })
@@ -255,7 +255,7 @@ export async function calculateLeadScore(contactId: string) {
 
   events.forEach((event) => {
     const eventDate = new Date(event.tracked_at)
-    const points = eventPoints[event.event_type] || event.points_awarded || 0
+    const points = eventPoints[event.pattern_type] || event.points_awarded || 0
 
     score += points
 
@@ -277,9 +277,9 @@ export async function calculateLeadScore(contactId: string) {
   // Intent score based on high-value actions
   const highIntentEvents = events.filter(
     (e) =>
-      e.event_type === "showing_request" ||
-      e.event_type === "cma_request" ||
-      e.event_type === "document_download"
+      e.pattern_type === "showing_request" ||
+      e.pattern_type === "cma_request" ||
+      e.pattern_type === "document_download"
   )
   intent = highIntentEvents.length * 20
 

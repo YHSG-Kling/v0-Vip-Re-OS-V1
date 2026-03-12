@@ -292,10 +292,10 @@ async function checkDocument(ctx: {
 }): Promise<void> {
   const { supabase, contentId, cmaDisclaimerText, violations } = ctx
 
-  // documents table does not exist in the public schema — attempt a read but
+  // client_documents table exists — attempt a read but
   // treat a missing table gracefully; only the lifecycle_event and result matter
   const { data: doc } = await supabase
-    .from("documents" as string)
+    .from("client_documents")
     .select("content, document_type")
     .eq("id", contentId)
     .maybeSingle()

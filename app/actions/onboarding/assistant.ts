@@ -137,13 +137,13 @@ export async function fireAssistantEvent(
 
   try {
     await supabase
-      .from('kernel_events')
+      .from('lifecycle_events')
       .insert({
         event_type: eventMap[event],
         entity_type: 'agent',
         entity_id: agentId,
         brokerage_id: brokerageId,
-        actor_id: agentId,
+        actor_user_id: agentId,
         metadata: {
           step: currentStep,
           timestamp: new Date().toISOString(),

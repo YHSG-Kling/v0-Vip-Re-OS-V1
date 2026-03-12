@@ -68,10 +68,12 @@ export async function POST(request: NextRequest) {
     }
 
     // Log kernel event for sync started
-    await supabase.from("kernel_event_log").insert({
+    await supabase.from("lifecycle_events").insert({
+      brokerage_id: profile.brokerage_id,
       event_type: KernelEvent.SYSTEM_SYNC_TRIGGERED,
       entity_type: "accounting_sync_log",
       entity_id: syncLog.id,
+      actor_user_id: user.id,
       metadata: {
         provider: credentials.provider_name,
         sync_type,
@@ -167,10 +169,12 @@ export async function POST(request: NextRequest) {
         .eq("id", syncLog.id)
 
       // Log kernel event for sync completed
-      await supabase.from("kernel_event_log").insert({
+      await supabase.from("lifecycle_events").insert({
+        brokerage_id: profile.brokerage_id,
         event_type: KernelEvent.SYSTEM_SYNC_COMPLETED,
         entity_type: "accounting_sync_log",
         entity_id: syncLog.id,
+        actor_user_id: user.id,
         metadata: {
           provider: credentials.provider_name,
           sync_type,

@@ -275,8 +275,10 @@ export async function updateTitleStatus(data: {
 
   if (error) throw error
 
-  // Emit kernel event for milestone sync
-  await supabase.from("kernel_event_log").insert({
+  // Emit kernel event for milestone sync - get brokerage from transaction
+  const { data: txn } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).single()
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: txn?.brokerage_id,
     event_type: KernelEvent.JOURNEY_STAGE_UPDATED,
     entity_type: "transaction",
     entity_id: data.transactionId,

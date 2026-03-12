@@ -27,13 +27,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: "Unauthorized" }, { status: 401 })
     }
 
-    const { data: userData, error: userError } = await supabase.from("auth").select("role").eq("id", user.id).single()
+    const { data: agent } = await supabase.from("agents").select("id, brokerage_id").eq("user_id", user.id).maybeSingle()
+    const { data: userRecord } = await supabase.from("users").select("role").eq("id", user.id).maybeSingle()
 
-    if (userError || !userData) {
+    if (!userRecord) {
       return NextResponse.json({ success: false, error: "User not found" }, { status: 401 })
     }
 
-    const userRole = userData.role
+    const userRole = userRecord.role
     const canCreateContacts = ["broker", "admin", "agent"].includes(userRole?.toLowerCase())
     if (!canCreateContacts) {
       return NextResponse.json(
@@ -42,11 +43,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Resolve agent ID - never use user.id for agent_id column
-    const resolvedAgentId = await resolveAgentId(supabase, user.id)
+    // Use agent.id directly instead of separate resolveAgentId call
     const agentId = userRole?.toLowerCase() === "agent" 
-      ? resolvedAgentId 
-      : body.agent_id || resolvedAgentId
+      ? agent?.id 
+      : body.agent_id || agent?.id
     if (!agentId) {
       return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
     }

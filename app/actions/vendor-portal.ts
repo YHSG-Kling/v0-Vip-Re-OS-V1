@@ -90,8 +90,10 @@ export async function addVendorJobNote(data: {
 
   if (error) throw error
 
-  // Emit kernel event
-  await supabase.from("kernel_event_log").insert({
+  // Emit kernel event - get brokerage from vendor
+  const { data: vendorData } = await supabase.from("vendors").select("brokerage_id").eq("id", data.vendorId).single()
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: vendorData?.brokerage_id,
     event_type: KernelEvent.PORTAL_MODULE_VIEWED,
     entity_type: "vendor_job",
     entity_id: data.jobId,
@@ -152,8 +154,10 @@ export async function uploadVendorJobDocument(data: {
 
   if (docError) throw docError
 
-  // Emit kernel event
-  await supabase.from("kernel_event_log").insert({
+  // Emit kernel event - get brokerage from transaction
+  const { data: txnDoc } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).single()
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: txnDoc?.brokerage_id,
     event_type: KernelEvent.DOCUMENT_UPLOADED,
     entity_type: "vendor_job_document",
     entity_id: document.id,
@@ -192,8 +196,10 @@ export async function sendVendorMessageToAgent(data: {
 
   if (msgError) throw msgError
 
-  // Emit kernel event
-  await supabase.from("kernel_event_log").insert({
+  // Emit kernel event - get brokerage from transaction
+  const { data: txnMsg } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).single()
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: txnMsg?.brokerage_id,
     event_type: KernelEvent.MESSAGE_CREATED,
     entity_type: "vendor_message",
     entity_id: data.jobId,
