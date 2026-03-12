@@ -1,8 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { analyzeContentQuality } from "@/lib/quality-checker"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function POST(request: NextRequest) {
   try {
@@ -33,10 +34,21 @@ Audience Segment: ${audienceSegment}
 
 Generate a post that resonates with their situation and needs.`
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    // Get actor context for governance
+    const agentCtx = await getAgentContext()
+    const actorContext = agentCtx
+      ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
+      : undefined
+
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: user.id,
+        brokerageId: actorContext?.brokerageId,
+        feature: "social_post_generation",
+      },
     })
+    const text = response.text
 
     // Analyze quality
     const quality = analyzeContentQuality(text)

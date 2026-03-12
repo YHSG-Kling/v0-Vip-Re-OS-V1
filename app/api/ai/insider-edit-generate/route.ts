@@ -1,6 +1,7 @@
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { NextResponse } from "next/server"
 import type { InsiderEditInput, InsiderEditNewsletter, InsiderEditSection } from "@/types"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 const THEM_FIRST_SYSTEM_PROMPT = `You are "The Insider," a curated real estate newsletter curator with quiet confidence and specific editorial taste. Your tone is low-stress, high-quality, and micro-editorial.
 
@@ -43,11 +44,21 @@ ${sectionType === "deal" ? `- Unique Features: ${context.pressureTestHighlights.
 
 Generate only the section content, no headers or labels.`
 
-  const { text } = await generateText({
-    model: "openai/gpt-4-turbo",
-    system: THEM_FIRST_SYSTEM_PROMPT,
-    prompt: userPrompt,
+  // Get actor context for governance
+  const agentCtx = await getAgentContext()
+  const actorContext = agentCtx
+    ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
+    : undefined
+
+  const response = await generateAIResponse({
+    prompt: `${THEM_FIRST_SYSTEM_PROMPT}\n\n${userPrompt}`,
+    metadata: {
+      userId: actorContext?.userId,
+      brokerageId: actorContext?.brokerageId,
+      feature: "email_generation",
+    },
   })
+  const text = response.text
 
   const sectionTitles: Record<InsiderEditSection["sectionType"], string> = {
     hook: "This Week's Market POV",
@@ -83,11 +94,20 @@ export async function POST(request: Request) {
     const previewText = sections[0].content.split(".")[0] + "."
 
     // Generate subject line
-    const subjectLineResult = await generateText({
-      model: "openai/gpt-4-turbo",
-      system:
-        "Generate a compelling, curiosity-driven email subject line (50 chars max) for a real estate newsletter. No hype words. Example: 'The quiet appeal of Williamsburg'",
-      prompt: `For a neighborhood: ${body.city}, vibe: ${body.vibe}. Subject line:`,
+    const agentCtx = await getAgentContext()
+    const actorContext = agentCtx
+      ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
+      : undefined
+
+    const subjectLineResult = await generateAIResponse({
+      prompt: `Generate a compelling, curiosity-driven email subject line (50 chars max) for a real estate newsletter. No hype words. Example: 'The quiet appeal of Williamsburg'
+
+For a neighborhood: ${body.city}, vibe: ${body.vibe}. Subject line:`,
+      metadata: {
+        userId: body.createdByUserId,
+        brokerageId: actorContext?.brokerageId,
+        feature: "email_generation",
+      },
     })
 
     const newsletter: InsiderEditNewsletter = {

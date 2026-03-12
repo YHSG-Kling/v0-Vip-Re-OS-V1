@@ -13,7 +13,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
@@ -321,13 +321,17 @@ Return ONLY the script text, ready to be read by the agent.`
     }
 
     // ── Generate script using AI ─────────────────────────────────────────────
-    const { text: generatedScript } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
-      system: systemPrompt,
-      prompt: userPrompt,
+    const response = await generateAIResponse({
+      prompt: `${systemPrompt}\n\n${userPrompt}`,
       temperature: 0.7,
       maxTokens: 2000,
+      metadata: {
+        userId: agent_id,
+        brokerageId: brokerage_id,
+        feature: "video_script_generation",
+      },
     })
+    const generatedScript = response.text
 
     // ── Compliance check ─────────────────────────────────────────────────────
     const scriptLower = generatedScript.toLowerCase()

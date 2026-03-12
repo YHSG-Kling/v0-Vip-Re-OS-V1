@@ -1063,9 +1063,10 @@ export async function generateVideoScript(params: {
   tone?: string
   length?: string
   userId?: string
+  brokerageId?: string
 }) {
   try {
-    const { generateText } = await import("ai")
+    const { generateAIResponse } = await import("@/lib/ai")
     
     const purposeDescriptions: Record<string, string> = {
       welcome: "a warm welcome message introducing yourself and your services",
@@ -1117,14 +1118,18 @@ Requirements:
 
 Return ONLY the script text, no formatting or labels.`
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: params.userId,
+        brokerageId: params.brokerageId,
+        feature: "video_script_generation",
+      },
     })
     
     console.log("[v0] Generated video script for purpose:", params.purpose, "persona:", params.persona)
     
-    return { success: true, script: text.trim() }
+    return { success: true, script: response.text.trim() }
   } catch (error: any) {
     console.error("[v0] Script generation error:", error)
     return { success: false, error: error.message }

@@ -10,7 +10,8 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 const SYSTEM_PROMPT = `You are a real estate ISA outreach expert. Generate a sequence of outreach steps as a JSON array.
 Each item must have exactly these fields:
