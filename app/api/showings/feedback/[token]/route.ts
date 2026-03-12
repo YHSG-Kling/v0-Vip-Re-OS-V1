@@ -3,7 +3,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
 import { aiAnalyzeShowingFeedback } from "@/app/actions/ai-showing-management"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 
 const OFFER_INTEREST_SCORE: Record<string, number> = {
   very_likely: 90,
@@ -52,8 +52,7 @@ export async function POST(
     // 2. Generate AI summary
     let aiSummary: string | null = null
     try {
-      const { text } = await generateText({
-        model: "anthropic/claude-opus-4.6",
+      const summaryResponse = await generateAIResponse({
         prompt: `Summarize this showing feedback in 1-2 sentences for the listing agent. Be concise and professional.
 
 Presentation: ${presentationRating}/5
@@ -66,8 +65,13 @@ Buyer interest level: ${buyerInterestLevel}
 Liked most: ${favoriteFeatures || "not provided"}
 Concerns: ${specificConcerns || "none"}
 Additional notes: ${additionalNotes || "none"}`,
+        metadata: {
+          userId: "system",
+          brokerageId: fbReq.brokerage_id,
+          feature: "sentiment_analysis",
+        },
       })
-      aiSummary = text
+      aiSummary = summaryResponse.text
     } catch {
       // Non-blocking — proceed without summary
     }

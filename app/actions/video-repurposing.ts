@@ -6,7 +6,8 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { getPlatformConfig, getAllPlatformConfigs, validateSnippetForPlatform } from "./video-repurposing.utils"
 
 // ============================================
@@ -380,13 +381,17 @@ Focus on:
 - Use trending hashtags for real estate`
 
     try {
-      const { text } = await generateText({
-        model: "openai/gpt-4o-mini",
+      const response = await generateAIResponse({
         prompt,
+        metadata: {
+          userId: "system",
+          brokerageId: params.brokerageId,
+          feature: "video_script_generation",
+        },
       })
 
       // Parse AI response
-      const cleanText = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim()
+      const cleanText = response.text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim()
       const suggestion = JSON.parse(cleanText)
       
       // Validate and constrain suggestions
@@ -683,14 +688,22 @@ Make each variation unique with different:
 - Hashtag strategies`
 
   try {
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    // Get agent context for AI routing
+    const agentContext = await getAgentContext()
+
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: agentContext.userId,
+        brokerageId: agentContext.brokerageId,
+        agentId: agentContext.agentId,
+        feature: "video_script_generation",
+      },
     })
 
-    const cleanText = text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim()
+    const cleanText = response.text.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim()
     const variations = JSON.parse(cleanText)
-    
+
     return variations.map((v: any) => ({
       caption: v.caption.substring(0, config.maxCaptionLength),
       hashtags: (v.hashtags || []).slice(0, config.hashtagLimit),

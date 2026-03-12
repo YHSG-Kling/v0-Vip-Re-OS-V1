@@ -12,7 +12,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import type { 
   SourceType, 
@@ -133,11 +133,16 @@ export async function executePipeline(params: {
         const config = OUTPUT_FORMAT_CONFIG[format]
         
         // Generate platform-specific content using AI
-        const { text: generatedContent } = await generateText({
-          model: "gpt-4",
+        const aiResponse = await generateAIResponse({
           prompt: `Create a ${config.displayName} post based on: ${pipeline.source_content_id}`,
           maxTokens: 500,
+          metadata: {
+            userId,
+            brokerageId: params.brokerageId,
+            feature: "video_script_generation",
+          },
         })
+        const generatedContent = aiResponse.text
 
         // ── Apply brand voice ──
         const brandResult = await applyBrandVoice({

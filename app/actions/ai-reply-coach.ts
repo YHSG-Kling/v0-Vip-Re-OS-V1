@@ -12,7 +12,7 @@
  * an inbound message triggers a draft.  No new KernelEvents required.
  */
 
-import { generateText }        from "ai"
+import { generateAIResponse }  from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
 import { applyBrandVoice }     from "@/lib/kernel/brand-voice"
 import { processKernelEvent }  from "@/lib/kernel/notification-engine"
@@ -140,8 +140,7 @@ export async function generateAIReplyDraft(
     const includeSubject = params.channel === "email"
 
     // ── 5. Generate draft via AI ─────────────────────────────────────────────
-    const { text: rawDraft } = await generateText({
-      model: "anthropic/claude-opus-4.6",
+    const draftResponse = await generateAIResponse({
       prompt: `You are a real estate agent's AI reply coach. Generate a ${resolvedTone} reply.
 
 INBOUND MESSAGE (requires reply):
@@ -173,7 +172,13 @@ REQUIREMENTS:
 - Do NOT use prohibited phrases: ${brandVoiceResult.violations.length > 0 ? brandVoiceResult.violations.join(", ") : "none flagged"}
 ${includeSubject ? "- Start your reply with SUBJECT: <subject line> on the first line, then a blank line, then the body" : "- Return ONLY the message body, no subject line"}
 - Return ONLY the message content, no meta-commentary`,
+      metadata: {
+        userId: params.agentUserId,
+        brokerageId: params.brokerageId,
+        feature: "ai_reply_coach",
+      },
     })
+    const rawDraft = draftResponse.text
 
     // ── 6. Parse subject vs body if email ───────────────────────────────────
     let draftSubject: string | undefined

@@ -7,7 +7,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -570,12 +570,17 @@ OUTPUT FORMAT (JSON):
 }`
 
   try {
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: params.agentId,
+        brokerageId: "system",
+        agentId: params.agentId,
+        feature: "social_post_generation",
+      },
     })
 
-    return parseAIJsonResponse(text)
+    return parseAIJsonResponse(response.text)
   } catch (error) {
     // Fallback content
     return {

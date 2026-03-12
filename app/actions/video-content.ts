@@ -2,7 +2,7 @@
 
 import { createServerClient } from "@/lib/supabase/server"
 import { logVideoGenerated } from "@/lib/events"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
@@ -37,8 +37,7 @@ export async function generateVideoScript(params: {
   if (!agentId) throw new Error("Agent profile not found")
 
   // Generate script using AI
-  const { text: script } = await generateText({
-    model: "openai/gpt-4o-mini",
+  const scriptResponse = await generateAIResponse({
     prompt: `Generate a ${params.video_type} video script for ${params.audience_segment || "general audience"}.
     
 Tone: ${params.tone || "professional and friendly"}
@@ -46,7 +45,15 @@ Key points to cover: ${params.key_points?.join(", ") || "none specified"}
 Context: ${params.context_type}
 
 Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
+    metadata: {
+      userId: user.id,
+      brokerageId: profile.brokerage_id,
+      agentId: agentId,
+      feature: "video_script_generation",
+    },
   })
+
+  const script = scriptResponse.text
 
   // Save video asset record
   const { data: video, error } = await supabase

@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -31,8 +31,7 @@ export async function generateVideoScript(params: {
     if (!org) throw new Error("Organization not found")
 
     // Use AI to generate script from URL content
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    const response = await generateAIResponse({
       prompt: `Create a 75-word engaging voiceover script for a ${params.contentCategory} video based on this URL: ${params.url}
 
 Requirements:
@@ -43,6 +42,11 @@ Requirements:
 - Make it compelling for social media
 
 Return ONLY the script text, no formatting or labels.`,
+      metadata: {
+        userId: userId,
+        brokerageId: params.organizationId,
+        feature: "video_script_generation",
+      },
     })
 
     // Create video queue entry
@@ -54,8 +58,8 @@ Return ONLY the script text, no formatting or labels.`,
         organization_type: params.organizationType,
         source_url: params.url,
         content_category: params.contentCategory,
-        ai_generated_script: text,
-        edited_script: text,
+        ai_generated_script: response.text,
+        edited_script: response.text,
         script_status: "pending",
       })
       .select()
@@ -91,8 +95,7 @@ export async function checkCompliance(videoQueueId: string) {
     const complianceRules = video.brokerages?.compliance_rules || {}
 
     // Use AI to check compliance
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    const complianceResponse = await generateAIResponse({
       prompt: `Analyze this real estate video script for compliance violations:
 
 Script: "${script}"
@@ -109,9 +112,14 @@ Return JSON: {
   "flags": [{"severity": "warning"|"violation", "issue": string, "suggestion": string}],
   "score": number 0-100
 }`,
+      metadata: {
+        userId: "system",
+        brokerageId: video.organization_id,
+        feature: "video_script_generation",
+      },
     })
 
-    const complianceResult = JSON.parse(text)
+    const complianceResult = JSON.parse(complianceResponse.text)
 
     // Update video with compliance results
     await supabase
@@ -230,8 +238,7 @@ export async function generateSocialCaption(videoQueueId: string) {
 
     if (!video) throw new Error("Video not found")
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    const captionResponse = await generateAIResponse({
       prompt: `Create an engaging social media caption for this video:
 
 Category: ${video.content_category}
@@ -245,12 +252,17 @@ Requirements:
 - Maximum 200 characters
 
 Return only the caption text.`,
+      metadata: {
+        userId: video.user_id || "system",
+        brokerageId: video.organization_id,
+        feature: "video_script_generation",
+      },
     })
 
-    await supabase.from("video_generation_queue").update({ social_caption: text }).eq("id", videoQueueId)
+    await supabase.from("video_generation_queue").update({ social_caption: captionResponse.text }).eq("id", videoQueueId)
 
     revalidatePath("/content-studio")
-    return { success: true, caption: text }
+    return { success: true, caption: captionResponse.text }
   } catch (error) {
     console.error("Generate social caption error:", error)
     return { success: false, error: "Failed to generate caption" }
