@@ -8,6 +8,8 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { RepurposeDashboardClient } from "./repurpose-dashboard-client"
 import { getPipelines, getRepurposeHistory } from "@/lib/repurpose/actions"
 
+export const dynamic = "force-dynamic"
+
 export const metadata = {
   title: "Omni-Presence Repurposer | Dashboard",
   description: "Transform your content across all social platforms with AI-powered repurposing",
