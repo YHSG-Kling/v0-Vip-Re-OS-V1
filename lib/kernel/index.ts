@@ -117,3 +117,6 @@ export { syncCalendarEventToProvider } from "./calendar-sync-orchestrator"
 export { createTransactionMilestoneCalendarEvents } from "./milestone-calendar-bridge"
 
 export { findStuckAgentsAndNotify } from "./onboarding-reminders"
+
+export { resolveAIModel } from "./ai-model"
+export type { ResolveAIModelParams } from "./ai-model"

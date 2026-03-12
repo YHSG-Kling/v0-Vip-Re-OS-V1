@@ -2,6 +2,7 @@ import { generateText } from "ai"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateContentCompliance } from "@/lib/compliance-rules"
 import { validateThemFirstContent } from "@/lib/them-first"
+import { resolveAIModel } from "@/lib/kernel/ai-model"
 import { 
   logAIUsage, 
   calculateCost, 
@@ -385,13 +386,41 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
     throw new Error(platformCheck.reason || "AI features are disabled")
   }
   
-  // Set defaults with task-based routing
-  const { model: routedModel, fallback: routedFallback } = selectModelForTask(
+  // Resolve model through kernel cascade.
+  // Priority: governance caps > explicit caller request > feature routing > platform default.
+  // Explicit caller models are NOT exempt from governance — caps always apply when
+  // actor context is available. Only background jobs (no userId/brokerageId) skip caps.
+  let resolvedModel: AIModel
+
+  if (request.metadata.userId && request.metadata.brokerageId) {
+    // Full actor context — run kernel cascade with caller preference (may be undefined)
+    resolvedModel = await resolveAIModel({
+      feature:        request.metadata.feature || "unspecified",
+      actorContext: {
+        userId:      request.metadata.userId,
+        agentId:     request.metadata.agentId   ?? undefined,
+        brokerageId: request.metadata.brokerageId,
+        teamId:      request.metadata.teamId     ?? undefined,
+      },
+      requestedModel: request.model ?? undefined,
+    })
+  } else {
+    // No actor context — background job, webhook, cron.
+    // Cannot evaluate brokerage caps without knowing who the actor is.
+    // Use explicit request.model if provided, else static routing table.
+    const { model: staticDefault } = selectModelForTask(
+      request.metadata.feature || "unspecified"
+    )
+    resolvedModel = request.model ?? staticDefault
+  }
+  const model = resolvedModel
+
+  // Fallback: use routed fallback from static table if no explicit fallback provided
+  const { fallback: routedFallback } = selectModelForTask(
     request.metadata.feature || "unspecified"
   )
-  const model = request.model ?? routedModel
-  // Use routed fallback if no explicit fallback provided
   const resolvedFallback = request.fallbackModel ?? routedFallback
+
   const temperature = request.temperature ?? 0.7
   const maxTokens = request.maxTokens ?? 2000
   
