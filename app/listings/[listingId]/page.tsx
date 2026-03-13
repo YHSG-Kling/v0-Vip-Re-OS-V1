@@ -7,13 +7,13 @@ import Link from "next/link"
 import { notFound } from "next/navigation"
 
 interface ListingDetailPageProps {
-  params: {
+  params: Promise<{
     listingId: string
-  }
+  }>
 }
 
 export default async function ListingDetailPage({ params }: ListingDetailPageProps) {
-  const { listingId } = params
+  const { listingId } = await params
   
   // Fetch listing data
   const result = await getListingById(listingId)
