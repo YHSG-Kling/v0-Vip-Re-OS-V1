@@ -13,10 +13,13 @@ export default function NotificationsPage() {
   const loadRules = async () => {
     try {
       setLoading(true);
+      setError('');
       const data = await listNotificationRules();
       setRules(data);
     } catch (err) {
-      setError('Failed to load notification rules');
+      console.error('[v0] Error loading notification rules:', err);
+      const message = err instanceof Error ? err.message : 'Failed to load notification rules';
+      setError(message);
     } finally {
       setLoading(false);
     }

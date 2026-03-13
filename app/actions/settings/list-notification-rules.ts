@@ -11,5 +11,11 @@ export async function listNotificationRules() {
     throw new Error("Unauthorized")
   }
 
-  return await kernelListNotificationRules({ userId: user.id })
+  try {
+    return await kernelListNotificationRules({ userId: user.id })
+  } catch (error) {
+    console.error('[v0] listNotificationRules error:', error)
+    // Return empty array instead of throwing to prevent page crash
+    return []
+  }
 }
