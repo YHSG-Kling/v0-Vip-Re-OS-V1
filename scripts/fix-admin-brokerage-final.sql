@@ -1,24 +1,12 @@
 -- Fix admin user brokerage association - comprehensive script
 -- This script ensures admin@yourbrokerage.com has proper brokerage_id in all tables
 
--- First, let's see what we have
-SELECT 'auth.users' as source, id, email, raw_user_meta_data->>'user_type' as user_type
-FROM auth.users WHERE email = 'admin@yourbrokerage.com';
-
-SELECT 'public.users' as source, id, email, user_type, brokerage_id
-FROM public.users WHERE email = 'admin@yourbrokerage.com';
-
-SELECT 'user_role_assignments' as source, user_id, role, brokerage_id
-FROM public.user_role_assignments 
-WHERE user_id IN (SELECT id FROM auth.users WHERE email = 'admin@yourbrokerage.com');
-
-SELECT 'brokerages' as source, id, name FROM public.brokerages LIMIT 5;
-
 -- Get the admin user ID and first brokerage ID
 DO $$
 DECLARE
   v_user_id uuid;
   v_brokerage_id uuid;
+  v_row_count integer;
 BEGIN
   -- Get admin user ID from auth.users
   SELECT id INTO v_user_id FROM auth.users WHERE email = 'admin@yourbrokerage.com';
@@ -49,7 +37,8 @@ BEGIN
       user_type = 'admin'
   WHERE id = v_user_id;
   
-  RAISE NOTICE 'Updated public.users - rows affected: %', SQL%ROWCOUNT;
+  GET DIAGNOSTICS v_row_count = ROW_COUNT;
+  RAISE NOTICE 'Updated public.users - rows affected: %', v_row_count;
   
   -- Update user_role_assignments
   UPDATE public.user_role_assignments
@@ -57,15 +46,18 @@ BEGIN
       role = 'admin'
   WHERE user_id = v_user_id;
   
-  RAISE NOTICE 'Updated user_role_assignments - rows affected: %', SQL%ROWCOUNT;
+  GET DIAGNOSTICS v_row_count = ROW_COUNT;
+  RAISE NOTICE 'Updated user_role_assignments - rows affected: %', v_row_count;
   
   -- If no role assignment exists, create one
-  IF NOT FOUND THEN
+  IF v_row_count = 0 THEN
     INSERT INTO public.user_role_assignments (user_id, role, brokerage_id)
     VALUES (v_user_id, 'admin', v_brokerage_id)
     ON CONFLICT (user_id, role) DO UPDATE SET brokerage_id = v_brokerage_id;
     RAISE NOTICE 'Inserted new role assignment';
   END IF;
+  
+  RAISE NOTICE 'Admin user fix completed successfully';
   
 END $$;
 
