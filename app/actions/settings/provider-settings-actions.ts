@@ -28,12 +28,16 @@ async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string
   // Use service client to bypass RLS
   const supabase = createServiceClient()
   
+  console.log("[v0] requireBrokerAdmin - userId:", userId, "type:", typeof userId)
+  
   // Try public.users first
   const { data: user, error: userError } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", userId)
     .maybeSingle()
+
+  console.log("[v0] users table query - data:", JSON.stringify(user), "error:", JSON.stringify(userError))
 
   if (user?.brokerage_id) {
     const userType = user.user_type || "admin"
@@ -44,11 +48,13 @@ async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string
   }
 
   // Fallback: check user_role_assignments
-  const { data: roleAssignment } = await supabase
+  const { data: roleAssignment, error: roleError } = await supabase
     .from("user_role_assignments")
     .select("brokerage_id, role")
     .eq("user_id", userId)
     .maybeSingle()
+
+  console.log("[v0] user_role_assignments query - data:", JSON.stringify(roleAssignment), "error:", JSON.stringify(roleError))
 
   if (roleAssignment?.brokerage_id) {
     const role = roleAssignment.role || "admin"
@@ -56,18 +62,6 @@ async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string
       throw new Error("Forbidden: insufficient permissions")
     }
     return { brokerageId: roleAssignment.brokerage_id as string, userType: role }
-  }
-
-  // Final fallback: Get first brokerage for the user from auth.users metadata via service
-  // This handles edge cases during initial setup
-  const { data: brokerages } = await supabase
-    .from("brokerages")
-    .select("id")
-    .limit(1)
-    .maybeSingle()
-
-  if (brokerages?.id) {
-    return { brokerageId: brokerages.id as string, userType: "admin" }
   }
 
   throw new Error("User not found or not associated with a brokerage")
