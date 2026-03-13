@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -19,7 +19,7 @@ export type NotificationRuleRow = {
 async function requireBrokerAdmin(
   userId: string
 ): Promise<{ brokerageId: string; userType: string }> {
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   // Try to get user from public.users first
   const { data: user, error: userError } = await supabase
@@ -27,8 +27,6 @@ async function requireBrokerAdmin(
     .select("brokerage_id, user_type")
     .eq("id", userId)
     .maybeSingle()
-
-  console.log("[v0] requireBrokerAdmin - userId:", userId, "user:", user, "userError:", userError)
 
   // If user found in public.users with brokerage_id, check permissions
   if (user?.brokerage_id) {
@@ -46,8 +44,6 @@ async function requireBrokerAdmin(
     .eq("user_id", userId)
     .maybeSingle()
 
-  console.log("[v0] requireBrokerAdmin - roleAssignment:", roleAssignment, "roleError:", roleError)
-
   if (roleAssignment?.brokerage_id) {
     const role = roleAssignment.role || "admin" // Default to admin if role is null
     if (!["admin", "broker", "superadmin"].includes(role)) {
@@ -64,8 +60,6 @@ async function requireBrokerAdmin(
     .limit(1)
     .maybeSingle()
 
-  console.log("[v0] requireBrokerAdmin - firstBrokerage fallback:", firstBrokerage)
-
   if (firstBrokerage?.id) {
     // User exists but wasn't properly linked - return with the brokerage
     return { brokerageId: firstBrokerage.id, userType: "admin" }
@@ -81,7 +75,7 @@ export async function listNotificationRules(params: {
   userId: string
 }): Promise<NotificationRuleRow[]> {
   const { brokerageId } = await requireBrokerAdmin(params.userId)
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { data: rules, error } = await supabase
     .from("notification_rules")
@@ -110,7 +104,7 @@ export async function updateNotificationRule(params: {
   >
 }): Promise<void> {
   const { brokerageId } = await requireBrokerAdmin(params.userId)
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { error } = await supabase
     .from("notification_rules")
@@ -135,7 +129,7 @@ export async function createNotificationRule(params: {
   }
 }): Promise<{ id: string }> {
   const { brokerageId } = await requireBrokerAdmin(params.userId)
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { data: insertedRow, error } = await supabase
     .from("notification_rules")
@@ -166,7 +160,7 @@ export async function deleteNotificationRule(params: {
   ruleId: string
 }): Promise<void> {
   const { brokerageId } = await requireBrokerAdmin(params.userId)
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { error } = await supabase
     .from("notification_rules")
