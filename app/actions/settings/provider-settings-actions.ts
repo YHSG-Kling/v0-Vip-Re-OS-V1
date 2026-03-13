@@ -28,6 +28,8 @@ async function requireBrokerAdmin(userId: string) {
   // Use service client to bypass RLS
   const supabase = createServiceClient()
   
+  console.log("[v0] requireBrokerAdmin called with userId:", userId)
+  
   // Try public.users first
   const { data: user, error: userError } = await supabase
     .from("users")
@@ -35,7 +37,9 @@ async function requireBrokerAdmin(userId: string) {
     .eq("id", userId)
     .maybeSingle()
 
-  if (!userError && user?.brokerage_id) {
+  console.log("[v0] users query result:", { user, userError })
+
+  if (user?.brokerage_id) {
     const userType = user.user_type || "admin"
     if (!["admin", "broker", "superadmin"].includes(userType)) {
       throw new Error("Forbidden: insufficient permissions")
@@ -50,7 +54,9 @@ async function requireBrokerAdmin(userId: string) {
     .eq("user_id", userId)
     .maybeSingle()
 
-  if (!roleError && roleAssignment?.brokerage_id) {
+  console.log("[v0] user_role_assignments query result:", { roleAssignment, roleError })
+
+  if (roleAssignment?.brokerage_id) {
     const role = roleAssignment.role || "admin"
     if (!["admin", "broker", "superadmin"].includes(role)) {
       throw new Error("Forbidden: insufficient permissions")
@@ -58,19 +64,7 @@ async function requireBrokerAdmin(userId: string) {
     return { brokerageId: roleAssignment.brokerage_id as string, userType: role }
   }
 
-  // If user not found in either table, create a default entry or use a default brokerage
-  // For now, we'll try to get a default brokerage from the brokerages table
-  const { data: defaultBrokerage } = await supabase
-    .from("brokerages")
-    .select("id")
-    .limit(1)
-    .maybeSingle()
-
-  if (defaultBrokerage?.id) {
-    return { brokerageId: defaultBrokerage.id as string, userType: "admin" }
-  }
-
-  throw new Error("User not found or not associated with a brokerage, and no default brokerage available")
+  throw new Error("User not found or not associated with a brokerage")
 }
 
 // SYSTEM_ONLY_TYPES mirror kernel/providers.ts — brokerage cannot override these.
