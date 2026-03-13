@@ -13,7 +13,7 @@ export async function GET() {
       .select("*", { count: "exact" })
       .eq("brokerage_id", brokerageId)
       .eq("status", "pending")
-      .order("created_at", { ascending: false })
+      .order("submitted_at", { ascending: false })
 
     // If user is an agent, only show their approvals
     if (agentId) {
