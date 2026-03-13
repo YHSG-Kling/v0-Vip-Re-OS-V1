@@ -190,14 +190,20 @@ export async function resolveEducationContext(
     }
   }
 
-  // Get completed lesson keys from educational_moments
-  const { data: completedMoments } = await supabase
-    .from("educational_moments")
-    .select("lesson_key")
-    .eq("contact_id", contactId)
-    .not("read_at", "is", null)
+  // Get completed lesson keys from contact_education_progress (correct table)
+  let completedLessonKeys: string[] = []
+  try {
+    const { data: completedProgress } = await supabase
+      .from("contact_education_progress")
+      .select("lesson_key, completed_at")
+      .eq("contact_id", contactId)
+      .not("completed_at", "is", null)
 
-  const completedLessonKeys = completedMoments?.map(m => m.lesson_key) ?? []
+    completedLessonKeys = completedProgress?.map(p => p.lesson_key) ?? []
+  } catch {
+    // Fail safely - return empty array if table/query fails
+    completedLessonKeys = []
+  }
 
   return {
     portalView,

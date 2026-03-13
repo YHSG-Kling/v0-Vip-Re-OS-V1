@@ -220,20 +220,25 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
     return { success: false, error: "Contact not found" }
   }
 
-  // Upsert educational_moments
-  const { error: upsertError } = await service
-    .from("educational_moments")
-    .upsert({
-      contact_id: contactId,
-      lesson_key: lessonKey,
-      read_at: new Date().toISOString(),
-      content_type: "lesson",
-    }, {
-      onConflict: "contact_id,lesson_key",
-    })
+  // Upsert contact_education_progress (correct table for per-contact lesson completion)
+  try {
+    const { error: upsertError } = await service
+      .from("contact_education_progress")
+      .upsert({
+        contact_id: contactId,
+        brokerage_id: contact.brokerage_id,
+        lesson_key: lessonKey,
+        completed_at: new Date().toISOString(),
+      }, {
+        onConflict: "contact_id,lesson_key",
+      })
 
-  if (upsertError) {
-    console.error("[PortalEducation] Error marking lesson read:", upsertError)
+    if (upsertError) {
+      console.error("[PortalEducation] Error marking lesson read:", upsertError)
+      return { success: false, error: "Failed to mark lesson as read" }
+    }
+  } catch (err) {
+    console.error("[PortalEducation] Exception marking lesson read:", err)
     return { success: false, error: "Failed to mark lesson as read" }
   }
 
