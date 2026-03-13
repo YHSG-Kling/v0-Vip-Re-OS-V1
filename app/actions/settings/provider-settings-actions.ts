@@ -28,16 +28,12 @@ async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string
   // Use service client to bypass RLS
   const supabase = createServiceClient()
   
-  console.log("[v0] requireBrokerAdmin - userId:", userId, "type:", typeof userId)
-  
   // Try public.users first
-  const { data: user, error: userError } = await supabase
+  const { data: user } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", userId)
     .maybeSingle()
-
-  console.log("[v0] users table query - data:", JSON.stringify(user), "error:", JSON.stringify(userError))
 
   if (user?.brokerage_id) {
     const userType = user.user_type || "admin"
@@ -48,13 +44,11 @@ async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string
   }
 
   // Fallback: check user_role_assignments
-  const { data: roleAssignment, error: roleError } = await supabase
+  const { data: roleAssignment } = await supabase
     .from("user_role_assignments")
     .select("brokerage_id, role")
     .eq("user_id", userId)
     .maybeSingle()
-
-  console.log("[v0] user_role_assignments query - data:", JSON.stringify(roleAssignment), "error:", JSON.stringify(roleError))
 
   if (roleAssignment?.brokerage_id) {
     const role = roleAssignment.role || "admin"
