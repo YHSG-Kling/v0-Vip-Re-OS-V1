@@ -14,7 +14,7 @@ export interface PortalMessage {
   agent_id: string
   brokerage_id: string
   body: string
-  direction: "inbound" | "outbound"
+  direction: "agent_to_client" | "client_to_agent"
   created_at: string
   read_at: string | null
   transaction_id?: string | null
@@ -23,14 +23,15 @@ export interface PortalMessage {
 export interface SendMessageParams {
   contactId: string
   messageBody: string
-  channel?: "portal" | "sms" | "email"
-  direction: "inbound" | "outbound"
+  direction: "agent_to_client" | "client_to_agent"
   transactionId?: string
 }
 
 export interface MarkReadParams {
   contactId: string
-  direction: "inbound" | "outbound"
+  /** When agent is viewing, pass "client_to_agent" to mark client messages as read.
+   *  When contact is viewing, pass "agent_to_client" to mark agent messages as read. */
+  direction: "agent_to_client" | "client_to_agent"
 }
 
 // ─── SERVER ACTIONS ───────────────────────────────────────────────────────────
@@ -56,7 +57,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       return { success: false, error: "Unauthorized" }
     }
 
-    const { contactId, messageBody, channel = "portal", direction, transactionId } = params
+    const { contactId, messageBody, direction, transactionId } = params
 
     // Validate message body
     if (!messageBody || messageBody.trim().length === 0) {
@@ -127,7 +128,6 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       metadata: {
         messageId: message.id,
         direction,
-        channel,
       },
     }).catch(() => {})
 
@@ -140,8 +140,8 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
 /**
  * Mark messages as read for a contact.
  * Direction determines which messages to mark:
- * - 'outbound': marks agent's messages as read (contact opened messages page)
- * - 'inbound': marks contact's messages as read (agent opened messages page)
+ * - 'agent_to_client': marks agent's messages as read (contact opened messages page)
+ * - 'client_to_agent': marks client's messages as read (agent opened messages page)
  */
 export async function markMessagesRead(params: MarkReadParams): Promise<{
   success: boolean
@@ -302,7 +302,7 @@ export async function generateAIDraft(params: {
     // Build context for AI
     const conversationContext = recentMessages
       ?.reverse()
-      .map((m) => `${m.direction === "outbound" ? "Agent" : "Client"}: ${m.body}`)
+      .map((m) => `${m.direction === "agent_to_client" ? "Agent" : "Client"}: ${m.body}`)
       .join("\n")
 
     const contactName = contact.first_name || "there"
