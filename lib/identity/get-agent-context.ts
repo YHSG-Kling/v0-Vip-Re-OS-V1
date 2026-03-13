@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server"
  * Resolves authenticated user to context with userId, agentId (if applicable), and brokerageId.
  * Works for all user types (agent, broker, admin, tc, compliance_officer, vendor, etc.)
  * agentId will be null for non-agent users.
- * brokerageId is required - throws if user is not associated with a brokerage.
+ * brokerageId may be null if user profile is incomplete - callers should handle this case.
  */
 export async function getAgentContext() {
   const supabase = await createClient()
@@ -37,12 +37,8 @@ export async function getAgentContext() {
   // Determine userType from multiple sources
   const userType = userData?.user_type ?? roleData?.role ?? user.user_metadata?.user_type ?? "agent"
   
-  // brokerageId - check users table, then role assignments, then auth metadata
-  const brokerageId = userData?.brokerage_id ?? roleData?.brokerage_id ?? user.user_metadata?.brokerage_id
-  
-  if (!brokerageId) {
-    throw new Error("User is not associated with a brokerage")
-  }
+  // brokerageId - check users table, then role assignments, then auth metadata (may be null)
+  const brokerageId = userData?.brokerage_id ?? roleData?.brokerage_id ?? user.user_metadata?.brokerage_id ?? null
 
   // Try to get agent record if user is an agent type
   let agentId: string | null = roleData?.agent_id ?? null

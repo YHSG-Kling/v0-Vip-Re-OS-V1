@@ -7,6 +7,11 @@ export async function GET() {
     const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
 
+    // If user has no brokerage association, return empty results
+    if (!brokerageId) {
+      return NextResponse.json({ items: [], total: 0 })
+    }
+
     // Build query - filter by agent_id if user is an agent, otherwise show brokerage-wide for admins/brokers
     let query = supabase
       .from("approval_items")
