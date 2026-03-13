@@ -13,7 +13,7 @@ import { createServiceClient } from "./supabase/service"
 async function queueContactEnrichment(contactId: string, metadata: Record<string, any> = {}): Promise<void> {
   try {
     const supabase = createServiceClient()
-    await supabase.from('enrichment_queue').insert({
+    await supabase.from('lead_enrichment_queue').insert({
       contact_id: contactId,
       source: metadata.source ?? 'ghl_sync',
       metadata: JSON.stringify(metadata),
