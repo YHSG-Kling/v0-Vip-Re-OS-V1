@@ -1,11 +1,12 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 
 // ─── GET LIFETIME CONTEXT ────────────────────────────────────────────────────
 export async function getLifetimeContext(contactId: string) {
   const supabase = await createClient()
 
-  // Get contact with agent info
+  // Get contact (without broken embedded join)
   const { data: contact } = await supabase
     .from("contacts")
     .select(`
@@ -14,13 +15,17 @@ export async function getLifetimeContext(contactId: string) {
       last_name,
       name,
       buyer_stage,
-      agent_id,
-      agents:agent_id(id, name, email, phone, photo_url, brokerage_id)
+      agent_id
     `)
     .eq("id", contactId)
     .single()
 
   if (!contact) return null
+
+  // Resolve agent via kernel identity function
+  const agentInfo = contact.agent_id
+    ? await resolveContactOwnerAgent(supabase, contact.agent_id)
+    : null
 
   // Get closed transaction
   const { data: transaction } = await supabase
@@ -66,7 +71,7 @@ export async function getLifetimeContext(contactId: string) {
 
   // Get preferred vendors from agent's brokerage
   let preferredVendors: any[] = []
-  if (contact.agents?.brokerage_id) {
+  if (agentInfo?.brokerage_id) {
     const { data: vendors } = await supabase
       .from("vendor_directory")
       .select(`
@@ -75,7 +80,7 @@ export async function getLifetimeContext(contactId: string) {
         is_featured,
         vendors:vendor_id(id, business_name, vendor_type, phone, email, website_url, rating_avg)
       `)
-      .eq("brokerage_id", contact.agents.brokerage_id)
+      .eq("brokerage_id", agentInfo.brokerage_id)
       .eq("is_featured", true)
       .limit(3)
     
@@ -84,6 +89,7 @@ export async function getLifetimeContext(contactId: string) {
 
   return {
     contact,
+    agent: agentInfo,
     transaction,
     homeValueEstimate,
     touchpoints: touchpoints || [],
@@ -129,15 +135,15 @@ export async function submitReferral(data: {
   // Send notification to agent via client_portal_messages
   await supabase.from("client_portal_messages").insert({
     contact_id: data.contactId,
-    direction: "inbound",
+    direction: "client_to_agent",
     message_type: "referral",
     content: `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}`,
     read: false,
     created_at: new Date().toISOString(),
   })
 
-  // Emit kernel event - get brokerage from agent
-  const { data: agentData } = await supabase.from("agents").select("brokerage_id").eq("id", contact.agent_id).single()
+  // Emit kernel event - resolve agent via kernel identity function
+  const agentData = await resolveContactOwnerAgent(supabase, contact.agent_id)
   await supabase.from("lifecycle_events").insert({
     brokerage_id: agentData?.brokerage_id,
     event_type: KernelEvent.REFERRAL_ASK_SENT,
@@ -245,7 +251,7 @@ export async function getMarketUpdates(contactId: string) {
   }
 }
 
-// ─── REQUEST VALUE UPDATE ────────────────────────────────────────────────────
+// ─── REQUEST VALUE UPDATE ────────────────────────��───────────────────────────
 export async function requestValueUpdate(contactId: string) {
   const supabase = await createClient()
 
@@ -261,7 +267,7 @@ export async function requestValueUpdate(contactId: string) {
   // Send message to agent
   await supabase.from("client_portal_messages").insert({
     contact_id: contactId,
-    direction: "inbound",
+    direction: "client_to_agent",
     message_type: "request",
     content: `${contact.first_name || "Client"} requested an updated home value estimate.`,
     read: false,
@@ -275,14 +281,18 @@ export async function requestValueUpdate(contactId: string) {
 export async function getVendorResources(contactId: string) {
   const supabase = await createClient()
 
-  // Get contact's agent brokerage
+  // Get contact's agent_id
   const { data: contact } = await supabase
     .from("contacts")
-    .select("agents:agent_id(brokerage_id)")
+    .select("agent_id")
     .eq("id", contactId)
     .single()
 
-  const brokerageId = (contact?.agents as any)?.brokerage_id
+  if (!contact?.agent_id) return []
+
+  // Resolve agent via kernel identity function
+  const agentInfo = await resolveContactOwnerAgent(supabase, contact.agent_id)
+  const brokerageId = agentInfo?.brokerage_id
   if (!brokerageId) return []
 
   const { data: vendors } = await supabase
