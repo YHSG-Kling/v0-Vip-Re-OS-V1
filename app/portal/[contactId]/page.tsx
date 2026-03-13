@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import Link from "next/link"
 import { determinePortalView } from "@/lib/kernel/portal"
+import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import { CLIENT_VISIBLE_MILESTONES } from "@/lib/transactions/transaction-stages"
 import { BUYER_MILESTONE_LABELS } from "@/lib/portal/resolve-education-context"
 import { DealTeamCard } from "@/app/components/portal/DealTeamCard"
@@ -100,14 +101,8 @@ export default async function PortalHomePage({
           .select("id, member_type, agent_id, external_name, external_company, external_phone, external_email, scheduled_date, agent:agents(id, first_name, last_name, phone, email, profile_photo_url)")
           .eq("transaction_id", activeTransaction.id)
       : Promise.resolve({ data: [] }),
-    // Primary agent
-    contact.agent_id
-      ? supabase
-          .from("agents")
-          .select("id, first_name, last_name, phone, email, profile_photo_url")
-          .eq("id", contact.agent_id)
-          .single()
-      : Promise.resolve({ data: null }),
+    // Primary agent - resolved outside Promise.all via kernel identity function
+    Promise.resolve({ data: null }),
     // Offers
     supabase
       .from("offers")
@@ -149,13 +144,8 @@ export default async function PortalHomePage({
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(3),
-    // Education - unread lessons
-    supabase
-      .from("educational_moments")
-      .select("id, lesson_key, read_at")
-      .eq("contact_id", contactId)
-      .is("read_at", null)
-      .limit(1),
+    // Education - resolved outside Promise.all via contact_education_progress
+    Promise.resolve({ data: [] }),
     // Vendor assignments
     activeTransaction
       ? supabase
@@ -166,20 +156,39 @@ export default async function PortalHomePage({
       : Promise.resolve({ data: [] }),
   ])
 
+  // Resolve agent via kernel identity function (fixes broken contact.agent_id → agents.id lookup)
+  const agentInfo = contact.agent_id
+    ? await resolveContactOwnerAgent(supabase, contact.agent_id)
+    : null
+
+  // Resolve education progress via contact_education_progress table
+  let completedLessonKeys: string[] = []
+  try {
+    const { data: completedLessons } = await supabase
+      .from("contact_education_progress")
+      .select("lesson_key, completed_at")
+      .eq("contact_id", contactId)
+      .not("completed_at", "is", null)
+
+    completedLessonKeys = completedLessons?.map(l => l.lesson_key) ?? []
+  } catch {
+    completedLessonKeys = []
+  }
+
   // Filter milestones to client-visible only
   const milestones = (milestonesResult.data ?? []).filter((m: any) =>
     CLIENT_VISIBLE_MILESTONES.includes(m.milestone_name as any)
   )
 
   const dealTeamMembers = dealTeamResult.data ?? []
-  const primaryAgent = agentResult.data
+  const primaryAgent = agentInfo
   const offers = offersResult.data ?? []
   const showings = showingsResult.data ?? []
   const preferences = preferencesResult.data
   const alerts = alertsResult.data ?? []
   const savedProperties = savedPropertiesResult.data ?? []
   const messages = messagesResult.data ?? []
-  const unreadEducation = educationResult.data?.[0]
+  const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorAssignmentsResult.data ?? []
 
   // Computed values
@@ -480,8 +489,8 @@ export default async function PortalHomePage({
           <CardContent>
             <div className="text-center py-4 space-y-3">
               <p className="text-sm text-muted-foreground">
-                {unreadEducation
-                  ? "You have unread lessons to help you on your journey"
+                {hasCompletedLessons
+                  ? "Continue your learning journey"
                   : "Educational resources to guide your home buying journey"}
               </p>
               <Button variant="outline" size="sm" asChild>
