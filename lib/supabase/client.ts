@@ -15,17 +15,7 @@ function getClientInstance() {
     )
   }
   
-  clientInstance = createBrowserClient(url, key, {
-    auth: {
-      // Use a custom storage key to help avoid lock contention
-      storageKey: 'vip-agents-auth',
-      flowType: 'pkce',
-      // Disable lock to prevent timeout errors - session will still be managed correctly
-      lockHook: async (name, callback) => {
-        return await callback()
-      },
-    },
-  })
+  clientInstance = createBrowserClient(url, key)
   return clientInstance
 }
 
