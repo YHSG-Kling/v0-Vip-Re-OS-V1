@@ -109,28 +109,28 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
 
   admin: {
     sidebarItems: [
-      { id: 'dashboard', label: 'Admin Dashboard', href: '/admin/dashboard', icon: 'LayoutGrid' },
-      { id: 'users', label: 'Users', href: '/admin/users', icon: 'Users' },
-      { id: 'brokerages', label: 'Brokerages', href: '/admin/brokerages', icon: 'Building2' },
-      { id: 'system', label: 'System Health', href: '/admin/system', icon: 'Activity' },
-      { id: 'monitoring', label: 'Monitoring', href: '/admin/monitoring', icon: 'Eye' },
-      { id: 'logs', label: 'Audit Logs', href: '/admin/logs', icon: 'FileText' },
-      { id: 'settings', label: 'Settings', href: '/admin/settings', icon: 'Settings' },
+      { id: 'dashboard', label: 'Admin Dashboard', href: '/dashboard/admin', icon: 'LayoutGrid' },
+      { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
+      { id: 'forms', label: 'Forms Manager', href: '/dashboard/admin/forms', icon: 'FileText' },
+      { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/admin/knowledge', icon: 'BookOpen' },
+      { id: 'system', label: 'System Health', href: '/admin/system-health', icon: 'Activity' },
+      { id: 'logs', label: 'Audit Trail', href: '/admin/audit-trail', icon: 'Eye' },
+      { id: 'settings', label: 'Settings', href: '/settings', icon: 'Settings' },
     ],
     topNavItems: [
       { id: 'alerts', label: 'Alerts', icon: 'AlertTriangle', badge: { count: 1, color: 'red' } },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
-      { id: 'dashboard', label: 'Dashboard', href: '/admin/dashboard', icon: 'LayoutGrid' },
-      { id: 'users', label: 'Users', href: '/admin/users', icon: 'Users' },
-      { id: 'system', label: 'System', href: '/admin/system', icon: 'Activity' },
-      { id: 'monitoring', label: 'Monitor', href: '/admin/monitoring', icon: 'Eye' },
-      { id: 'more', label: 'More', href: '/admin/menu', icon: 'Menu' },
+      { id: 'dashboard', label: 'Dashboard', href: '/dashboard/admin', icon: 'LayoutGrid' },
+      { id: 'onboarding', label: 'Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
+      { id: 'system', label: 'System', href: '/admin/system-health', icon: 'Activity' },
+      { id: 'settings', label: 'Settings', href: '/settings', icon: 'Settings' },
     ],
     commandPaletteItems: [
-      { id: 'view-logs', label: 'View Logs', href: '/admin/logs' },
-      { id: 'system-status', label: 'System Status', href: '/admin/system' },
+      { id: 'view-logs', label: 'View Audit Trail', href: '/admin/audit-trail' },
+      { id: 'system-status', label: 'System Health', href: '/admin/system-health' },
+      { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding' },
     ],
   },
 

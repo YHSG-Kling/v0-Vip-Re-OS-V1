@@ -25,12 +25,15 @@ import {
 import { useAuth } from "@/lib/auth/client"
 import Link from "next/link"
 
-// Role-based dashboard routing
+// Role-based dashboard routing — must match actual page routes that exist
 const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
   admin: "/dashboard/admin",
-  broker: "/dashboard/broker", 
-  tc: "/dashboard/tc",
+  superadmin: "/dashboard/admin",
+  broker: "/dashboard/brokerage",
+  tc: "/dashboard/coordinator",
   compliance_officer: "/dashboard/compliance",
+  isa: "/dashboard/isa",
+  team_lead: "/dashboard/agent",
   agent: "/dashboard/agent",
   contact: "/portal",
 }
