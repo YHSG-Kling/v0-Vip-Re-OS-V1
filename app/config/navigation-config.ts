@@ -11,31 +11,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'contacts', label: 'My Contacts', href: '/contacts', icon: 'Users' },
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
-      { id: 'divider1', divider: true },
-      {
-        id: 'campaign',
-        label: 'Campaigns',
-        icon: 'Megaphone',
-        children: [
-          { id: 'email', label: 'Email', href: '/dashboard/campaigns/email' },
-          { id: 'sms', label: 'SMS', href: '/dashboard/campaigns/sms' },
-          { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/direct-mail' },
-        ],
-      },
-      {
-        id: 'content',
-        label: 'Content Studio',
-        icon: 'Palette',
-        children: [
-          { id: 'newsletter', label: 'Newsletter', href: '/newsletters/templates' },
-          { id: 'social', label: 'Social Media', href: '/dashboard/marketing/social' },
-          { id: 'videos', label: 'Videos', href: '/dashboard/marketing/videos' },
-          { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
-        ],
-      },
-      { id: 'divider2', divider: true },
-      { id: 'coaching', label: 'Training & Coaching', href: '/dashboard/coaching', icon: 'BookOpen' },
-      { id: 'onboarding', label: 'Onboarding', href: '/dashboard/onboarding', icon: 'BookOpen' },
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },
     ],
     topNavItems: [
