@@ -21,21 +21,37 @@ async function requireBrokerAdmin(
 ): Promise<{ brokerageId: string; userType: string }> {
   const supabase = await createClient()
 
-  const { data: user, error } = await supabase
+  // Try to get user from public.users first
+  const { data: user } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", userId)
-    .single()
+    .maybeSingle()
 
-  if (error || !user) {
-    throw new Error("User not found")
+  // If user found in public.users, check permissions
+  if (user?.brokerage_id && user?.user_type) {
+    if (!["admin", "broker", "superadmin"].includes(user.user_type)) {
+      throw new Error("Forbidden: insufficient permissions")
+    }
+    return { brokerageId: user.brokerage_id, userType: user.user_type }
   }
 
-  if (!["admin", "broker", "superadmin"].includes(user.user_type)) {
-    throw new Error("Forbidden: insufficient permissions")
+  // Fallback: check user_role_assignments table
+  const { data: roleAssignment } = await supabase
+    .from("user_role_assignments")
+    .select("brokerage_id, role")
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (roleAssignment?.brokerage_id && roleAssignment?.role) {
+    if (!["admin", "broker", "superadmin"].includes(roleAssignment.role)) {
+      throw new Error("Forbidden: insufficient permissions")
+    }
+    return { brokerageId: roleAssignment.brokerage_id, userType: roleAssignment.role }
   }
 
-  return { brokerageId: user.brokerage_id, userType: user.user_type }
+  // If still no user found, throw error
+  throw new Error("User not found or not associated with a brokerage")
 }
 
 // ─── EXPORTED FUNCTIONS ───────────────────────────────────────────────────────
