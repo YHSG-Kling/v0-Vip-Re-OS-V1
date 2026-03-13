@@ -3,7 +3,7 @@
 import { runPipelineSimple } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
-import { CONTENT_TYPES, AI_MODELS } from "@/lib/constants"
+import { CONTENT_TYPES } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 
 // ============================================
