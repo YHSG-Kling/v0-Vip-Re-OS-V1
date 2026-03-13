@@ -26,7 +26,7 @@ export async function getListingById(listingId: string) {
 
     const { data, error } = await supabase
       .from("listings")
-      .select("*, seller:seller_id(*), agent:agent_id(*)")
+      .select("*, seller_contact:seller_contact_id(id, first_name, last_name, email, phone), agent:agents!listings_agent_id_fkey(id, user_id)")
       .eq("id", listingId)
       .single()
 
