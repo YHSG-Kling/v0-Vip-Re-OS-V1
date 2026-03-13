@@ -20,8 +20,16 @@ export async function getListings(params?: {
   return getListingsService(params)
 }
 
+// UUID validation regex
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export async function getListingById(listingId: string) {
   try {
+    // Validate listingId is a proper UUID (not "new" or other invalid values)
+    if (!listingId || !UUID_REGEX.test(listingId)) {
+      return { success: false, error: "Invalid listing ID" }
+    }
+
     const supabase = await createClient()
 
     const { data, error } = await supabase
