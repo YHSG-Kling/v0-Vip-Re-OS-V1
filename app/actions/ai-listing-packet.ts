@@ -67,16 +67,23 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       return { success: false, error: "Listing must be live on MLS before generating packet" }
     }
 
-    // Create packet record
+    // Get agent's brokerage_id for the job record
+    const { data: agent } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("user_id", config.agentId)
+      .single()
+
+    // Create packet job record
     const { data: packet, error: packetError } = await supabase
-      .from("listing_packets")
+      .from("listing_packet_jobs")
       .insert({
         listing_id: config.listingId,
-        agent_id: config.agentId,
-        status: "generating",
-        config: config,
-        documents: [],
-        created_at: new Date().toISOString(),
+        brokerage_id: agent?.brokerage_id,
+        agent_user_id: config.agentId,
+        job_type: "full_packet",
+        status: "queued",
+        config: { ...config, sections: [], content: null },
       })
       .select()
       .single()
@@ -116,27 +123,18 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       documents.push(appraiserReport)
     }
 
-    // Update packet with documents
+    // Update packet job with generated content stored in config jsonb
     await supabase
-      .from("listing_packets")
+      .from("listing_packet_jobs")
       .update({
         status: "completed",
-        documents: documents,
-        completed_at: new Date().toISOString(),
+        config: {
+          ...config,
+          sections: documents.map(d => d.type),
+          content: documents,
+        },
       })
       .eq("id", packet.id)
-
-    // Create binder tracking if requested
-    if (config.createPhysicalBinder) {
-      await supabase.from("listing_packet_binders").insert({
-        packet_id: packet.id,
-        listing_id: config.listingId,
-        copies_requested: config.copies,
-        status: "pending_print",
-        delivery_location: "property_display_table",
-        created_at: new Date().toISOString(),
-      })
-    }
 
     revalidatePath(`/listings/${config.listingId}`)
     return {
@@ -477,48 +475,6 @@ Return as JSON with professional appraiser report formatting.`,
 }
 
 // =====================================================
-// TRACK BINDER DELIVERY
-// =====================================================
-
-export async function trackBinderDelivery(params: {
-  packetId: string
-  agentId: string
-  deliveredAt: string
-  location: string
-  photoUrl?: string
-  notes?: string
-}) {
-  if (!isValidUUID(params.packetId) || !isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid packet or agent ID" }
-  }
-
-  const supabase = await createClient()
-
-  try {
-    const { data, error } = await supabase
-      .from("listing_packet_binders")
-      .update({
-        status: "delivered",
-        delivered_at: params.deliveredAt,
-        delivery_location: params.location,
-        delivery_photo_url: params.photoUrl,
-        delivery_notes: params.notes,
-        delivered_by: params.agentId,
-      })
-      .eq("packet_id", params.packetId)
-      .select()
-      .single()
-
-    if (error) throw error
-
-    return { success: true, binder: data }
-  } catch (error) {
-    console.error("Track binder delivery error:", error)
-    return handleError(error, "trackBinderDelivery")
-  }
-}
-
-// =====================================================
 // GET LISTING PACKET STATUS
 // =====================================================
 
@@ -531,11 +487,8 @@ export async function getListingPacketStatus(listingId: string) {
 
   try {
     const { data: packets, error } = await supabase
-      .from("listing_packets")
-      .select(`
-        *,
-        binders:listing_packet_binders(*)
-      `)
+      .from("listing_packet_jobs")
+      .select("*")
       .eq("listing_id", listingId)
       .order("created_at", { ascending: false })
 
@@ -560,18 +513,21 @@ export async function aiPacketQualityCheck(packetId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: packet } = await supabase.from("listing_packets").select("*").eq("id", packetId).single()
+    const { data: packet } = await supabase.from("listing_packet_jobs").select("*").eq("id", packetId).single()
 
     if (!packet) {
       return { success: false, error: "Packet not found" }
     }
+
+    // Extract documents from config.content
+    const documents = packet.config?.content || []
 
     const { text: qualityResult } = await generateText({
       model: "openai/gpt-4o",
       prompt: `Review this listing packet for quality and completeness:
 
 Documents included:
-${JSON.stringify(packet.documents, null, 2)}
+${JSON.stringify(documents, null, 2)}
 
 Configuration:
 ${JSON.stringify(packet.config, null, 2)}
@@ -597,12 +553,15 @@ Return JSON:
 
     const qualityCheck = JSON.parse(qualityResult)
 
-    // Update packet with quality check
+    // Update packet job with quality check in config
     await supabase
-      .from("listing_packets")
+      .from("listing_packet_jobs")
       .update({
-        quality_check: qualityCheck,
-        quality_checked_at: new Date().toISOString(),
+        config: {
+          ...packet.config,
+          quality_check: qualityCheck,
+          quality_checked_at: new Date().toISOString(),
+        },
       })
       .eq("id", packetId)
 
@@ -630,8 +589,8 @@ export async function regeneratePacketDocument(params: {
 
   try {
     const { data: packet } = await supabase
-      .from("listing_packets")
-      .select("*, listings(*)")
+      .from("listing_packet_jobs")
+      .select("*, listings:listing_id(*)")
       .eq("id", params.packetId)
       .single()
 
@@ -664,16 +623,20 @@ export async function regeneratePacketDocument(params: {
         return { success: false, error: "Unknown document type" }
     }
 
-    // Update documents array
-    const updatedDocs = packet.documents.map((doc: PacketDocument) =>
+    // Update documents in config.content
+    const existingContent = packet.config?.content || []
+    const updatedDocs = existingContent.map((doc: PacketDocument) =>
       doc.type === params.documentType ? newDocument : doc
     )
 
     await supabase
-      .from("listing_packets")
+      .from("listing_packet_jobs")
       .update({
-        documents: updatedDocs,
-        updated_at: new Date().toISOString(),
+        config: {
+          ...packet.config,
+          content: updatedDocs,
+          sections: updatedDocs.map((d: PacketDocument) => d.type),
+        },
       })
       .eq("id", params.packetId)
 
