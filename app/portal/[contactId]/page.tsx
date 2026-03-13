@@ -110,12 +110,12 @@ export default async function PortalHomePage({
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(10),
-    // Showings
+    // Showings - use scheduled_at column
     supabase
       .from("showings")
-      .select("id, listing_id, showing_date, status, listing:listings(address, property_address)")
+      .select("id, listing_id, scheduled_at, status, listing:listings(address, property_address)")
       .eq("contact_id", contactId)
-      .order("showing_date", { ascending: true })
+      .order("scheduled_at", { ascending: true })
       .limit(5),
     // Property preferences
     supabase
@@ -194,7 +194,7 @@ export default async function PortalHomePage({
   // Computed values
   const contactName = contact.first_name || contact.name || "there"
   const unreadMessageCount = messages.filter((m: any) => m.direction === "outbound" && !m.read_at).length
-  const upcomingShowings = showings.filter((s: any) => new Date(s.showing_date) >= new Date())
+  const upcomingShowings = showings.filter((s: any) => new Date(s.scheduled_at) >= new Date())
 
   // Calculate days under contract if applicable
   let daysUnderContract: number | null = null
@@ -285,13 +285,13 @@ export default async function PortalHomePage({
         {/* 4. OFFER STATUS CARD */}
         <OfferStatusCard offers={offers as any} contactId={contactId} />
 
-        {/* 5. UPCOMING SHOWINGS */}
+        {/* 5. UPCOMING TOURS */}
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
                 <Eye className="h-4 w-4" />
-                Upcoming Showings
+                Upcoming Tours
               </CardTitle>
               <Button variant="ghost" size="sm" asChild>
                 <Link href={`/portal/${contactId}/showings`}>
@@ -304,11 +304,11 @@ export default async function PortalHomePage({
           <CardContent>
             {upcomingShowings.length === 0 ? (
               <div className="text-center py-4 space-y-3">
-                <p className="text-sm text-muted-foreground">No upcoming showings scheduled</p>
+                <p className="text-sm text-muted-foreground">No upcoming tours scheduled</p>
                 <Button variant="outline" size="sm" asChild>
                   <Link href={`/portal/${contactId}/showings`}>
                     <Calendar className="h-4 w-4 mr-2" />
-                    Schedule Showing
+                    Schedule Tour
                   </Link>
                 </Button>
               </div>
@@ -321,7 +321,7 @@ export default async function PortalHomePage({
                         {showing.listing?.address || showing.listing?.property_address || "Property"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {new Date(showing.showing_date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                        {new Date(showing.scheduled_at).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
                       </p>
                     </div>
                     <Badge variant="secondary">{showing.status}</Badge>

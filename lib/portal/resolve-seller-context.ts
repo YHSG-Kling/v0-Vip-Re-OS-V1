@@ -36,12 +36,22 @@ export interface ListingMetrics {
 export interface ShowingFeedback {
   id: string
   showing_id: string
-  feedback_text: string | null
-  sentiment: 'positive' | 'neutral' | 'negative' | null
-  rating: number | null
   created_at: string
+  // Build32 showing_feedback columns
+  presentation_rating: number | null
+  cleanliness_rating: number | null
+  price_opinion: 'too_high' | 'priced_right' | 'good_value' | null
+  meets_buyer_needs: 'yes' | 'partially' | 'no' | null
+  offer_interest: 'very_likely' | 'possible' | 'unlikely' | 'no' | null
+  overall_impression: 'loved_it' | 'liked_it' | 'neutral' | 'not_interested' | null
+  buyer_interest_level: 'hot' | 'warm' | 'cool' | 'cold' | null
+  buyer_favorite_features: string | null
+  specific_concerns: string | null
+  additional_notes: string | null
+  ai_summary: string | null
+  sentiment_score: number | null
   showing?: {
-    showing_date: string
+    scheduled_at: string
     contact?: {
       first_name: string | null
     }
@@ -100,6 +110,24 @@ export const OFFER_STATUS_CONFIG: Record<string, { label: string; color: string 
   rejected: { label: "Rejected", color: "bg-red-100 text-red-800" },
   expired: { label: "Expired", color: "bg-slate-100 text-slate-600" },
   withdrawn: { label: "Withdrawn", color: "bg-slate-100 text-slate-600" },
+}
+
+// ─── SENTIMENT DERIVATION HELPER ──────────────────────────────────────────────
+
+/**
+ * Derives overall sentiment from showing_feedback.overall_impression
+ * Since there is no direct 'sentiment' column, we map overall_impression values.
+ */
+export function deriveOverallSentiment(
+  feedback: Pick<ShowingFeedback, 'overall_impression'>
+): 'positive' | 'neutral' | 'negative' {
+  if (feedback.overall_impression === 'loved_it' || feedback.overall_impression === 'liked_it') {
+    return 'positive'
+  }
+  if (feedback.overall_impression === 'not_interested') {
+    return 'negative'
+  }
+  return 'neutral'
 }
 
 // ─── SELLER CONTEXT RESOLUTION ────────────────────────────────────────────────
@@ -191,6 +219,7 @@ export function formatPrice(price: number | null): string {
 
 /**
  * Calculates showing activity stats for a listing.
+ * Uses scheduled_at column (not showing_date) and presentation_rating/cleanliness_rating for avg.
  */
 export async function getShowingStats(
   supabase: SupabaseClient,
@@ -199,30 +228,33 @@ export async function getShowingStats(
   const now = new Date()
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
 
-  // Get all showings for this listing
+  // Get all showings for this listing - use scheduled_at column
   const { data: showings } = await supabase
     .from("showings")
-    .select("id, showing_date")
+    .select("id, scheduled_at")
     .eq("listing_id", listingId)
 
   const total = showings?.length ?? 0
   const thisWeek = showings?.filter(
-    (s) => new Date(s.showing_date) >= weekAgo
+    (s) => new Date(s.scheduled_at) >= weekAgo
   ).length ?? 0
 
-  // Get average feedback rating
+  // Get average feedback rating from presentation_rating and cleanliness_rating
   const showingIds = showings?.map((s) => s.id) ?? []
   let avgRating: number | null = null
 
   if (showingIds.length > 0) {
     const { data: feedback } = await supabase
       .from("showing_feedback")
-      .select("rating")
+      .select("presentation_rating, cleanliness_rating")
       .in("showing_id", showingIds)
-      .not("rating", "is", null)
+      .not("presentation_rating", "is", null)
 
     if (feedback && feedback.length > 0) {
-      const sum = feedback.reduce((acc, f) => acc + (f.rating ?? 0), 0)
+      const sum = feedback.reduce((acc, f) => {
+        const avg = ((f.presentation_rating ?? 0) + (f.cleanliness_rating ?? 0)) / 2
+        return acc + avg
+      }, 0)
       avgRating = sum / feedback.length
     }
   }
@@ -232,27 +264,33 @@ export async function getShowingStats(
 
 /**
  * Gets recent showing feedback for a listing.
+ * Uses scheduled_at column and Build32 showing_feedback columns.
  */
 export async function getRecentFeedback(
   supabase: SupabaseClient,
   listingId: string,
   limit: number = 3
 ): Promise<ShowingFeedback[]> {
-  // First get showings for this listing
+  // First get showings for this listing - use scheduled_at column
   const { data: showings } = await supabase
     .from("showings")
-    .select("id, showing_date, contact:contacts(first_name)")
+    .select("id, scheduled_at, contact:contacts(first_name)")
     .eq("listing_id", listingId)
-    .order("showing_date", { ascending: false })
+    .order("scheduled_at", { ascending: false })
 
   if (!showings || showings.length === 0) return []
 
   const showingIds = showings.map((s) => s.id)
 
-  // Get feedback for these showings
+  // Get feedback for these showings - use Build32 columns
   const { data: feedback } = await supabase
     .from("showing_feedback")
-    .select("id, showing_id, feedback_text, sentiment, rating, created_at")
+    .select(`id, showing_id, created_at,
+             presentation_rating, cleanliness_rating,
+             price_opinion, meets_buyer_needs, offer_interest,
+             overall_impression, buyer_interest_level,
+             buyer_favorite_features, specific_concerns,
+             additional_notes, ai_summary, sentiment_score`)
     .in("showing_id", showingIds)
     .order("created_at", { ascending: false })
     .limit(limit)
@@ -266,7 +304,7 @@ export async function getRecentFeedback(
       ...f,
       showing: showing
         ? {
-            showing_date: showing.showing_date,
+            scheduled_at: showing.scheduled_at,
             contact: showing.contact as any,
           }
         : undefined,

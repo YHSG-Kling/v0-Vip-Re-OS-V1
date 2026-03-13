@@ -31,15 +31,18 @@ export async function getTours(agentId: string) {
   }
 }
 
-export async function createTour(params: { agentId: string; tourDate: string; tourName?: string }) {
+export async function createTour(params: { agentId: string; tourDate: string; notes?: string }) {
   try {
     const supabase = await createClient()
+    // Build32 tours columns: contact_id, agent_id, brokerage_id, tour_date, scheduled_at,
+    // status, notes, all_confirmed, ai_plan_narrative, plan_sent_at, offline_cached_at
+    // tour_name does NOT exist in Build32 schema - use notes field if label needed
     const { data, error } = await supabase
       .from("tours")
       .insert({
         agent_id: params.agentId,
         tour_date: params.tourDate,
-        tour_name: params.tourName || `Tour ${new Date(params.tourDate).toLocaleDateString()}`,
+        notes: params.notes || `Tour ${new Date(params.tourDate).toLocaleDateString()}`,
         status: "planned",
       })
       .select()

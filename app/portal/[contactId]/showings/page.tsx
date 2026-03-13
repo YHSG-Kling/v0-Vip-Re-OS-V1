@@ -7,16 +7,33 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/ca
 import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/app/components/ui/tabs"
-import { ArrowLeft, Calendar, Eye, Clock, CheckCircle, XCircle, MapPin, Home, MessageSquare, Star } from "lucide-react"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/app/components/ui/collapsible"
+import { ArrowLeft, Calendar, Eye, Clock, CheckCircle, XCircle, MapPin, Home, MessageSquare, Star, ChevronDown, Route, Sparkles } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 // Status config
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
   pending: { label: "Pending", color: "bg-amber-100 text-amber-800", icon: Clock },
+  approved: { label: "Approved", color: "bg-blue-100 text-blue-800", icon: CheckCircle },
   confirmed: { label: "Confirmed", color: "bg-blue-100 text-blue-800", icon: CheckCircle },
   completed: { label: "Completed", color: "bg-green-100 text-green-800", icon: CheckCircle },
   cancelled: { label: "Cancelled", color: "bg-red-100 text-red-800", icon: XCircle },
+  denied: { label: "Denied", color: "bg-red-100 text-red-800", icon: XCircle },
+  needs_reschedule: { label: "Needs Reschedule", color: "bg-purple-100 text-purple-800", icon: Calendar },
   rescheduled: { label: "Rescheduled", color: "bg-purple-100 text-purple-800", icon: Calendar },
+  planned: { label: "Planned", color: "bg-slate-100 text-slate-800", icon: Calendar },
+}
+
+// Interest level config for tour stops
+const INTEREST_LEVEL_CONFIG: Record<string, { label: string; color: string }> = {
+  love_it: { label: "Love It", color: "bg-green-100 text-green-800" },
+  like_it: { label: "Like It", color: "bg-blue-100 text-blue-800" },
+  maybe: { label: "Maybe", color: "bg-amber-100 text-amber-800" },
+  no: { label: "Not For Us", color: "bg-slate-100 text-slate-600" },
 }
 
 export default async function ShowingsPage({
@@ -43,44 +60,59 @@ export default async function ShowingsPage({
     redirect("/portal?error=contact_not_found")
   }
 
-  // Fetch showings and showing_requests
-  const [showingsResult, requestsResult] = await Promise.all([
+  // Fetch tours with tour_stops, showings, and showing_requests in parallel
+  const [toursResult, showingsResult, requestsResult] = await Promise.all([
+    // Tours with stops
+    supabase
+      .from("tours")
+      .select(`id, tour_date, status, all_confirmed, ai_plan_narrative, notes,
+               tour_stops(id, property_address, list_price, primary_photo_url,
+                          suggested_time, is_confirmed, buyer_interest_level,
+                          buyer_note, feedback, rating, order_index)`)
+      .eq("contact_id", contactId)
+      .order("tour_date", { ascending: false }),
+    // Showings - use scheduled_at column
     supabase
       .from("showings")
-      .select("id, listing_id, showing_date, status, feedback, notes, listing:listings(id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url)")
+      .select("id, listing_id, scheduled_at, status, feedback, notes, rating, buyer_interest_level, listing:listings(id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url)")
       .eq("contact_id", contactId)
-      .order("showing_date", { ascending: false }),
+      .order("scheduled_at", { ascending: false }),
+    // Showing requests - use correct columns
     supabase
       .from("showing_requests")
-      .select("id, listing_id, requested_time, confirmed_date, status, notes, listing:listings(id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url)")
+      .select("id, listing_id, requested_date, requested_start_time, requested_end_time, seller_approved_at, status, message, listing:listings(id, address, property_address, list_price, bedrooms, bathrooms, primary_photo_url)")
       .eq("contact_id", contactId)
-      .order("requested_time", { ascending: false }),
+      .order("requested_date", { ascending: false }),
   ])
 
+  const tours = toursResult.data ?? []
   const showings = showingsResult.data ?? []
   const requests = requestsResult.data ?? []
 
-  // Combine and categorize
+  // Combine and categorize showings/requests
   const now = new Date()
   const allItems = [
     ...showings.map((s: any) => ({
       ...s,
       type: "showing" as const,
-      date: s.showing_date,
+      date: s.scheduled_at,
     })),
     ...requests.map((r: any) => ({
       ...r,
       type: "request" as const,
-      date: r.confirmed_date || r.requested_time,
+      // Combine date and time for display
+      date: r.seller_approved_at
+        ? new Date(`${r.requested_date}T${r.requested_start_time}`)
+        : new Date(r.requested_date),
     })),
   ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 
   const upcomingItems = allItems.filter(
-    (item) => new Date(item.date) >= now && !["cancelled", "completed"].includes(item.status)
+    (item) => new Date(item.date) >= now && !["cancelled", "completed", "denied"].includes(item.status)
   ).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
   const completedItems = allItems.filter(
-    (item) => item.status === "completed" || (new Date(item.date) < now && item.status !== "cancelled")
+    (item) => item.status === "completed" || (new Date(item.date) < now && !["cancelled", "denied"].includes(item.status))
   )
 
   return (
@@ -94,18 +126,33 @@ export default async function ShowingsPage({
               Back to Dashboard
             </Link>
           </Button>
-          <h1 className="text-3xl font-bold">My Showings</h1>
-          <p className="text-muted-foreground mt-1">Schedule property tours and provide feedback</p>
+          <h1 className="text-3xl font-bold">My Tours</h1>
+          <p className="text-muted-foreground mt-1">Schedule property tours and share your feedback</p>
         </div>
         <Button asChild>
           <Link href={`/portal/${contactId}/messages`}>
             <Calendar className="h-4 w-4 mr-2" />
-            Request Showing
+            Schedule Tour
           </Link>
         </Button>
       </div>
 
-      {/* Tabs */}
+      {/* Planned Tours Section */}
+      {tours.length > 0 && (
+        <div className="space-y-4">
+          <h2 className="text-xl font-semibold flex items-center gap-2">
+            <Route className="h-5 w-5" />
+            Planned Tours
+          </h2>
+          <div className="space-y-3">
+            {tours.map((tour: any) => (
+              <TourCard key={tour.id} tour={tour} contactId={contactId} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tabs for individual showings */}
       <Tabs defaultValue="upcoming" className="space-y-4">
         <TabsList>
           <TabsTrigger value="upcoming">Upcoming ({upcomingItems.length})</TabsTrigger>
@@ -118,9 +165,9 @@ export default async function ShowingsPage({
             <Card>
               <CardContent className="py-12 text-center">
                 <Eye className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                <h3 className="text-lg font-semibold mb-2">No upcoming showings</h3>
+                <h3 className="text-lg font-semibold mb-2">No upcoming tours scheduled</h3>
                 <p className="text-muted-foreground mb-4">
-                  Find a property you like and schedule a showing
+                  Find a property you like and schedule a tour
                 </p>
                 <Button asChild>
                   <Link href={`/portal/${contactId}/search`}>
@@ -142,7 +189,7 @@ export default async function ShowingsPage({
           {completedItems.length === 0 ? (
             <Card>
               <CardContent className="py-8 text-center">
-                <p className="text-muted-foreground">No completed showings yet</p>
+                <p className="text-muted-foreground">No completed tours yet</p>
               </CardContent>
             </Card>
           ) : (
@@ -158,7 +205,7 @@ export default async function ShowingsPage({
           {allItems.length === 0 ? (
             <Card>
               <CardContent className="py-8 text-center">
-                <p className="text-muted-foreground">No showings scheduled yet</p>
+                <p className="text-muted-foreground">No tours scheduled yet</p>
               </CardContent>
             </Card>
           ) : (
@@ -176,6 +223,137 @@ export default async function ShowingsPage({
         <ShowingsManager contactId={contactId} />
       </div>
     </div>
+  )
+}
+
+// Tour Card Component with expandable stops
+function TourCard({ tour, contactId }: { tour: any; contactId: string }) {
+  const status = STATUS_CONFIG[tour.status] || STATUS_CONFIG.planned
+  const StatusIcon = status.icon
+  const tourDate = new Date(tour.tour_date)
+  const stops = tour.tour_stops ?? []
+  const sortedStops = [...stops].sort((a: any, b: any) => (a.order_index ?? 0) - (b.order_index ?? 0))
+
+  return (
+    <Card>
+      <Collapsible>
+        <CardContent className="p-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <Route className="h-5 w-5 text-primary" />
+                <h3 className="font-semibold">
+                  {tourDate.toLocaleDateString("en-US", {
+                    weekday: "long",
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </h3>
+                <Badge variant="secondary" className={cn("shrink-0", status.color)}>
+                  <StatusIcon className="h-3 w-3 mr-1" />
+                  {status.label}
+                </Badge>
+                {tour.all_confirmed && (
+                  <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    All Confirmed
+                  </Badge>
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {sortedStops.length} {sortedStops.length === 1 ? "property" : "properties"} on this tour
+              </p>
+            </div>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm">
+                View Stops
+                <ChevronDown className="h-4 w-4 ml-1" />
+              </Button>
+            </CollapsibleTrigger>
+          </div>
+
+          <CollapsibleContent className="mt-4 space-y-3">
+            {/* AI Tour Plan Narrative */}
+            {tour.ai_plan_narrative && (
+              <div className="p-3 rounded-lg bg-primary/5 border border-primary/10">
+                <p className="text-sm font-medium flex items-center gap-1 mb-1">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  AI Tour Plan
+                </p>
+                <p className="text-sm text-muted-foreground">{tour.ai_plan_narrative}</p>
+              </div>
+            )}
+
+            {/* Tour Stops */}
+            <div className="space-y-2">
+              {sortedStops.map((stop: any, index: number) => (
+                <div
+                  key={stop.id}
+                  className="flex items-center gap-3 p-3 rounded-lg border bg-card"
+                >
+                  {/* Order number */}
+                  <div className="h-8 w-8 rounded-full bg-primary/10 text-primary flex items-center justify-center text-sm font-semibold shrink-0">
+                    {index + 1}
+                  </div>
+
+                  {/* Property Image */}
+                  <div className="h-12 w-12 rounded-lg bg-muted flex items-center justify-center shrink-0 overflow-hidden">
+                    {stop.primary_photo_url ? (
+                      <img
+                        src={stop.primary_photo_url}
+                        alt={stop.property_address}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <Home className="h-5 w-5 text-muted-foreground" />
+                    )}
+                  </div>
+
+                  {/* Property Details */}
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-sm truncate">{stop.property_address}</p>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      {stop.list_price && <span>${stop.list_price.toLocaleString()}</span>}
+                      {stop.suggested_time && (
+                        <>
+                          <span className="text-muted-foreground/50">|</span>
+                          <span>{stop.suggested_time}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Status badges */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    {stop.is_confirmed && (
+                      <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200">
+                        <CheckCircle className="h-3 w-3 mr-1" />
+                        Confirmed
+                      </Badge>
+                    )}
+                    {stop.buyer_interest_level && INTEREST_LEVEL_CONFIG[stop.buyer_interest_level] && (
+                      <Badge
+                        variant="secondary"
+                        className={cn("text-xs", INTEREST_LEVEL_CONFIG[stop.buyer_interest_level].color)}
+                      >
+                        {INTEREST_LEVEL_CONFIG[stop.buyer_interest_level].label}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Tour Notes */}
+            {tour.notes && (
+              <div className="p-2 bg-muted rounded-lg">
+                <p className="text-sm text-muted-foreground">{tour.notes}</p>
+              </div>
+            )}
+          </CollapsibleContent>
+        </CardContent>
+      </Collapsible>
+    </Card>
   )
 }
 
@@ -250,6 +428,16 @@ function ShowingCard({
               </span>
             </div>
 
+            {/* Interest Level (if rated) */}
+            {item.buyer_interest_level && INTEREST_LEVEL_CONFIG[item.buyer_interest_level] && (
+              <Badge
+                variant="secondary"
+                className={cn("text-xs", INTEREST_LEVEL_CONFIG[item.buyer_interest_level].color)}
+              >
+                {INTEREST_LEVEL_CONFIG[item.buyer_interest_level].label}
+              </Badge>
+            )}
+
             {/* Feedback (for completed) */}
             {showFeedback && item.feedback && (
               <div className="mt-2 p-2 bg-muted rounded-lg">
@@ -262,7 +450,7 @@ function ShowingCard({
             )}
 
             {/* Actions */}
-            {!isPast && item.status !== "cancelled" && (
+            {!isPast && !["cancelled", "denied"].includes(item.status) && (
               <div className="flex gap-2 pt-2">
                 <Button variant="outline" size="sm" asChild>
                   <Link href={`/portal/${contactId}/properties/${item.listing_id}`}>
