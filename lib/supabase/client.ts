@@ -15,7 +15,17 @@ function getClientInstance() {
     )
   }
   
-  clientInstance = createBrowserClient(url, key)
+  clientInstance = createBrowserClient(url, key, {
+    auth: {
+      // Increase lock timeout to prevent timeout errors during concurrent auth operations
+      lock: {
+        acquireTimeout: 30000, // 30 seconds instead of default 10
+      },
+      // Prevent multiple tabs from fighting over the same session
+      storageKey: 'vip-agents-auth',
+      flowType: 'pkce',
+    },
+  })
   return clientInstance
 }
 
