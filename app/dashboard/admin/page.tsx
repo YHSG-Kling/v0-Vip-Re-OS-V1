@@ -99,7 +99,7 @@ export default function AdminDashboardPage() {
       color: "text-emerald-600",
       bgColor: "bg-emerald-50",
       subtitle: "+12% vs last month",
-      href: "/dashboard/admin/analytics",
+      href: "/admin/usage",
     },
     {
       title: "Active Listings",
