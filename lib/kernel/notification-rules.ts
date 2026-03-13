@@ -19,6 +19,8 @@ export type NotificationRuleRow = {
 async function requireBrokerAdmin(
   userId: string
 ): Promise<{ brokerageId: string; userType: string }> {
+  console.log("[v0] requireBrokerAdmin called with userId:", userId)
+  
   const supabase = createServiceClient()
 
   // Try to get user from public.users first
@@ -27,6 +29,8 @@ async function requireBrokerAdmin(
     .select("brokerage_id, user_type")
     .eq("id", userId)
     .maybeSingle()
+
+  console.log("[v0] users query result:", { user, userError })
 
   // If user found in public.users with brokerage_id, check permissions
   if (user?.brokerage_id) {
@@ -43,6 +47,8 @@ async function requireBrokerAdmin(
     .select("brokerage_id, role")
     .eq("user_id", userId)
     .maybeSingle()
+
+  console.log("[v0] user_role_assignments query result:", { roleAssignment, roleError })
 
   if (roleAssignment?.brokerage_id) {
     const role = roleAssignment.role || "admin" // Default to admin if role is null
