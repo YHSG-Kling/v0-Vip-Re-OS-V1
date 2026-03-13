@@ -52,19 +52,6 @@ async function requireBrokerAdmin(
     return { brokerageId: roleAssignment.brokerage_id, userType: role }
   }
 
-  // Final fallback: Get first available brokerage for this admin user
-  // This handles cases where the user exists but brokerage_id relationship is incomplete
-  const { data: firstBrokerage } = await supabase
-    .from("brokerages")
-    .select("id")
-    .limit(1)
-    .maybeSingle()
-
-  if (firstBrokerage?.id) {
-    // User exists but wasn't properly linked - return with the brokerage
-    return { brokerageId: firstBrokerage.id, userType: "admin" }
-  }
-
   // If still no user found, throw error
   throw new Error("User not found or not associated with a brokerage")
 }
