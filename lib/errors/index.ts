@@ -310,7 +310,22 @@ export async function retryAsync<T>(
 // ============================================
 
 export function handleError(error: any, context?: string): { success: false; error: string } {
-  logError(error instanceof Error ? error : new Error(String(error)), { context })
+  // Extract error message properly from various error types
+  let errorMessage: string
+  
+  if (error instanceof Error) {
+    errorMessage = error.message
+  } else if (typeof error === 'object' && error !== null) {
+    // Handle Supabase/PostgreSQL errors and other object errors
+    errorMessage = error.message || error.error || error.details || JSON.stringify(error)
+  } else if (typeof error === 'string') {
+    errorMessage = error
+  } else {
+    errorMessage = "An unexpected error occurred"
+  }
+  
+  const errorInstance = error instanceof Error ? error : new Error(errorMessage)
+  logError(errorInstance, { context })
   
   if (error instanceof AppError) {
     return createErrorResponse(error, process.env.NODE_ENV === "development")
@@ -318,7 +333,7 @@ export function handleError(error: any, context?: string): { success: false; err
   
   return {
     success: false,
-    error: error?.message || String(error) || "An unexpected error occurred",
+    error: errorMessage,
   }
 }
 
