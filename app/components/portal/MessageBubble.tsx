@@ -5,7 +5,7 @@ import { Check, CheckCheck } from "lucide-react"
 
 interface MessageBubbleProps {
   body: string
-  direction: "inbound" | "outbound"
+  direction: "agent_to_client" | "client_to_agent"
   createdAt: string
   readAt?: string | null
   senderName: string
@@ -14,10 +14,10 @@ interface MessageBubbleProps {
 
 /**
  * MessageBubble - iMessage-style chat bubble.
- * - direction='outbound' (from agent) → right-aligned, agent name label
- * - direction='inbound' (from client) → left-aligned, "You" label
- * - Shows read receipt for outbound messages
- * - Highlights unread inbound messages
+ * - direction='agent_to_client' → right-aligned, agent name label
+ * - direction='client_to_agent' → left-aligned, "You" label
+ * - Shows read receipt for agent_to_client messages
+ * - Highlights unread client_to_agent messages
  */
 export function MessageBubble({
   body,
@@ -27,14 +27,14 @@ export function MessageBubble({
   senderName,
   isUnread = false,
 }: MessageBubbleProps) {
-  const isOutbound = direction === "outbound"
+  const isAgentMessage = direction === "agent_to_client"
   const formattedTime = formatMessageTime(createdAt)
 
   return (
     <div
       className={cn(
         "flex flex-col gap-1 max-w-[80%]",
-        isOutbound ? "ml-auto items-end" : "mr-auto items-start"
+        isAgentMessage ? "ml-auto items-end" : "mr-auto items-start"
       )}
     >
       {/* Sender label */}
@@ -44,7 +44,7 @@ export function MessageBubble({
       <div
         className={cn(
           "px-4 py-2 rounded-2xl text-sm leading-relaxed",
-          isOutbound
+          isAgentMessage
             ? "bg-primary text-primary-foreground rounded-br-md"
             : cn(
                 "bg-muted text-foreground rounded-bl-md",
@@ -58,7 +58,7 @@ export function MessageBubble({
       {/* Timestamp and read receipt */}
       <div className="flex items-center gap-1 px-1">
         <span className="text-[10px] text-muted-foreground">{formattedTime}</span>
-        {isOutbound && (
+        {isAgentMessage && (
           <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
             {readAt ? (
               <>

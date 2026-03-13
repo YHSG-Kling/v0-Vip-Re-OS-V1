@@ -89,7 +89,7 @@ export function MessagesClient({
   // Handle send message
   const handleSend = useCallback(
     async (messageBody: string, channel: string) => {
-      const direction = isAgent ? "outbound" : "inbound"
+      const direction = isAgent ? "agent_to_client" : "client_to_agent"
 
       // Create optimistic message
       const optimisticMessage: PortalMessage = {
@@ -184,10 +184,10 @@ export function MessagesClient({
                       createdAt={msg.created_at}
                       readAt={msg.read_at}
                       senderName={
-                        msg.direction === "outbound" ? agentCard.name : "You"
+                        msg.direction === "agent_to_client" ? agentCard.name : "You"
                       }
                       isUnread={
-                        msg.direction === "inbound" && !msg.read_at && !isAgent
+                        msg.direction === "client_to_agent" && !msg.read_at && !isAgent
                       }
                     />
                   ))}

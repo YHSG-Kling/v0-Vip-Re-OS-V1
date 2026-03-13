@@ -122,11 +122,11 @@ export default async function PortalMessagesPage({ params }: PageProps) {
   }
 
   // Mark messages as read based on who is viewing
-  // - If agent is viewing: mark inbound messages (from contact) as read
-  // - If contact is viewing: mark outbound messages (from agent) as read
+  // - If agent is viewing: mark client_to_agent messages (from contact) as read
+  // - If contact is viewing: mark agent_to_client messages (from agent) as read
   await markMessagesRead({
     contactId,
-    direction: isAgent ? "inbound" : "outbound",
+    direction: isAgent ? "client_to_agent" : "agent_to_client",
   })
 
   // Prepare agent contact card data
