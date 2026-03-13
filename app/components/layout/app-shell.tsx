@@ -21,7 +21,7 @@ export function AppShell({ children }: AppShellProps) {
   }
 
   if (!user || !userContext) {
-    return <>{children}</>
+    return null
   }
 
   const primaryRole = userContext.roles[0]
