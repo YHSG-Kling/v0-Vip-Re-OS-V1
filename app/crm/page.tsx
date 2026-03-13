@@ -3,264 +3,302 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth/client'
-import Sidebar from '@/app/components/Sidebar'
+import { createClient } from '@/lib/supabase/client'
 import LoadingSpinner from '@/app/components/LoadingSpinner'
-import { Users, Search, Plus, Filter, Mail, Phone, MapPin, Calendar } from 'lucide-react'
+import { Users, Search, Plus, Filter, Mail, Phone, MapPin, Calendar, ChevronRight } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+
+interface Contact {
+  id: string
+  first_name: string | null
+  last_name: string | null
+  name: string | null
+  email: string | null
+  phone: string | null
+  contact_type: string | null
+  buyer_stage: string | null
+  seller_stage: string | null
+  city: string | null
+  state: string | null
+  created_at: string
+}
 
 export default function CRMPage() {
   const router = useRouter()
-  const { user, isLoading, signOut } = useAuth()
+  const { user, isLoading: authLoading } = useAuth()
   const [searchQuery, setSearchQuery] = useState('')
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [stats, setStats] = useState({ total: 0, active: 0, buyers: 0, sellers: 0 })
 
-  // Redirect to login if not authenticated
   useEffect(() => {
-    if (!isLoading && !user) {
+    if (!authLoading && !user) {
       router.push('/login')
     }
-  }, [user, isLoading, router])
+  }, [user, authLoading, router])
 
-  const handleLogout = async () => {
-    await signOut()
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-    })
-    logout()
-    router.push('/login')
-  }
+  useEffect(() => {
+    async function fetchContacts() {
+      if (!user) return
+      
+      const supabase = createClient()
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('id, first_name, last_name, name, email, phone, contact_type, buyer_stage, seller_stage, city, state, created_at')
+        .order('created_at', { ascending: false })
+        .limit(50)
 
-  if (isLoading) {
-    return <LoadingSpinner fullScreen size="lg" text="Loading CRM..." />
+      if (!error && data) {
+        setContacts(data)
+        setStats({
+          total: data.length,
+          active: data.filter(c => c.buyer_stage === 'active' || c.seller_stage === 'active').length,
+          buyers: data.filter(c => c.contact_type === 'buyer').length,
+          sellers: data.filter(c => c.contact_type === 'seller').length,
+        })
+      }
+      setIsLoading(false)
+    }
+
+    if (user) {
+      fetchContacts()
+    }
+  }, [user])
+
+  if (authLoading || isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <LoadingSpinner size="lg" text="Loading contacts..." />
+      </div>
+    )
   }
 
   if (!user) {
     return null
   }
 
-  // Sample contacts data - in production this would come from your database
-  const contacts = [
-    {
-      id: 1,
-      name: 'John Smith',
-      email: 'john.smith@email.com',
-      phone: '(555) 123-4567',
-      type: 'Buyer',
-      status: 'Active',
-      lastContact: '2 days ago',
-      location: 'Los Angeles, CA'
-    },
-    {
-      id: 2,
-      name: 'Sarah Johnson',
-      email: 'sarah.j@email.com',
-      phone: '(555) 234-5678',
-      type: 'Seller',
-      status: 'Hot Lead',
-      lastContact: '5 hours ago',
-      location: 'Beverly Hills, CA'
-    },
-    {
-      id: 3,
-      name: 'Michael Brown',
-      email: 'mbrown@email.com',
-      phone: '(555) 345-6789',
-      type: 'Buyer',
-      status: 'Nurture',
-      lastContact: '1 week ago',
-      location: 'Santa Monica, CA'
-    },
-    {
-      id: 4,
-      name: 'Emily Davis',
-      email: 'emily.davis@email.com',
-      phone: '(555) 456-7890',
-      type: 'Investor',
-      status: 'Active',
-      lastContact: 'Yesterday',
-      location: 'Pasadena, CA'
-    },
-  ]
+  const getDisplayName = (contact: Contact) => {
+    if (contact.first_name || contact.last_name) {
+      return `${contact.first_name || ''} ${contact.last_name || ''}`.trim()
+    }
+    return contact.name || 'Unknown'
+  }
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Hot Lead':
-        return 'bg-red-500/10 text-red-400 border-red-500/20'
-      case 'Active':
-        return 'bg-green-500/10 text-green-400 border-green-500/20'
-      case 'Nurture':
-        return 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+  const getInitials = (contact: Contact) => {
+    const name = getDisplayName(contact)
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
+  }
+
+  const getStatusBadge = (contact: Contact) => {
+    const stage = contact.buyer_stage || contact.seller_stage
+    if (!stage) return <Badge variant="secondary">New</Badge>
+    
+    switch (stage) {
+      case 'active':
+        return <Badge className="bg-green-100 text-green-800">Active</Badge>
+      case 'nurture':
+        return <Badge className="bg-blue-100 text-blue-800">Nurture</Badge>
+      case 'hot':
+        return <Badge className="bg-red-100 text-red-800">Hot Lead</Badge>
       default:
-        return 'bg-slate-500/10 text-slate-400 border-slate-500/20'
+        return <Badge variant="secondary">{stage}</Badge>
     }
   }
 
-  const getTypeColor = (type: string) => {
+  const getTypeBadge = (type: string | null) => {
+    if (!type) return null
     switch (type) {
-      case 'Buyer':
-        return 'bg-blue-500/10 text-blue-400'
-      case 'Seller':
-        return 'bg-purple-500/10 text-purple-400'
-      case 'Investor':
-        return 'bg-yellow-500/10 text-yellow-400'
+      case 'buyer':
+        return <Badge className="bg-blue-100 text-blue-800">Buyer</Badge>
+      case 'seller':
+        return <Badge className="bg-purple-100 text-purple-800">Seller</Badge>
+      case 'investor':
+        return <Badge className="bg-amber-100 text-amber-800">Investor</Badge>
       default:
-        return 'bg-slate-500/10 text-slate-400'
+        return <Badge variant="secondary">{type}</Badge>
     }
   }
+
+  const filteredContacts = contacts.filter(contact => {
+    if (!searchQuery) return true
+    const name = getDisplayName(contact).toLowerCase()
+    const email = (contact.email || '').toLowerCase()
+    const phone = (contact.phone || '').toLowerCase()
+    const query = searchQuery.toLowerCase()
+    return name.includes(query) || email.includes(query) || phone.includes(query)
+  })
 
   return (
-    <div className="flex min-h-screen bg-slate-950">
-      <Sidebar role={user.role} onLogout={handleLogout} />
-      
-      <main className="ml-64 flex-1 p-8">
-        {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h1 className="text-3xl font-bold text-white mb-2">CRM & Contacts</h1>
-              <p className="text-slate-400">Manage your contacts and relationships</p>
-            </div>
-            <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
-              <Plus size={18} />
-              Add Contact
-            </button>
+    <div className="p-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="mb-8">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">CRM & Contacts</h1>
+            <p className="text-gray-500 mt-1">Manage your contacts and relationships</p>
           </div>
-
-          {/* Stats */}
-          <div className="grid grid-cols-4 gap-4 mb-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm mb-1">Total Contacts</p>
-                  <p className="text-2xl font-bold text-white">248</p>
-                </div>
-                <div className="w-10 h-10 bg-blue-500/10 rounded-lg flex items-center justify-center">
-                  <Users className="text-blue-400" size={20} />
-                </div>
-              </div>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm mb-1">Active Leads</p>
-                  <p className="text-2xl font-bold text-white">67</p>
-                </div>
-                <div className="w-10 h-10 bg-green-500/10 rounded-lg flex items-center justify-center">
-                  <Users className="text-green-400" size={20} />
-                </div>
-              </div>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm mb-1">Hot Leads</p>
-                  <p className="text-2xl font-bold text-white">23</p>
-                </div>
-                <div className="w-10 h-10 bg-red-500/10 rounded-lg flex items-center justify-center">
-                  <Users className="text-red-400" size={20} />
-                </div>
-              </div>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm mb-1">This Week</p>
-                  <p className="text-2xl font-bold text-white">12</p>
-                </div>
-                <div className="w-10 h-10 bg-purple-500/10 rounded-lg flex items-center justify-center">
-                  <Calendar className="text-purple-400" size={20} />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Search and Filters */}
-          <div className="flex items-center gap-4">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-              <input
-                type="text"
-                placeholder="Search contacts by name, email, or phone..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
-              />
-            </div>
-            <button className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 rounded-lg transition-colors">
-              <Filter size={18} />
-              Filters
-            </button>
-          </div>
+          <Button>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Contact
+          </Button>
         </div>
 
-        {/* Contacts Table */}
-        <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-slate-800">
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Contact</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Type</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Status</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Location</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Last Contact</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {contacts.map((contact) => (
-                <tr key={contact.id} className="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
-                  <td className="py-4 px-6">
+        {/* Stats */}
+        <div className="grid grid-cols-4 gap-4 mb-6">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-gray-500 text-sm mb-1">Total Contacts</p>
+                  <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
+                </div>
+                <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                  <Users className="text-blue-600 h-5 w-5" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-gray-500 text-sm mb-1">Active</p>
+                  <p className="text-2xl font-bold text-gray-900">{stats.active}</p>
+                </div>
+                <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
+                  <Users className="text-green-600 h-5 w-5" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-gray-500 text-sm mb-1">Buyers</p>
+                  <p className="text-2xl font-bold text-gray-900">{stats.buyers}</p>
+                </div>
+                <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                  <Users className="text-blue-600 h-5 w-5" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-gray-500 text-sm mb-1">Sellers</p>
+                  <p className="text-2xl font-bold text-gray-900">{stats.sellers}</p>
+                </div>
+                <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+                  <Users className="text-purple-600 h-5 w-5" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Search and Filters */}
+        <div className="flex items-center gap-4">
+          <div className="flex-1 relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 h-4 w-4" />
+            <Input
+              type="text"
+              placeholder="Search contacts by name, email, or phone..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-10"
+            />
+          </div>
+          <Button variant="outline">
+            <Filter className="h-4 w-4 mr-2" />
+            Filters
+          </Button>
+        </div>
+      </div>
+
+      {/* Contacts Table */}
+      <Card>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Contact</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Location</TableHead>
+              <TableHead>Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {filteredContacts.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={5} className="text-center py-8 text-gray-500">
+                  {searchQuery ? `No contacts found matching "${searchQuery}"` : 'No contacts yet'}
+                </TableCell>
+              </TableRow>
+            ) : (
+              filteredContacts.map((contact) => (
+                <TableRow 
+                  key={contact.id} 
+                  className="cursor-pointer hover:bg-gray-50"
+                  onClick={() => router.push(`/contacts/${contact.id}`)}
+                >
+                  <TableCell>
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-semibold">
-                        {contact.name.split(' ').map(n => n[0]).join('')}
+                      <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-semibold text-sm">
+                        {getInitials(contact)}
                       </div>
                       <div>
-                        <p className="font-semibold text-white">{contact.name}</p>
-                        <p className="text-sm text-slate-400">{contact.email}</p>
+                        <p className="font-medium text-gray-900">{getDisplayName(contact)}</p>
+                        <p className="text-sm text-gray-500">{contact.email || 'No email'}</p>
                       </div>
                     </div>
-                  </td>
-                  <td className="py-4 px-6">
-                    <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${getTypeColor(contact.type)}`}>
-                      {contact.type}
-                    </span>
-                  </td>
-                  <td className="py-4 px-6">
-                    <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${getStatusColor(contact.status)}`}>
-                      {contact.status}
-                    </span>
-                  </td>
-                  <td className="py-4 px-6">
-                    <div className="flex items-center gap-2 text-slate-400">
-                      <MapPin size={14} />
-                      <span className="text-sm">{contact.location}</span>
-                    </div>
-                  </td>
-                  <td className="py-4 px-6">
-                    <span className="text-sm text-slate-400">{contact.lastContact}</span>
-                  </td>
-                  <td className="py-4 px-6">
+                  </TableCell>
+                  <TableCell>
+                    {getTypeBadge(contact.contact_type)}
+                  </TableCell>
+                  <TableCell>
+                    {getStatusBadge(contact)}
+                  </TableCell>
+                  <TableCell>
+                    {contact.city || contact.state ? (
+                      <div className="flex items-center gap-1 text-gray-500 text-sm">
+                        <MapPin className="h-3 w-3" />
+                        {[contact.city, contact.state].filter(Boolean).join(', ')}
+                      </div>
+                    ) : (
+                      <span className="text-gray-400 text-sm">-</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
                     <div className="flex items-center gap-2">
-                      <button className="p-2 hover:bg-slate-700 rounded-lg transition-colors text-slate-400 hover:text-white">
-                        <Mail size={16} />
-                      </button>
-                      <button className="p-2 hover:bg-slate-700 rounded-lg transition-colors text-slate-400 hover:text-white">
-                        <Phone size={16} />
-                      </button>
+                      <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation() }}>
+                        <Mail className="h-4 w-4" />
+                      </Button>
+                      <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation() }}>
+                        <Phone className="h-4 w-4" />
+                      </Button>
+                      <ChevronRight className="h-4 w-4 text-gray-400" />
                     </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Empty state when search returns no results */}
-        {searchQuery && contacts.length === 0 && (
-          <div className="text-center py-12">
-            <Users className="mx-auto text-slate-600 mb-4" size={48} />
-            <p className="text-slate-400">No contacts found matching "{searchQuery}"</p>
-          </div>
-        )}
-      </main>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </Card>
     </div>
   )
 }

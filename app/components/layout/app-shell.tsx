@@ -16,13 +16,18 @@ export function AppShell({ children }: AppShellProps) {
   const { user, userContext } = useAuth()
   const pathname = usePathname()
 
+  // Routes that have their own layout - bypass AppShell
   if (
     pathname.startsWith('/auth') ||
     pathname.startsWith('/login') ||
-    pathname.startsWith('/portal')
+    pathname.startsWith('/portal') ||
+    pathname.startsWith('/settings')
   ) {
     return <>{children}</>
   }
+
+  // Hide mobile bottom nav on wizard/create flows to prevent interference
+  const hideBottomNav = pathname.includes('/videos/create') || pathname.includes('/wizard')
 
   if (!user || !userContext) {
     return null
@@ -44,9 +49,11 @@ export function AppShell({ children }: AppShellProps) {
           <div className="h-full">{children}</div>
         </main>
 
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white">
-          <MobileBottomNav items={navigation.mobileBottomNav} />
-        </div>
+        {!hideBottomNav && (
+          <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white">
+            <MobileBottomNav items={navigation.mobileBottomNav} />
+          </div>
+        )}
       </div>
     </div>
   )

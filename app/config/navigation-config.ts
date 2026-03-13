@@ -184,26 +184,26 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   },
 
   contact: {
+    // Contact users should be redirected to /portal/[contactId] - these are fallback links
     sidebarItems: [
-      { id: 'overview', label: 'Overview', href: '/contact/portal', icon: 'Home' },
-      { id: 'transaction', label: 'My Transaction', href: '/contact/transaction', icon: 'FileText' },
-      { id: 'documents', label: 'Documents', href: '/contact/documents', icon: 'Folder' },
-      { id: 'messages', label: 'Messages', href: '/contact/messages', icon: 'Mail' },
-      { id: 'settings', label: 'Settings', href: '/contact/settings', icon: 'Settings' },
+      { id: 'overview', label: 'Overview', href: '/portal', icon: 'Home' },
+      { id: 'transaction', label: 'My Transaction', href: '/portal', icon: 'FileText' },
+      { id: 'documents', label: 'Documents', href: '/portal', icon: 'Folder' },
+      { id: 'messages', label: 'Messages', href: '/portal', icon: 'Mail' },
     ],
     topNavItems: [
       { id: 'notifications', label: 'Notifications', icon: 'Bell' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
-      { id: 'overview', label: 'Overview', href: '/contact/portal', icon: 'Home' },
-      { id: 'transaction', label: 'Transaction', href: '/contact/transaction', icon: 'FileText' },
-      { id: 'documents', label: 'Documents', href: '/contact/documents', icon: 'Folder' },
-      { id: 'messages', label: 'Messages', href: '/contact/messages', icon: 'Mail' },
+      { id: 'overview', label: 'Overview', href: '/portal', icon: 'Home' },
+      { id: 'transaction', label: 'Transaction', href: '/portal', icon: 'FileText' },
+      { id: 'documents', label: 'Documents', href: '/portal', icon: 'Folder' },
+      { id: 'messages', label: 'Messages', href: '/portal', icon: 'Mail' },
     ],
     commandPaletteItems: [
-      { id: 'contact-agent', label: 'Contact Agent', href: '/contact/messages/new' },
-      { id: 'view-docs', label: 'View Documents', href: '/contact/documents' },
+      { id: 'contact-agent', label: 'Contact Agent', href: '/portal' },
+      { id: 'view-docs', label: 'View Documents', href: '/portal' },
     ],
   },
 
