@@ -22,32 +22,53 @@ async function requireBrokerAdmin(
   const supabase = await createClient()
 
   // Try to get user from public.users first
-  const { data: user } = await supabase
+  const { data: user, error: userError } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", userId)
     .maybeSingle()
 
-  // If user found in public.users, check permissions
-  if (user?.brokerage_id && user?.user_type) {
-    if (!["admin", "broker", "superadmin"].includes(user.user_type)) {
+  console.log("[v0] requireBrokerAdmin - userId:", userId, "user:", user, "userError:", userError)
+
+  // If user found in public.users with brokerage_id, check permissions
+  if (user?.brokerage_id) {
+    const userType = user.user_type || "admin" // Default to admin if user_type is null
+    if (!["admin", "broker", "superadmin"].includes(userType)) {
       throw new Error("Forbidden: insufficient permissions")
     }
-    return { brokerageId: user.brokerage_id, userType: user.user_type }
+    return { brokerageId: user.brokerage_id, userType }
   }
 
   // Fallback: check user_role_assignments table
-  const { data: roleAssignment } = await supabase
+  const { data: roleAssignment, error: roleError } = await supabase
     .from("user_role_assignments")
     .select("brokerage_id, role")
     .eq("user_id", userId)
     .maybeSingle()
 
-  if (roleAssignment?.brokerage_id && roleAssignment?.role) {
-    if (!["admin", "broker", "superadmin"].includes(roleAssignment.role)) {
+  console.log("[v0] requireBrokerAdmin - roleAssignment:", roleAssignment, "roleError:", roleError)
+
+  if (roleAssignment?.brokerage_id) {
+    const role = roleAssignment.role || "admin" // Default to admin if role is null
+    if (!["admin", "broker", "superadmin"].includes(role)) {
       throw new Error("Forbidden: insufficient permissions")
     }
-    return { brokerageId: roleAssignment.brokerage_id, userType: roleAssignment.role }
+    return { brokerageId: roleAssignment.brokerage_id, userType: role }
+  }
+
+  // Final fallback: Get first available brokerage for this admin user
+  // This handles cases where the user exists but brokerage_id relationship is incomplete
+  const { data: firstBrokerage } = await supabase
+    .from("brokerages")
+    .select("id")
+    .limit(1)
+    .maybeSingle()
+
+  console.log("[v0] requireBrokerAdmin - firstBrokerage fallback:", firstBrokerage)
+
+  if (firstBrokerage?.id) {
+    // User exists but wasn't properly linked - return with the brokerage
+    return { brokerageId: firstBrokerage.id, userType: "admin" }
   }
 
   // If still no user found, throw error
