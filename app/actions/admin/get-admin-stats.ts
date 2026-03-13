@@ -4,28 +4,29 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { createClient } from '@/lib/supabase/server'
 
 export async function getAdminDashboardStats() {
-  const supabase = createServiceClient()
-  const authClient = await createClient()
-  
-  // Get current user to determine brokerage
-  const { data: { user } } = await authClient.auth.getUser()
-  if (!user?.id) {
-    throw new Error('Unauthorized')
-  }
+  try {
+    const supabase = createServiceClient()
+    const authClient = await createClient()
+    
+    // Get current user to determine brokerage
+    const { data: { user } } = await authClient.auth.getUser()
+    if (!user?.id) {
+      return getEmptyStats()
+    }
 
-  // Get user's brokerage_id
-  const { data: userData } = await supabase
-    .from('users')
-    .select('brokerage_id')
-    .eq('id', user.id)
-    .maybeSingle()
+    // Get user's brokerage_id
+    const { data: userData } = await supabase
+      .from('users')
+      .select('brokerage_id')
+      .eq('id', user.id)
+      .maybeSingle()
 
-  const brokerageId = userData?.brokerage_id
+    const brokerageId = userData?.brokerage_id
 
-  // If no brokerage, return empty stats
-  if (!brokerageId) {
-    return getEmptyStats()
-  }
+    // If no brokerage, return empty stats
+    if (!brokerageId) {
+      return getEmptyStats()
+    }
 
   // Get current date info
   const now = new Date()
@@ -250,6 +251,10 @@ export async function getAdminDashboardStats() {
     recentActivities: [],
     // Top performers
     topAgents,
+  }
+  } catch (error) {
+    console.error('[v0] Error fetching admin dashboard stats:', error)
+    return getEmptyStats()
   }
 }
 
