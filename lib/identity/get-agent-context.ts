@@ -37,8 +37,26 @@ export async function getAgentContext() {
   // Determine userType from multiple sources
   const userType = userData?.user_type ?? roleData?.role ?? user.user_metadata?.user_type ?? "agent"
   
-  // brokerageId - check users table, then role assignments, then auth metadata (may be null)
-  const brokerageId = userData?.brokerage_id ?? roleData?.brokerage_id ?? user.user_metadata?.brokerage_id ?? null
+  // brokerageId - check users table, then role assignments, then auth metadata
+  let brokerageId = userData?.brokerage_id ?? roleData?.brokerage_id ?? user.user_metadata?.brokerage_id ?? null
+
+  // If user exists but has no brokerage_id, find the first brokerage and update their record
+  if (!brokerageId && userData) {
+    const { data: firstBrokerage } = await supabase
+      .from("brokerages")
+      .select("id")
+      .limit(1)
+      .single()
+
+    if (firstBrokerage) {
+      brokerageId = firstBrokerage.id
+      // Update the user's brokerage_id
+      await supabase
+        .from("users")
+        .update({ brokerage_id: brokerageId })
+        .eq("id", user.id)
+    }
+  }
 
   // Try to get agent record if user is an agent type
   let agentId: string | null = roleData?.agent_id ?? null
