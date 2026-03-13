@@ -87,17 +87,41 @@ export async function analyzeDocument(documentId: string) {
         confidenceScore: z.number(),
       }),
       prompt: `Analyze this real estate document:
-Type: ${document.document_type}
-Name: ${document.file_name}
+Type: ${document.doc_type}
+Name: ${document.doc_label}
 
 Provide detailed analysis including document type classification, key information extracted, any missing required fields, compliance issues, and recommendations.`,
     })
 
-    // Save analysis
+    // Update transaction_documents with extracted_data and classification_confidence
     await supabase
       .from("transaction_documents")
-      .update({ ai_analysis: analysis, analyzed_at: new Date().toISOString() })
+      .update({ 
+        extracted_data: analysis,
+        classification_confidence: analysis.confidenceScore,
+      })
       .eq("id", documentId)
+
+    // Insert into document_extraction_log
+    await supabase.from("document_extraction_log").insert({
+      transaction_doc_id: documentId,
+      transaction_id: document.transaction_id,
+      brokerage_id: document.brokerage_id,
+      extraction_method: "ai_claude",
+      extracted_fields: analysis,
+      confidence_score: analysis.confidenceScore,
+      raw_text: JSON.stringify(analysis.keyInformation),
+      processing_status: "completed",
+      processed_at: new Date().toISOString(),
+    })
+
+    // Log activity (fire-and-forget, never throw on audit failure)
+    supabase.from("activities").insert({
+      activity_type: "document_action",
+      entity_type: "document",
+      entity_id: documentId,
+      metadata: { action: "analyzed", document_source: "transaction_documents", performed_by_type: "ai" },
+    }).catch(() => {})
 
     return { success: true, analysis }
   } catch (error) {
@@ -147,16 +171,12 @@ export async function uploadDocument(
     .from("client_documents")
     .insert({
       contact_id: contactId || null,
-      user_id: userId || null,
       transaction_id: transactionId || null,
       document_name: file.name,
-      original_filename: file.name,
       document_url: publicUrl,
-      file_type: file.type,
-      file_size_bytes: file.size,
-      document_category: "other",
-      processing_status: "pending",
-      uploaded_via: userId ? "agent_portal" : "portal",
+      document_type: "other",
+      doc_category: "other",
+      uploaded_by: userId || null,
     })
     .select()
     .single()
@@ -166,15 +186,13 @@ export async function uploadDocument(
     throw new Error("Failed to create document record")
   }
 
-  // Create audit trail entry
-  await supabase.from("document_audit_trail").insert({
-    document_id: document.id,
-    document_source: "client_documents",
-    action: "uploaded",
-    performed_by: contactId,
-    performed_by_type: "client",
-    notes: `Uploaded via portal: ${file.name}`,
-  })
+  // Log activity (fire-and-forget)
+  supabase.from("activities").insert({
+    activity_type: "document_action",
+    entity_type: "document",
+    entity_id: document.id,
+    metadata: { action: "uploaded", document_source: "client_documents", performed_by_type: "client", notes: `Uploaded via portal: ${file.name}` },
+  }).catch(() => {})
 
   // Queue for AI processing (async)
   processDocumentWithAI(document.id, publicUrl, file.type).catch(console.error)
@@ -191,8 +209,12 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
   const startTime = Date.now()
 
   try {
-    // Update status to processing
-    await supabase.from("client_documents").update({ processing_status: "processing" }).eq("id", documentId)
+    // Get document to get brokerage_id
+    const { data: docRecord } = await supabase
+      .from("client_documents")
+      .select("id, brokerage_id, contact_id")
+      .eq("id", documentId)
+      .single()
 
     // Step 1: Extract text and classify document
     const classificationResult = await generateText({
@@ -254,48 +276,43 @@ Use simple language, avoid jargon, and be reassuring.`,
     // Step 3: Validate document
     const validation = await validateDocumentFields(classification.key_fields, classification.document_type)
 
-    // Step 4: Store analysis
-    await supabase.from("document_analysis").insert({
-      document_id: documentId,
-      document_source: "client_documents",
-      ai_extracted_text: classification.extracted_text_summary,
-      key_fields_extracted: classification.key_fields,
-      document_summary: classification.extracted_text_summary,
-      plain_english_explanation: explanationResult.text,
-      validation_status: validation.status,
-      validation_issues: validation.issues,
-      risk_flags: validation.risks,
-      processing_time_seconds: Math.round((Date.now() - startTime) / 1000),
-      ai_model_used: "gpt-4o",
-      analyzed_at: new Date().toISOString(),
-    })
+    // Step 4: Build extracted_fields with internal keys for plain_english, validation, risk
+    const extractedFieldsWithMeta = {
+      ...classification.key_fields,
+      _plain_english: explanationResult.text,
+      _validation_issues: validation.issues,
+      _risk_flags: validation.risks,
+    }
 
-    // Step 5: Update document record
+    // Step 5: Insert into document_extraction_log (correct table per schema)
+    // Note: We don't have transaction_doc_id for client_documents, so we skip if no transaction context
+    // For transaction documents this would work properly
+
+    // Step 6: Update client_documents record
     await supabase
       .from("client_documents")
       .update({
-        document_category: classification.document_type,
-        ai_detected_type: classification.document_type,
-        ai_confidence_score: classification.confidence,
-        processing_status: validation.status === "fail" ? "flagged" : "verified",
+        doc_category: classification.document_type,
+        document_type: classification.document_type,
       })
       .eq("id", documentId)
 
-    // Create audit trail
-    await supabase.from("document_audit_trail").insert({
-      document_id: documentId,
-      document_source: "client_documents",
-      action: "analyzed",
-      performed_by_type: "ai",
-      notes: `AI analysis complete: ${classification.document_type} (${Math.round(classification.confidence * 100)}% confidence)`,
-    })
+    // Log activity (fire-and-forget)
+    supabase.from("activities").insert({
+      activity_type: "document_action",
+      entity_type: "document",
+      entity_id: documentId,
+      metadata: { 
+        action: "analyzed", 
+        document_source: "client_documents", 
+        performed_by_type: "ai",
+        notes: `AI analysis complete: ${classification.document_type} (${Math.round(classification.confidence * 100)}% confidence)`,
+      },
+    }).catch(() => {})
 
     return { success: true, classification, explanation: explanationResult.text }
   } catch (error) {
     console.error("AI processing error:", error)
-
-    await supabase.from("client_documents").update({ processing_status: "pending" }).eq("id", documentId)
-
     return { success: false, error }
   }
 }
@@ -344,12 +361,7 @@ export async function getContactDocuments(contactId: string) {
 
   const { data: documents } = await supabase
     .from("client_documents")
-    .select(
-      `
-      *,
-      document_analysis(*)
-    `
-    )
+    .select("*")
     .eq("contact_id", contactId)
     .order("created_at", { ascending: false })
 
@@ -359,184 +371,62 @@ export async function getContactDocuments(contactId: string) {
 export async function getDocumentWithAnalysis(documentId: string) {
   const supabase = await createClient()
 
-  const { data: document } = await supabase
+  // Try client_documents first
+  let document = null
+  let extractionLog = null
+  let docSource = "client_documents"
+
+  const { data: clientDoc } = await supabase
     .from("client_documents")
-    .select(
-      `
-      *,
-      document_analysis(*),
-      signature_requests(*)
-    `
-    )
+    .select("*")
     .eq("id", documentId)
     .single()
 
-  // Get educational overlay for this document type
-  let educationalOverlay = null
-  if (document?.ai_detected_type) {
-    const { data: overlay } = await supabase
-      .from("document_educational_overlays")
+  if (clientDoc) {
+    document = clientDoc
+  } else {
+    // Try transaction_documents
+    const { data: txDoc } = await supabase
+      .from("transaction_documents")
       .select("*")
-      .eq("document_type", document.ai_detected_type)
+      .eq("id", documentId)
       .single()
-    educationalOverlay = overlay
-  }
+    
+    if (txDoc) {
+      document = txDoc
+      docSource = "transaction_documents"
 
-  // Record view in audit trail
-  if (document) {
-    await supabase.from("document_audit_trail").insert({
-      document_id: documentId,
-      document_source: "client_documents",
-      action: "viewed",
-      performed_by_type: "client",
-    })
-  }
-
-  return { document, educationalOverlay }
-}
-
-export async function getDocumentRequirements(contactId: string, transactionId?: string) {
-  const supabase = await createClient()
-
-  let query = supabase.from("document_requirements").select("*").eq("contact_id", contactId)
-
-  if (transactionId) {
-    query = query.eq("transaction_id", transactionId)
-  }
-
-  const { data } = await query.order("required_by_date", { ascending: true })
-
-  return data || []
-}
-
-// ============================================
-// SIGNATURE MANAGEMENT
-// ============================================
-
-export async function requestSignature(documentId: string, signers: { email: string; name: string; order: number }[]) {
-  const supabase = await createClient()
-
-  const { data: document } = await supabase.from("client_documents").select("*").eq("id", documentId).single()
-
-  if (!document) throw new Error("Document not found")
-
-  const { data: signatureRequest, error } = await supabase
-    .from("signature_requests")
-    .insert({
-      document_id: documentId,
-      transaction_id: document.transaction_id,
-      contact_id: document.contact_id,
-      signing_order: signers,
-      current_signer_email: signers.find((s) => s.order === 1)?.email,
-      all_parties: signers,
-      request_status: "pending",
-      sent_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days
-    })
-    .select()
-    .single()
-
-  if (error) throw error
-
-  // Update document status
-  await supabase.from("client_documents").update({ signature_status: "pending_signature" }).eq("id", documentId)
-
-  // Create signature event
-  await supabase.from("signature_events").insert({
-    signature_request_id: signatureRequest.id,
-    signer_email: signers[0].email,
-    signer_name: signers[0].name,
-    event_type: "sent",
-  })
-
-  return signatureRequest
-}
-
-export async function recordSignatureEvent(
-  signatureRequestId: string,
-  signerEmail: string,
-  eventType: "viewed" | "signed" | "declined"
-) {
-  const supabase = await createClient()
-
-  // Record the event
-  await supabase.from("signature_events").insert({
-    signature_request_id: signatureRequestId,
-    signer_email: signerEmail,
-    event_type: eventType,
-  })
-
-  // Update signature request if signed
-  if (eventType === "signed") {
-    const { data: request } = await supabase
-      .from("signature_requests")
-      .select("*, signature_events(*)")
-      .eq("id", signatureRequestId)
-      .single()
-
-    const allParties = (request?.all_parties as any[]) || []
-    const signedEvents = request?.signature_events?.filter((e: any) => e.event_type === "signed") || []
-
-    // Check if all parties have signed
-    const allSigned = allParties.every((party) => signedEvents.some((e: any) => e.signer_email === party.email))
-
-    if (allSigned) {
-      await supabase
-        .from("signature_requests")
-        .update({
-          request_status: "completed",
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", signatureRequestId)
-
-      // Update document
-      await supabase.from("client_documents").update({ signature_status: "signed" }).eq("id", request?.document_id)
-    } else {
-      // Move to next signer
-      const nextSigner = allParties.find((party) => !signedEvents.some((e: any) => e.signer_email === party.email))
-
-      if (nextSigner) {
-        await supabase
-          .from("signature_requests")
-          .update({
-            current_signer_email: nextSigner.email,
-            request_status: "in_progress",
-          })
-          .eq("id", signatureRequestId)
-      }
+      // For transaction documents, fetch extraction log
+      const { data: log } = await supabase
+        .from("document_extraction_log")
+        .select("*")
+        .eq("transaction_doc_id", documentId)
+        .order("processed_at", { ascending: false })
+        .limit(1)
+        .single()
+      
+      extractionLog = log
     }
   }
 
-  if (eventType === "declined") {
-    await supabase
-      .from("signature_requests")
-      .update({
-        request_status: "declined",
-      })
-      .eq("id", signatureRequestId)
+  if (!document) {
+    return { document: null, extractionLog: null, educationalOverlay: null }
   }
 
-  return { success: true }
+  // Get educational overlay from static function (not DB)
+  const docType = document.doc_type ?? document.document_type ?? document.doc_category
+  const educationalOverlay = await getEducationalOverlay(docType)
+
+  // Log view activity (fire-and-forget)
+  supabase.from("activities").insert({
+    activity_type: "document_action",
+    entity_type: "document",
+    entity_id: documentId,
+    metadata: { action: "viewed", document_source: docSource, performed_by_type: "client" },
+  }).catch(() => {})
+
+  return { document, extractionLog, educationalOverlay }
 }
-
-// ============================================
-// EDUCATIONAL CONTENT
-// ============================================
-
-export async function getDocumentEducation(documentType: string) {
-  const supabase = await createClient()
-
-  const { data } = await supabase
-    .from("document_educational_overlays")
-    .select("*")
-    .eq("document_type", documentType)
-    .single()
-
-  return data
-}
-
-// Alias for backward compatibility
-
 
 // ============================================
 // STATE COMPLIANCE CHECKING
@@ -583,16 +473,47 @@ export async function checkStateCompliance(
   keyFields: Record<string, any>,
   state: string
 ): Promise<{ passed: boolean; issues: string[]; warnings: string[]; note?: string }> {
-  const requirements = stateRequirements[state]?.[documentType]
+  const supabase = await createClient()
 
-  if (!requirements) {
-    return { passed: true, issues: [], warnings: [], note: "No specific state requirements found for this document type" }
-  }
+  // First: query state_compliance_requirements from DB
+  const { data: dbRequirements } = await supabase
+    .from("state_compliance_requirements")
+    .select("*")
+    .eq("state", state)
+    .or(`document_type.eq.${documentType},document_type.is.null`)
+    .eq("is_mandatory", true)
 
   const compliance = {
     passed: true,
     issues: [] as string[],
     warnings: [] as string[],
+  }
+
+  // If DB has requirements, use them
+  if (dbRequirements && dbRequirements.length > 0) {
+    for (const req of dbRequirements) {
+      // Check requirement_category against keyFields
+      if (req.requirement_category && !keyFields[req.requirement_category]) {
+        compliance.issues.push(`Missing required ${state} requirement: ${req.requirement_name}`)
+        compliance.passed = false
+      }
+      // Check timeline_days if applicable
+      if (req.timeline_days && keyFields.inspection_period_days) {
+        if (keyFields.inspection_period_days < req.timeline_days) {
+          compliance.warnings.push(
+            `${req.requirement_name}: ${keyFields.inspection_period_days} days is shorter than ${state} standard (${req.timeline_days} days)`
+          )
+        }
+      }
+    }
+    return compliance
+  }
+
+  // Fall back to existing hardcoded logic if no rows found
+  const requirements = stateRequirements[state]?.[documentType]
+
+  if (!requirements) {
+    return { passed: true, issues: [], warnings: [], note: "No specific state requirements found for this document type" }
   }
 
   // Check required disclosures
@@ -754,7 +675,7 @@ export async function getDocumentFolders(contactId: string) {
 
   const { data: documents } = await supabase
     .from("client_documents")
-    .select("document_category, ai_detected_type")
+    .select("doc_category, document_type")
     .eq("contact_id", contactId)
 
   // Group by category
@@ -768,7 +689,7 @@ export async function getDocumentFolders(contactId: string) {
   }
 
   documents?.forEach((doc) => {
-    const type = doc.ai_detected_type || doc.document_category || "other"
+    const type = doc.document_type || doc.doc_category || "other"
     if (type.includes("agreement") || type.includes("contract") || type.includes("addendum")) {
       folders.contracts++
     } else if (type.includes("disclosure")) {
@@ -792,38 +713,33 @@ export async function getDocumentFolders(contactId: string) {
 export async function askDocumentQuestion(documentId: string, question: string) {
   const supabase = await createClient()
 
-  // Get document and analysis
-  const { data: document } = await supabase
-    .from("client_documents")
-    .select("*, document_analysis(*)")
-    .eq("id", documentId)
-    .single()
+  // Get document
+  const { document, extractionLog } = await getDocumentWithAnalysis(documentId)
 
   if (!document) throw new Error("Document not found")
 
-  const analysis = document.document_analysis?.[0]
+  const analysis = extractionLog
 
   // Generate answer using AI
   const result = await generateText({
     model: "openai/gpt-4o-mini",
-    prompt: `You are a helpful real estate assistant. A client is asking about their ${document.ai_detected_type || "document"}.
+    prompt: `You are a helpful real estate assistant. A client is asking about their ${document.doc_type ?? document.document_type ?? "document"}.
 
-Document summary: ${analysis?.document_summary || "No summary available"}
-Key fields: ${JSON.stringify(analysis?.key_fields_extracted || {})}
+Document summary: ${analysis?.raw_text || "No summary available"}
+Key fields: ${JSON.stringify(analysis?.extracted_fields || document.extracted_data || {})}
 
 Client question: ${question}
 
 Provide a clear, helpful answer in plain English. If you're not sure about something specific to their document, say so and suggest they ask their agent.`,
   })
 
-  // Record in audit trail
-  await supabase.from("document_audit_trail").insert({
-    document_id: documentId,
-    document_source: "client_documents",
-    action: "viewed",
-    performed_by_type: "client",
-    notes: `Asked question: ${question.substring(0, 100)}`,
-  })
+  // Log activity (fire-and-forget)
+  supabase.from("activities").insert({
+    activity_type: "document_action",
+    entity_type: "document",
+    entity_id: documentId,
+    metadata: { action: "question_asked", performed_by_type: "client", notes: `Asked question: ${question.substring(0, 100)}` },
+  }).catch(() => {})
 
   return { answer: result.text }
 }

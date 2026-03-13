@@ -6,7 +6,18 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
   const { contactId } = await params
   const supabase = await createClient()
 
-  // 1. Query transactions first
+  // Get contact for brokerage_id
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("id, brokerage_id")
+    .eq("id", contactId)
+    .single()
+
+  if (!contact) {
+    redirect("/portal?error=contact_not_found")
+  }
+
+  // STEP 1 — Resolve transaction IDs (never use Supabase subquery in .in())
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id")
@@ -14,43 +25,75 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
 
   const transactionIds = transactions?.map(t => t.id) ?? []
 
-  // 2. Query client_documents
-  const { data: clientDocuments } = await supabase
+  // STEP 2 — Fetch client documents
+  const { data: clientDocs } = await supabase
     .from("client_documents")
-    .select("id, name, document_type, file_url, uploaded_at, uploaded_by, review_status, notes")
+    .select(`id, document_name, document_url, document_type, doc_category,
+             is_financial_verification, verification_amount, verification_lender,
+             expiration_date, verified_by, verified_at, uploaded_by, created_at`)
     .eq("contact_id", contactId)
-    .order("uploaded_at", { ascending: false })
+    .order("created_at", { ascending: false })
 
-  // 3. Query transaction_documents if transactionIds exist
-  let transactionDocuments: any[] = []
-  if (transactionIds.length > 0) {
-    const { data } = await supabase
-      .from("transaction_documents")
-      .select("id, name, document_type, file_url, uploaded_at, required, status, transaction_id")
-      .in("transaction_id", transactionIds)
-      .order("uploaded_at", { ascending: false })
-    
-    transactionDocuments = data ?? []
-  }
+  // STEP 3 — Fetch transaction documents with inline analysis data
+  const { data: txDocs } = transactionIds.length > 0
+    ? await supabase
+        .from("transaction_documents")
+        .select(`id, transaction_id, doc_type, doc_label, status, storage_url,
+                 uploaded_at, extracted_data, classification_confidence,
+                 rejection_reason, notes`)
+        .in("transaction_id", transactionIds)
+        .order("uploaded_at", { ascending: false })
+    : { data: [] }
 
-  // 4. Query document_checklist if transactionIds exist
-  let documentChecklist: any[] = []
-  if (transactionIds.length > 0) {
-    const { data } = await supabase
-      .from("document_checklist")
-      .select("id, item_name, required, status, due_date, notes, transaction_id")
-      .in("transaction_id", transactionIds)
-      .order("due_date", { ascending: true })
-    
-    documentChecklist = data ?? []
-  }
+  // STEP 4 — Fetch extraction log for all transaction docs with completed analysis
+  const txDocIds = txDocs?.map(d => d.id) ?? []
+  const { data: extractionLogs } = txDocIds.length > 0
+    ? await supabase
+        .from("document_extraction_log")
+        .select(`id, transaction_doc_id, extraction_method, extracted_fields,
+                 confidence_score, processing_status, processed_at, error_message`)
+        .in("transaction_doc_id", txDocIds)
+        .eq("processing_status", "completed")
+        .order("processed_at", { ascending: false })
+    : { data: [] }
+
+  // STEP 5 — Fetch document checklist
+  const { data: checklist } = transactionIds.length > 0
+    ? await supabase
+        .from("document_checklist")
+        .select(`id, transaction_id, required_documents, verified_count,
+                 total_count, status`)
+        .in("transaction_id", transactionIds)
+    : { data: [] }
+
+  // STEP 6 — Fetch document classifications for routing metadata
+  const { data: classifications } = await supabase
+    .from("document_classifications")
+    .select("doc_type, filing_folder, requires_review, auto_route")
+    .eq("brokerage_id", contact.brokerage_id)
+
+  // STEP 7 — Fetch state compliance requirements for doc types present
+  const uniqueDocTypes = [...new Set([
+    ...(txDocs?.map(d => d.doc_type).filter(Boolean) ?? []),
+    ...(clientDocs?.map(d => d.document_type).filter(Boolean) ?? []),
+  ])]
+
+  const { data: stateRequirements } = uniqueDocTypes.length > 0
+    ? await supabase
+        .from("state_compliance_requirements")
+        .select("state, document_type, requirement_name, description, is_mandatory, timeline_days")
+        .in("document_type", uniqueDocTypes)
+    : { data: [] }
 
   return (
     <DocumentsClient
       contactId={contactId}
-      clientDocuments={clientDocuments ?? []}
-      transactionDocuments={transactionDocuments}
-      documentChecklist={documentChecklist}
+      clientDocs={clientDocs ?? []}
+      txDocs={txDocs ?? []}
+      extractionLogs={extractionLogs ?? []}
+      checklist={checklist ?? []}
+      classifications={classifications ?? []}
+      stateRequirements={stateRequirements ?? []}
     />
   )
 }
