@@ -25,6 +25,16 @@ import {
 import { useAuth } from "@/lib/auth/client"
 import Link from "next/link"
 
+// Role-based dashboard routing
+const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
+  admin: "/dashboard/admin",
+  broker: "/dashboard/broker", 
+  tc: "/dashboard/tc",
+  compliance_officer: "/dashboard/compliance",
+  agent: "/dashboard/agent",
+  contact: "/portal",
+}
+
 interface AgentStats {
   activeListings: number
   pendingOffers: number
@@ -53,7 +63,8 @@ const Loading = () => (
 
 function DashboardContent() {
   const router = useRouter()
-  const { user, brokerage } = useAuth()
+  const { user, userContext } = useAuth()
+  const [redirected, setRedirected] = useState(false)
   const [stats, setStats] = useState<AgentStats>({
     activeListings: 0,
     pendingOffers: 0,
@@ -67,7 +78,22 @@ function DashboardContent() {
   const [loading, setLoading] = useState(true)
   const [actionItems, setActionItems] = useState<ActionItem[]>([])
 
+  // Redirect based on user role
   useEffect(() => {
+    if (userContext && !redirected) {
+      const primaryRole = userContext.roles[0] || "agent"
+      const targetRoute = ROLE_DASHBOARD_ROUTES[primaryRole]
+      if (targetRoute && targetRoute !== "/dashboard") {
+        setRedirected(true)
+        router.replace(targetRoute)
+      }
+    }
+  }, [userContext, redirected, router])
+
+  useEffect(() => {
+    // Skip fetching if we're going to redirect
+    if (redirected) return
+    
     const fetchDashboardData = async () => {
       setLoading(true)
       try {
@@ -123,9 +149,14 @@ function DashboardContent() {
       }
     }
 
-    fetchDashboardData()
-  }, [])
+  fetchDashboardData()
+  }, [redirected])
 
+  // Show loading while redirecting to role-specific dashboard
+  if (redirected) {
+    return <Loading />
+  }
+  
   const statCards = [
     {
       title: "Active Listings",
