@@ -21,6 +21,7 @@ import {
   Sparkles,
 } from "lucide-react"
 import { getAgentStats } from "@/app/actions/agents"
+import { createClient } from "@/lib/supabase/client"
 import Link from "next/link"
 
 interface AgentStats {
@@ -61,18 +62,28 @@ export default function AgentDashboard() {
     const fetchDashboardData = async () => {
       setLoading(true)
       try {
-        const agentStats = await getAgentStats()
+        // Get current user ID from Supabase auth
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
         
-        if (agentStats.success && agentStats.stats) {
+        if (!user?.id) {
+          console.warn("[v0] No authenticated user found for agent dashboard")
+          setLoading(false)
+          return
+        }
+
+        const agentStats = await getAgentStats(user.id)
+        
+        if (agentStats && typeof agentStats === 'object') {
           setStats({
-            activeListings: agentStats.stats.active_listings || 0,
-            pendingOffers: agentStats.stats.pending_offers || 0,
-            closingsThisMonth: agentStats.stats.closings_this_month || 0,
-            totalVolume: agentStats.stats.total_volume || 0,
-            activeClients: agentStats.stats.active_clients || 0,
-            upcomingShowings: agentStats.stats.upcoming_showings || 0,
-            pendingTasks: agentStats.stats.pending_tasks || 0,
-            unreadMessages: agentStats.stats.unread_messages || 0,
+            activeListings: agentStats.activeDeals || 0,
+            pendingOffers: 0,
+            closingsThisMonth: 0,
+            totalVolume: agentStats.ytdVolume || 0,
+            activeClients: agentStats.contactCount || 0,
+            upcomingShowings: 0,
+            pendingTasks: agentStats.pendingTasks || 0,
+            unreadMessages: 0,
           })
         }
 
