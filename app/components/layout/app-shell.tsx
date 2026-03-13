@@ -16,7 +16,11 @@ export function AppShell({ children }: AppShellProps) {
   const { user, userContext } = useAuth()
   const pathname = usePathname()
 
-  if (pathname.startsWith('/auth') || pathname.startsWith('/login')) {
+  if (
+    pathname.startsWith('/auth') ||
+    pathname.startsWith('/login') ||
+    pathname.startsWith('/portal')
+  ) {
     return <>{children}</>
   }
 
