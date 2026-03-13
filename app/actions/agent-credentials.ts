@@ -24,10 +24,25 @@ interface AgentCredential {
   error_message?: string
 }
 
-// Get all credentials for current agent
+// Get all credentials for current agent or brokerage (for admins)
 export async function getAgentCredentials() {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
+
+  // If user is not an agent (admin/broker), return brokerage-wide credentials
+  if (!agentId) {
+    if (!brokerageId) {
+      return [] // No brokerage association
+    }
+    const { data, error } = await supabase
+      .from("agent_api_credentials")
+      .select("*")
+      .eq("brokerage_id", brokerageId)
+      .order("service_name")
+
+    if (error) throw error
+    return data as AgentCredential[]
+  }
 
   const { data, error } = await supabase
     .from("agent_api_credentials")
@@ -45,13 +60,28 @@ export async function getServiceCredential(serviceName: ServiceName) {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
+  // If user is not an agent (admin/broker), get brokerage-wide credential
+  if (!agentId) {
+    if (!brokerageId) return null
+    
+    const { data, error } = await supabase
+      .from("agent_api_credentials")
+      .select("*")
+      .eq("brokerage_id", brokerageId)
+      .eq("service_name", serviceName)
+      .maybeSingle()
+
+    if (error && error.code !== "PGRST116") throw error
+    return data as AgentCredential | null
+  }
+
   const { data, error } = await supabase
     .from("agent_api_credentials")
     .select("*")
     .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
     .eq("service_name", serviceName)
-    .single()
+    .maybeSingle()
 
   if (error && error.code !== "PGRST116") throw error // PGRST116 = not found
   return data as AgentCredential | null
@@ -69,11 +99,14 @@ export async function saveServiceCredential(params: {
   config?: Record<string, any>
 }) {
   const supabase = await createClient()
-  const { agentId, brokerageId } = await getAgentContext()
-  if (!agentId) throw new Error("Not authenticated")
+  const { agentId, brokerageId, userId } = await getAgentContext()
+  if (!brokerageId) throw new Error("Not associated with a brokerage")
 
+  // Use agentId if available, otherwise use the userId for admins/brokers
+  const effectiveAgentId = agentId || userId
+  
   const credential = {
-    agent_id: agentId,
+    agent_id: effectiveAgentId,
     brokerage_id: brokerageId,
     service_name: params.serviceName,
     service_type: params.serviceType,
@@ -176,13 +209,19 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
 
 // Delete credential
 export async function deleteServiceCredential(serviceName: ServiceName) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId, brokerageId, userId } = await getAgentContext()
   const supabase = await createClient()
+
+  // Use agentId if available, otherwise userId for admins/brokers
+  const effectiveAgentId = agentId || userId
+  if (!effectiveAgentId || !brokerageId) {
+    throw new Error("Unable to delete credential - missing agent or brokerage context")
+  }
 
   const { error } = await supabase
     .from("agent_api_credentials")
     .delete()
-    .eq("agent_id", agentId)
+    .eq("agent_id", effectiveAgentId)
     .eq("brokerage_id", brokerageId)
     .eq("service_name", serviceName)
 
