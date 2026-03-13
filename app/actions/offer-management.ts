@@ -6,17 +6,17 @@ import { incrementUsage } from "@/lib/usage"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure, getOfferExpirationHours } from "@/lib/brokerage"
 
-// Submit offer
+// Submit offer (using canonical offers table with offer_price)
 export async function submitOffer(offerData: {
   transaction_id: string
   listing_id: string
-  buyer_id: string
-  offer_amount: number
+  contact_id: string
+  offer_price: number
   earnest_money: number
   down_payment_percent: number
   financing_type: string
   contingencies: string[]
-  close_date: string
+  closing_date: string
   additional_terms?: any
 }) {
   const supabase = await createClient()
@@ -64,7 +64,7 @@ export async function submitOffer(offerData: {
       activity_type: "offer_received",
       entity_type: "offer",
       entity_id: offer.id,
-      description: `New offer of $${offerData.offer_amount.toLocaleString()} received`,
+      description: `New offer of $${offerData.offer_price.toLocaleString()} received`,
       metadata: { priority: "high" },
     })
   }
@@ -108,9 +108,9 @@ export async function analyzeOffer(offerId: string, userId: string) {
     offer?.commission_percentage ?? undefined
   )
 
-  // Calculate net to seller
+  // Calculate net to seller (using canonical offer_price field)
   const netToSeller = calculateNetSheet({
-    purchase_price: offer.offer_amount,
+    purchase_price: offer.offer_price,
     listing_price: offer.listing.price,
     earnest_money: offer.earnest_money,
     agent_commission: commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate,
@@ -127,12 +127,12 @@ export async function analyzeOffer(offerId: string, userId: string) {
 
 Property: ${offer.listing.address}
 List Price: $${offer.listing.price.toLocaleString()}
-Offer Amount: $${offer.offer_amount.toLocaleString()}
+Offer Amount: $${offer.offer_price.toLocaleString()}
 Earnest Money: $${offer.earnest_money.toLocaleString()}
 Down Payment: ${offer.down_payment_percent}%
 Financing: ${offer.financing_type}
-Contingencies: ${offer.contingencies.join(", ")}
-Close Date: ${offer.close_date}
+Contingencies: ${offer.contingencies?.join(", ") || "None"}
+Close Date: ${offer.closing_date}
 Net to Seller: $${netToSeller.net_to_seller.toLocaleString()}
 
 Provide your analysis in the following format:
@@ -205,22 +205,22 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
   )
   const totalCommissionRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
 
-  // Calculate net sheets for all
+  // Calculate net sheets for all (using canonical offer_price field)
   const offerComparisons = offers.map((offer) => ({
     offer_id: offer.id,
-    buyer_name: `${offer.buyer.first_name} ${offer.buyer.last_name}`,
-    offer_amount: offer.offer_amount,
+    buyer_name: `${offer.buyer?.first_name || "Unknown"} ${offer.buyer?.last_name || "Buyer"}`,
+    offer_price: offer.offer_price,
     net_to_seller: calculateNetSheet({
-      purchase_price: offer.offer_amount,
+      purchase_price: offer.offer_price,
       earnest_money: offer.earnest_money,
       agent_commission: totalCommissionRate,
       closing_costs: 0.02,
     }).net_to_seller,
     down_payment_percent: offer.down_payment_percent,
     financing_type: offer.financing_type,
-    contingencies_count: offer.contingencies.length,
-    close_date: offer.close_date,
-    days_to_close: Math.floor((new Date(offer.close_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)),
+    contingencies_count: offer.contingencies?.length || 0,
+    closing_date: offer.closing_date,
+    days_to_close: Math.floor((new Date(offer.closing_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)),
   }))
 
   // Track LLM usage
@@ -236,7 +236,7 @@ ${offerComparisons
     (o, i) => `
 Offer ${i + 1}:
 - Buyer: ${o.buyer_name}
-- Amount: $${o.offer_amount.toLocaleString()}
+- Amount: $${o.offer_price.toLocaleString()}
 - Net to Seller: $${o.net_to_seller.toLocaleString()}
 - Down Payment: ${o.down_payment_percent}%
 - Financing: ${o.financing_type}
@@ -403,15 +403,15 @@ export async function acceptOffer(offerId: string, agentId: string) {
     })
     .eq("id", offerId)
 
-  // Update transaction
+  // Update transaction (using canonical offer_price field)
   if (offer.transaction_id) {
     await supabase
       .from("transactions")
       .update({
         status: "under_contract",
-        purchase_price: offer.offer_amount,
+        purchase_price: offer.offer_price,
         contract_date: new Date().toISOString(),
-        estimated_close_date: offer.close_date,
+        estimated_close_date: offer.closing_date,
       })
       .eq("id", offer.transaction_id)
 

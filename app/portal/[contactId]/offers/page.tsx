@@ -30,14 +30,14 @@ function OfferCard({ offer, contactId }: { offer: any; contactId: string }) {
               <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <DollarSign className="h-3.5 w-3.5" />
-                  {formatCurrency(offer.offer_amount)}
+                  {formatCurrency(offer.offer_price)}
                 </span>
-                {listPrice && offer.offer_amount && (
+                {listPrice && offer.offer_price && (
                   <span className={cn(
-                    offer.offer_amount > listPrice ? "text-green-600" : "text-amber-600"
+                    offer.offer_price > listPrice ? "text-green-600" : "text-amber-600"
                   )}>
-                    {offer.offer_amount > listPrice ? "+" : ""}
-                    {(((offer.offer_amount - listPrice) / listPrice) * 100).toFixed(1)}% vs list
+                    {offer.offer_price > listPrice ? "+" : ""}
+                    {(((offer.offer_price - listPrice) / listPrice) * 100).toFixed(1)}% vs list
                   </span>
                 )}
                 <span className="flex items-center gap-1">
@@ -103,11 +103,11 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     redirect("/portal?error=contact_not_found")
   }
 
-  // BUYER VIEW: Show offers the buyer has submitted
+  // BUYER VIEW: Show offers the buyer has submitted (using canonical offer_price)
   if (portalView === "buyer") {
     const { data: buyerOffers } = await supabase
       .from("offers")
-      .select("id, listing_id, transaction_id, offer_amount, status, created_at, expiration_date, listing:listings(id, address, property_address, list_price)")
+      .select("id, listing_id, transaction_id, offer_price, status, created_at, expiration_date, listing:listings(id, address, property_address, list_price)")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
 
@@ -141,7 +141,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
                     Congratulations! Your offer was accepted!
                   </h3>
                   <p className="text-green-700">
-                    {acceptedOffer.listing?.address || acceptedOffer.listing?.property_address || "Property"} - {formatCurrency(acceptedOffer.offer_amount)}
+                    {acceptedOffer.listing?.address || acceptedOffer.listing?.property_address || "Property"} - {formatCurrency(acceptedOffer.offer_price)}
                   </p>
                   <Button className="bg-green-600 hover:bg-green-700" asChild>
                     <Link href={`/portal/${contactId}/journey`}>
@@ -244,7 +244,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     .select("*, buyer:contacts(*)")
     .eq("listing_id", listing.id)
     .in("status", ["pending", "submitted", "under_review", "countered"])
-    .order("offer_amount", { ascending: false })
+    .order("offer_price", { ascending: false })
 
   offers = sellerOffers ?? []
 
@@ -263,12 +263,12 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     )
   }
 
-  // Single offer view
+  // Single offer view (using canonical offer_price)
   if (offers.length === 1) {
     const offer = offers[0]
     const contingencies =
       typeof offer.contingencies === "string" ? JSON.parse(offer.contingencies || "{}") : offer.contingencies || {}
-    const priceVsList = ((offer.offer_amount - listing.price) / listing.price) * 100
+    const priceVsList = ((offer.offer_price - listing.price) / listing.price) * 100
 
     return (
       <div className="space-y-6">
@@ -291,7 +291,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
             <CardContent className="space-y-4">
               <div>
                 <div className="text-4xl font-bold text-green-600 mb-1">
-                  ${(offer.offer_amount || 0).toLocaleString()}
+                  ${(offer.offer_price || 0).toLocaleString()}
                 </div>
                 <div className="text-sm text-muted-foreground">
                   {priceVsList > 0
@@ -358,9 +358,9 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
             </CardContent>
           </Card>
 
-          {/* Net Sheet Calculator - Use offer_amount instead of offer_price */}
+          {/* Net Sheet Calculator using canonical offer_price */}
           <NetSheetCalculator
-            offerPrice={offer.offer_amount || 0}
+            offerPrice={offer.offer_price || 0}
             listPrice={listing.price || 0}
             currentMortgageBalance={listing.mortgage_balance || 0}
             propertyAddress={listing.address || ""}
@@ -441,20 +441,20 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
               </tr>
             </thead>
             <tbody>
-              {/* Offer Price */}
+              {/* Offer Price (using canonical offer_price) */}
               <tr className="border-b">
                 <td className="py-3">Offer Price</td>
                 {offers.map((offer) => (
                   <td key={offer.id} className="text-center py-3">
-                    ${(offer.offer_amount || 0).toLocaleString()}
-                    {offer.offer_amount === Math.max(...offers.map((o: any) => o.offer_amount || 0)) && " ⭐"}
+                    ${(offer.offer_price || 0).toLocaleString()}
+                    {offer.offer_price === Math.max(...offers.map((o: any) => o.offer_price || 0)) && " ⭐"}
                   </td>
                 ))}
                 <td className="text-center py-3 font-semibold">
                   {String.fromCharCode(
                     65 +
                       offers.findIndex(
-                        (o: any) => o.offer_amount === Math.max(...offers.map((o: any) => o.offer_amount || 0)),
+                        (o: any) => o.offer_price === Math.max(...offers.map((o: any) => o.offer_price || 0)),
                       ),
                   )}
                 </td>

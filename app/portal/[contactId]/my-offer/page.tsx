@@ -45,7 +45,8 @@ export default async function MyOfferPage({ params }: { params: Promise<{ contac
   }
 
   const activeOffer = offers[0]
-  const hasCounter = activeOffer.counter_amount && activeOffer.counter_amount !== activeOffer.offer_amount
+  // Note: counter logic uses parent_offer_id + offer_type='counter', current_round, and status per schema
+  const hasCounter = activeOffer.current_round && activeOffer.current_round > 1
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -98,13 +99,13 @@ export default async function MyOfferPage({ params }: { params: Promise<{ contac
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Offer Details - Use offer_amount instead of offer_price */}
+          {/* Offer Details using canonical offer_price */}
           <div>
             <h3 className="font-semibold mb-3">Your Offer Details</h3>
             <div className="grid md:grid-cols-3 gap-4">
               <div>
                 <p className="text-sm text-muted-foreground">Your Offer Price</p>
-                <p className="text-2xl font-bold text-green-600">${(activeOffer.offer_amount || 0).toLocaleString()}</p>
+                <p className="text-2xl font-bold text-green-600">${(activeOffer.offer_price || 0).toLocaleString()}</p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Financing</p>
@@ -121,52 +122,40 @@ export default async function MyOfferPage({ params }: { params: Promise<{ contac
               <div>
                 <p className="text-sm text-muted-foreground">Closing Date</p>
                 <p className="font-semibold">
-                  {activeOffer.close_date ? new Date(activeOffer.close_date).toLocaleDateString() : "TBD"}
+                  {activeOffer.closing_date ? new Date(activeOffer.closing_date).toLocaleDateString() : "TBD"}
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Counter Received - Use counter_amount instead of counter_price */}
+          {/* Counter Received - Per schema: counters use parent_offer_id + offer_type='counter' */}
           {hasCounter && (
             <Card className="border-blue-200 bg-blue-50">
               <CardHeader>
-                <CardTitle className="text-lg">Seller Counter Received</CardTitle>
+                <CardTitle className="text-lg">Negotiation in Progress</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <p className="text-sm">Seller countered your offer with these terms:</p>
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b">
-                      <th className="text-left py-2">Term</th>
-                      <th className="text-right py-2">Your Offer</th>
-                      <th className="text-right py-2">Seller Counter</th>
-                      <th className="text-right py-2">Difference</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr className="border-b">
-                      <td className="py-2">Price</td>
-                      <td className="text-right">${(activeOffer.offer_amount || 0).toLocaleString()}</td>
-                      <td className="text-right font-semibold">
-                        ${(activeOffer.counter_amount || 0).toLocaleString()}
-                      </td>
-                      <td className="text-right text-orange-600">
-                        +${((activeOffer.counter_amount || 0) - (activeOffer.offer_amount || 0)).toLocaleString()}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+                <p className="text-sm">This offer is in round {activeOffer.current_round} of negotiations.</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-muted-foreground">Current Offer Price</p>
+                    <p className="text-xl font-bold">${(activeOffer.offer_price || 0).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-muted-foreground">Status</p>
+                    <p className="text-xl font-semibold capitalize">{activeOffer.status}</p>
+                  </div>
+                </div>
 
                 <div className="bg-white p-4 rounded-lg">
                   <p className="text-sm font-semibold mb-2">Your agent recommends:</p>
                   <p className="text-sm text-muted-foreground">
-                    The seller's counter is reasonable. Discuss with your agent to determine next steps.
+                    Discuss with your agent to determine next steps in the negotiation.
                   </p>
                 </div>
 
                 <div className="flex gap-2">
-                  <Button className="flex-1">Accept Counter</Button>
+                  <Button className="flex-1">Accept Current Terms</Button>
                   <Button variant="outline" className="flex-1 bg-transparent">
                     Counter Back
                   </Button>

@@ -51,7 +51,7 @@ interface OfferCreationParams {
   agentId: string
   buyerId: string
   listingId: string
-  offerAmount: number
+  offerPrice: number
   earnestMoney: number
   downPaymentPercent: number
   financingType: "conventional" | "fha" | "va" | "cash" | "usda" | "other"
@@ -520,7 +520,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
         deal_type: "buyer_side",
         status: "offer_submitted",
         property_address: listing.address,
-        purchase_price: params.offerAmount,
+        purchase_price: params.offerPrice,
         estimated_close_date: params.closeDate,
       })
       .select()
@@ -528,24 +528,23 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
 
     if (txError) throw txError
 
-    // Create offer record
+    // Create offer record (using canonical offers table with offer_price)
     const { data: offer, error: offerError } = await supabase
       .from("offers")
       .insert({
         transaction_id: transaction.id,
         listing_id: params.listingId,
-        buyer_id: params.buyerId,
-        offer_amount: params.offerAmount,
+        contact_id: params.buyerId,
+        offer_price: params.offerPrice,
         earnest_money: params.earnestMoney,
         down_payment_percent: params.downPaymentPercent,
         financing_type: params.financingType,
         contingencies: params.contingencies,
-        close_date: params.closeDate,
-        escalation_clause: params.escalationClause,
-        additional_terms: params.additionalTerms,
+        closing_date: params.closeDate,
+        escalation_clause: params.escalationClause?.enabled || false,
+        escalation_cap: params.escalationClause?.maxPrice,
         status: "pending",
         submitted_at: new Date().toISOString(),
-        expires_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
       })
       .select()
       .single()
@@ -566,7 +565,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
       activity_type: "offer_received",
       entity_type: "offer",
       entity_id: offer.id,
-      description: `New offer of $${params.offerAmount.toLocaleString()} received on ${listing.address}`,
+      description: `New offer of $${params.offerPrice.toLocaleString()} received on ${listing.address}`,
       metadata: { priority: "high" },
     })
 
