@@ -100,13 +100,11 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(3),
-    // Education - unread lessons
+    // Education - completed lessons from contact_education_progress
     supabase
-      .from("educational_moments")
-      .select("id, lesson_key, read_at")
-      .eq("contact_id", contactId)
-      .is("read_at", null)
-      .limit(1),
+      .from("contact_education_progress")
+      .select("lesson_key, completed_at")
+      .eq("contact_id", contactId),
   ])
 
   // Filter milestones to client-visible only
@@ -117,7 +115,8 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   const dealTeamMembers = dealTeamResult.data ?? []
   const primaryAgent = agentResult.data
   const messages = messagesResult.data ?? []
-  const unreadEducation = educationResult.data?.[0]
+  const completedLessonKeys = educationResult.data?.map((p: any) => p.lesson_key) ?? []
+  const hasCompletedLessons = completedLessonKeys.length > 0
   const vendorAssignments = vendorData.assignments ?? []
 
   // Computed values
@@ -238,8 +237,8 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           <CardContent>
             <div className="text-center py-4 space-y-3">
               <p className="text-sm text-muted-foreground">
-                {unreadEducation
-                  ? "You have unread resources about the selling process"
+                {hasCompletedLessons
+                  ? "Continue learning about the selling process"
                   : "Tips and guides for selling your home"}
               </p>
               <Button variant="outline" size="sm" asChild>
