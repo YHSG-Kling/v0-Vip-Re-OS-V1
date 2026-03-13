@@ -81,23 +81,37 @@ export function useAuth(): AuthState {
         client.from('user_role_assignments').select('role, brokerage_id, team_id, agent_id, vendor_id').eq('user_id', authUser.id),
       ])
 
+      // Priority: auth metadata > role assignments > users table > default
       const rawRole: string = authUser.user_metadata?.user_type
         || rolesData?.[0]?.role
+        || userData?.user_type
         || 'agent'
+      
+      console.log("[v0] Auth resolution:", {
+        authMetadataUserType: authUser.user_metadata?.user_type,
+        roleAssignmentRole: rolesData?.[0]?.role,
+        usersTableUserType: userData?.user_type,
+        resolvedRole: rawRole
+      })
 
       const canonicalRole = toCanonicalRoleOrDefault(rawRole, 'agent')
       const persona: string | null = authUser.user_metadata?.contact_persona ?? null
+
+      // Build roles array - include users table user_type as fallback
+      const resolvedRoles = rolesData && rolesData.length > 0
+        ? rolesData.map((r: Record<string, unknown>) =>
+            toCanonicalRoleOrDefault(r.role as string, 'agent')
+          )
+        : [canonicalRole]
+      
+      console.log("[v0] Resolved roles:", resolvedRoles)
 
       const ctx: UserContext = {
         id: authUser.id,
         email: authUser.email ?? '',
         firstName: userData?.first_name ?? '',
         lastName: userData?.last_name ?? '',
-        roles: rolesData && rolesData.length > 0
-          ? rolesData.map((r: Record<string, unknown>) =>
-              toCanonicalRoleOrDefault(r.role as string, 'agent')
-            )
-          : [canonicalRole],
+        roles: resolvedRoles,
         brokerageId: rolesData?.[0]?.brokerage_id ?? userData?.brokerage_id,
         teamId: rolesData?.[0]?.team_id ?? userData?.team_id,
         agentId: rolesData?.[0]?.agent_id ?? undefined,
