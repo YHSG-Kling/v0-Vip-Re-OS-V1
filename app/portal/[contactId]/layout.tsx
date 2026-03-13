@@ -9,6 +9,7 @@ import {
   buildPortalNav,
   type PortalView,
 } from "@/lib/kernel/portal"
+import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import PortalNav from "@/components/portal/PortalNav"
 import PortalUserMenu from "@/components/portal/PortalUserMenu"
 import PortalAIAssistant from "@/components/portal/PortalAIAssistant"
@@ -50,16 +51,21 @@ export default async function PortalLayout({
   const { contactId } = await params
   const supabase = await createClient()
 
-  // Fetch contact with agent info
+  // Fetch contact (without broken embedded join)
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("*, agent:agents(id, full_name)")
+    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, name, contact_persona")
     .eq("id", contactId)
     .single()
 
   if (contactError || !contact) {
     redirect("/portal?error=contact_not_found")
   }
+
+  // Resolve agent via kernel identity function
+  const agentData = contact?.agent_id
+    ? await resolveContactOwnerAgent(supabase, contact.agent_id)
+    : null
 
   // Kernel-driven portal view determination
   const [view, modules] = await Promise.all([
@@ -71,11 +77,11 @@ export default async function PortalLayout({
   const navItems = buildPortalNav(view, modules, contactId)
 
   // Log portal access (non-blocking)
-  logPortalAccess(supabase, contactId, "layout", "view", contact.agent?.id).catch(() => {})
+  logPortalAccess(supabase, contactId, "layout", "view", agentData?.id).catch(() => {})
 
   // Derive display values
   const contactName = contact.first_name || contact.name || "Guest"
-  const agentName = contact.agent?.full_name || "Your Agent"
+  const agentName = agentData?.full_name || "Your Agent"
   const isBuyer = view === "buyer"
   const isSeller = view === "seller"
   const persona = contact.contact_persona || "other"
@@ -97,7 +103,7 @@ export default async function PortalLayout({
               Your agent: {agentName}
             </p>
           </div>
-          <PortalUserMenu contact={contact} contactId={contactId} />
+          <PortalUserMenu contact={contact} contactId={contactId} agentData={agentData} />
         </div>
       </header>
 
