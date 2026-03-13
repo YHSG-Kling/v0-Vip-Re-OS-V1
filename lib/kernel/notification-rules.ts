@@ -16,10 +16,17 @@ export type NotificationRuleRow = {
 
 // ─── INTERNAL HELPER ─────────────────────────────────────────────────────────
 
+// UUID validation regex
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 async function requireBrokerAdmin(
   userId: string
 ): Promise<{ brokerageId: string; userType: string }> {
-  console.log("[v0] requireBrokerAdmin called with userId:", userId)
+  // Validate userId is a proper UUID before querying
+  if (!userId || typeof userId !== 'string' || !UUID_REGEX.test(userId)) {
+    console.error("[v0] requireBrokerAdmin: Invalid userId:", userId)
+    throw new Error("Invalid user ID")
+  }
   
   const supabase = createServiceClient()
 
@@ -29,8 +36,6 @@ async function requireBrokerAdmin(
     .select("brokerage_id, user_type")
     .eq("id", userId)
     .maybeSingle()
-
-  console.log("[v0] users query result:", { user, userError })
 
   // If user found in public.users with brokerage_id, check permissions
   if (user?.brokerage_id) {
@@ -47,8 +52,6 @@ async function requireBrokerAdmin(
     .select("brokerage_id, role")
     .eq("user_id", userId)
     .maybeSingle()
-
-  console.log("[v0] user_role_assignments query result:", { roleAssignment, roleError })
 
   if (roleAssignment?.brokerage_id) {
     const role = roleAssignment.role || "admin" // Default to admin if role is null
