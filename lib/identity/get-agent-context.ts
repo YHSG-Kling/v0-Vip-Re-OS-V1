@@ -26,19 +26,27 @@ export async function getAgentContext() {
     .eq("id", user.id)
     .single()
 
-  // Determine userType from users table or auth metadata
-  const userType = userData?.user_type ?? user.user_metadata?.user_type ?? "agent"
+  // Also check user_role_assignments for brokerage_id as fallback
+  const { data: roleData } = await supabase
+    .from("user_role_assignments")
+    .select("brokerage_id, role, agent_id")
+    .eq("user_id", user.id)
+    .limit(1)
+    .single()
+
+  // Determine userType from multiple sources
+  const userType = userData?.user_type ?? roleData?.role ?? user.user_metadata?.user_type ?? "agent"
   
-  // brokerageId is required - check users table first, then auth metadata
-  const brokerageId = userData?.brokerage_id ?? user.user_metadata?.brokerage_id
+  // brokerageId - check users table, then role assignments, then auth metadata
+  const brokerageId = userData?.brokerage_id ?? roleData?.brokerage_id ?? user.user_metadata?.brokerage_id
   
   if (!brokerageId) {
     throw new Error("User is not associated with a brokerage")
   }
 
   // Try to get agent record if user is an agent type
-  let agentId: string | null = null
-  if (userType === "agent") {
+  let agentId: string | null = roleData?.agent_id ?? null
+  if (!agentId && userType === "agent") {
     const { data: agent } = await supabase
       .from("agents")
       .select("id")
