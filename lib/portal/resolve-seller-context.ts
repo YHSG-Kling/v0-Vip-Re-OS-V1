@@ -37,7 +37,6 @@ export interface ShowingFeedback {
   id: string
   showing_id: string
   created_at: string
-  // Supabase showing_feedback columns
   presentation_rating: number | null
   cleanliness_rating: number | null
   price_opinion: 'too_high' | 'priced_right' | 'good_value' | null

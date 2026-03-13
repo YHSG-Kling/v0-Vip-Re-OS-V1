@@ -34,9 +34,6 @@ export async function getTours(agentId: string) {
 export async function createTour(params: { agentId: string; tourDate: string; notes?: string }) {
   try {
     const supabase = await createClient()
-    // Supabase tours columns: contact_id, agent_id, brokerage_id, tour_date, scheduled_at,
-    // status, notes, all_confirmed, ai_plan_narrative, plan_sent_at, offline_cached_at
-    // tour_name does NOT exist in schema - use notes field if label needed
     const { data, error } = await supabase
       .from("tours")
       .insert({
