@@ -87,13 +87,6 @@ export function useAuth(): AuthState {
         || userData?.user_type
         || 'agent'
       
-      console.log("[v0] useAuth debug:", {
-        authMetadata: authUser.user_metadata,
-        rolesData,
-        userData: { user_type: userData?.user_type, id: userData?.id },
-        rawRole
-      })
-      
       const canonicalRole = toCanonicalRoleOrDefault(rawRole, 'agent')
       const persona: string | null = authUser.user_metadata?.contact_persona ?? null
 
@@ -103,8 +96,6 @@ export function useAuth(): AuthState {
             toCanonicalRoleOrDefault(r.role as string, 'agent')
           )
         : [canonicalRole]
-      
-      console.log("[v0] Resolved roles:", resolvedRoles, "canonicalRole:", canonicalRole)
 
       const ctx: UserContext = {
         id: authUser.id,

@@ -80,16 +80,9 @@ function DashboardContent() {
 
   // Redirect based on user role
   useEffect(() => {
-    console.log("[v0] Dashboard redirect check:", { 
-      userContext, 
-      redirected,
-      roles: userContext?.roles,
-      primaryRole: userContext?.roles?.[0]
-    })
     if (userContext && !redirected) {
       const primaryRole = userContext.roles[0] || "agent"
       const targetRoute = ROLE_DASHBOARD_ROUTES[primaryRole]
-      console.log("[v0] Redirecting to:", targetRoute, "for role:", primaryRole)
       if (targetRoute && targetRoute !== "/dashboard") {
         setRedirected(true)
         router.replace(targetRoute)
