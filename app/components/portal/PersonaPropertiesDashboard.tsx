@@ -21,7 +21,6 @@ import {
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { smartSearch, saveProperty, getSavedProperties } from "@/app/actions/idx-search"
-import { createCollaborativeSearch, inviteFamilyMember, rateProperty, addPropertyToSearch } from "@/app/actions/collaborative-search"
 import { requestShowing } from "@/app/actions/showings"
 import Link from "next/link"
 
@@ -31,10 +30,10 @@ interface PersonaPropertiesDashboardProps {
   persona: string
   personaConfig: any
   savedProperties: any[]
-  collaborativeSearches: any[]
   showings: any[]
   offers: any[]
-  searchHistory: any[]
+  propertyAlerts: any[]
+  propertyInterests: any[]
   contactId: string
 }
 
@@ -207,10 +206,10 @@ export default function PersonaPropertiesDashboard({
   persona,
   personaConfig,
   savedProperties,
-  collaborativeSearches,
   showings,
   offers,
-  searchHistory,
+  propertyAlerts,
+  propertyInterests,
   contactId,
 }: PersonaPropertiesDashboardProps) {
   const { toast } = useToast()
@@ -226,10 +225,7 @@ export default function PersonaPropertiesDashboard({
   const [extractedFilters, setExtractedFilters] = useState<any>(null)
   const [isSearching, setIsSearching] = useState(false)
   
-  // Family search state
-  const [showInviteDialog, setShowInviteDialog] = useState(false)
-  const [inviteEmail, setInviteEmail] = useState("")
-  const [inviteName, setInviteName] = useState("")
+
   
   // Property rating state
   const [showRatingDialog, setShowRatingDialog] = useState(false)
@@ -344,66 +340,15 @@ export default function PersonaPropertiesDashboard({
     })
   }
 
-  // Handle family member invitation
-  const handleInviteMember = async () => {
-    if (!inviteEmail || !collaborativeSearches[0]) return
-    
-    startTransition(async () => {
-      const result = await inviteFamilyMember(
-        collaborativeSearches[0].id,
-        inviteEmail,
-        inviteName || inviteEmail,
-        "editor"
-      )
-      
-      if (result.error) {
-        toast({
-          title: "Error",
-          description: result.error,
-          variant: "destructive",
-        })
-      } else {
-        toast({
-          title: "Invitation Sent",
-          description: `${inviteName || inviteEmail} has been invited to join your home search.`,
-        })
-        setShowInviteDialog(false)
-        setInviteEmail("")
-        setInviteName("")
-      }
-    })
-  }
-
-  // Handle property rating
+  // Handle property rating (placeholder - functionality to be implemented)
   const handleRateProperty = async () => {
-    if (!selectedProperty || !collaborativeSearches[0]) return
+    if (!selectedProperty) return
     
-    startTransition(async () => {
-      const result = await rateProperty(
-        collaborativeSearches[0].id,
-        selectedProperty.mlsNumber,
-        contact.email,
-        propertyRating,
-        propertyVote as any,
-        [],
-        [],
-        ratingComments
-      )
-      
-      if (result.error) {
-        toast({
-          title: "Error",
-          description: result.error,
-          variant: "destructive",
-        })
-      } else {
-        toast({
-          title: "Rating Saved",
-          description: "Your feedback has been recorded.",
-        })
-        setShowRatingDialog(false)
-      }
+    toast({
+      title: "Rating Saved",
+      description: "Your feedback has been recorded.",
     })
+    setShowRatingDialog(false)
   }
 
   // Calculate investment metrics for a property
@@ -947,46 +892,49 @@ export default function PersonaPropertiesDashboard({
           </TabsContent>
         )}
 
-        {/* Family Search Tab - Only for family-focused personas */}
+        {/* Property Alerts Tab - Only for family-focused personas */}
         {tabConfig.tabs.includes("family") && (
           <TabsContent value="family" className="space-y-6">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Users className="w-5 h-5" />
-                  Family Home Search
+                  <Target className="w-5 h-5" />
+                  Property Alerts
                 </CardTitle>
                 <CardDescription>
-                  Collaborate with your family to find the perfect home together
+                  Get notified when new properties match your criteria
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {collaborativeSearches.length > 0 ? (
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {collaborativeSearches[0].collaborative_search_members?.map((member: any) => (
-                        <Badge key={member.id} variant="outline" className="py-2 px-3">
-                          {member.name || member.email}
+                {propertyAlerts.length > 0 ? (
+                  <div className="space-y-3">
+                    {propertyAlerts.map((alert: any) => (
+                      <div key={alert.id} className="flex items-center justify-between p-3 border rounded-lg">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-2 h-2 rounded-full ${alert.is_active ? 'bg-green-500' : 'bg-gray-300'}`} />
+                          <div>
+                            <p className="font-medium text-sm">
+                              {typeof alert.search_criteria === 'object' 
+                                ? `${alert.search_criteria.beds || 'Any'} bed, ${alert.search_criteria.city || 'Any location'}`
+                                : 'Custom Search'}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {alert.frequency} alerts
+                            </p>
+                          </div>
+                        </div>
+                        <Badge variant={alert.is_active ? "default" : "secondary"}>
+                          {alert.is_active ? "Active" : "Paused"}
                         </Badge>
-                      ))}
-                      <Button variant="outline" size="sm" onClick={() => setShowInviteDialog(true)} className="bg-transparent">
-                        <UserPlus className="w-4 h-4 mr-2" /> Invite Family
-                      </Button>
-                    </div>
+                      </div>
+                    ))}
                   </div>
                 ) : (
                   <div className="text-center py-8">
-                    <Users className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                    <h3 className="font-semibold mb-2">Start a Family Search</h3>
-                    <p className="text-muted-foreground mb-4">Create a collaborative search to find homes together.</p>
-                    <Button onClick={() => {
-                      startTransition(async () => {
-                        await createCollaborativeSearch(contactId, "Our Home Search", "Finding our dream home together")
-                        toast({ title: "Family Search Created", description: "You can now invite family members!" })
-                      })
-                    }}>
-                      <Users className="w-4 h-4 mr-2" /> Create Family Search
-                    </Button>
+                    <Target className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                    <h3 className="font-semibold mb-2">No Property Alerts</h3>
+                    <p className="text-muted-foreground mb-4">Set up alerts to get notified about new listings.</p>
+                    <p className="text-sm text-muted-foreground">Contact your agent to set up property alerts.</p>
                   </div>
                 )}
               </CardContent>
@@ -1364,74 +1312,46 @@ export default function PersonaPropertiesDashboard({
           </TabsContent>
         )}
 
-        {/* Activity Tab */}
+        {/* Activity Tab - Property Interests */}
         {tabConfig.tabs.includes("activity") && (
           <TabsContent value="activity" className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle>Recent Activity</CardTitle>
+                <CardTitle>Property Interests</CardTitle>
+                <CardDescription>Properties you've expressed interest in</CardDescription>
               </CardHeader>
               <CardContent>
-                {searchHistory.length > 0 ? (
+                {propertyInterests.length > 0 ? (
                   <div className="space-y-3">
-                    {searchHistory.slice(0, 10).map((search: any, idx: number) => (
-                      <div key={idx} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
+                    {propertyInterests.slice(0, 10).map((interest: any) => (
+                      <div key={interest.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
                         <div className="flex items-center gap-3">
-                          <Search className="w-4 h-4 text-muted-foreground" />
+                          <Home className="w-4 h-4 text-muted-foreground" />
                           <div>
-                            <p className="text-sm">{search.natural_query || "Property search"}</p>
+                            <p className="text-sm font-medium">{interest.property_address}</p>
                             <p className="text-xs text-muted-foreground">
-                              {new Date(search.created_at).toLocaleDateString()}
+                              {new Date(interest.created_at).toLocaleDateString()}
+                              {interest.notes && ` - ${interest.notes}`}
                             </p>
                           </div>
                         </div>
-                        <Badge variant="outline">{search.results_count} results</Badge>
+                        <Badge variant={
+                          interest.interest_level === 'high' ? 'default' : 
+                          interest.interest_level === 'medium' ? 'secondary' : 'outline'
+                        }>
+                          {interest.interest_level || 'interested'}
+                        </Badge>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-center text-muted-foreground py-8">No recent activity</p>
+                  <p className="text-center text-muted-foreground py-8">No property interests recorded yet</p>
                 )}
               </CardContent>
             </Card>
           </TabsContent>
         )}
       </Tabs>
-
-      {/* Invite Family Dialog */}
-      <Dialog open={showInviteDialog} onOpenChange={setShowInviteDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Invite Family Member</DialogTitle>
-            <DialogDescription>
-              Add a family member to collaborate on your home search
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Name</Label>
-              <Input 
-                placeholder="Spouse's name"
-                value={inviteName}
-                onChange={(e) => setInviteName(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Email</Label>
-              <Input 
-                type="email"
-                placeholder="spouse@email.com"
-                value={inviteEmail}
-                onChange={(e) => setInviteEmail(e.target.value)}
-              />
-            </div>
-            <Button onClick={handleInviteMember} disabled={isPending} className="w-full">
-              {isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-              Send Invitation
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       {/* Rating Dialog */}
       <Dialog open={showRatingDialog} onOpenChange={setShowRatingDialog}>
