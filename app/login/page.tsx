@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { useState, useEffect, Suspense } from 'react'
+import { useState, useEffect, Suspense, useId } from 'react'
 import { Mail, Lock, Loader2 } from 'lucide-react'
 
 function LoginContent() {
@@ -16,8 +16,14 @@ function LoginContent() {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const [mounted, setMounted] = useState(false)
   const router = useRouter()
   const searchParams = useSearchParams()
+
+  // Prevent hydration mismatch by only rendering tabs after mount
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   useEffect(() => {
     const errorParam = searchParams.get('error')
@@ -80,6 +86,25 @@ function LoginContent() {
     }
   }
 
+  // Show loading placeholder until client-side mounted to prevent hydration mismatch
+  if (!mounted) {
+    return (
+      <Card className="w-full max-w-md">
+        <CardHeader className="text-center">
+          <CardTitle className="text-2xl font-bold text-gray-900">VIP Agents AI</CardTitle>
+          <CardDescription className="text-gray-600">
+            Real Estate Operating System
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
   return (
     <Card className="w-full max-w-md">
       <CardHeader className="text-center">
@@ -89,7 +114,7 @@ function LoginContent() {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <Tabs defaultValue="password" className="w-full" suppressHydrationWarning>
+        <Tabs defaultValue="password" className="w-full">
           <TabsList className="grid w-full grid-cols-2 mb-6">
             <TabsTrigger value="password">Email &amp; Password</TabsTrigger>
             <TabsTrigger value="magic">Magic Link</TabsTrigger>
