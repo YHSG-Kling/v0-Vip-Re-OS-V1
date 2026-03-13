@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -24,18 +25,40 @@ export type ProviderSettingsPayload = {
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 async function requireBrokerAdmin(userId: string) {
-  const supabase = await createClient()
-  const { data: user, error } = await supabase
+  // Use service client to bypass RLS
+  const supabase = createServiceClient()
+  
+  // Try public.users first
+  const { data: user } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", userId)
-    .single()
+    .maybeSingle()
 
-  if (error || !user) throw new Error("User not found")
-  if (!["admin", "broker", "superadmin"].includes(user.user_type)) {
-    throw new Error("Forbidden: insufficient permissions")
+  if (user?.brokerage_id) {
+    const userType = user.user_type || "admin"
+    if (!["admin", "broker", "superadmin"].includes(userType)) {
+      throw new Error("Forbidden: insufficient permissions")
+    }
+    return { brokerageId: user.brokerage_id as string, userType }
   }
-  return { brokerageId: user.brokerage_id as string, userType: user.user_type as string }
+
+  // Fallback: check user_role_assignments
+  const { data: roleAssignment } = await supabase
+    .from("user_role_assignments")
+    .select("brokerage_id, role")
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (roleAssignment?.brokerage_id) {
+    const role = roleAssignment.role || "admin"
+    if (!["admin", "broker", "superadmin"].includes(role)) {
+      throw new Error("Forbidden: insufficient permissions")
+    }
+    return { brokerageId: roleAssignment.brokerage_id as string, userType: role }
+  }
+
+  throw new Error("User not found or not associated with a brokerage")
 }
 
 // SYSTEM_ONLY_TYPES mirror kernel/providers.ts — brokerage cannot override these.
