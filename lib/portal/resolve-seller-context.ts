@@ -37,7 +37,7 @@ export interface ShowingFeedback {
   id: string
   showing_id: string
   created_at: string
-  // Build32 showing_feedback columns
+  // Supabase showing_feedback columns
   presentation_rating: number | null
   cleanliness_rating: number | null
   price_opinion: 'too_high' | 'priced_right' | 'good_value' | null
@@ -264,7 +264,7 @@ export async function getShowingStats(
 
 /**
  * Gets recent showing feedback for a listing.
- * Uses scheduled_at column and Build32 showing_feedback columns.
+ * Uses scheduled_at column and Supabase showing_feedback columns.
  */
 export async function getRecentFeedback(
   supabase: SupabaseClient,
@@ -282,7 +282,7 @@ export async function getRecentFeedback(
 
   const showingIds = showings.map((s) => s.id)
 
-  // Get feedback for these showings - use Build32 columns
+  // Get feedback for these showings - use Supabase columns
   const { data: feedback } = await supabase
     .from("showing_feedback")
     .select(`id, showing_id, created_at,

@@ -72,7 +72,7 @@ export interface RateStopParams {
   listPrice?: number
   city?: string
   zip?: string
-  // Build32 CHECK constraint: buyer_interest_level = ANY ('love_it','like_it','maybe','no')
+  // Supabase CHECK constraint: buyer_interest_level = ANY ('love_it','like_it','maybe','no')
   // 'not_for_us' is NOT valid - use 'no' instead
   interestLevel: 'love_it' | 'like_it' | 'maybe' | 'no'
   note?: string
@@ -87,7 +87,7 @@ export interface CompleteTourParams {
   stopRatings: Array<{
     tourStopId: string
     showingId: string
-    // Build32 CHECK constraint: buyer_interest_level = ANY ('love_it','like_it','maybe','no')
+    // Supabase CHECK constraint: buyer_interest_level = ANY ('love_it','like_it','maybe','no')
     interestLevel: 'love_it' | 'like_it' | 'maybe' | 'no'
     note?: string
     listingId?: string
@@ -466,7 +466,7 @@ export async function rateTourStop(params: RateStopParams) {
   }
 
   // Signal weight: love_it=10, like_it=5, maybe=2, no=-2
-  // Build32 CHECK constraint uses 'no' not 'not_for_us'
+  // Supabase CHECK constraint uses 'no' not 'not_for_us'
   const signalWeights: Record<string, number> = { love_it: 10, like_it: 5, maybe: 2, no: -2 }
   await supabase.from('buyer_behavior_log').insert({
     brokerage_id:     brokerageId,
@@ -520,7 +520,7 @@ export async function completeTour(params: CompleteTourParams) {
     .eq('id', tourId)
 
   // Bulk buyer_behavior_log
-  // Build32 CHECK constraint uses 'no' not 'not_for_us'
+  // Supabase CHECK constraint uses 'no' not 'not_for_us'
   const signalWeights: Record<string, number> = { love_it: 10, like_it: 5, maybe: 2, no: -2 }
   const logInserts = stopRatings.map(r => ({
     brokerage_id:     brokerageId,
