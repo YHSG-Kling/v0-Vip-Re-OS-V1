@@ -12,6 +12,11 @@ export async function getContacts(params?: {
     const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
 
+    // If no valid agent/brokerage context, return empty array
+    if (!agentId || !brokerageId) {
+      return { success: true, contacts: [] }
+    }
+
     let query = supabase
       .from("contacts")
       .select("*")
@@ -50,6 +55,11 @@ export async function getContactById(contactId: string) {
   try {
     const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
+
+    // If no valid agent/brokerage context, return null
+    if (!agentId || !brokerageId) {
+      return { success: false, error: "No agent context", contact: null }
+    }
 
     const { data, error } = await supabase
       .from("contacts")
