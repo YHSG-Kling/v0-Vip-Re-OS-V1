@@ -14,7 +14,14 @@ import {
   Shield,
   FileText,
   Calendar,
+  Map,
+  Heart,
+  Sparkles,
+  Network,
+  Activity,
 } from "lucide-react"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
 import { BrokerageAgentList } from "@/components/brokerage/agent-list"
 import { BrokerageRevenueChart } from "@/components/brokerage/revenue-chart"
 import { BrokerageComplianceOverview } from "@/components/brokerage/compliance-overview"
@@ -167,6 +174,52 @@ export default async function BrokerageDashboard({
           </CardContent>
         </Card>
       )}
+
+      {/* Quick Actions */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Quick Actions</CardTitle>
+          <CardDescription>Intelligence & monitoring tools</CardDescription>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <Link href="/dashboard/brokerage/deal-health">
+            <Button variant="outline" className="w-full h-auto flex-col py-4 gap-2">
+              <Activity className="h-5 w-5" />
+              <span className="text-xs">Deal Health</span>
+            </Button>
+          </Link>
+          <Link href="/dashboard/team-heatmap">
+            <Button variant="outline" className="w-full h-auto flex-col py-4 gap-2">
+              <Map className="h-5 w-5" />
+              <span className="text-xs">Team Heatmap</span>
+            </Button>
+          </Link>
+          <Link href="/dashboard/brokerage/fatigue">
+            <Button variant="outline" className="w-full h-auto flex-col py-4 gap-2">
+              <Heart className="h-5 w-5" />
+              <span className="text-xs">Agent Fatigue</span>
+            </Button>
+          </Link>
+          <Link href="/dashboard/recruiting-roi">
+            <Button variant="outline" className="w-full h-auto flex-col py-4 gap-2">
+              <TrendingUp className="h-5 w-5" />
+              <span className="text-xs">Recruiting ROI</span>
+            </Button>
+          </Link>
+          <Link href="/dashboard/ai-quality">
+            <Button variant="outline" className="w-full h-auto flex-col py-4 gap-2">
+              <Sparkles className="h-5 w-5" />
+              <span className="text-xs">AI Quality</span>
+            </Button>
+          </Link>
+          <Link href="/dashboard/coordination">
+            <Button variant="outline" className="w-full h-auto flex-col py-4 gap-2">
+              <Network className="h-5 w-5" />
+              <span className="text-xs">AI Coordination</span>
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
 
       {/* Main Content Tabs */}
       <Tabs defaultValue="agents" className="space-y-4">
