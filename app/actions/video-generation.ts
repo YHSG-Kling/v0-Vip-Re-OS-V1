@@ -9,7 +9,8 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
-import type { ScriptType, ApprovalStatus, VideoScript, ScriptVariation } from "@/app/types/video-generation"
+import type { ScriptType, ApprovalStatus, VideoScript, ScriptVariation, VideoEventType } from "@/app/types/video-generation"
+import { VIDEO_EVENT_TYPES, PERFORMANCE_THRESHOLDS } from "@/app/types/video-generation"
 
 // ============================================
 // VIDEO SCRIPT LIBRARY — CANONICAL TABLE
@@ -426,33 +427,7 @@ export async function getVideoQueue(agentId: string) {
 // DO NOT use video_analytics table
 // ============================================
 
-// Supported event types for video_engagement_events
-export const VIDEO_EVENT_TYPES = [
-  "view",
-  "pause",
-  "complete",
-  "click",
-  "share",
-  "lead_capture",
-  "cta_click",
-  "replay",
-] as const
-
-export type VideoEventType = (typeof VIDEO_EVENT_TYPES)[number]
-
-// Performance thresholds for kernel events
-export const PERFORMANCE_THRESHOLDS = {
-  HIGH_PERFORMER: {
-    minViews: 100,
-    minCompletionRate: 70,
-    minClickThroughRate: 5,
-  },
-  LOW_PERFORMER: {
-    minViews: 50,
-    maxCompletionRate: 20,
-    maxClickThroughRate: 1,
-  },
-}
+// VIDEO_EVENT_TYPES, VideoEventType, and PERFORMANCE_THRESHOLDS are imported from @/app/types/video-generation
 
 export async function recordVideoEngagementEvent(data: {
   brokerageId: string

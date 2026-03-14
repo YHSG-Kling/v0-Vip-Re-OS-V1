@@ -52,3 +52,35 @@ export interface ScriptVariation {
   created_at: string
   updated_at: string
 }
+
+// ============================================
+// VIDEO PERFORMANCE TRACKING — LAYER 8.5
+// ============================================
+
+// Supported event types for video_engagement_events
+export const VIDEO_EVENT_TYPES = [
+  "view",
+  "pause",
+  "complete",
+  "click",
+  "share",
+  "lead_capture",
+  "cta_click",
+  "replay",
+] as const
+
+export type VideoEventType = (typeof VIDEO_EVENT_TYPES)[number]
+
+// Performance thresholds for kernel events
+export const PERFORMANCE_THRESHOLDS = {
+  HIGH_PERFORMER: {
+    minViews: 100,
+    minCompletionRate: 70,
+    minClickThroughRate: 5,
+  },
+  LOW_PERFORMER: {
+    minViews: 50,
+    maxCompletionRate: 20,
+    maxClickThroughRate: 1,
+  },
+} as const
