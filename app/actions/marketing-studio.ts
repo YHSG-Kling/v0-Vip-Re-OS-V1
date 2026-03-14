@@ -164,6 +164,11 @@ export async function getCampaigns(filters?: {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
+  // If no brokerageId, return empty campaigns
+  if (!brokerageId) {
+    return { success: true, campaigns: [] }
+  }
+
   let query = supabase
     .from("marketing_campaigns")
     .select(`
@@ -176,7 +181,13 @@ export async function getCampaigns(filters?: {
     .order("created_at", { ascending: false })
 
   // Visibility filter — agent sees own + team + brokerage level
-  query = query.or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`)
+  // Only apply agent filter if agentId is a valid UUID
+  if (agentId) {
+    query = query.or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`)
+  } else {
+    // If no agentId, only show brokerage-wide campaigns
+    query = query.eq("visibility_scope", "brokerage")
+  }
 
   if (filters?.status) {
     query = query.eq("status", filters.status)
@@ -348,13 +359,23 @@ export async function getAssets(filters?: {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
+  // If no brokerageId, return empty assets
+  if (!brokerageId) {
+    return { success: true, assets: [] }
+  }
+
   let query = supabase
     .from("marketing_assets")
     .select("*, qr_links:marketing_asset_qr_links(id, qr_code_id, placement_type)")
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
 
-  query = query.or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`)
+  // Only apply agent filter if agentId is a valid UUID
+  if (agentId) {
+    query = query.or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`)
+  } else {
+    query = query.eq("visibility_scope", "brokerage")
+  }
 
   if (filters?.campaignId) {
     query = query.eq("campaign_id", filters.campaignId)
@@ -484,13 +505,21 @@ export async function getCalendarEvents(filters?: {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
+  // If no brokerageId, return empty events
+  if (!brokerageId) {
+    return { success: true, events: [] }
+  }
+
   let query = supabase
     .from("campaign_calendar")
     .select("*, campaign:marketing_campaigns(id, campaign_name)")
     .eq("brokerage_id", brokerageId)
     .order("scheduled_at", { ascending: true })
 
-  query = query.or(`agent_user_id.eq.${agentId},campaign_id.is.null`)
+  // Only apply agent filter if agentId is a valid UUID
+  if (agentId) {
+    query = query.or(`agent_user_id.eq.${agentId},campaign_id.is.null`)
+  }
 
   if (filters?.campaignId) {
     query = query.eq("campaign_id", filters.campaignId)
