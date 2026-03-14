@@ -45,12 +45,8 @@ import {
   enrichLead,
   convertLeadToContact,
   rejectLead,
-  type Lead,
-  type LeadScore,
-  type LeadIntent,
-  type LeadStatus,
-  type LeadSource,
 } from "@/app/actions/lead-management"
+import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/types/lead-management"
 import { cn } from "@/lib/utils"
 
 export default function LeadsPage() {
