@@ -422,7 +422,7 @@ Consider: agent expertise, workload balance, location match, and lead type fit.`
       })
       .eq("id", params.leadId)
 
-    revalidatePath("/dashboard/leads")
+    revalidatePath("/leads")
     return {
       success: true,
       assignedTo: assignment.assignedAgentId,

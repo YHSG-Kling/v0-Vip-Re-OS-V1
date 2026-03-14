@@ -310,7 +310,7 @@ export default function SLAMonitorPage() {
                             size="sm"
                             asChild
                           >
-                            <a href={`/dashboard/leads/${row.lead_id}`}>
+                            <a href={`/leads/${row.lead_id}`}>
                               View Lead
                             </a>
                           </Button>

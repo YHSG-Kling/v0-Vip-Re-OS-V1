@@ -640,7 +640,7 @@ export default function AdminDashboardPage() {
             </div>
             <Card className="border-border">
               <CardContent className="p-8 text-center">
-                <Link href="/dashboard/leads">
+                <Link href="/leads">
                   <Button>
                     <Target className="h-4 w-4 mr-2" />
                     View All Leads
