@@ -269,10 +269,15 @@ export default function MarketingStudioClient() {
   async function loadNewsletterData() {
     setIsNewsletterLoading(true)
     try {
-      // Get user context first
+      // Get user context first - if unavailable, just show empty data (not an error)
       const userContext = await getUserContextForPrediction()
       if (!userContext.success || !userContext.brokerageId || !userContext.userId) {
-        console.error("[v0] Failed to get user context for newsletter data")
+        // No brokerage context - show empty newsletter data without error
+        setNewsletterCampaigns([])
+        setScheduledSends([])
+        setSubscriberCount(0)
+        setNewsletterTemplates([])
+        setLocalContent([])
         return
       }
       const { brokerageId, userId } = userContext
