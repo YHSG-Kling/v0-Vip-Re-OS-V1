@@ -1,36 +1,54 @@
 'use client'
 
 import React from 'react'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth/client'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
 import { getNavigationForRole } from '@/app/config/navigation-config'
+import { Loader2 } from 'lucide-react'
 
 interface AppShellProps {
   children: React.ReactNode
 }
 
 export function AppShell({ children }: AppShellProps) {
-  const { user, userContext } = useAuth()
+  const { user, userContext, isLoading } = useAuth()
   const pathname = usePathname()
+  const router = useRouter()
 
-  // Routes that have their own layout - bypass AppShell
-  if (
-    pathname.startsWith('/auth') ||
-    pathname.startsWith('/login') ||
-    pathname.startsWith('/portal') ||
-    pathname.startsWith('/settings')
-  ) {
+  // Routes that have their own layout - bypass AppShell completely
+  const bypassRoutes = ['/auth', '/login', '/signup', '/portal', '/settings', '/open-house', '/qr']
+  const shouldBypass = bypassRoutes.some(route => pathname.startsWith(route))
+  
+  if (shouldBypass) {
     return <>{children}</>
   }
 
   // Hide mobile bottom nav on wizard/create flows to prevent interference
   const hideBottomNav = pathname.includes('/videos/create') || pathname.includes('/wizard')
 
+  // Show loading state while auth is being determined
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  // Redirect to login if not authenticated (instead of returning null)
   if (!user || !userContext) {
-    return null
+    // Only redirect if we're on a protected route
+    if (typeof window !== 'undefined' && !pathname.startsWith('/login')) {
+      router.push('/login')
+    }
+    return (
+      <div className="flex items-center justify-center h-screen bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    )
   }
 
   const primaryRole = userContext.roles[0]
