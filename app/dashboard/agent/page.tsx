@@ -22,6 +22,9 @@ import {
   Video,
   Palette,
   Zap,
+  Mic,
+  Send,
+  RefreshCw,
 } from "lucide-react"
 import { getAgentStats } from "@/app/actions/agents"
 import { createClient } from "@/lib/supabase/client"
@@ -395,6 +398,36 @@ export default function AgentDashboard() {
                   <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
                     <Users className="h-4 w-4 mr-2" />
                     Add New Contact
+                  </Button>
+                </Link>
+                <Link href="/dashboard/briefing">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    AI Daily Briefing
+                  </Button>
+                </Link>
+                <Link href="/dashboard/voice">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <Mic className="h-4 w-4 mr-2" />
+                    Voice Command
+                  </Button>
+                </Link>
+                <Link href="/dashboard/communications/outreach">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <Send className="h-4 w-4 mr-2" />
+                    AI Outreach
+                  </Button>
+                </Link>
+                <Link href="/dashboard/market-insights">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <TrendingUp className="h-4 w-4 mr-2" />
+                    Market Insights
+                  </Button>
+                </Link>
+                <Link href="/dashboard/campaigns/repurpose">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <RefreshCw className="h-4 w-4 mr-2" />
+                    Repurpose Content
                   </Button>
                 </Link>
               </CardContent>
