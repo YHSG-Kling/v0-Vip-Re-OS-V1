@@ -269,6 +269,14 @@ export default function MarketingStudioClient() {
   async function loadNewsletterData() {
     setIsNewsletterLoading(true)
     try {
+      // Get user context first
+      const userContext = await getUserContextForPrediction()
+      if (!userContext.success || !userContext.brokerageId || !userContext.userId) {
+        console.error("[v0] Failed to get user context for newsletter data")
+        return
+      }
+      const { brokerageId, userId } = userContext
+
       const supabase = (await import("@/lib/supabase/client")).createClient()
       
       // Get newsletter campaigns
