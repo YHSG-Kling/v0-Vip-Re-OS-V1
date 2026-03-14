@@ -19,6 +19,9 @@ import {
   AlertCircle,
   ArrowRight,
   Sparkles,
+  Video,
+  Palette,
+  Zap,
 } from "lucide-react"
 import { getAgentStats } from "@/app/actions/agents"
 import { createClient } from "@/lib/supabase/client"
@@ -358,10 +361,28 @@ export default function AgentDashboard() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="p-4 space-y-2">
-                <Link href="/offer-lab">
+                <Link href="/dashboard/videos/create">
                   <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
-                    <Target className="h-4 w-4 mr-2" />
-                    Create New Offer
+                    <Video className="h-4 w-4 mr-2" />
+                    Create Video
+                  </Button>
+                </Link>
+                <Link href="/dashboard/marketing/studio">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <Palette className="h-4 w-4 mr-2" />
+                    Marketing Studio
+                  </Button>
+                </Link>
+                <Link href="/leads">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <Zap className="h-4 w-4 mr-2" />
+                    View Leads
+                  </Button>
+                </Link>
+                <Link href="/dashboard/financials/agent">
+                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
+                    <DollarSign className="h-4 w-4 mr-2" />
+                    My Financials
                   </Button>
                 </Link>
                 <Link href="/listings/new">
@@ -370,16 +391,10 @@ export default function AgentDashboard() {
                     Add New Listing
                   </Button>
                 </Link>
-                <Link href="/crm">
+                <Link href="/contacts/new">
                   <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
                     <Users className="h-4 w-4 mr-2" />
                     Add New Contact
-                  </Button>
-                </Link>
-                <Link href="/calendar">
-                  <Button variant="outline" className="w-full justify-start bg-transparent" size="sm">
-                    <Calendar className="h-4 w-4 mr-2" />
-                    Schedule Showing
                   </Button>
                 </Link>
               </CardContent>

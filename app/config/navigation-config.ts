@@ -7,10 +7,23 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   agent: {
     sidebarItems: [
       { id: 'dashboard', label: 'Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
-      { id: 'leads', label: 'My Leads', href: '/dashboard/buyers', icon: 'Zap', badge: { count: 5, color: 'red' } },
+      { id: 'leads', label: 'My Leads', href: '/leads', icon: 'Zap', badge: { count: 5, color: 'red' } },
       { id: 'contacts', label: 'My Contacts', href: '/contacts', icon: 'Users' },
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
+      { id: 'divider1', divider: true },
+      {
+        id: 'video-tools',
+        label: 'Video Tools',
+        icon: 'Video',
+        children: [
+          { id: 'video-studio', label: 'Video Studio', href: '/dashboard/videos/create' },
+          { id: 'video-library', label: 'Video Library', href: '/dashboard/videos/library' },
+          { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics' },
+        ],
+      },
+      { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio', icon: 'Palette' },
+      { id: 'financials', label: 'My Financials', href: '/dashboard/financials/agent', icon: 'DollarSign' },
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },
     ],
     topNavItems: [
@@ -37,19 +50,35 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'dashboard', label: 'Broker Dashboard', href: '/dashboard/brokerage', icon: 'LayoutGrid' },
       { id: 'team', label: 'My Team', href: '/dashboard/team', icon: 'Users' },
+      { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Zap' },
       { id: 'analytics', label: 'Analytics', href: '/dashboard/analytics', icon: 'BarChart3' },
       { id: 'transactions', label: 'All Transactions', href: '/dashboard/transactions', icon: 'FileText' },
       { id: 'divider1', divider: true },
+      {
+        id: 'video-tools',
+        label: 'Video Tools',
+        icon: 'Video',
+        children: [
+          { id: 'video-studio', label: 'Video Studio', href: '/dashboard/videos/create' },
+          { id: 'video-library', label: 'Video Library', href: '/dashboard/videos/library' },
+          { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics' },
+        ],
+      },
+      { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio', icon: 'Palette' },
       {
         id: 'financials',
         label: 'Financials',
         icon: 'DollarSign',
         children: [
+          { id: 'brokerage-financials', label: 'Brokerage P&L', href: '/dashboard/financials/brokerage' },
+          { id: 'team-financials', label: 'Team Financials', href: '/dashboard/financials/team' },
           { id: 'commissions', label: 'Commissions', href: '/dashboard/financials/commissions' },
           { id: 'expenses', label: 'Expenses', href: '/dashboard/financials/expenses' },
           { id: 'payouts', label: 'Agent Payouts', href: '/dashboard/financials/payouts' },
         ],
       },
+      { id: 'usage-metrics', label: 'Usage Metrics', href: '/admin/usage', icon: 'Activity' },
+      { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       {
         id: 'settings',
         label: 'Brokerage Settings',
@@ -84,10 +113,20 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'dashboard', label: 'ISA Dashboard', href: '/dashboard/isa', icon: 'LayoutGrid' },
       { id: 'calling', label: 'Calling', href: '/dashboard/isa/calling', icon: 'Phone', badge: { count: 12, color: 'red' } },
-      { id: 'leads', label: 'Leads', href: '/dashboard/isa/leads', icon: 'Zap' },
+      { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Zap' },
       { id: 'campaigns', label: 'Campaigns', href: '/dashboard/isa/campaigns', icon: 'Megaphone' },
       { id: 'scripts', label: 'Scripts', href: '/dashboard/isa/scripts', icon: 'FileText' },
       { id: 'analytics', label: 'My Stats', href: '/dashboard/isa/analytics', icon: 'BarChart3' },
+      { id: 'divider1', divider: true },
+      {
+        id: 'video-tools',
+        label: 'Video Tools',
+        icon: 'Video',
+        children: [
+          { id: 'video-studio', label: 'Video Studio', href: '/dashboard/videos/create' },
+          { id: 'video-library', label: 'Video Library', href: '/dashboard/videos/library' },
+        ],
+      },
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },
     ],
     topNavItems: [
@@ -110,9 +149,16 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   admin: {
     sidebarItems: [
       { id: 'dashboard', label: 'Admin Dashboard', href: '/dashboard/admin', icon: 'LayoutGrid' },
+      { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Zap' },
       { id: 'onboarding', label: 'Agent Onboarding', href: '/dashboard/admin/onboarding', icon: 'UserPlus' },
+      { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       { id: 'forms', label: 'Forms Manager', href: '/dashboard/admin/forms', icon: 'FileText' },
       { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/admin/knowledge', icon: 'BookOpen' },
+      { id: 'divider1', divider: true },
+      { id: 'team-financials', label: 'Team Financials', href: '/dashboard/financials/team', icon: 'DollarSign' },
+      { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics', icon: 'Video' },
+      { id: 'usage-metrics', label: 'Usage Metrics', href: '/admin/usage', icon: 'Activity' },
+      { id: 'divider2', divider: true },
       { id: 'system', label: 'System Health', href: '/admin/system-health', icon: 'Activity' },
       { id: 'logs', label: 'Audit Trail', href: '/admin/audit-trail', icon: 'Eye' },
       { id: 'settings', label: 'Settings', href: '/settings', icon: 'Settings' },
@@ -292,6 +338,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'platform', label: 'Platform Admin', href: '/admin/platform', icon: 'ShieldAlert' },
       { id: 'brokerages', label: 'Brokerages', href: '/admin/brokerages', icon: 'Building2' },
       { id: 'users', label: 'All Users', href: '/admin/users', icon: 'Users' },
+      { id: 'divider1', divider: true },
+      { id: 'billing', label: 'Billing Administration', href: '/admin/billing', icon: 'CreditCard' },
+      { id: 'usage-metrics', label: 'Usage Metrics', href: '/admin/usage', icon: 'Activity' },
+      { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
+      { id: 'divider2', divider: true },
       { id: 'system-health', label: 'System Health', href: '/admin/system-health', icon: 'Activity' },
       { id: 'ai-audit', label: 'AI Audit', href: '/admin/ai-audit', icon: 'Eye' },
       { id: 'integrations', label: 'Integrations', href: '/admin/integrations', icon: 'Plug' },
@@ -319,12 +370,31 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'dashboard', label: 'Team Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
       { id: 'crm', label: 'CRM', href: '/contacts', icon: 'Users' },
+      { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Zap' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
-      { id: 'lead-intelligence', label: 'Lead Intelligence', href: '/dashboard/lead-intelligence', icon: 'Brain' },
       { id: 'agent-roster', label: 'My Team', href: '/dashboard/team', icon: 'UserCheck' },
-      { id: 'financials', label: 'Financials', href: '/dashboard/financials', icon: 'DollarSign' },
+      { id: 'divider1', divider: true },
+      {
+        id: 'video-tools',
+        label: 'Video Tools',
+        icon: 'Video',
+        children: [
+          { id: 'video-studio', label: 'Video Studio', href: '/dashboard/videos/create' },
+          { id: 'video-library', label: 'Video Library', href: '/dashboard/videos/library' },
+          { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics' },
+        ],
+      },
+      { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio', icon: 'Palette' },
+      {
+        id: 'financials',
+        label: 'Financials',
+        icon: 'DollarSign',
+        children: [
+          { id: 'my-financials', label: 'My Financials', href: '/dashboard/financials/agent' },
+          { id: 'team-financials', label: 'Team Financials', href: '/dashboard/financials/team' },
+        ],
+      },
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'CheckCircle' },
-      { id: 'content-studio', label: 'Content Studio', href: '/dashboard/marketing', icon: 'Palette' },
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },
     ],
     topNavItems: [

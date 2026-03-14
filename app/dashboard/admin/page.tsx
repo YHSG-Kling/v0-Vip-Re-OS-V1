@@ -33,6 +33,10 @@ import {
   ChevronRight,
   Eye,
   Bell,
+  Video,
+  Zap,
+  GitBranch,
+  CreditCard,
 } from "lucide-react"
 import { useAuth } from "@/lib/auth/client"
 import Link from "next/link"
@@ -411,28 +415,40 @@ export default function AdminDashboardPage() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-4 space-y-2">
+                    <Link href="/leads">
+                      <Button variant="outline" className="w-full justify-start" size="sm">
+                        <Zap className="h-4 w-4 mr-2" />
+                        Lead Intelligence
+                      </Button>
+                    </Link>
+                    <Link href="/dashboard/admin/assignment-rules">
+                      <Button variant="outline" className="w-full justify-start" size="sm">
+                        <GitBranch className="h-4 w-4 mr-2" />
+                        Assignment Rules
+                      </Button>
+                    </Link>
+                    <Link href="/dashboard/financials/team">
+                      <Button variant="outline" className="w-full justify-start" size="sm">
+                        <DollarSign className="h-4 w-4 mr-2" />
+                        Team Financials
+                      </Button>
+                    </Link>
+                    <Link href="/dashboard/videos/analytics">
+                      <Button variant="outline" className="w-full justify-start" size="sm">
+                        <Video className="h-4 w-4 mr-2" />
+                        Video Analytics
+                      </Button>
+                    </Link>
+                    <Link href="/admin/usage">
+                      <Button variant="outline" className="w-full justify-start" size="sm">
+                        <Activity className="h-4 w-4 mr-2" />
+                        Usage Metrics
+                      </Button>
+                    </Link>
                     <Link href="/dashboard/admin/onboarding">
                       <Button variant="outline" className="w-full justify-start" size="sm">
                         <UserPlus className="h-4 w-4 mr-2" />
                         Agent Onboarding
-                      </Button>
-                    </Link>
-                    <Link href="/dashboard/admin/forms">
-                      <Button variant="outline" className="w-full justify-start" size="sm">
-                        <FileText className="h-4 w-4 mr-2" />
-                        Manage Forms
-                      </Button>
-                    </Link>
-                    <Link href="/dashboard/admin/knowledge">
-                      <Button variant="outline" className="w-full justify-start" size="sm">
-                        <BarChart3 className="h-4 w-4 mr-2" />
-                        Knowledge Base
-                      </Button>
-                    </Link>
-                    <Link href="/settings">
-                      <Button variant="outline" className="w-full justify-start" size="sm">
-                        <Settings className="h-4 w-4 mr-2" />
-                        Brokerage Settings
                       </Button>
                     </Link>
                   </CardContent>
