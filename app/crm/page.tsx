@@ -1,304 +1,257 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '@/lib/auth/client'
-import { createClient } from '@/lib/supabase/client'
-import LoadingSpinner from '@/app/components/LoadingSpinner'
-import { Users, Search, Plus, Filter, Mail, Phone, MapPin, Calendar, ChevronRight } from 'lucide-react'
+import { getContacts } from '@/app/actions/contacts'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+  Users,
+  Search,
+  Plus,
+  Mail,
+  Phone,
+  MapPin,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react'
+import Link from 'next/link'
 
 interface Contact {
   id: string
-  first_name: string | null
-  last_name: string | null
-  name: string | null
-  email: string | null
-  phone: string | null
-  contact_type: string | null
-  buyer_stage: string | null
-  seller_stage: string | null
-  city: string | null
-  state: string | null
-  created_at: string
+  first_name: string
+  last_name: string
+  email: string
+  phone?: string
+  contact_type?: string
+  status?: string
+  city?: string
+  state?: string
+  created_at?: string
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  new: 'bg-slate-100 text-slate-700',
+  contacted: 'bg-blue-100 text-blue-700',
+  qualified: 'bg-indigo-100 text-indigo-700',
+  appointment_booked: 'bg-purple-100 text-purple-700',
+  signed_agreement: 'bg-yellow-100 text-yellow-700',
+  active_listing: 'bg-orange-100 text-orange-700',
+  pending: 'bg-amber-100 text-amber-700',
+  sold: 'bg-green-100 text-green-700',
+  lifetime_customer: 'bg-emerald-100 text-emerald-700',
+}
+
+const TYPE_COLORS: Record<string, string> = {
+  buyer: 'bg-blue-50 text-blue-700',
+  seller: 'bg-green-50 text-green-700',
+  investor: 'bg-purple-50 text-purple-700',
+  other: 'bg-gray-50 text-gray-600',
 }
 
 export default function CRMPage() {
-  const router = useRouter()
-  const { user, isLoading: authLoading } = useAuth()
-  const [searchQuery, setSearchQuery] = useState('')
+  const { user, loading: authLoading } = useAuth()
   const [contacts, setContacts] = useState<Contact[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [stats, setStats] = useState({ total: 0, active: 0, buyers: 0, sellers: 0 })
+  const [filtered, setFiltered] = useState<Contact[]>([])
+  const [search, setSearch] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login')
-    }
-  }, [user, authLoading, router])
-
-  useEffect(() => {
-    async function fetchContacts() {
-      if (!user) return
-      
-      const supabase = createClient()
-      const { data, error } = await supabase
-        .from('contacts')
-        .select('id, first_name, last_name, name, email, phone, contact_type, buyer_stage, seller_stage, city, state, created_at')
-        .order('created_at', { ascending: false })
-        .limit(50)
-
-      if (!error && data) {
-        setContacts(data)
-        setStats({
-          total: data.length,
-          active: data.filter(c => c.buyer_stage === 'active' || c.seller_stage === 'active').length,
-          buyers: data.filter(c => c.contact_type === 'buyer').length,
-          sellers: data.filter(c => c.contact_type === 'seller').length,
-        })
+  const loadContacts = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await getContacts({ limit: 100 })
+      if (result.success) {
+        setContacts(result.contacts)
+        setFiltered(result.contacts)
+      } else {
+        setError(result.error ?? 'Failed to load contacts')
       }
-      setIsLoading(false)
+    } catch (err) {
+      setError('Failed to load contacts')
+    } finally {
+      setLoading(false)
     }
+  }, [])
 
-    if (user) {
-      fetchContacts()
+  useEffect(() => {
+    if (!authLoading && user) {
+      loadContacts()
     }
-  }, [user])
+  }, [authLoading, user, loadContacts])
 
-  if (authLoading || isLoading) {
+  useEffect(() => {
+    const q = search.toLowerCase()
+    setFiltered(
+      contacts.filter(
+        (c) =>
+          `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
+          c.email.toLowerCase().includes(q) ||
+          c.phone?.includes(q) ||
+          c.city?.toLowerCase().includes(q)
+      )
+    )
+  }, [search, contacts])
+
+  if (authLoading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <LoadingSpinner size="lg" text="Loading contacts..." />
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
       </div>
     )
   }
 
-  if (!user) {
-    return null
-  }
-
-  const getDisplayName = (contact: Contact) => {
-    if (contact.first_name || contact.last_name) {
-      return `${contact.first_name || ''} ${contact.last_name || ''}`.trim()
-    }
-    return contact.name || 'Unknown'
-  }
-
-  const getInitials = (contact: Contact) => {
-    const name = getDisplayName(contact)
-    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
-  }
-
-  const getStatusBadge = (contact: Contact) => {
-    const stage = contact.buyer_stage || contact.seller_stage
-    if (!stage) return <Badge variant="secondary">New</Badge>
-    
-    switch (stage) {
-      case 'active':
-        return <Badge className="bg-green-100 text-green-800">Active</Badge>
-      case 'nurture':
-        return <Badge className="bg-blue-100 text-blue-800">Nurture</Badge>
-      case 'hot':
-        return <Badge className="bg-red-100 text-red-800">Hot Lead</Badge>
-      default:
-        return <Badge variant="secondary">{stage}</Badge>
-    }
-  }
-
-  const getTypeBadge = (type: string | null) => {
-    if (!type) return null
-    switch (type) {
-      case 'buyer':
-        return <Badge className="bg-blue-100 text-blue-800">Buyer</Badge>
-      case 'seller':
-        return <Badge className="bg-purple-100 text-purple-800">Seller</Badge>
-      case 'investor':
-        return <Badge className="bg-amber-100 text-amber-800">Investor</Badge>
-      default:
-        return <Badge variant="secondary">{type}</Badge>
-    }
-  }
-
-  const filteredContacts = contacts.filter(contact => {
-    if (!searchQuery) return true
-    const name = getDisplayName(contact).toLowerCase()
-    const email = (contact.email || '').toLowerCase()
-    const phone = (contact.phone || '').toLowerCase()
-    const query = searchQuery.toLowerCase()
-    return name.includes(query) || email.includes(query) || phone.includes(query)
-  })
-
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">CRM & Contacts</h1>
-            <p className="text-gray-500 mt-1">Manage your contacts and relationships</p>
-          </div>
-          <Button>
-            <Plus className="h-4 w-4 mr-2" />
-            Add Contact
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">My Contacts</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            {loading ? 'Loading...' : `${filtered.length} contact${filtered.length !== 1 ? 's' : ''}`}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={loadContacts}
+            disabled={loading}
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
           </Button>
-        </div>
-
-        {/* Stats */}
-        <div className="grid grid-cols-4 gap-4 mb-6">
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-500 text-sm mb-1">Total Contacts</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
-                </div>
-                <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                  <Users className="text-blue-600 h-5 w-5" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-500 text-sm mb-1">Active</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.active}</p>
-                </div>
-                <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
-                  <Users className="text-green-600 h-5 w-5" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-500 text-sm mb-1">Buyers</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.buyers}</p>
-                </div>
-                <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
-                  <Users className="text-blue-600 h-5 w-5" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-gray-500 text-sm mb-1">Sellers</p>
-                  <p className="text-2xl font-bold text-gray-900">{stats.sellers}</p>
-                </div>
-                <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
-                  <Users className="text-purple-600 h-5 w-5" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Search and Filters */}
-        <div className="flex items-center gap-4">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 h-4 w-4" />
-            <Input
-              type="text"
-              placeholder="Search contacts by name, email, or phone..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10"
-            />
-          </div>
-          <Button variant="outline">
-            <Filter className="h-4 w-4 mr-2" />
-            Filters
+          <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" asChild>
+            <Link href="/contacts/new">
+              <Plus className="h-4 w-4 mr-2" />
+              Add Contact
+            </Link>
           </Button>
         </div>
       </div>
 
-      {/* Contacts Table */}
-      <Card>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Contact</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Location</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filteredContacts.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={5} className="text-center py-8 text-gray-500">
-                  {searchQuery ? `No contacts found matching "${searchQuery}"` : 'No contacts yet'}
-                </TableCell>
-              </TableRow>
-            ) : (
-              filteredContacts.map((contact) => (
-                <TableRow 
-                  key={contact.id} 
-                  className="cursor-pointer hover:bg-gray-50"
-                  onClick={() => router.push(`/contacts/${contact.id}`)}
-                >
-                  <TableCell>
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-semibold text-sm">
-                        {getInitials(contact)}
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+        <Input
+          placeholder="Search by name, email, phone, or city..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-10"
+        />
+      </div>
+
+      {/* Error state */}
+      {error && (
+        <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {error}
+          <button
+            onClick={loadContacts}
+            className="ml-2 underline font-medium"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* Loading skeleton */}
+      {loading && (
+        <div className="space-y-3">
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="h-20 bg-gray-100 rounded-lg animate-pulse" />
+          ))}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!loading && !error && filtered.length === 0 && (
+        <div className="text-center py-16">
+          <Users className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-1">
+            {search ? 'No contacts match your search' : 'No contacts yet'}
+          </h3>
+          <p className="text-sm text-gray-500 mb-4">
+            {search
+              ? 'Try adjusting your search terms'
+              : 'Add your first contact to get started'}
+          </p>
+          {!search && (
+            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" asChild>
+              <Link href="/contacts/new">
+                <Plus className="h-4 w-4 mr-2" />
+                Add Contact
+              </Link>
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Contact list */}
+      {!loading && filtered.length > 0 && (
+        <div className="grid gap-3">
+          {filtered.map((contact) => (
+            <Card
+              key={contact.id}
+              className="hover:shadow-md transition-shadow cursor-pointer"
+            >
+              <CardContent className="p-4">
+                <Link href={`/contacts/${contact.id}`} className="block">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <h3 className="font-semibold text-gray-900 truncate">
+                          {contact.first_name} {contact.last_name}
+                        </h3>
+                        {contact.contact_type && (
+                          <Badge
+                            className={`text-xs ${
+                              TYPE_COLORS[contact.contact_type] ?? TYPE_COLORS.other
+                            }`}
+                          >
+                            {contact.contact_type}
+                          </Badge>
+                        )}
+                        {contact.status && (
+                          <Badge
+                            className={`text-xs ${
+                              STATUS_COLORS[contact.status] ?? 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {contact.status.replace(/_/g, ' ')}
+                          </Badge>
+                        )}
                       </div>
-                      <div>
-                        <p className="font-medium text-gray-900">{getDisplayName(contact)}</p>
-                        <p className="text-sm text-gray-500">{contact.email || 'No email'}</p>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
+                        {contact.email && (
+                          <span className="flex items-center gap-1">
+                            <Mail className="h-3.5 w-3.5" />
+                            {contact.email}
+                          </span>
+                        )}
+                        {contact.phone && (
+                          <span className="flex items-center gap-1">
+                            <Phone className="h-3.5 w-3.5" />
+                            {contact.phone}
+                          </span>
+                        )}
+                        {(contact.city || contact.state) && (
+                          <span className="flex items-center gap-1">
+                            <MapPin className="h-3.5 w-3.5" />
+                            {[contact.city, contact.state].filter(Boolean).join(', ')}
+                          </span>
+                        )}
                       </div>
                     </div>
-                  </TableCell>
-                  <TableCell>
-                    {getTypeBadge(contact.contact_type)}
-                  </TableCell>
-                  <TableCell>
-                    {getStatusBadge(contact)}
-                  </TableCell>
-                  <TableCell>
-                    {contact.city || contact.state ? (
-                      <div className="flex items-center gap-1 text-gray-500 text-sm">
-                        <MapPin className="h-3 w-3" />
-                        {[contact.city, contact.state].filter(Boolean).join(', ')}
-                      </div>
-                    ) : (
-                      <span className="text-gray-400 text-sm">-</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation() }}>
-                        <Mail className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="icon" onClick={(e) => { e.stopPropagation() }}>
-                        <Phone className="h-4 w-4" />
-                      </Button>
-                      <ChevronRight className="h-4 w-4 text-gray-400" />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </Card>
+                  </div>
+                </Link>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
