@@ -33,7 +33,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
     mobileBottomNav: [
       { id: 'dashboard', label: 'Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
-      { id: 'leads', label: 'Leads', href: '/dashboard/buyers', icon: 'Zap' },
+      { id: 'leads', label: 'Leads', href: '/leads', icon: 'Zap' },
       { id: 'contacts', label: 'Contacts', href: '/contacts', icon: 'Users' },
       { id: 'listings', label: 'Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'more', label: 'More', href: '/dashboard', icon: 'Menu' },
@@ -135,7 +135,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
     mobileBottomNav: [
       { id: 'calling', label: 'Calling', href: '/dashboard/isa/calling', icon: 'Phone' },
-      { id: 'leads', label: 'Leads', href: '/dashboard/isa/leads', icon: 'Zap' },
+      { id: 'leads', label: 'Leads', href: '/leads', icon: 'Zap' },
       { id: 'campaigns', label: 'Campaigns', href: '/dashboard/isa/campaigns', icon: 'Megaphone' },
       { id: 'analytics', label: 'Stats', href: '/dashboard/isa/analytics', icon: 'BarChart3' },
       { id: 'more', label: 'More', href: '/dashboard', icon: 'Menu' },
