@@ -997,14 +997,14 @@ export default function MarketingStudioClient() {
                     <div className="space-y-2">
                       <Label>Campaign (Optional)</Label>
                       <Select
-                        value={newAsset.campaignId}
-                        onValueChange={(v) => setNewAsset({ ...newAsset, campaignId: v })}
+                        value={newAsset.campaignId || "none"}
+                        onValueChange={(v) => setNewAsset({ ...newAsset, campaignId: v === "none" ? "" : v })}
                       >
                         <SelectTrigger>
                           <SelectValue placeholder="Select campaign" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="">No Campaign</SelectItem>
+                          <SelectItem value="none">No Campaign</SelectItem>
                           {campaigns.map((c) => (
                             <SelectItem key={c.id} value={c.id}>
                               {c.campaign_name}
