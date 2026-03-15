@@ -50,6 +50,7 @@ import {
   Upload,
   Plus,
   Loader2,
+  MapPin,
 } from "lucide-react"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
 
@@ -63,6 +64,9 @@ interface TransactionDetailClientProps {
     agent_id: string
     contact_id: string
     property_address: string
+    property_city: string | null
+    property_state: string | null
+    property_zip: string | null
     purchase_price: number
     status: string
     stage: string
@@ -558,6 +562,14 @@ export function TransactionDetailClient({
             </Link>
             <div className="flex-1">
               <h1 className="text-xl font-semibold">{transaction.property_address}</h1>
+              {(transaction.property_city || transaction.property_state || transaction.property_zip) && (
+                <p className="text-sm text-muted-foreground flex items-center gap-1">
+                  <MapPin className="h-3.5 w-3.5" />
+                  {[transaction.property_city, transaction.property_state, transaction.property_zip]
+                    .filter(Boolean)
+                    .join(', ')}
+                </p>
+              )}
               <p className="text-sm text-muted-foreground">
                 ${transaction.purchase_price?.toLocaleString()} | {transaction.deal_type ?? "Purchase"}
               </p>
