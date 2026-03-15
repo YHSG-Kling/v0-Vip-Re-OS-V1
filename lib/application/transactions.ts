@@ -5,6 +5,24 @@ import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 // ============================================
+// HELPERS
+// ============================================
+
+/**
+ * Normalize ZIP codes to standard formats:
+ * - "12345" → "12345" (5-digit unchanged)
+ * - "12345 6789" → "12345-6789" (9-digit with space)
+ * - "123456789" → "12345-6789" (9-digit without separator)
+ */
+function normalizeZip(zip?: string): string | undefined {
+  if (!zip) return undefined
+  const cleaned = zip.replace(/\s+/g, '').replace(/[^0-9]/g, '')
+  if (cleaned.length === 5) return cleaned
+  if (cleaned.length === 9) return `${cleaned.slice(0, 5)}-${cleaned.slice(5)}`
+  return zip.trim()
+}
+
+// ============================================
 // TRANSACTION CRUD
 // ============================================
 
@@ -90,6 +108,7 @@ export async function createTransaction(transactionData: {
     .from("transactions")
     .insert({
       ...transactionData,
+      property_zip: normalizeZip(transactionData.property_zip),
       status: transactionData.status || "new",
       commission_percentage: transactionData.commissionPercentage ?? null,
     })
@@ -159,6 +178,9 @@ export async function updateTransaction(
   if (updates.commissionPercentage !== undefined) {
     updatePayload.commission_percentage = updates.commissionPercentage
     delete updatePayload.commissionPercentage
+  }
+  if (updates.property_zip !== undefined) {
+    updatePayload.property_zip = normalizeZip(updates.property_zip)
   }
 
   const { data, error } = await supabase
