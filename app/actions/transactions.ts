@@ -28,6 +28,9 @@ export async function getTransactionById(transactionId: string) {
 
 export async function createTransaction(transactionData: {
   property_address: string
+  property_city?: string
+  property_state?: string  // 2-letter US state code, e.g. "FL", "CA", "TX"
+  property_zip?: string
   transaction_type: "purchase" | "sale" | "lease" | "dual"
   status?: string
   contract_price?: number
@@ -48,6 +51,9 @@ export async function updateTransaction(
   transactionId: string,
   updates: Partial<{
     property_address: string
+    property_city: string
+    property_state: string
+    property_zip: string
     transaction_type: string
     status: string
     contract_price: number
