@@ -41,6 +41,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
+import { US_STATES } from "@/lib/constants/us-states"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -55,14 +56,6 @@ interface LicenseIntakeClientProps {
     instructions: string | null
   }>
 }
-
-const US_STATES = [
-  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
-  "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
-  "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-  "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
-  "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
-]
 
 const STEP_LABELS = [
   { label: "License Details", icon: FileText },
@@ -388,7 +381,9 @@ function LicenseDetailsStep({
                 </SelectTrigger>
                 <SelectContent>
                   {US_STATES.map(state => (
-                    <SelectItem key={state} value={state}>{state}</SelectItem>
+                    <SelectItem key={state.code} value={state.code}>
+                      {state.code} — {state.name}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>

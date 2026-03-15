@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Loader2, Home, MapPin, DollarSign, User, ArrowLeft, Sparkles } from "lucide-react"
 import Link from "next/link"
 import { aiEnrichPropertyData, createListing } from "@/app/actions/ai-listing-intake"
+import { US_STATES } from "@/lib/constants/us-states"
 
 const PROPERTY_TYPES = [
   { value: "single_family", label: "Single Family Home" },
@@ -19,14 +20,6 @@ const PROPERTY_TYPES = [
   { value: "multi_family", label: "Multi-Family" },
   { value: "land", label: "Land/Lot" },
   { value: "commercial", label: "Commercial" },
-]
-
-const US_STATES = [
-  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
-  "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
-  "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
-  "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
-  "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY"
 ]
 
 export default function NewListingPage() {
@@ -172,8 +165,8 @@ export default function NewListingPage() {
                     </SelectTrigger>
                     <SelectContent>
                       {US_STATES.map((state) => (
-                        <SelectItem key={state} value={state}>
-                          {state}
+                        <SelectItem key={state.code} value={state.code}>
+                          {state.code} — {state.name}
                         </SelectItem>
                       ))}
                     </SelectContent>
