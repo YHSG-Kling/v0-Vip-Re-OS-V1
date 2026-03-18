@@ -21,6 +21,7 @@ import { AgentSuperpowersPanel } from "./components/agent-superpowers-panel"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
+import { NewlyConvertedContactsPanel } from "./components/conversion"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -231,6 +232,11 @@ export default function AgentDashboard() {
             callingId={callingId}
             loading={loading}
           />
+        )}
+
+        {/* Conversion Workspace - Qualified Handoffs */}
+        {agentId && brokerageId && (
+          <NewlyConvertedContactsPanel agentId={agentId} brokerageId={brokerageId} />
         )}
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
