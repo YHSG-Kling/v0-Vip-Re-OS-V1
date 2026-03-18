@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
 
 export default async function BuyersPage() {
   const supabase = await createClient()
@@ -24,6 +26,21 @@ export default async function BuyersPage() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">My Leads</h1>
           <p className="text-muted-foreground">Manage your buyer leads and prospects</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 p-4 bg-muted/30 border-b border-border mb-4 rounded-lg">
+        <p className="text-sm font-semibold text-foreground">Buyer Operations</p>
+        <div className="flex gap-2 flex-wrap">
+          <Link href="/dashboard/isa/calendar">
+            <Button size="sm" variant="outline" className="text-xs">ISA Calendar</Button>
+          </Link>
+          <Link href="/dashboard/buyers/fatigue">
+            <Button size="sm" variant="outline" className="text-xs">Fatigue Monitor</Button>
+          </Link>
+          <Link href="/leads">
+            <Button size="sm" variant="outline" className="text-xs">Lead Intelligence</Button>
+          </Link>
         </div>
       </div>
 

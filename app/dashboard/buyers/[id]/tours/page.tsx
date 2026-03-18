@@ -6,6 +6,7 @@ import { getSavedPropertiesForTour, getBuyerTours } from '@/app/actions/tour-pla
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
+import { TourPipelineStepper } from '@/app/components/shared/TourPipelineStepper'
 
 interface Props {
   params: Promise<{ id: string }>
@@ -96,6 +97,25 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
           {tours.length} tour{tours.length === 1 ? '' : 's'} on file
         </p>
       </div>
+
+      {/* Journey stepper */}
+      <TourPipelineStepper
+        contactId={contactId}
+        savedCount={savedProperties.length}
+        tourCount={tours.length}
+        buyerStage={contact.buyer_stage}
+      />
+
+      {/* AI route optimization nudge */}
+      {tours.length > 0 && savedProperties.length > 1 && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+          <p className="text-sm text-blue-800">
+            <span className="font-medium">AI can optimize your tour route</span>
+            {' '}— save drive time and see more homes efficiently
+          </p>
+          <span className="text-xs text-blue-600 font-medium shrink-0 ml-2">Use route optimizer in Plan tab</span>
+        </div>
+      )}
 
       <div className="flex-1 min-h-0">
         <ToursClient
