@@ -42,6 +42,7 @@ import {
   Video,
   Mail,
   Sparkles,
+  Rocket,
 } from "lucide-react"
 import {
   getCampaigns,
@@ -71,6 +72,15 @@ import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } f
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
 import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
+import {
+  CampaignLauncherPanel,
+  CompetitorWatchPanel,
+  RepurposeEnginePanel,
+  CreativeVariationsPanel,
+  PerformanceIntelligencePanel,
+  PrelaunchPredictionPanel,
+  SellerSafeMarketingSummary,
+} from "./components/ad-os"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -183,6 +193,11 @@ export default function MarketingStudioClient() {
   const [localContent, setLocalContent] = useState<any[]>([])
   const [isNewsletterLoading, setIsNewsletterLoading] = useState(false)
 
+  // Ad OS state
+  const [listings, setListings] = useState<Array<{ id: string; address: string; city: string; zip?: string; list_price?: number }>>([])
+  const [agentId, setAgentId] = useState<string>("")
+  const [brokerageId, setBrokerageId] = useState<string>("")
+
   // Form states
   const [newCampaign, setNewCampaign] = useState({
     campaignName: "",
@@ -217,6 +232,7 @@ export default function MarketingStudioClient() {
     if (activeTab === "assets") loadAssets()
     if (activeTab === "calendar") loadCalendarEvents()
     if (activeTab === "newsletters") loadNewsletterData()
+    if (activeTab === "ad-os") loadAdOsData()
   }, [activeTab, statusFilter])
 
   async function loadInitialData() {
@@ -330,6 +346,30 @@ export default function MarketingStudioClient() {
       console.error("[v0] Failed to load newsletter data:", error)
     } finally {
       setIsNewsletterLoading(false)
+    }
+  }
+
+  async function loadAdOsData() {
+    try {
+      const userContext = await getUserContextForPrediction()
+      if (userContext.success && userContext.userId && userContext.brokerageId) {
+        setAgentId(userContext.userId)
+        setBrokerageId(userContext.brokerageId)
+
+        // Load agent's active listings
+        const supabase = (await import("@/lib/supabase/client")).createClient()
+        const { data: listingsData } = await supabase
+          .from("listings")
+          .select("id, address, city, zip, list_price")
+          .eq("brokerage_id", userContext.brokerageId)
+          .in("status", ["active", "pending", "coming_soon"])
+          .order("created_at", { ascending: false })
+          .limit(50)
+
+        setListings(listingsData || [])
+      }
+    } catch (error) {
+      console.error("[v0] Failed to load Ad OS data:", error)
     }
   }
 
@@ -662,7 +702,14 @@ export default function MarketingStudioClient() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4 md:grid-cols-7 gap-2 h-auto bg-muted p-2 rounded-xl">
+          <TabsList className="grid w-full grid-cols-4 md:grid-cols-8 gap-2 h-auto bg-muted p-2 rounded-xl">
+            <TabsTrigger
+              value="ad-os"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Rocket className="h-4 w-4" />
+              <span className="text-xs">Ad OS</span>
+            </TabsTrigger>
             <TabsTrigger
               value="overview"
               className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
@@ -713,6 +760,37 @@ export default function MarketingStudioClient() {
               <span className="text-xs">QR Links</span>
             </TabsTrigger>
           </TabsList>
+
+          {/* Ad OS Tab */}
+          <TabsContent value="ad-os" className="space-y-6">
+            {/* Row 1: Campaign Launcher + Competitor Watch */}
+            <div className="grid lg:grid-cols-2 gap-6">
+              <CampaignLauncherPanel
+                listings={listings}
+                agentId={agentId}
+                onCampaignCreated={() => {
+                  loadCampaigns()
+                  loadInitialData()
+                }}
+              />
+              <CompetitorWatchPanel listings={listings} agentId={agentId} />
+            </div>
+
+            {/* Row 2: Repurpose Engine + Creative Variations */}
+            <div className="grid lg:grid-cols-2 gap-6">
+              <RepurposeEnginePanel agentId={agentId} />
+              <CreativeVariationsPanel agentId={agentId} />
+            </div>
+
+            {/* Row 3: Prelaunch Prediction + Performance Intelligence */}
+            <div className="grid lg:grid-cols-2 gap-6">
+              <PrelaunchPredictionPanel agentId={agentId} />
+              <PerformanceIntelligencePanel brokerageId={brokerageId} />
+            </div>
+
+            {/* Row 4: Seller-Safe Marketing Summary (full width) */}
+            <SellerSafeMarketingSummary listings={listings} />
+          </TabsContent>
 
           {/* Overview Tab */}
           <TabsContent value="overview" className="space-y-6">
