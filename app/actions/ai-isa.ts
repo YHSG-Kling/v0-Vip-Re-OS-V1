@@ -643,3 +643,78 @@ export async function skipGhostContact(params: {
   if (error) return { success: false, error: error.message }
   return { success: true }
 }
+
+/** Retry ghost contact via specified channel */
+export async function retryGhostContact(params: {
+  brokerageId: string
+  contactId: string
+  channel: "email" | "sms" | "phone"
+}): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthenticated" }
+
+  const service = createServiceClient()
+
+  // Get contact info
+  const { data: contact, error: contactErr } = await service
+    .from("contacts")
+    .select("email, phone, first_name, lifecycle_state")
+    .eq("id", params.contactId)
+    .single()
+
+  if (contactErr || !contact) return { success: false, error: "Contact not found" }
+
+  // Compliance gate
+  const compliance = await evaluateOutbound({
+    actorContext: { brokerageId: params.brokerageId, userId: user.id },
+    messageType: params.channel === "email" ? "email" : "sms",
+    content: "Ghost recovery re-engagement",
+  })
+  if (!compliance.allowed) {
+    return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
+  }
+
+  // Dispatch based on channel
+  if (params.channel === "email" && contact.email) {
+    const result = await dispatchEmail({
+      brokerageId: params.brokerageId,
+      userId: user.id,
+      from: "noreply@platform.com",
+      to: contact.email,
+      subject: "Quick follow-up",
+      html: `<p>Hi ${contact.first_name ?? "there"},</p><p>Just checking in to see if you're still looking for help with your real estate needs. Let me know!</p>`,
+      systemSource: "ghost_recovery",
+      leadId: params.contactId,
+    })
+    if (!result.success) return { success: false, error: result.error }
+  }
+
+  // Log engagement event
+  await service.from("ai_isa_engagement_tracking").insert({
+    brokerage_id: params.brokerageId,
+    contact_id: params.contactId,
+    channel: params.channel,
+    event_type: "sent",
+    created_at: new Date().toISOString(),
+  })
+
+  return { success: true }
+}
+
+/** Suppress ghost contact — mark as skipped to stop retries */
+export async function suppressGhostContact(params: {
+  brokerageId: string
+  contactId: string
+}): Promise<{ success: boolean; error?: string }> {
+  const service = createServiceClient()
+  const { error } = await service.from("ai_isa_engagement_tracking").insert({
+    brokerage_id: params.brokerageId,
+    contact_id: params.contactId,
+    channel: "system",
+    event_type: "suppressed",
+    created_at: new Date().toISOString(),
+  })
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
