@@ -1723,10 +1723,10 @@ export async function celebrateMilestone(transactionId: string, milestone: strin
 export async function loadClientDashboard(transactionId: string, contactId?: string) {
   const supabase = await createClient()
   
-  // Fetch transaction with full relationships
+  // Fetch transaction with full relationships - specify which foreign key to use
   const { data: transaction } = await supabase
     .from("transactions")
-    .select(`*, contacts(*), agents(*)`)
+    .select(`*, contacts!transactions_contact_id_fkey(*), agents(*)`)
     .eq("id", transactionId)
     .single()
   
@@ -1978,7 +1978,7 @@ export async function loadAgentDashboard() {
 
   const { data: transactions } = await supabase
     .from("transactions")
-    .select(`*, contacts(*), listings(*)`)
+    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
     .eq("agent_id", agentId)
     .order("created_at", { ascending: false })
 
@@ -1999,7 +1999,7 @@ export async function getAgentTransactionKanban() {
 
   const { data: transactions } = await supabase
     .from("transactions")
-    .select(`*, contacts(*), listings(*)`)
+    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
     .eq("agent_id", agentId)
     .neq("status", "closed")
     .order("created_at", { ascending: false })
