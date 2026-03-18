@@ -7,6 +7,13 @@ import { Progress } from "@/components/ui/progress"
 import Link from "next/link"
 import { DollarSign, Users, TrendingUp, Award, Target, AlertTriangle } from "lucide-react"
 import { TeamRevenueChart } from "./team-revenue-chart"
+import {
+  FinancialCommandStrip,
+  MarginBreakdownPanel,
+  FinancialActionStack,
+  type FinancialPriority,
+  type FinancialAction,
+} from "../components/os"
 
 export const dynamic = "force-dynamic"
 
@@ -184,6 +191,67 @@ export default async function TeamFinancialsPage() {
   const totalRecruitingCost = recruitingROI.data?.reduce((sum, r) => sum + (r.total_recruiting_cost || 0), 0) || 0
   const totalRecruitingRevenue = recruitingROI.data?.reduce((sum, r) => sum + (r.lifetime_brokerage_net || 0), 0) || 0
 
+  // Build financial priority for team lead
+  const teamFinancialPriority: FinancialPriority | null = (() => {
+    if (goalPct < 50 && goalAmount > 0) {
+      return {
+        id: "below-goal",
+        title: "Team Below Revenue Target",
+        description: `Currently at ${goalPct.toFixed(1)}% of ${currentPeriod} goal`,
+        urgency: "high",
+        metric: `${goalPct.toFixed(1)}%`,
+        metricLabel: "of goal",
+        ctaLabel: "View Team Details",
+        ctaHref: "/dashboard/team",
+      }
+    }
+    
+    if (agentCount < 3) {
+      return {
+        id: "team-size",
+        title: "Consider Team Expansion",
+        description: "Growing your team can increase revenue capacity",
+        urgency: "low",
+        ctaLabel: "Recruiting",
+        ctaHref: "/dashboard/recruiting",
+      }
+    }
+    
+    return null
+  })()
+
+  // Build action stack for team lead
+  const teamFinancialActions: FinancialAction[] = [
+    {
+      id: "review-team-performance",
+      title: "Review Agent Performance",
+      description: `${agentCount} agents contributing to team revenue`,
+      priority: "medium",
+      type: "review",
+      href: "/dashboard/team",
+    },
+    {
+      id: "view-commissions",
+      title: "View Team Commissions",
+      description: "Track pending and paid commissions",
+      priority: "medium",
+      type: "commission",
+      value: mtdTotal,
+      href: "/dashboard/financials/commissions",
+    },
+  ]
+  
+  if (goalPct < 80 && goalAmount > 0) {
+    teamFinancialActions.unshift({
+      id: "review-goal-progress",
+      title: "Address Goal Shortfall",
+      description: `${(100 - goalPct).toFixed(1)}% remaining to hit target`,
+      priority: goalPct < 50 ? "urgent" : "high",
+      type: "budget",
+      value: goalAmount - currentRevenue,
+    })
+  }
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -195,6 +263,18 @@ export default async function TeamFinancialsPage() {
           {agentCount} Agent{agentCount !== 1 ? "s" : ""}
         </Badge>
       </div>
+
+      {/* Financial Command Strip */}
+      <FinancialCommandStrip
+        priority={teamFinancialPriority}
+        periodSummary={{
+          mtdRevenue: mtdTotal,
+          ytdRevenue: ytdTotal,
+          pendingCommissions: 0,
+          expensesMTD: 0,
+        }}
+        role="team_lead"
+      />
 
       {/* Section 1: Team KPI Row */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -452,6 +532,9 @@ export default async function TeamFinancialsPage() {
           />
         </CardContent>
       </Card>
+
+      {/* Section 7: Financial Action Stack */}
+      <FinancialActionStack actions={teamFinancialActions} />
     </div>
   )
 }

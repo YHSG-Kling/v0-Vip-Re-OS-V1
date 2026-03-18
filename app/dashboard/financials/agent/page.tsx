@@ -17,6 +17,14 @@ import {
 } from "lucide-react"
 import { ExpensesDonutChart } from "./expenses-chart"
 import { EarningsTrendChart } from "./earnings-trend-chart"
+import {
+  FinancialCommandStrip,
+  ProfitabilityRadar,
+  FinancialActionStack,
+  ProfitLossReportPanel,
+  type FinancialPriority,
+  type FinancialAction,
+} from "../components/os"
 
 export const dynamic = "force-dynamic"
 
@@ -198,6 +206,75 @@ export default async function AgentFinancialsPage() {
   // Process monthly trend data
   const monthlyTrendData = processMonthlyTrend(monthlyTrend)
 
+  // Calculate net income after expenses
+  const ytdNetAfterExpenses = (ytdEarnings?.agent_net || 0) - totalExpensesYTD
+
+  // Build financial priority
+  const financialPriority: FinancialPriority | null = (() => {
+    const pendingAmount = totalPipelineValue
+    const pendingCount = pipelineDeals.length
+    
+    if (pendingCount > 3 && pendingAmount > 50000) {
+      return {
+        id: "pending-commissions",
+        title: "Multiple Pending Commissions",
+        description: `${pendingCount} deals worth ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pendingAmount)} in pipeline`,
+        urgency: "high",
+        metric: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pendingAmount),
+        metricLabel: "pending",
+        ctaLabel: "Review Pipeline",
+        ctaHref: "/dashboard/financials/commissions",
+      }
+    }
+    
+    if (totalExpensesMTD > (mtdEarnings?.agent_net || 0) * 0.5 && totalExpensesMTD > 1000) {
+      return {
+        id: "expense-pressure",
+        title: "Expense Pressure This Month",
+        description: "Expenses are running high relative to income",
+        urgency: "medium",
+        metric: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(totalExpensesMTD),
+        metricLabel: "MTD expenses",
+        ctaLabel: "Track Expenses",
+        ctaHref: "/dashboard/financials/expenses",
+      }
+    }
+    
+    return null
+  })()
+
+  // Build action stack
+  const financialActions: FinancialAction[] = []
+  
+  if (pipelineDeals.length > 0) {
+    financialActions.push({
+      id: "review-pending",
+      title: "Review Pending Commissions",
+      description: `${pipelineDeals.length} commission${pipelineDeals.length !== 1 ? "s" : ""} awaiting close`,
+      priority: pipelineDeals.length > 3 ? "high" : "medium",
+      type: "commission",
+      value: totalPipelineValue,
+      href: "/dashboard/financials/commissions",
+    })
+  }
+  
+  financialActions.push({
+    id: "log-expense",
+    title: "Log New Expense",
+    description: "Track business expenses for tax deductions",
+    priority: "low",
+    type: "expense",
+    href: "/dashboard/financials/expenses",
+  })
+  
+  financialActions.push({
+    id: "generate-pl",
+    title: "Generate P&L Report",
+    description: "AI-powered profit and loss analysis",
+    priority: "low",
+    type: "report",
+  })
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -207,6 +284,18 @@ export default async function AgentFinancialsPage() {
           Track your commissions, cap progress, and financial performance
         </p>
       </div>
+
+      {/* Financial Command Strip */}
+      <FinancialCommandStrip
+        priority={financialPriority}
+        periodSummary={{
+          mtdRevenue: mtdEarnings?.agent_net || 0,
+          ytdRevenue: ytdEarnings?.agent_net || 0,
+          pendingCommissions: totalPipelineValue,
+          expensesMTD: totalExpensesMTD,
+        }}
+        role="agent"
+      />
 
       {/* Section 1: KPI Row */}
       <EarningsKPIRow
@@ -386,6 +475,31 @@ export default async function AgentFinancialsPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Section 8: OS Components - Profitability Radar & Action Stack */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <ProfitabilityRadar
+          metrics={{
+            grossIncome: ytdEarnings?.gross_commission || 0,
+            netProfit: ytdNetAfterExpenses,
+            profitMargin: (ytdEarnings?.gross_commission || 0) > 0 
+              ? (ytdNetAfterExpenses / (ytdEarnings?.gross_commission || 1)) * 100 
+              : 0,
+            expenseRatio: (ytdEarnings?.agent_net || 0) > 0 
+              ? (totalExpensesYTD / (ytdEarnings?.agent_net || 1)) * 100 
+              : 0,
+            targetProgress: agentData?.cap_amount 
+              ? ((agentData?.cap_progress || 0) / agentData.cap_amount) * 100 
+              : undefined,
+          }}
+          period="ytd"
+        />
+        
+        <FinancialActionStack actions={financialActions} />
+      </div>
+
+      {/* Section 9: P&L Report Generator */}
+      <ProfitLossReportPanel agentId={agentId} />
     </div>
   )
 }

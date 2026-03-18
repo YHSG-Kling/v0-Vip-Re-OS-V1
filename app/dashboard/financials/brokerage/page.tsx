@@ -21,6 +21,15 @@ import {
 import { PLExpenseChart } from "./pl-expense-chart"
 import { PLTrendChart } from "./pl-trend-chart"
 import { ForecastChart } from "./forecast-chart"
+import {
+  FinancialCommandStrip,
+  MarginBreakdownPanel,
+  PayoutReadinessPanel,
+  FinancialActionStack,
+  ProfitLossReportPanel,
+  type FinancialPriority,
+  type FinancialAction,
+} from "../components/os"
 
 export const dynamic = "force-dynamic"
 
@@ -162,6 +171,77 @@ export default async function BrokeragePLPage() {
     return `${val.toFixed(1)}%`
   }
 
+  // Build broker financial priority
+  const brokerPriority: FinancialPriority | null = (() => {
+    const profitMargin = latestPL?.profit_margin_pct || 0
+    const pendingPayouts = capSummary.belowCap
+    
+    if (profitMargin < 10 && (mtdEarnings?.gross_commission_income || 0) > 0) {
+      return {
+        id: "low-margin",
+        title: "Profit Margin Under Pressure",
+        description: "Operating expenses are compressing net income",
+        urgency: "high",
+        metric: `${profitMargin.toFixed(1)}%`,
+        metricLabel: "margin",
+        ctaLabel: "Review Expenses",
+        ctaHref: "/dashboard/financials/expenses",
+      }
+    }
+    
+    if (capSummary.postCap > capSummary.totalAgents * 0.3) {
+      return {
+        id: "cap-exposure",
+        title: "High Post-Cap Agent Ratio",
+        description: `${capSummary.postCap} agents at 100% commission - revenue exposure`,
+        urgency: "medium",
+        metric: `${capSummary.postCap}`,
+        metricLabel: "post-cap agents",
+        ctaLabel: "Review Caps",
+        ctaHref: "/dashboard/financials/payouts",
+      }
+    }
+    
+    return null
+  })()
+
+  // Build broker action stack
+  const brokerActions: FinancialAction[] = [
+    {
+      id: "review-payouts",
+      title: "Review Agent Payouts",
+      description: `${capSummary.totalAgents} active agents with pending payouts`,
+      priority: "medium",
+      type: "payout",
+      href: "/dashboard/financials/payouts",
+    },
+    {
+      id: "view-team-revenue",
+      title: "View Team Revenue",
+      description: "Breakdown by team performance",
+      priority: "low",
+      type: "review",
+      href: "/dashboard/financials/team",
+    },
+    {
+      id: "generate-pl",
+      title: "Generate P&L Report",
+      description: "Comprehensive brokerage financial analysis",
+      priority: "low",
+      type: "report",
+    },
+  ]
+  
+  if ((latestPL?.profit_margin_pct || 0) < 15) {
+    brokerActions.unshift({
+      id: "margin-review",
+      title: "Address Margin Compression",
+      description: "Profit margin below healthy threshold",
+      priority: "high",
+      type: "budget",
+    })
+  }
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -176,6 +256,18 @@ export default async function BrokeragePLPage() {
           {capSummary.totalAgents} Active Agents
         </Badge>
       </div>
+
+      {/* Financial Command Strip */}
+      <FinancialCommandStrip
+        priority={brokerPriority}
+        periodSummary={{
+          mtdRevenue: mtdEarnings?.brokerage_net || 0,
+          ytdRevenue: ytdEarnings?.brokerage_net || 0,
+          pendingCommissions: 0,
+          expensesMTD: (latestPL?.operating_expenses || 0) + (latestPL?.tech_expenses || 0),
+        }}
+        role="broker"
+      />
 
       {/* ─── SECTION 1: BROKERAGE KPI ROW ─────────────────────────────────────── */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
@@ -384,7 +476,7 @@ export default async function BrokeragePLPage() {
         </CardContent>
       </Card>
 
-      {/* ─── SECTION 4: AGENT CAPS SUMMARY ────────────────────────────────────── */}
+      {/* ─── SECTION 4: AGENT CAPS SUMMARY ───────────��────────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -513,6 +605,49 @@ export default async function BrokeragePLPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* ─── SECTION 7: MARGIN BREAKDOWN & ACTION STACK ────────────────────────── */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <MarginBreakdownPanel
+          grossIncome={mtdEarnings?.gross_commission_income || 0}
+          breakdown={[
+            {
+              label: "Agent Splits",
+              value: latestPL?.agent_splits_paid || 0,
+              percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
+                ? ((latestPL?.agent_splits_paid || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
+                : 0,
+            },
+            {
+              label: "Operating Expenses",
+              value: latestPL?.operating_expenses || 0,
+              percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
+                ? ((latestPL?.operating_expenses || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
+                : 0,
+            },
+            {
+              label: "Technology",
+              value: latestPL?.tech_expenses || 0,
+              percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
+                ? ((latestPL?.tech_expenses || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
+                : 0,
+            },
+            {
+              label: "Marketing",
+              value: latestPL?.marketing_expenses || 0,
+              percentOfGross: (mtdEarnings?.gross_commission_income || 0) > 0
+                ? ((latestPL?.marketing_expenses || 0) / (mtdEarnings?.gross_commission_income || 1)) * 100
+                : 0,
+            },
+          ]}
+          netMargin={latestPL?.profit_margin_pct || 0}
+        />
+        
+        <FinancialActionStack actions={brokerActions} />
+      </div>
+
+      {/* ─── SECTION 8: P&L REPORT GENERATOR ──────────────────────────────────── */}
+      <ProfitLossReportPanel agentId={profile.id} />
     </div>
   )
 }
