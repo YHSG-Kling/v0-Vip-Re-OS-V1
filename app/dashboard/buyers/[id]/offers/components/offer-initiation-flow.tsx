@@ -9,8 +9,16 @@ import {
 } from "@/app/actions/buyer-offers"
 import { StrategyAdvisor }   from "./strategy-advisor"
 import { OfferFormWizard }   from "./offer-form-wizard"
+import { aiCalculateEscalation, aiGenerateBuyerLetter } from "@/app/actions/ai-offer-creation"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { Badge } from "@/components/ui/badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Loader2 } from "lucide-react"
 
-type FlowStep = "address" | "form_source" | "strategy" | "wizard"
+type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "wizard"
 
 interface ResolvedProperty {
   address:         string
@@ -53,6 +61,21 @@ export function OfferInitiationFlow({
   const [isLoadingAddress, startAddressLoad] = useTransition()
   const [isLoadingFormSrc, startFormSrcLoad] = useTransition()
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Escalation state
+  const [escalationResult, setEscalationResult] = useState<any>(null)
+  const [escalationLoading, setEscalationLoading] = useState(false)
+  const [escalationForm, setEscalationForm] = useState({
+    initialOffer: '',
+    maxBudget: '',
+    competition: 'medium' as 'none' | 'low' | 'medium' | 'high',
+    trend: 'stable' as 'appreciating' | 'stable' | 'declining',
+  })
+
+  // Buyer letter state
+  const [buyerLetter, setBuyerLetter] = useState('')
+  const [letterLoading, setLetterLoading] = useState(false)
+  const [letterForm, setLetterForm] = useState({ buyerStory: '', whyThisHome: '' })
 
   // ── Step 1: Address search ──────────────────────────────────────────────────
 
@@ -115,17 +138,17 @@ export function OfferInitiationFlow({
 
   function onUseStrategy(rec: StrategyRecommendation) {
     setRecommendation(rec)
-    setFlowStep("wizard")
+    setFlowStep("escalation")
   }
 
   function onCustomizeStrategy(rec: StrategyRecommendation) {
     setRecommendation(rec)
-    setFlowStep("wizard")
+    setFlowStep("escalation")
   }
 
   function onSkipStrategy() {
     setRecommendation(null)
-    setFlowStep("wizard")
+    setFlowStep("escalation")
   }
 
   // ── RENDER ──────────────────────────────────────────────────────────────────
@@ -150,6 +173,191 @@ export function OfferInitiationFlow({
             onSkip={onSkipStrategy}
             onBack={() => setFlowStep("form_source")}
           />
+        </div>
+      </div>
+    )
+  }
+
+  if (flowStep === "escalation") {
+    return (
+      <div className="flex flex-col h-full overflow-y-auto">
+        <div className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <button onClick={() => setFlowStep("strategy")} className="text-sm text-muted-foreground hover:underline">
+            Back
+          </button>
+          <p className="text-sm font-semibold">Escalation Clause</p>
+        </div>
+        <div className="flex-1 px-5 py-4 space-y-4">
+          <div>
+            <h3 className="font-semibold">Model an Escalation Clause</h3>
+            <p className="text-sm text-muted-foreground">
+              Automatically beats competing offers up to your max — only when needed.
+              This protects your buyer while staying competitive.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Initial Offer Price</Label>
+              <Input
+                type="number"
+                placeholder="Offer amount"
+                value={escalationForm.initialOffer}
+                onChange={e => setEscalationForm(f => ({ ...f, initialOffer: e.target.value }))}
+              />
+            </div>
+            <div>
+              <Label>Maximum Budget</Label>
+              <Input
+                type="number"
+                placeholder="Max you can go"
+                value={escalationForm.maxBudget}
+                onChange={e => setEscalationForm(f => ({ ...f, maxBudget: e.target.value }))}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Competition Level</Label>
+              <Select value={escalationForm.competition} onValueChange={v => setEscalationForm(f => ({ ...f, competition: v as any }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="low">Low</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Market Trend</Label>
+              <Select value={escalationForm.trend} onValueChange={v => setEscalationForm(f => ({ ...f, trend: v as any }))}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="appreciating">Appreciating</SelectItem>
+                  <SelectItem value="stable">Stable</SelectItem>
+                  <SelectItem value="declining">Declining</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {!escalationResult ? (
+            <Button
+              onClick={async () => {
+                setEscalationLoading(true)
+                const result = await aiCalculateEscalation({
+                  listPrice: property?.listPrice || Number(escalationForm.initialOffer),
+                  initialOffer: Number(escalationForm.initialOffer),
+                  maxBudget: Number(escalationForm.maxBudget),
+                  estimatedCompetition: escalationForm.competition,
+                  marketTrend: escalationForm.trend,
+                })
+                setEscalationResult(result)
+                setEscalationLoading(false)
+              }}
+              disabled={escalationLoading || !escalationForm.initialOffer || !escalationForm.maxBudget}
+            >
+              {escalationLoading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Calculating...</> : 'Calculate Escalation'}
+            </Button>
+          ) : (
+            <div className="p-4 bg-muted/40 rounded-lg space-y-2">
+              <div className="flex items-center gap-2">
+                {escalationResult.recommended
+                  ? <Badge className="bg-green-100 text-green-800">Recommended</Badge>
+                  : <Badge variant="secondary">Not recommended in this market</Badge>}
+              </div>
+              {escalationResult.recommended && (
+                <>
+                  <p className="text-sm">Starting: ${escalationResult.startingOffer?.toLocaleString()}</p>
+                  <p className="text-sm">Increment: ${escalationResult.incrementAmount?.toLocaleString()}</p>
+                  <p className="text-sm">Cap: ${escalationResult.capAmount?.toLocaleString()}</p>
+                </>
+              )}
+              <p className="text-xs text-muted-foreground">{escalationResult.explanation}</p>
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <Button onClick={() => setFlowStep('buyer_letter')}>
+              {escalationResult ? 'Continue to Buyer Letter' : 'Skip Escalation'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (flowStep === "buyer_letter") {
+    return (
+      <div className="flex flex-col h-full overflow-y-auto">
+        <div className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <button onClick={() => setFlowStep("escalation")} className="text-sm text-muted-foreground hover:underline">
+            Back
+          </button>
+          <p className="text-sm font-semibold">Buyer Letter</p>
+        </div>
+        <div className="flex-1 px-5 py-4 space-y-4">
+          <div>
+            <h3 className="font-semibold">Write a Buyer Letter</h3>
+            <p className="text-sm text-muted-foreground">
+              A personal letter increases acceptance rates — especially in competitive markets.
+              Help your buyers connect with the seller on a human level.
+            </p>
+          </div>
+
+          <div>
+            <Label>Tell us about your buyer</Label>
+            <Textarea
+              rows={3}
+              placeholder="What do they do? Family situation? What does homeownership mean to them?"
+              value={letterForm.buyerStory}
+              onChange={e => setLetterForm(f => ({ ...f, buyerStory: e.target.value }))}
+            />
+          </div>
+
+          <div>
+            <Label>Why is this home right for them?</Label>
+            <Textarea
+              rows={3}
+              placeholder="What stood out? What made them excited?"
+              value={letterForm.whyThisHome}
+              onChange={e => setLetterForm(f => ({ ...f, whyThisHome: e.target.value }))}
+            />
+          </div>
+
+          {!buyerLetter ? (
+            <Button
+              onClick={async () => {
+                if (!letterForm.buyerStory || !letterForm.whyThisHome) return
+                setLetterLoading(true)
+                const result = await aiGenerateBuyerLetter({
+                  agentId: agentUserId,
+                  buyerFirstName: contactName.split(' ')[0],
+                  buyerStory: letterForm.buyerStory,
+                  propertyAddress: property?.address || '',
+                  whyThisHome: letterForm.whyThisHome,
+                })
+                setBuyerLetter((result as any).letter || '')
+                setLetterLoading(false)
+              }}
+              disabled={letterLoading || !letterForm.buyerStory || !letterForm.whyThisHome}
+            >
+              {letterLoading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Generating...</> : 'Generate Buyer Letter'}
+            </Button>
+          ) : (
+            <div className="space-y-2">
+              <Textarea rows={10} value={buyerLetter} onChange={e => setBuyerLetter(e.target.value)} />
+              <Button variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(buyerLetter)}>
+                Copy Letter
+              </Button>
+            </div>
+          )}
+
+          <Button onClick={() => setFlowStep('wizard')}>
+            {buyerLetter ? 'Include with Offer' : 'Skip Buyer Letter'}
+          </Button>
         </div>
       </div>
     )
