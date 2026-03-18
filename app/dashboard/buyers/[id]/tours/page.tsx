@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { createClient } from '@/lib/supabase/server'
 import { ToursClient } from './tours-client'
 import { getSavedPropertiesForTour, getBuyerTours } from '@/app/actions/tour-planner'
+import { getAIShowingInsights } from '@/app/actions/ai-showing-management'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
@@ -74,7 +75,21 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
     )
   }
 
-  // Load saved properties and existing tours
+  // Resolve agentId for insights
+  const agentIdentity = await supabase.from("agents").select("id")
+    .eq("user_id", user.id).maybeSingle()
+  const agentIdForInsights = agentIdentity.data?.id
+
+  // Load saved properties, existing tours, and insights
+  const tourInsightsResult = agentIdForInsights
+    ? await getAIShowingInsights(agentIdForInsights, {
+        start: new Date(Date.now()-30*24*60*60*1000).toISOString().split('T')[0],
+        end: new Date().toISOString().split('T')[0]
+      })
+    : null
+  const tourInsights = tourInsightsResult?.success
+    ? (tourInsightsResult as any).insights || null : null
+
   const [savedRes, toursRes] = await Promise.all([
     getSavedPropertiesForTour(contactId),
     getBuyerTours(contactId),
@@ -125,6 +140,7 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
           savedProperties={savedProperties}
           initialTours={tours}
           defaultTab={defaultTab}
+          tourInsights={tourInsights}
         />
       </div>
     </div>

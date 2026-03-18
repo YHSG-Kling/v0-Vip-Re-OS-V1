@@ -50,11 +50,17 @@ interface ToursClientProps {
   savedProperties: SavedProperty[]
   initialTours: Tour[]
   defaultTab?: 'plan' | 'confirm' | 'day-of'
+  tourInsights?: {
+    positivePatterns?: string[]
+    objectionPatterns?: string[]
+    pricingSignal?: string
+  } | null
 }
 
 export function ToursClient({
   contact, agentUserId, brokerageId,
   savedProperties, initialTours, defaultTab = 'plan',
+  tourInsights,
 }: ToursClientProps) {
   const router   = useRouter()
   const [tab, setTab]     = useState<string>(defaultTab)
@@ -73,6 +79,29 @@ export function ToursClient({
 
   return (
     <Tabs value={tab} onValueChange={setTab} className="flex flex-col h-full">
+      {/* Tour Intelligence Strip */}
+      <div className="mb-4 p-2 bg-indigo-50 border border-indigo-100 rounded-lg">
+        {tourInsights ? (
+          <div className="flex flex-wrap gap-2 items-center">
+            <span className="text-xs font-medium text-indigo-700">Tour Insights:</span>
+            {tourInsights.positivePatterns?.slice(0, 2).map((p, i) => (
+              <span key={`pos-${i}`} className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
+                + {p}
+              </span>
+            ))}
+            {tourInsights.objectionPatterns?.slice(0, 1).map((p, i) => (
+              <span key={`obj-${i}`} className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+                ! {p}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-indigo-600">
+            Tour insights appear after feedback is collected from showings.
+          </p>
+        )}
+      </div>
+
       <TabsList className="grid w-full grid-cols-3 mb-6">
         <TabsTrigger value="plan">Plan</TabsTrigger>
         <TabsTrigger value="confirm">Confirm</TabsTrigger>

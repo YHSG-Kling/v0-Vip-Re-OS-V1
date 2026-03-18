@@ -4,6 +4,7 @@ import { useState, useTransition } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Star } from "lucide-react"
+import { aiAnalyzeShowingFeedback } from "@/app/actions/ai-showing-management"
 
 interface Props {
   token: string
@@ -175,6 +176,13 @@ export default function FeedbackForm({
       const body = await res.json()
       if (body.success) {
         setSubmitted(true)
+        // Fire analysis in background — does not block success UX
+        const savedFeedbackId = body.feedbackId
+        if (savedFeedbackId) {
+          aiAnalyzeShowingFeedback(savedFeedbackId).catch(err =>
+            console.warn('[ShowingFeedback] Analysis running in background:', err)
+          )
+        }
       } else {
         setError(body.error ?? "Something went wrong. Please try again.")
       }
