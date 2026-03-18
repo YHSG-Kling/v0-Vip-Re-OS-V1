@@ -46,8 +46,13 @@ import {
   convertLeadToContact,
   rejectLead,
 } from "@/app/actions/lead-management"
+import { getHotLeads } from "@/app/actions/ai-auto-response"
+import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
+import { HotLeadCard } from "@/app/components/shared/HotLeadCard"
 import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/types/lead-management"
 import { cn } from "@/lib/utils"
+import { createClient } from "@/lib/supabase/client"
+import { Zap } from "lucide-react"
 
 export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([])
@@ -69,6 +74,12 @@ export default function LeadsPage() {
 
   // Actions
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+
+  // Hot leads
+  const [hotLeads, setHotLeads] = useState<any[]>([])
+  const [hotLeadsLoading, setHotLeadsLoading] = useState(true)
+  const [agentId, setAgentId] = useState('')
+  const [callingId, setCallingId] = useState<string | null>(null)
 
   // Fetch leads
   const fetchLeads = async () => {
@@ -96,6 +107,35 @@ export default function LeadsPage() {
   useEffect(() => {
     fetchLeads()
   }, [page, scoreFilter, intentFilter, statusFilter, sourceFilter, sortBy, sortOrder])
+
+  // Load hot leads and resolve agentId
+  useEffect(() => {
+    const loadHotLeads = async () => {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      // Resolve agentId
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", user.id)
+        .maybeSingle()
+      const resolvedAgentId = agentRow?.id || ''
+      setAgentId(resolvedAgentId)
+
+      // Load hot leads
+      try {
+        const leads = await getHotLeads(5)
+        setHotLeads(Array.isArray(leads) ? leads : [])
+      } catch {
+        setHotLeads([])
+      } finally {
+        setHotLeadsLoading(false)
+      }
+    }
+    loadHotLeads()
+  }, [])
 
   // Debounced search
   useEffect(() => {
@@ -143,6 +183,23 @@ export default function LeadsPage() {
       fetchLeads()
     }
     setActionLoading(null)
+  }
+
+  const handleWhisperBridge = async (contactId: string, context: string) => {
+    if (!agentId) return
+    setCallingId(contactId + 'whisper')
+    try {
+      await initiateWhisperBridge({ contactId, agentId, context })
+    } catch {}
+    setCallingId(null)
+  }
+
+  const handleVapiBot = async (contactId: string, triggerEvent: string) => {
+    setCallingId(contactId + 'vapi')
+    try {
+      await triggerVapiVoiceBot({ contactId, triggerEvent })
+    } catch {}
+    setCallingId(null)
   }
 
   const getScoreColor = (score: LeadScore) => {
@@ -303,6 +360,40 @@ export default function LeadsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Hot Leads Section */}
+        {(hotLeads.length > 0 || hotLeadsLoading) && (
+          <div className="mb-6">
+            <div className="flex items-center gap-2 mb-3">
+              <Zap className="h-5 w-5 text-amber-500" />
+              <h2 className="text-base font-semibold">Hot Leads Now</h2>
+              {!hotLeadsLoading && (
+                <Badge variant="secondary" className="text-xs">{hotLeads.length} active signals</Badge>
+              )}
+            </div>
+            <p className="text-sm text-muted-foreground mb-3">
+              These contacts are showing real buying signals right now.
+            </p>
+            {hotLeadsLoading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {[1, 2, 3].map(i => <div key={i} className="h-28 bg-muted animate-pulse rounded-lg" />)}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {hotLeads.map(lead => (
+                  <HotLeadCard
+                    key={lead.id}
+                    lead={lead}
+                    onWhisperBridge={handleWhisperBridge}
+                    onVapiBot={handleVapiBot}
+                    callingId={callingId}
+                    compact={false}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Leads Table */}
         <Card>
