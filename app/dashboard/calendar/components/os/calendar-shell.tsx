@@ -1,0 +1,420 @@
+"use client"
+
+import { useState, useEffect, useCallback } from "react"
+import { createClient } from "@/lib/supabase/client"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button"
+import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react"
+import { CalendarRoleFilterBar, type CalendarRole } from "./calendar-role-filter-bar"
+import { CalendarTimelineView } from "./calendar-timeline-view"
+import { CalendarAgendaView } from "./calendar-agenda-view"
+import { CalendarOptimizationPanel } from "./calendar-optimization-panel"
+import { CalendarQuickCreatePanel } from "./calendar-quick-create-panel"
+import { CalendarSyncStatusCard } from "./calendar-sync-status-card"
+import { MeetingBriefCard } from "./meeting-brief-card"
+
+export type UnifiedCalendarEvent = {
+  id: string
+  title: string
+  startAt: string
+  endAt: string
+  eventType: "showing" | "tour" | "open_house" | "inspection" | "appraisal" | "closing" | "appointment" | "task" | "follow_up" | "isa_appointment"
+  source: "showings" | "calendar_events" | "open_houses" | "transactions" | "tasks" | "scheduled_touchpoints" | "buyer_tours"
+  location?: string
+  contactId?: string
+  contactName?: string
+  listingId?: string
+  listingAddress?: string
+  agentId?: string
+  status?: string
+  priority?: "high" | "medium" | "low"
+  metadata?: Record<string, unknown>
+}
+
+interface CalendarShellProps {
+  agentId: string
+  brokerageId: string
+  defaultRole?: CalendarRole
+}
+
+export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: CalendarShellProps) {
+  const supabase = createClient()
+  const [viewDate, setViewDate] = useState(() => new Date())
+  const [events, setEvents] = useState<UnifiedCalendarEvent[]>([])
+  const [loading, setLoading] = useState(true)
+  const [activeRole, setActiveRole] = useState<CalendarRole>(defaultRole)
+  const [activeView, setActiveView] = useState<"timeline" | "agenda">("timeline")
+  const [selectedEvent, setSelectedEvent] = useState<UnifiedCalendarEvent | null>(null)
+  const [showQuickCreate, setShowQuickCreate] = useState(false)
+
+  // Get week boundaries
+  const getWeekBounds = useCallback((date: Date) => {
+    const start = new Date(date)
+    start.setDate(start.getDate() - start.getDay())
+    start.setHours(0, 0, 0, 0)
+    const end = new Date(start)
+    end.setDate(end.getDate() + 7)
+    return { start, end }
+  }, [])
+
+  // Aggregate all calendar sources
+  const loadUnifiedCalendar = useCallback(async () => {
+    setLoading(true)
+    const { start, end } = getWeekBounds(viewDate)
+    const startISO = start.toISOString()
+    const endISO = end.toISOString()
+
+    try {
+      // Parallel fetch all calendar sources
+      const [
+        showingsRes,
+        calendarEventsRes,
+        openHousesRes,
+        transactionsRes,
+        tasksRes,
+        touchpointsRes,
+        toursRes,
+      ] = await Promise.all([
+        // 1. Showings (main appointment source)
+        supabase
+          .from("showings")
+          .select(`
+            id, scheduled_at, duration_minutes, status, notes, location,
+            contact_id, listing_id, agent_id,
+            contacts(first_name, last_name),
+            listings(address, city)
+          `)
+          .eq("agent_id", agentId)
+          .gte("scheduled_at", startISO)
+          .lt("scheduled_at", endISO)
+          .neq("status", "cancelled"),
+
+        // 2. Calendar events (ISA appointments, etc.)
+        supabase
+          .from("calendar_events")
+          .select("*")
+          .eq("agent_id", agentId)
+          .eq("is_cancelled", false)
+          .gte("start_at", startISO)
+          .lt("start_at", endISO),
+
+        // 3. Open houses
+        supabase
+          .from("open_houses")
+          .select(`
+            id, start_time, end_time, status, notes,
+            listing_id,
+            listings(address, city)
+          `)
+          .eq("agent_id", agentId)
+          .gte("start_time", startISO)
+          .lt("start_time", endISO),
+
+        // 4. Transactions with key dates
+        supabase
+          .from("transactions")
+          .select(`
+            id, property_address, status,
+            inspection_date, appraisal_date, closing_date,
+            contact_id,
+            contacts(first_name, last_name)
+          `)
+          .eq("agent_id", agentId)
+          .in("status", ["under_contract", "inspection", "appraisal", "financing", "closing"]),
+
+        // 5. Tasks with due dates
+        supabase
+          .from("tasks")
+          .select("*")
+          .eq("agent_id", agentId)
+          .gte("due_date", start.toISOString().split("T")[0])
+          .lte("due_date", end.toISOString().split("T")[0])
+          .neq("status", "completed"),
+
+        // 6. Scheduled touchpoints / follow-ups
+        supabase
+          .from("scheduled_touchpoints")
+          .select(`
+            id, scheduled_date, touchpoint_type, purpose, priority, status,
+            contact_id,
+            contacts(first_name, last_name)
+          `)
+          .eq("agent_id", agentId)
+          .eq("status", "scheduled")
+          .gte("scheduled_date", startISO)
+          .lt("scheduled_date", endISO),
+
+        // 7. Buyer tours
+        supabase
+          .from("buyer_tours")
+          .select(`
+            id, tour_date, start_time, end_time, status, notes,
+            contact_id,
+            contacts(first_name, last_name)
+          `)
+          .eq("agent_id", agentId)
+          .gte("tour_date", start.toISOString().split("T")[0])
+          .lte("tour_date", end.toISOString().split("T")[0]),
+      ])
+
+      const unified: UnifiedCalendarEvent[] = []
+
+      // Transform showings
+      showingsRes.data?.forEach((s: any) => {
+        const endAt = new Date(new Date(s.scheduled_at).getTime() + (s.duration_minutes || 30) * 60000)
+        unified.push({
+          id: s.id,
+          title: s.notes || "Showing",
+          startAt: s.scheduled_at,
+          endAt: endAt.toISOString(),
+          eventType: "showing",
+          source: "showings",
+          location: s.location,
+          contactId: s.contact_id,
+          contactName: s.contacts ? `${s.contacts.first_name || ""} ${s.contacts.last_name || ""}`.trim() : undefined,
+          listingId: s.listing_id,
+          listingAddress: s.listings ? `${s.listings.address}, ${s.listings.city}` : undefined,
+          agentId: s.agent_id,
+          status: s.status,
+        })
+      })
+
+      // Transform calendar events
+      calendarEventsRes.data?.forEach((e: any) => {
+        unified.push({
+          id: e.id,
+          title: e.title,
+          startAt: e.start_at,
+          endAt: e.end_at,
+          eventType: e.event_type === "isa_appointment" ? "isa_appointment" : "appointment",
+          source: "calendar_events",
+          location: e.location,
+          contactId: e.entity_type === "contact" ? e.entity_id : undefined,
+          agentId: e.agent_id,
+          metadata: e.metadata,
+        })
+      })
+
+      // Transform open houses
+      openHousesRes.data?.forEach((oh: any) => {
+        unified.push({
+          id: oh.id,
+          title: `Open House: ${oh.listings?.address || "Property"}`,
+          startAt: oh.start_time,
+          endAt: oh.end_time,
+          eventType: "open_house",
+          source: "open_houses",
+          listingId: oh.listing_id,
+          listingAddress: oh.listings ? `${oh.listings.address}, ${oh.listings.city}` : undefined,
+          status: oh.status,
+        })
+      })
+
+      // Transform transaction milestones
+      transactionsRes.data?.forEach((t: any) => {
+        const dateFields = [
+          { field: "inspection_date", type: "inspection" as const },
+          { field: "appraisal_date", type: "appraisal" as const },
+          { field: "closing_date", type: "closing" as const },
+        ]
+        dateFields.forEach(({ field, type }) => {
+          if (t[field]) {
+            const dateStr = t[field]
+            const eventDate = new Date(dateStr)
+            if (eventDate >= start && eventDate < end) {
+              unified.push({
+                id: `${t.id}-${type}`,
+                title: `${type.charAt(0).toUpperCase() + type.slice(1)}: ${t.property_address}`,
+                startAt: new Date(dateStr + "T10:00:00").toISOString(),
+                endAt: new Date(dateStr + "T12:00:00").toISOString(),
+                eventType: type,
+                source: "transactions",
+                contactId: t.contact_id,
+                contactName: t.contacts ? `${t.contacts.first_name || ""} ${t.contacts.last_name || ""}`.trim() : undefined,
+                priority: "high",
+              })
+            }
+          }
+        })
+      })
+
+      // Transform tasks
+      tasksRes.data?.forEach((task: any) => {
+        unified.push({
+          id: task.id,
+          title: task.title,
+          startAt: new Date(task.due_date + "T09:00:00").toISOString(),
+          endAt: new Date(task.due_date + "T09:30:00").toISOString(),
+          eventType: "task",
+          source: "tasks",
+          priority: task.priority as "high" | "medium" | "low",
+          status: task.status,
+        })
+      })
+
+      // Transform touchpoints
+      touchpointsRes.data?.forEach((tp: any) => {
+        unified.push({
+          id: tp.id,
+          title: `Follow-up: ${tp.contacts?.first_name || "Contact"} - ${tp.purpose}`,
+          startAt: tp.scheduled_date,
+          endAt: new Date(new Date(tp.scheduled_date).getTime() + 15 * 60000).toISOString(),
+          eventType: "follow_up",
+          source: "scheduled_touchpoints",
+          contactId: tp.contact_id,
+          contactName: tp.contacts ? `${tp.contacts.first_name || ""} ${tp.contacts.last_name || ""}`.trim() : undefined,
+          priority: tp.priority as "high" | "medium" | "low",
+        })
+      })
+
+      // Transform buyer tours
+      toursRes.data?.forEach((tour: any) => {
+        unified.push({
+          id: tour.id,
+          title: `Tour: ${tour.contacts?.first_name || "Buyer"}`,
+          startAt: `${tour.tour_date}T${tour.start_time || "10:00:00"}`,
+          endAt: `${tour.tour_date}T${tour.end_time || "12:00:00"}`,
+          eventType: "tour",
+          source: "buyer_tours",
+          contactId: tour.contact_id,
+          contactName: tour.contacts ? `${tour.contacts.first_name || ""} ${tour.contacts.last_name || ""}`.trim() : undefined,
+          status: tour.status,
+        })
+      })
+
+      // Sort by start time
+      unified.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
+
+      setEvents(unified)
+    } catch (err) {
+      console.error("Failed to load unified calendar:", err)
+    } finally {
+      setLoading(false)
+    }
+  }, [supabase, agentId, viewDate, getWeekBounds])
+
+  useEffect(() => {
+    loadUnifiedCalendar()
+  }, [loadUnifiedCalendar])
+
+  // Filter events by role
+  const filteredEvents = events.filter((e) => {
+    if (activeRole === "all") return true
+    if (activeRole === "isa") return e.eventType === "isa_appointment" || e.eventType === "follow_up"
+    if (activeRole === "listing") return ["showing", "open_house"].includes(e.eventType)
+    if (activeRole === "transaction") return ["inspection", "appraisal", "closing"].includes(e.eventType)
+    if (activeRole === "buyer") return e.eventType === "tour"
+    return true // agent sees all
+  })
+
+  // Navigation
+  const prevWeek = () => setViewDate((d) => new Date(d.getTime() - 7 * 24 * 60 * 60 * 1000))
+  const nextWeek = () => setViewDate((d) => new Date(d.getTime() + 7 * 24 * 60 * 60 * 1000))
+  const goToToday = () => setViewDate(new Date())
+
+  const { start: weekStart } = getWeekBounds(viewDate)
+  const weekLabel = `${weekStart.toLocaleDateString("en-US", { month: "short", day: "numeric" })} - ${new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold text-foreground">Calendar OS</h1>
+          <p className="text-sm text-muted-foreground">Unified scheduling across all domains</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => loadUnifiedCalendar()}>
+            <RefreshCw className="h-4 w-4 mr-1" />
+            Refresh
+          </Button>
+          <Button size="sm" onClick={() => setShowQuickCreate(true)}>
+            Quick Create
+          </Button>
+        </div>
+      </div>
+
+      {/* Role Filter */}
+      <CalendarRoleFilterBar activeRole={activeRole} onRoleChange={setActiveRole} />
+
+      {/* Week Navigation */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="icon" onClick={prevWeek}>
+            <ChevronLeft className="h-4 w-4" />
+          </Button>
+          <Button variant="outline" size="sm" onClick={goToToday}>
+            Today
+          </Button>
+          <Button variant="outline" size="icon" onClick={nextWeek}>
+            <ChevronRight className="h-4 w-4" />
+          </Button>
+        </div>
+        <h2 className="text-lg font-medium text-foreground">{weekLabel}</h2>
+        <Tabs value={activeView} onValueChange={(v) => setActiveView(v as "timeline" | "agenda")}>
+          <TabsList>
+            <TabsTrigger value="timeline">Timeline</TabsTrigger>
+            <TabsTrigger value="agenda">Agenda</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+
+      {/* Main Content Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+        {/* Calendar View (3 cols) */}
+        <div className="lg:col-span-3">
+          {loading ? (
+            <Card>
+              <CardContent className="py-16 text-center text-muted-foreground">
+                Loading unified calendar...
+              </CardContent>
+            </Card>
+          ) : activeView === "timeline" ? (
+            <CalendarTimelineView
+              events={filteredEvents}
+              weekStart={weekStart}
+              onSelectEvent={setSelectedEvent}
+            />
+          ) : (
+            <CalendarAgendaView
+              events={filteredEvents}
+              weekStart={weekStart}
+              onSelectEvent={setSelectedEvent}
+            />
+          )}
+        </div>
+
+        {/* Right Sidebar (1 col) */}
+        <div className="space-y-4">
+          <CalendarSyncStatusCard agentId={agentId} />
+          <CalendarOptimizationPanel
+            agentId={agentId}
+            date={viewDate.toISOString().split("T")[0]}
+            events={filteredEvents}
+          />
+          {selectedEvent && (
+            <MeetingBriefCard
+              event={selectedEvent}
+              agentId={agentId}
+              onClose={() => setSelectedEvent(null)}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Quick Create Panel */}
+      {showQuickCreate && (
+        <CalendarQuickCreatePanel
+          agentId={agentId}
+          brokerageId={brokerageId}
+          onClose={() => setShowQuickCreate(false)}
+          onCreated={() => {
+            setShowQuickCreate(false)
+            loadUnifiedCalendar()
+          }}
+        />
+      )}
+    </div>
+  )
+}

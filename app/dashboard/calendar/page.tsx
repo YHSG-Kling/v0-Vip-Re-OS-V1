@@ -1,20 +1,13 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { CalendarShell } from "@/app/dashboard/calendar/components/os"
+import { CalendarShell } from "./components/os"
 
 export const metadata = {
-  title: "ISA Calendar | Dashboard",
-  description: "ISA appointments and follow-ups - filtered view of Calendar OS",
+  title: "Calendar OS | Dashboard",
+  description: "Unified scheduling across all domains - showings, tours, transactions, and more",
 }
 
-/**
- * ISA Calendar - A filtered view of the unified Calendar OS
- * 
- * This page is now a thin wrapper around Calendar OS with the ISA role pre-selected.
- * The unified calendar aggregates all time-sensitive items into one surface.
- * ISA-specific events (appointments, follow-ups) are filtered automatically.
- */
-export default async function ISACalendarPage() {
+export default async function CalendarPage() {
   const supabase = await createClient()
 
   // Get authenticated user
@@ -45,7 +38,7 @@ export default async function ISACalendarPage() {
       <CalendarShell
         agentId={agentId}
         brokerageId={brokerageId}
-        defaultRole="isa"
+        defaultRole="agent"
       />
     </main>
   )
