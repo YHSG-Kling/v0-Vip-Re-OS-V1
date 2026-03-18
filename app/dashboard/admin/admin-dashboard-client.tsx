@@ -9,7 +9,7 @@ import {
   OnboardingOperationsPanel,
   AssignmentRulesPanel,
   ProviderIntelligencePanel,
-  SLAMonitorPanel,
+  SlaMonitorPanel,
   FormsImportPanel,
   KnowledgeOpsPanel,
   FarmIntelligencePanel,
@@ -115,7 +115,7 @@ export function AdminDashboardClient({ brokerageId }: AdminDashboardClientProps)
         {/* OS Panels - Second Row (3 columns) */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <ProviderIntelligencePanel brokerageId={brokerageId} stats={stats} />
-          <SLAMonitorPanel brokerageId={brokerageId} stats={stats} />
+          <SlaMonitorPanel brokerageId={brokerageId} stats={stats} />
           <FormsImportPanel brokerageId={brokerageId} stats={stats} />
         </div>
 
