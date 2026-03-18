@@ -2,6 +2,8 @@ import { redirect }             from "next/navigation"
 import { createClient }          from "@/lib/supabase/server"
 import { getBuyerJourney }       from "@/app/actions/buyer-execution"
 import { loadFinancialProfile, loadMortgageBrokers } from "@/app/actions/buyer-financial"
+import { getCollaborativeSearches, getConsensus } from "@/app/actions/collaborative-search"
+import { getBuyerTours } from "@/app/actions/tour-planner"
 import { BuyerOverviewClient }   from "./buyer-overview-client"
 
 interface PageProps {
@@ -34,7 +36,7 @@ export default async function BuyerDetailPage({ params }: PageProps) {
   const brokerageId = contact.brokerage_id ?? ""
 
   // Parallel loads
-  const [journeyResult, financialResult, partnersResult, draftsResult, interestsResult, profileResult] =
+  const [journeyResult, financialResult, partnersResult, draftsResult, interestsResult, profileResult, collaborativeSearchResult, toursResult] =
     await Promise.all([
       getBuyerJourney({ contactId: buyerId, userId: user.id, source: "agent_dashboard" }),
       loadFinancialProfile({ contactId: buyerId }),
@@ -57,12 +59,28 @@ export default async function BuyerDetailPage({ params }: PageProps) {
         .select("full_name, first_name, last_name")
         .eq("id", user.id)
         .maybeSingle(),
+      // Collaborative search
+      getCollaborativeSearches(buyerId),
+      // Tours
+      getBuyerTours(buyerId),
     ])
 
   const agentProfile = profileResult.data
   const agentName = agentProfile?.full_name
     ?? `${agentProfile?.first_name ?? ""} ${agentProfile?.last_name ?? ""}`.trim()
     ?? "Agent"
+
+  // Collaborative search computed values
+  const collaborativeSearches = (collaborativeSearchResult as any)?.searches || []
+  const activeSearch = collaborativeSearches[0] || null
+  const tours = (toursResult as any)?.tours || []
+  const nextTour = tours.sort((a: any, b: any) =>
+    new Date(a.tour_date).getTime() - new Date(b.tour_date).getTime()
+  ).find((t: any) => new Date(t.tour_date) >= new Date())
+
+  // If activeSearch exists, fetch consensus
+  const consensusResult = activeSearch ? await getConsensus(activeSearch.id) : null
+  const consensus = (consensusResult as any)?.consensus || null
 
   return (
     <div className="flex flex-col h-full min-h-screen bg-background">
@@ -77,6 +95,11 @@ export default async function BuyerDetailPage({ params }: PageProps) {
         brokerageId={brokerageId}
         agentUserId={user.id}
         agentName={agentName}
+        collaborativeSearches={collaborativeSearches}
+        activeSearch={activeSearch}
+        consensus={consensus}
+        tours={tours}
+        nextTour={nextTour}
       />
     </div>
   )
