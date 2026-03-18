@@ -42,6 +42,14 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
+import {
+  VideoBusinessPurposePicker,
+  VideoContextPicker,
+  RepurposeDestinationsCard,
+  ListingVideoModeCard,
+  SellerUpdateVideoModeCard,
+} from "../components/business-context"
+import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -112,10 +120,19 @@ export default function VideoCreatePage() {
   const supabase = createClient()
 
   // Wizard state
-  const [currentStep, setCurrentStep] = useState(1)
+  const [currentStep, setCurrentStep] = useState(0) // Start at step 0 (business context)
   const [isGenerating, setIsGenerating] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Business context state (Step 0)
+  const [selectedPurpose, setSelectedPurpose] = useState<VideoPurpose | null>(null)
+  const [selectedContextId, setSelectedContextId] = useState<string>("")
+  const [selectedContextType, setSelectedContextType] = useState<"listing" | "contact" | "homeowner" | "market" | "none">("none")
+  const [selectedContextData, setSelectedContextData] = useState<any>(null)
+  const [repurposeDestinations, setRepurposeDestinations] = useState<RepurposeDestination[]>([])
+  const [listingVideoMode, setListingVideoMode] = useState<ListingVideoMode | null>(null)
+  const [sellerUpdateMode, setSellerUpdateMode] = useState<SellerUpdateMode | null>(null)
 
   // Step 1: Script Selection
   const [scriptSource, setScriptSource] = useState<"library" | "custom">("library")
@@ -301,7 +318,8 @@ export default function VideoCreatePage() {
   // ─── Steps Configuration ────────────────────────────────────────────────────
 
   const steps = [
-    { number: 1, label: "Select Script" },
+    { number: 0, label: "Purpose" },
+    { number: 1, label: "Script" },
     { number: 2, label: "Avatar & Voice" },
     { number: 3, label: "Style & Quality" },
     { number: 4, label: "Review & Generate" },
@@ -309,6 +327,15 @@ export default function VideoCreatePage() {
 
   const canProceed = () => {
     switch (currentStep) {
+      case 0:
+        // Purpose step - need purpose selected, and context if required
+        if (!selectedPurpose) return false
+        const needsContext = ["listing_launch", "seller_update", "portal_video", "homeowner_update", "market_update"].includes(selectedPurpose)
+        if (needsContext && !selectedContextId) return false
+        // For listing purposes, also need mode selected
+        if (selectedPurpose === "listing_launch" && !listingVideoMode) return false
+        if (selectedPurpose === "seller_update" && !sellerUpdateMode) return false
+        return true
       case 1:
         return scriptSource === "library" ? !!selectedScript : customScript.trim().length > 20
       case 2:
@@ -317,6 +344,51 @@ export default function VideoCreatePage() {
         return !!backgroundStyle && !!qualityPreset && !!outputOrientation
       default:
         return true
+    }
+  }
+
+  // Handle context selection
+  const handleSelectContext = (id: string, type: "listing" | "contact" | "homeowner" | "market" | "none", data: any) => {
+    setSelectedContextId(id)
+    setSelectedContextType(type)
+    setSelectedContextData(data)
+  }
+
+  // Toggle repurpose destination
+  const handleToggleDestination = (dest: RepurposeDestination) => {
+    setRepurposeDestinations((prev) =>
+      prev.includes(dest) ? prev.filter((d) => d !== dest) : [...prev, dest]
+    )
+  }
+
+  // Generate script based on purpose and context
+  const handleGenerateScript = async () => {
+    if (!selectedPurpose || !selectedContextData) return
+    setIsGenerating(true)
+    try {
+      // Generate appropriate script based on purpose
+      let generatedScript = ""
+      
+      if (selectedPurpose === "listing_launch" && selectedContextData) {
+        generatedScript = `Welcome to ${selectedContextData.address}. This stunning property in ${selectedContextData.city} is now available at $${selectedContextData.list_price?.toLocaleString()}. Let me show you what makes this home special.`
+      } else if (selectedPurpose === "seller_update" && selectedContextData) {
+        generatedScript = `Hi! I wanted to give you a quick update on your listing at ${selectedContextData.address}. Here's what's been happening in the market and with buyer interest in your property.`
+      } else if (selectedPurpose === "market_update") {
+        generatedScript = `Let's talk about what's happening in the ${selectedContextId} real estate market. Here are the trends you need to know about.`
+      } else {
+        generatedScript = `Thank you for watching. I'm excited to share some valuable information with you today.`
+      }
+
+      setCustomScript(generatedScript)
+      setScriptSource("custom")
+      setScriptTitle(`${selectedPurpose.replace(/_/g, " ")} - ${new Date().toLocaleDateString()}`)
+      
+      // Auto-advance to script step
+      setCurrentStep(1)
+    } catch (err) {
+      console.error("Error generating script:", err)
+    } finally {
+      setIsGenerating(false)
     }
   }
 
@@ -400,6 +472,77 @@ export default function VideoCreatePage() {
         {/* Step Content */}
         <Card className="mb-6">
           <CardContent className="p-6">
+            {/* Step 0: Business Purpose & Context */}
+            {currentStep === 0 && (
+              <div className="space-y-6">
+                <div>
+                  <h2 className="text-xl font-semibold mb-2">What video do you want to create?</h2>
+                  <p className="text-muted-foreground">
+                    Select a business purpose and we will generate the right script and delivery options
+                  </p>
+                </div>
+
+                {/* Purpose Picker */}
+                <VideoBusinessPurposePicker
+                  selectedPurpose={selectedPurpose}
+                  onSelectPurpose={setSelectedPurpose}
+                />
+
+                {/* Context Picker (shows based on purpose) */}
+                {selectedPurpose && (
+                  <VideoContextPicker
+                    purpose={selectedPurpose}
+                    brokerageId={brokerage?.id || ""}
+                    agentId={user?.id || ""}
+                    selectedContextId={selectedContextId}
+                    selectedContextType={selectedContextType}
+                    onSelectContext={handleSelectContext}
+                  />
+                )}
+
+                {/* Listing Video Mode (if listing purpose) */}
+                {selectedPurpose === "listing_launch" && selectedContextData && (
+                  <ListingVideoModeCard
+                    listingData={selectedContextData}
+                    selectedMode={listingVideoMode}
+                    onSelectMode={setListingVideoMode}
+                    onGenerateScript={handleGenerateScript}
+                    isGenerating={isGenerating}
+                  />
+                )}
+
+                {/* Seller Update Mode (if seller update purpose) */}
+                {selectedPurpose === "seller_update" && selectedContextData && (
+                  <SellerUpdateVideoModeCard
+                    listingData={selectedContextData}
+                    selectedMode={sellerUpdateMode}
+                    onSelectMode={setSellerUpdateMode}
+                    onGenerateScript={handleGenerateScript}
+                    isGenerating={isGenerating}
+                  />
+                )}
+
+                {/* Repurpose Destinations */}
+                {selectedPurpose && (
+                  <RepurposeDestinationsCard
+                    purpose={selectedPurpose}
+                    selectedDestinations={repurposeDestinations}
+                    onToggleDestination={handleToggleDestination}
+                    listingId={selectedContextType === "listing" ? selectedContextId : undefined}
+                    contactId={selectedContextType === "contact" || selectedContextType === "homeowner" ? selectedContextId : undefined}
+                  />
+                )}
+
+                {/* Quick Generate for non-listing purposes */}
+                {selectedPurpose && !["listing_launch", "seller_update"].includes(selectedPurpose) && selectedContextId && (
+                  <Button onClick={handleGenerateScript} disabled={isGenerating} className="w-full">
+                    <Sparkles className="h-4 w-4 mr-2" />
+                    {isGenerating ? "Generating..." : "Generate Script for Me"}
+                  </Button>
+                )}
+              </div>
+            )}
+
             {/* Step 1: Script Selection */}
             {currentStep === 1 && (
               <div className="space-y-6">
@@ -846,15 +989,15 @@ export default function VideoCreatePage() {
           <div className="flex items-center justify-between">
             <Button
               variant="outline"
-              onClick={() => setCurrentStep((s) => Math.max(1, s - 1))}
-              disabled={currentStep === 1}
+              onClick={() => setCurrentStep((s) => Math.max(0, s - 1))}
+              disabled={currentStep === 0}
             >
               <ArrowLeft className="h-4 w-4 mr-2" />
               Back
             </Button>
 
             <Button onClick={() => setCurrentStep((s) => s + 1)} disabled={!canProceed()}>
-              Next
+              {currentStep === 0 ? "Continue to Script" : "Next"}
               <ArrowRight className="h-4 w-4 ml-2" />
             </Button>
           </div>
@@ -864,7 +1007,7 @@ export default function VideoCreatePage() {
           <div className="flex items-center justify-start">
             <Button
               variant="outline"
-              onClick={() => setCurrentStep((s) => Math.max(1, s - 1))}
+              onClick={() => setCurrentStep((s) => Math.max(0, s - 1))}
             >
               <ArrowLeft className="h-4 w-4 mr-2" />
               Back
