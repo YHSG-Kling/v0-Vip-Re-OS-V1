@@ -149,19 +149,48 @@ export async function getReinvigorationSuggestions(
 export async function getBrokerageFatigueData(brokerageId: string) {
   const supabase = createServiceClient()
 
-  const { data, error } = await supabase
+  // Query fatigue scores first
+  const { data: scores, error } = await supabase
     .from("buyer_fatigue_scores")
-    .select(`
-      *,
-      contacts!inner(
-        id, first_name, last_name, agent_id, buyer_stage, deleted_at,
-        users:agent_id(first_name, last_name)
-      )
-    `)
+    .select("*")
     .eq("brokerage_id", brokerageId)
-    .is("contacts.deleted_at", null)
     .order("fatigue_score", { ascending: false })
 
   if (error) return { success: false as const, error: error.message }
-  return { success: true as const, data: data ?? [] }
+  
+  // Fetch contacts separately to avoid relationship ambiguity
+  const contactIds = (scores || []).map(s => s.contact_id).filter(Boolean)
+  if (contactIds.length === 0) return { success: true as const, data: [] }
+
+  const { data: contacts } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, agent_id, buyer_stage, deleted_at")
+    .in("id", contactIds)
+    .is("deleted_at", null)
+
+  // Fetch agent users for each contact
+  const agentIds = [...new Set((contacts || []).map(c => c.agent_id).filter(Boolean))]
+  let agentMap = new Map()
+  if (agentIds.length > 0) {
+    const { data: agents } = await supabase
+      .from("users")
+      .select("id, first_name, last_name")
+      .in("id", agentIds)
+    agentMap = new Map(agents?.map(a => [a.id, a]) || [])
+  }
+
+  const contactMap = new Map((contacts || []).map(c => [c.id, {
+    ...c,
+    users: agentMap.get(c.agent_id) || null,
+  }]))
+
+  // Merge contacts into scores
+  const enrichedData = (scores || [])
+    .filter(s => contactMap.has(s.contact_id))
+    .map(s => ({
+      ...s,
+      contacts: contactMap.get(s.contact_id),
+    }))
+
+  return { success: true as const, data: enrichedData }
 }

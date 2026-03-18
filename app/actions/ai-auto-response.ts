@@ -298,14 +298,21 @@ export async function calculateLeadScore(contactId: string) {
     priority = "warm"
   }
 
-  // Update or insert lead score (without priority_tier field)
+  // Update or insert lead score - using actual schema columns
+  // Schema: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
+  const { agentId } = await getAgentContext()
   const { error } = await supabase.from("lead_scores").upsert({
     contact_id: contactId,
-    total_score: totalScore,
-    engagement_score: engagementScore,
-    recency_score: recencyScore,
-    intent_score: intentScore,
-    last_calculated_at: new Date().toISOString(),
+    agent_id: agentId,
+    score: totalScore,
+    score_factors: {
+      engagement: engagementScore,
+      recency: recencyScore,
+      intent: intentScore,
+      priority,
+    },
+    ai_confidence: 0.8,
+    computed_at: new Date().toISOString(),
   })
 
   if (error) {
@@ -351,32 +358,24 @@ export async function getLeadScore(contactId: string) {
   return { success: true, score: data }
 }
 
-// Get hot leads (priority scoring) - filter by scores, not database column
+// Get hot leads (priority scoring) - using actual schema columns
+// Schema: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
 export async function getHotLeads(limit = 50) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const context = await getAgentContext()
+  if (!context?.agentId) {
+    return { success: false, error: "Agent context not available", leads: [] }
+  }
+  
+  const { agentId, brokerageId } = context
   const supabase = await createClient()
 
+  // Query lead_scores directly by agent_id (it exists in lead_scores table)
   const { data, error } = await supabase
     .from("lead_scores")
-    .select(
-      `
-      *,
-      contacts (
-        id,
-        first_name,
-        last_name,
-        email,
-        phone,
-        contact_type,
-        source,
-        created_at
-      )
-    `
-    )
-    .eq("contacts.agent_id", agentId)
-    .eq("contacts.brokerage_id", brokerageId)
-    .gte("total_score", 70) // Filter for hot leads client-side instead of priority_tier column
-    .order("total_score", { ascending: false })
+    .select("*")
+    .eq("agent_id", agentId)
+    .gte("score", 70) // Use 'score' column (not 'total_score')
+    .order("score", { ascending: false })
     .limit(limit)
 
   if (error) {
@@ -384,5 +383,27 @@ export async function getHotLeads(limit = 50) {
     return { success: false, error: error.message, leads: [] }
   }
 
-  return { success: true, leads: data || [] }
+  // Fetch contacts separately to avoid relationship issues
+  const leads = data || []
+  if (leads.length > 0) {
+    const contactIds = leads.map(l => l.contact_id).filter(Boolean)
+    if (contactIds.length > 0) {
+      const { data: contacts } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, email, phone, contact_type, source, created_at")
+        .in("id", contactIds)
+        .eq("brokerage_id", brokerageId)
+
+      const contactMap = new Map(contacts?.map(c => [c.id, c]) || [])
+      return {
+        success: true,
+        leads: leads.map(l => ({
+          ...l,
+          contacts: contactMap.get(l.contact_id) || null,
+        })),
+      }
+    }
+  }
+
+  return { success: true, leads: [] }
 }
