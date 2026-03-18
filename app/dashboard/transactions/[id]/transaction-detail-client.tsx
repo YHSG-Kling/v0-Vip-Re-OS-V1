@@ -51,7 +51,11 @@ import {
   Plus,
   Loader2,
   MapPin,
+  Sparkles,
+  CheckSquare,
 } from "lucide-react"
+import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
+import { Progress } from "@/components/ui/progress"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
@@ -344,6 +348,13 @@ export function TransactionDetailClient({
   const [emHeldBy, setEmHeldBy] = useState(titleEscrow?.earnest_money_held_by ?? "")
   const [emReceivedDate, setEmReceivedDate] = useState(titleEscrow?.earnest_money_received_date ?? "")
 
+  // Contract review state
+  const [contractReview, setContractReview] = useState<any>(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [docChecklist, setDocChecklist] = useState<any[]>([])
+  const [checklistLoading, setChecklistLoading] = useState(false)
+  const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set())
+
   const currentStage = transaction.stage as TransactionStage
   const allowedNextStages = STAGE_TRANSITIONS[currentStage] || []
   const canAdvance = allowedNextStages.length > 0 && currentStage !== "CLOSED" && currentStage !== "LOST"
@@ -532,6 +543,41 @@ export function TransactionDetailClient({
       })
       router.refresh()
     })
+  }
+
+  // ─── CONTRACT REVIEW HANDLERS ─────────────────────────────────────────────────
+
+  const getState = () => transaction.property_state || (() => {
+    const m = (transaction.property_address || '').split(',').pop()?.trim().match(/\b([A-Z]{2})\b/)
+    return m?.[1] || 'FL'
+  })()
+
+  const handleReviewDocuments = async () => {
+    setReviewLoading(true)
+    try {
+      const result = await reviewTransactionDocuments({
+        transactionId: transaction.id,
+        agentId: transaction.agent_id,
+        state: getState(),
+      })
+      if (result.success !== false) setContractReview(result)
+    } catch {}
+    finally { setReviewLoading(false) }
+  }
+
+  const handleGenerateChecklist = async () => {
+    setChecklistLoading(true)
+    try {
+      const txType:'purchase'|'sale'|'lease' = transaction.deal_type === 'seller' ? 'sale' : 'purchase'
+      const result = await generateDocumentChecklist({
+        transactionId: transaction.id,
+        transactionType: txType,
+        state: getState(),
+        agentId: transaction.agent_id,
+      })
+      if ((result as any).checklist) setDocChecklist((result as any).checklist)
+    } catch {}
+    finally { setChecklistLoading(false) }
   }
 
   // ─── RENDER ──────────────────────────────���───────────────────────────────────
@@ -1543,6 +1589,114 @@ export function TransactionDetailClient({
                   ) : (
                     <p className="text-sm text-muted-foreground">No documents uploaded.</p>
                   )}
+
+                  <div className="mt-6 border-t pt-6 space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <h3 className="font-semibold text-sm flex items-center gap-2">
+                          <Sparkles className="h-4 w-4 text-indigo-600" />
+                          AI Contract Intelligence
+                          {transaction.property_state && (
+                            <Badge variant="outline" className="text-xs font-normal">{transaction.property_state}</Badge>
+                          )}
+                        </h3>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Flag critical issues, missing signatures, and key dates before they become problems
+                          {transaction.property_state
+                            ? ` · ${transaction.property_state} compliance rules applied`
+                            : ' · state rules applied from address'}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={handleReviewDocuments} disabled={reviewLoading}>
+                          {reviewLoading ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin"/> : <Sparkles className="h-3.5 w-3.5 mr-1.5"/>}
+                          Review Documents
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={handleGenerateChecklist} disabled={checklistLoading}>
+                          {checklistLoading ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin"/> : <CheckSquare className="h-3.5 w-3.5 mr-1.5"/>}
+                          Generate Checklist
+                        </Button>
+                      </div>
+                    </div>
+
+                    {contractReview && (
+                      <div className="space-y-3">
+                        <div className="p-4 bg-muted/40 rounded-lg">
+                          <div className="flex justify-between items-center mb-2">
+                            <span className="text-sm font-medium">Document Score</span>
+                            <span className={`text-sm font-bold ${contractReview.overallScore>=80?'text-green-700':contractReview.overallScore>=60?'text-amber-700':'text-red-700'}`}>
+                              {contractReview.overallScore}/100 · {contractReview.overallScore>=80?'All Clear':contractReview.overallScore>=60?'Review Needed':'Issues Found'}
+                            </span>
+                          </div>
+                          <Progress value={contractReview.overallScore} className="h-2" />
+                          <p className="text-xs text-muted-foreground mt-1">{contractReview.overallAssessment}</p>
+                        </div>
+                        {contractReview.issues?.filter((i:any)=>i.severity==='critical').length > 0 && (
+                          <div className="border border-red-200 rounded-lg p-3 bg-red-50">
+                            <p className="text-sm font-semibold text-red-700 mb-1 flex items-center gap-1">
+                              <AlertTriangle className="h-4 w-4"/>
+                              {contractReview.issues.filter((i:any)=>i.severity==='critical').length} Critical Issues
+                            </p>
+                            {contractReview.issues.filter((i:any)=>i.severity==='critical').map((issue:any,idx:number)=>(
+                              <div key={idx} className="text-xs mb-1.5">
+                                <span className="font-medium">{issue.category}: </span>{issue.description}
+                                <p className="text-red-700 mt-0.5">→ {issue.recommendation}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {contractReview.missingItems?.length > 0 && (
+                          <div>
+                            <p className="text-sm font-medium mb-1">Missing Items</p>
+                            {contractReview.missingItems.map((item:any,idx:number)=>(
+                              <div key={idx} className="flex items-center gap-2 text-xs p-2 bg-muted/40 rounded mb-1">
+                                <Badge variant={item.required?"destructive":"secondary"} className="text-xs shrink-0">
+                                  {item.required?"Required":"Optional"}
+                                </Badge>
+                                <span>{item.item}</span>
+                                {item.deadline && <span className="ml-auto text-muted-foreground">Due: {item.deadline}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {contractReview.keyDates?.length > 0 && (
+                          <div>
+                            <p className="text-sm font-medium mb-1">Key Dates</p>
+                            {contractReview.keyDates.map((kd:any,idx:number)=>(
+                              <div key={idx} className="flex justify-between text-xs p-2 bg-muted/40 rounded mb-1">
+                                <span>{kd.event}</span>
+                                <span className={kd.daysRemaining<=7?'text-red-600 font-semibold':kd.daysRemaining<=14?'text-amber-600':'text-green-600'}>
+                                  {kd.date}{kd.daysRemaining!==undefined?` (${kd.daysRemaining}d)`:''}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {docChecklist.length > 0 && (
+                      <div>
+                        <div className="flex justify-between items-center mb-2">
+                          <p className="text-sm font-medium">Document Checklist</p>
+                          <p className="text-xs text-muted-foreground">{checkedItems.size}/{docChecklist.length} complete</p>
+                        </div>
+                        <Progress value={(checkedItems.size/docChecklist.length)*100} className="h-1.5 mb-3"/>
+                        {docChecklist.map((item:any,idx:number)=>(
+                          <label key={idx} className="flex items-start gap-2 p-2 rounded hover:bg-muted/40 cursor-pointer mb-1">
+                            <input type="checkbox" className="mt-0.5 shrink-0"
+                              checked={checkedItems.has(String(idx))}
+                              onChange={e=>{const n=new Set(checkedItems);e.target.checked?n.add(String(idx)):n.delete(String(idx));setCheckedItems(n)}}
+                            />
+                            <div>
+                              <span className={`text-xs ${checkedItems.has(String(idx))?'line-through text-muted-foreground':''}`}>{item.item}</span>
+                              {item.required && <Badge variant="outline" className="text-[10px] h-4 px-1 ml-1">Required</Badge>}
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>
