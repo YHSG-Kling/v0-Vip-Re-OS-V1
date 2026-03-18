@@ -369,18 +369,46 @@ export async function getHotLeads(limit = 50) {
   const { agentId, brokerageId } = context
   const supabase = await createClient()
 
-  // Query lead_scores directly by agent_id (it exists in lead_scores table)
+  // Try lead_scores first, fallback to contacts with high intent_score
   const { data, error } = await supabase
     .from("lead_scores")
-    .select("*")
+    .select("id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at")
     .eq("agent_id", agentId)
-    .gte("score", 70) // Use 'score' column (not 'total_score')
+    .gte("score", 70)
     .order("score", { ascending: false })
     .limit(limit)
 
   if (error) {
     console.error("Error fetching hot leads:", error)
-    return { success: false, error: error.message, leads: [] }
+    // Fallback: query contacts directly with high intent_score
+    const { data: contactsData, error: contactsError } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name, email, phone, contact_type, source, intent_score, engagement_score, created_at")
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
+      .or("intent_score.gte.70,engagement_score.gte.70,status.eq.hot")
+      .order("intent_score", { ascending: false, nullsFirst: false })
+      .limit(limit)
+
+    if (contactsError) {
+      console.error("Error fetching contacts fallback:", contactsError)
+      return { success: false, error: contactsError.message, leads: [] }
+    }
+
+    // Map contacts to the expected hot leads format
+    return {
+      success: true,
+      leads: (contactsData || []).map(c => ({
+        id: c.id,
+        contact_id: c.id,
+        agent_id: agentId,
+        score: c.intent_score || c.engagement_score || 70,
+        score_factors: { engagement: c.engagement_score, intent: c.intent_score },
+        ai_confidence: 0.8,
+        computed_at: new Date().toISOString(),
+        contacts: c,
+      })),
+    }
   }
 
   // Fetch contacts separately to avoid relationship issues

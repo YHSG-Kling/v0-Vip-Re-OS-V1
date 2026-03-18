@@ -250,35 +250,37 @@ export async function getTouchpointTimeline(contactId: string) {
  * Get upcoming anniversaries (close date within 30 days)
  */
 export async function getUpcomingAnniversaries() {
+  const context = await getAgentContext()
+  if (!context?.agentId) {
+    return { success: false, error: "Agent context not available", anniversaries: [] }
+  }
+
+  const { agentId } = context
   const supabase = await createClient()
-  const { agentId, brokerageId } = await getAgentContext()
 
   const today = new Date()
   const thirtyDaysFromNow = new Date(today)
   thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30)
 
-  // Get transactions with close dates in the current month range
-  const currentMonthDay = today.getDate()
-  const endMonthDay = thirtyDaysFromNow.getDate()
-
-  // Query transactions owned or related to agent
+  // Query transactions owned by agent with close dates
+  // Use close_date column (actual_close_date doesn't exist in schema)
   const { data: transactions, error } = await supabase
     .from("transactions")
     .select(`
       id,
-      actual_close_date,
+      close_date,
       property_address,
-      sale_price,
+      purchase_price,
       agent_id,
       contact_id
     `)
     .eq("agent_id", agentId)
     .eq("status", "closed")
-    .not("actual_close_date", "is", null)
+    .not("close_date", "is", null)
 
   if (error) {
     console.error("Error fetching anniversaries:", error)
-    return { success: false, error: error.message }
+    return { success: false, error: error.message, anniversaries: [] }
   }
 
   // Fetch contacts separately to avoid relationship ambiguity
@@ -297,14 +299,18 @@ export async function getUpcomingAnniversaries() {
       const contactMap = new Map(contacts?.map(c => [c.id, c]) || [])
       transactionsWithContacts = transactionsWithContacts.map(t => ({
         ...t,
-        contacts: contactMap.get(t.contact_id)
+        contacts: contactMap.get(t.contact_id),
+        // Map purchase_price to sale_price for component compatibility
+        sale_price: t.purchase_price,
+        actual_close_date: t.close_date
       }))
     }
   }
 
   // Filter for anniversary dates
   const upcomingAnniversaries = transactionsWithContacts.filter((t) => {
-    const closeDate = new Date(t.actual_close_date)
+    if (!t.close_date) return false
+    const closeDate = new Date(t.close_date)
     const anniversaryThisYear = new Date(
       today.getFullYear(),
       closeDate.getMonth(),
