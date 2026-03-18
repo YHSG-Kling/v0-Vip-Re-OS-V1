@@ -70,14 +70,15 @@ export default async function BrokerageDashboard({
   // Fetch all data in parallel
   const [
     dashboard,
-    forecast,
-    licenseStatus,
+    forecastData,
+    expirations,
     recruitingROI,
     costBreakdown,
     breakEvenAnalysis,
     fatigueResult,
     fatigueAlertsResult,
     dealHealthResult,
+    transactionsResult,
   ] = await Promise.all([
     getBrokerageDashboard(brokerageId),
     forecastBrokerageRevenue(brokerageId, 3),
@@ -103,7 +104,7 @@ export default async function BrokerageDashboard({
     })),
     getHighFatigueBuyers(brokerageId).catch(() => ({ success: false, buyers: [] })),
     getBrokerageFatigueAlerts(brokerageId).catch(() => ({ success: false, alerts: [] })),
-    // Fetch deal health scores
+    // Fetch deal health scores - separate queries to avoid ambiguous relationship
     supabase
       .from("deal_health_scores")
       .select(`
@@ -111,18 +112,18 @@ export default async function BrokerageDashboard({
         transaction_id,
         overall_score,
         risk_level,
-        ai_narrative,
-        transactions!inner (
-          id,
-          property_address,
-          close_date,
-          agent_id
-        )
+        ai_narrative
       `)
       .eq("brokerage_id", brokerageId)
       .in("risk_level", ["critical", "at_risk", "watch"])
       .order("overall_score", { ascending: true })
       .limit(10),
+    // Then fetch transactions separately
+    supabase
+      .from("transactions")
+      .select("id, property_address, close_date, agent_id, contact_id")
+      .eq("brokerage_id", brokerageId)
+      .in("stage", ["active", "pending", "contingent"])
   ])
 
   const { agents, activeTransactions, complianceRate, totalGCI, pendingCommissions } = dashboard

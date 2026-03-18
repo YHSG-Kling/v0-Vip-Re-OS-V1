@@ -8,6 +8,11 @@ import {
 } from "@/lib/intelligence/daily-briefing-generator"
 import { createClient } from "@/lib/supabase/server"
 
+// Helper to validate UUID is not null/undefined/"null"/"undefined"
+function isValidUUID(id: any): id is string {
+  return typeof id === "string" && id && id !== "null" && id !== "undefined"
+}
+
 // ─── Get Today's Briefing ─────────────────────────────────────────────────────
 
 export async function getTodaysBriefing(): Promise<{
@@ -16,7 +21,7 @@ export async function getTodaysBriefing(): Promise<{
 }> {
   try {
     const context = await getAgentContext()
-    if (!context?.agentId || context.agentId === "null" || context.agentId === "undefined") {
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
       return { briefing: null, error: "Agent context not available" }
     }
     
@@ -53,7 +58,7 @@ export async function generateBriefing(
 }> {
   try {
     const context = await getAgentContext()
-    if (!context?.agentId) {
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
       return { briefing: null, error: "Agent context not available" }
     }
     
@@ -129,7 +134,7 @@ export async function getUpcomingShowings(): Promise<{
 }> {
   try {
     const context = await getAgentContext()
-    if (!context?.agentId || context.agentId === "null" || context.agentId === "undefined") {
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
       return { showings: [], error: "Agent context not available" }
     }
     
@@ -207,7 +212,7 @@ export async function getActiveTransactions(): Promise<{
 }> {
   try {
     const context = await getAgentContext()
-    if (!context?.agentId || context.agentId === "null" || context.agentId === "undefined") {
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
       return { transactions: [], error: "Agent context not available" }
     }
     

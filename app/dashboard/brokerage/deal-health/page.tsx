@@ -57,43 +57,78 @@ export default async function DealHealthDashboardPage() {
       scored_at,
       flags,
       score_delta,
-      previous_score,
-      transactions!inner (
-        id,
-        property_address,
-        stage,
-        status,
-        purchase_price,
-        close_date,
-        contact_id,
-        agent_id,
-        contacts (first_name, last_name),
-        agents!transactions_agent_id_fkey (
-          id,
-          user_id
-        )
-      )
+      previous_score
     `)
     .eq("brokerage_id", brokerageId)
     .order("overall_score", { ascending: true })
 
-  // Fetch agent user names separately for display
-  const agentIds = healthScores
-    ?.map(s => s.transactions?.agents?.user_id)
-    .filter((id): id is string => !!id) ?? []
+  // Fetch transactions separately to avoid ambiguous relationship
+  const { data: transactionsList } = await supabase
+    .from("transactions")
+    .select(`
+      id,
+      property_address,
+      stage,
+      status,
+      purchase_price,
+      close_date,
+      contact_id,
+      agent_id
+    `)
+    .eq("brokerage_id", brokerageId)
+
+  // Fetch contacts and agents separately for lookup
+  const contactIds = (transactionsList ?? [])
+    .map(t => t.contact_id)
+    .filter((id): id is string => !!id)
   
-  const uniqueAgentIds = [...new Set(agentIds)]
-  const { data: agentUsers } = uniqueAgentIds.length > 0 
+  const agentIds = (transactionsList ?? [])
+    .map(t => t.agent_id)
+    .filter((id): id is string => !!id)
+
+  const { data: contacts } = contactIds.length > 0
+    ? await supabase
+        .from("contacts")
+        .select("id, first_name, last_name")
+        .in("id", contactIds)
+    : { data: [] }
+
+  const { data: agents } = agentIds.length > 0
+    ? await supabase
+        .from("agents")
+        .select("id, user_id")
+        .in("id", agentIds)
+    : { data: [] }
+
+  // Fetch agent user names for display
+  const userIds = (agents ?? [])
+    .map(a => a.user_id)
+    .filter((id): id is string => !!id)
+
+  const { data: agentUsers } = userIds.length > 0
     ? await supabase
         .from("users")
         .select("id, first_name, last_name")
-        .in("id", uniqueAgentIds)
+        .in("id", userIds)
     : { data: [] }
 
-  // Create a lookup map for agent names
-  const agentNameMap = new Map(
-    (agentUsers ?? []).map(u => [u.id, `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim()])
-  )
+  // Create lookup maps
+  const contactMap = new Map((contacts ?? []).map(c => [c.id, c]))
+  const agentMap = new Map((agents ?? []).map(a => [a.id, a]))
+  const userMap = new Map((agentUsers ?? []).map(u => [u.id, `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim()]))
+
+  // Enrich health scores with transaction data
+  const enrichedScores = (healthScores ?? []).map(score => {
+    const transaction = (transactionsList ?? []).find(t => t.id === score.transaction_id)
+    return {
+      ...score,
+      transaction: transaction ? {
+        ...transaction,
+        contact: transaction.contact_id ? contactMap.get(transaction.contact_id) : null,
+        agent_user_name: transaction.agent_id ? userMap.get(agentMap.get(transaction.agent_id)?.user_id ?? "") : null,
+      } : null,
+    }
+  })
 
   // Fetch unresolved proactive interventions
   // Schema: proactive_interventions uses issue_detected, severity, ai_recommendation (not intervention_type, title, description)
@@ -107,7 +142,7 @@ export default async function DealHealthDashboardPage() {
     .limit(10)
 
   // Calculate summary stats
-  const scores = healthScores ?? []
+  const scores = enrichedScores ?? []
   const summary = {
     critical: scores.filter(s => s.risk_level === "critical").length,
     at_risk:  scores.filter(s => s.risk_level === "at_risk").length,
@@ -116,13 +151,13 @@ export default async function DealHealthDashboardPage() {
     total:    scores.length,
   }
 
-  // Convert Map to plain object for serialization to client
-  const agentNames: Record<string, string> = Object.fromEntries(agentNameMap)
+  // Convert Maps to plain objects for serialization to client
+  const agentNames: Record<string, string> = Object.fromEntries(userMap)
 
   return (
     <main className="min-h-screen bg-background p-6">
       <DealHealthDashboardClient
-        healthScores={healthScores ?? []}
+        healthScores={enrichedScores ?? []}
         interventions={interventions ?? []}
         summary={summary}
         brokerageId={brokerageId}

@@ -28,6 +28,15 @@ import {
   Loader2,
 } from "lucide-react"
 import { toast } from "sonner"
+import {
+  CoachingCommandStrip,
+  ConversionCoachingPanel,
+  ResponseQualityPanel,
+  CallReviewPanel,
+  HandoffCoachingPanel,
+  AppointmentCoachingPanel,
+  WeeklyImprovementPanel,
+} from "./components/os"
 import { generateWeeklyCoachingReport } from "@/lib/intelligence/coaching-engine"
 import { createClient } from "@/lib/supabase/client"
 
@@ -325,6 +334,25 @@ export function CoachingDashboardClient({
         <p className="text-muted-foreground">
           AI-powered insights and playbooks to improve your performance
         </p>
+      </div>
+
+      {/* OS Command Strip */}
+      <div className="mb-6">
+        <CoachingCommandStrip agentId={agentId} brokerageId={brokerageId} />
+      </div>
+
+      {/* OS Panels Grid */}
+      <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <ConversionCoachingPanel agentId={agentId} brokerageId={brokerageId} />
+        <ResponseQualityPanel agentId={agentId} brokerageId={brokerageId} />
+        <CallReviewPanel agentId={agentId} brokerageId={brokerageId} />
+      </div>
+
+      {/* Second Row of OS Panels */}
+      <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <HandoffCoachingPanel agentId={agentId} brokerageId={brokerageId} />
+        <AppointmentCoachingPanel agentId={agentId} brokerageId={brokerageId} />
+        <WeeklyImprovementPanel agentId={agentId} brokerageId={brokerageId} />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
