@@ -8,6 +8,16 @@ import { CoordinatorTransactionList } from "@/components/coordinator/transaction
 import { DeadlineTracking } from "@/components/coordinator/deadline-tracking"
 import { MilestoneQueue } from "@/components/coordinator/milestone-queue"
 import { HealthOverview } from "@/components/coordinator/health-overview"
+import {
+  CoordinatorCommandStrip,
+  DealPipelineRadar,
+  DeadlineIntelligencePanel,
+  DocumentTrackingPanel,
+  ComplianceMonitorPanel,
+  MilestoneOperationsPanel,
+  TaskQueuePanel,
+  ClosingPrepPanel,
+} from "./components/os"
 import { AlertCircle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar } from "lucide-react"
 import Link from "next/link"
 
@@ -188,11 +198,13 @@ export default async function CoordinatorDashboard({
     return closeDate <= weekFromNow && closeDate >= new Date()
   }).length
 
+  const brokerageId = userData?.brokerage_id
+
   return (
-    <div className="container mx-auto p-6 space-y-6">
+    <div className="min-h-screen bg-background p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Transaction Coordination</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Transaction Coordination Command Center</h1>
           <p className="text-muted-foreground">
             {coordinator.display_name ? `${coordinator.display_name} - ` : ""}Managing {activeCount} active transaction
             {activeCount !== 1 ? "s" : ""}
@@ -209,6 +221,30 @@ export default async function CoordinatorDashboard({
             {capacityUsed.toFixed(0)}% Capacity
           </Badge>
         </div>
+      </div>
+
+      {/* OS Command Strip */}
+      <div>
+        <CoordinatorCommandStrip coordinatorId={coordinatorId} brokerageId={brokerageId || ""} />
+      </div>
+
+      {/* OS Intelligence Grid - First Row */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <DealPipelineRadar coordinatorId={coordinatorId} brokerageId={brokerageId || ""} />
+        <DeadlineIntelligencePanel brokerageId={brokerageId || ""} />
+        <DocumentTrackingPanel brokerageId={brokerageId || ""} />
+      </div>
+
+      {/* OS Intelligence Grid - Second Row */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <ComplianceMonitorPanel brokerageId={brokerageId || ""} />
+        <MilestoneOperationsPanel brokerageId={brokerageId || ""} />
+        <TaskQueuePanel brokerageId={brokerageId || ""} />
+      </div>
+
+      {/* OS Closing Prep */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <ClosingPrepPanel brokerageId={brokerageId || ""} />
       </div>
 
       {/* Key Metrics */}
