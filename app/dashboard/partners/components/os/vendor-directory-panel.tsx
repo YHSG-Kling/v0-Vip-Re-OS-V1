@@ -102,7 +102,7 @@ export function VendorDirectoryPanel({ brokerageId }: VendorDirectoryPanelProps)
             <CardTitle className="text-lg">Vendor Directory</CardTitle>
             <CardDescription>{vendors.length} active vendors</CardDescription>
           </div>
-          <Link href="/dashboard/vendors/new">
+          <Link href="/dashboard/vendors?action=new">
             <Button size="sm">
               <Plus className="mr-2 h-4 w-4" />
               Add

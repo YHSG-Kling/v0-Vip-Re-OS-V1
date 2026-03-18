@@ -61,7 +61,7 @@ export function CallReviewPanel({ insights, summary }: CallReviewPanelProps) {
             <CardDescription>Transcript coaching and missed moments</CardDescription>
           </div>
           <Button variant="ghost" size="sm" asChild>
-            <Link href="/dashboard/calls">
+            <Link href="/dashboard/voice">
               All Calls
               <ArrowRight className="ml-1 h-4 w-4" />
             </Link>
@@ -133,7 +133,7 @@ export function CallReviewPanel({ insights, summary }: CallReviewPanelProps) {
                     </div>
                     {insight.has_transcript && (
                       <Button variant="ghost" size="sm" asChild>
-                        <Link href={`/dashboard/calls/${insight.call_id}`}>
+                        <Link href={`/dashboard/voice/review/${insight.call_id}`}>
                           <Play className="h-4 w-4" />
                         </Link>
                       </Button>

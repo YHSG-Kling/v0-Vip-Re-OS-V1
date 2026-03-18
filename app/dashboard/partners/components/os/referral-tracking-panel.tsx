@@ -114,7 +114,7 @@ export function ReferralTrackingPanel({ brokerageId }: ReferralTrackingPanelProp
             <CardTitle className="text-lg">Referral Tracking</CardTitle>
             <CardDescription>Partner referral performance</CardDescription>
           </div>
-          <Link href="/dashboard/vendors/referrals">
+          <Link href="/referrals">
             <Button variant="ghost" size="sm">
               View All
               <ArrowRight className="ml-2 h-4 w-4" />

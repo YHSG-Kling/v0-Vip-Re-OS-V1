@@ -54,7 +54,7 @@ export function ConversionCoachingPanel({
             <CardDescription>Where opportunities are being lost</CardDescription>
           </div>
           <Button variant="ghost" size="sm" asChild>
-            <Link href="/dashboard/pipeline">
+            <Link href="/dashboard/buyers">
               View Pipeline
               <ArrowRight className="ml-1 h-4 w-4" />
             </Link>

@@ -60,7 +60,7 @@ export function ResponseQualityPanel({
             <CardDescription>AI and human response coaching</CardDescription>
           </div>
           <Button variant="ghost" size="sm" asChild>
-            <Link href="/dashboard/inbox">
+            <Link href="/dashboard/communications/inbox">
               View Inbox
               <ArrowRight className="ml-1 h-4 w-4" />
             </Link>

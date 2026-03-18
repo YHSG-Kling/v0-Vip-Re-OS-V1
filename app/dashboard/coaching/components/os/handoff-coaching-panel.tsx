@@ -70,7 +70,7 @@ export function HandoffCoachingPanel({
             <CardDescription>Follow-through after AI qualification</CardDescription>
           </div>
           <Button variant="ghost" size="sm" asChild>
-            <Link href="/dashboard/ai-isa">
+            <Link href="/dashboard/voice/isa">
               AI ISA Dashboard
               <ArrowRight className="ml-1 h-4 w-4" />
             </Link>

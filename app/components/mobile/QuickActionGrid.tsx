@@ -19,13 +19,13 @@ const quickActions: QuickAction[] = [
   },
   {
     label: "Send Update",
-    href: "/dashboard/messages",
+    href: "/dashboard/communications/inbox",
     icon: <MessageSquare className="h-6 w-6" />,
     color: "bg-blue-500 text-white",
   },
   {
     label: "Check Pipeline",
-    href: "/dashboard/pipeline",
+    href: "/dashboard/buyers",
     icon: <BarChart3 className="h-6 w-6" />,
     color: "bg-amber-500 text-white",
   },
