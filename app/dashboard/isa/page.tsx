@@ -22,6 +22,7 @@ import {
   ShieldAlert,
   Users,
   MessageSquare,
+  UserCheck,
 } from 'lucide-react'
 import Link from 'next/link'
 import {
@@ -32,6 +33,7 @@ import {
   GhostRecoveryPanel,
   RetrainingSignalsPanel,
 } from './components/qualification-os'
+import { HandoffQueuePanel } from '@/app/dashboard/voice/isa/handoff-queue-panel'
 
 export const dynamic = 'force-dynamic'
 
@@ -62,17 +64,40 @@ export default async function QualificationOSPage() {
   const brokerageId = profile.brokerage_id
 
   // Fetch all data in parallel
-  const [campaignResult, qualResult, ghostResult, engagementResult] = await Promise.all([
+  const [campaignResult, qualResult, ghostResult, engagementResult, handoffResult] = await Promise.all([
     listISACampaigns(brokerageId),
     getQualificationOutcomes(brokerageId),
     getGhostRecoveryQueue(brokerageId),
     getEngagementFeed({ brokerageId, limit: 100 }),
+    // Fetch handoff queue - qualified contacts ready for agent
+    supabase
+      .from('ai_isa_qualifications')
+      .select(`
+        id,
+        contact_id,
+        qualification_score,
+        qualification_result,
+        notes,
+        qualified_at,
+        contacts (
+          id,
+          first_name,
+          last_name,
+          phone,
+          buyer_stage
+        )
+      `)
+      .eq('brokerage_id', brokerageId)
+      .eq('qualification_result', 'qualified')
+      .order('qualified_at', { ascending: false })
+      .limit(20),
   ])
 
   const campaigns = campaignResult?.campaigns || []
   const qualOutcomes = qualResult || { outcomes: [], stats: { qualified: 0, not_qualified: 0, appointment_set: 0, no_response: 0, needs_follow_up: 0 }, chartData: [] }
   const ghosts = ghostResult?.ghosts || []
   const engagements = engagementResult?.items || []
+  const handoffQueue = (handoffResult?.data || []) as any[]
 
   const activeCampaigns = campaigns.filter((c: any) => c.status === 'active')
 
@@ -210,8 +235,12 @@ export default async function QualificationOSPage() {
       <QualificationRadar {...radarMetrics} />
 
       {/* Main Tabs */}
-      <Tabs defaultValue="intelligence" className="w-full">
-        <TabsList className="grid w-full grid-cols-2 md:grid-cols-6 h-auto">
+      <Tabs defaultValue="handoff" className="w-full">
+        <TabsList className="grid w-full grid-cols-3 md:grid-cols-7 h-auto">
+          <TabsTrigger value="handoff" className="flex items-center gap-1.5 text-xs py-2">
+            <UserCheck className="h-3.5 w-3.5" />
+            Handoff Queue
+          </TabsTrigger>
           <TabsTrigger value="intelligence" className="flex items-center gap-1.5 text-xs py-2">
             <MessageSquare className="h-3.5 w-3.5" />
             Intelligence
@@ -237,6 +266,15 @@ export default async function QualificationOSPage() {
             Campaigns
           </TabsTrigger>
         </TabsList>
+
+        {/* Handoff Queue Tab - Qualified leads ready for agent */}
+        <TabsContent value="handoff" className="mt-4">
+          <HandoffQueuePanel
+            queue={handoffQueue}
+            brokerageId={brokerageId}
+            agentId={user.id}
+          />
+        </TabsContent>
 
         {/* Conversation Intelligence Tab */}
         <TabsContent value="intelligence" className="mt-4">
