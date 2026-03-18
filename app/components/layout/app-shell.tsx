@@ -1,6 +1,6 @@
 'use client'
 
-import React from 'react'
+import React, { useEffect } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth/client'
 import { Sidebar } from './sidebar'
@@ -21,6 +21,15 @@ export function AppShell({ children }: AppShellProps) {
   // Routes that have their own layout - bypass AppShell completely
   const bypassRoutes = ['/auth', '/login', '/signup', '/portal', '/settings', '/open-house', '/qr']
   const shouldBypass = bypassRoutes.some(route => pathname.startsWith(route))
+
+  // Handle redirect in useEffect to avoid setState during render
+  const needsAuth = !isLoading && !user && !userContext && !shouldBypass && !pathname.startsWith('/login')
+  
+  useEffect(() => {
+    if (needsAuth) {
+      router.push('/login')
+    }
+  }, [needsAuth, router])
   
   if (shouldBypass) {
     return <>{children}</>
@@ -38,12 +47,8 @@ export function AppShell({ children }: AppShellProps) {
     )
   }
 
-  // Redirect to login if not authenticated (instead of returning null)
+  // Show loading while redirecting to login
   if (!user || !userContext) {
-    // Only redirect if we're on a protected route
-    if (typeof window !== 'undefined' && !pathname.startsWith('/login')) {
-      router.push('/login')
-    }
     return (
       <div className="flex items-center justify-center h-screen bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
