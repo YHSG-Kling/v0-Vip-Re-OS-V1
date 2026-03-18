@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server'
-import type { NextRequest } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
 import { PROTECTED_ROUTES, PUBLIC_ROUTES } from '@/app/constants/auth'
 
-export async function middleware(request: NextRequest) {
+export default async function proxy(request) {
   const pathname = request.nextUrl.pathname
 
   // Always allow public routes
@@ -37,15 +36,15 @@ export async function middleware(request: NextRequest) {
   })
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     {
       cookies: {
         getAll() {
           return request.cookies.getAll()
         },
         setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) =>
+          cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           )
           response = NextResponse.next({

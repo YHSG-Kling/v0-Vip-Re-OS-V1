@@ -2,6 +2,9 @@ import { getAgentContext } from '@/lib/identity/get-agent-context'
 import { redirect } from 'next/navigation'
 import { AdminDashboardClient } from './admin-dashboard-client'
 
+// Force dynamic rendering to prevent build-time prerendering errors
+export const dynamic = 'force-dynamic'
+
 export const metadata = {
   title: 'Brokerage Command Center | Admin Dashboard',
   description: 'Real-time operations intelligence and brokerage management',
