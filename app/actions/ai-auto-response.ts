@@ -298,14 +298,13 @@ export async function calculateLeadScore(contactId: string) {
     priority = "warm"
   }
 
-  // Update or insert lead score
+  // Update or insert lead score (without priority_tier field)
   const { error } = await supabase.from("lead_scores").upsert({
     contact_id: contactId,
     total_score: totalScore,
     engagement_score: engagementScore,
     recency_score: recencyScore,
     intent_score: intentScore,
-    priority_tier: priority,
     last_calculated_at: new Date().toISOString(),
   })
 
@@ -352,7 +351,7 @@ export async function getLeadScore(contactId: string) {
   return { success: true, score: data }
 }
 
-// Get hot leads (priority scoring)
+// Get hot leads (priority scoring) - filter by scores, not database column
 export async function getHotLeads(limit = 50) {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
@@ -376,7 +375,7 @@ export async function getHotLeads(limit = 50) {
     )
     .eq("contacts.agent_id", agentId)
     .eq("contacts.brokerage_id", brokerageId)
-    .eq("priority_tier", "hot")
+    .gte("total_score", 70) // Filter for hot leads client-side instead of priority_tier column
     .order("total_score", { ascending: false })
     .limit(limit)
 

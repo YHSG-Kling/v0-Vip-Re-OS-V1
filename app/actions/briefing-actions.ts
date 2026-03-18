@@ -15,7 +15,12 @@ export async function getTodaysBriefing(): Promise<{
   error?: string
 }> {
   try {
-    const { agentId, brokerageId } = await getAgentContext()
+    const context = await getAgentContext()
+    if (!context?.agentId) {
+      return { briefing: null, error: "Agent context not available" }
+    }
+    
+    const { agentId, brokerageId } = context
     const supabase = await createClient()
     const today = new Date().toISOString().split("T")[0]
 
@@ -47,7 +52,12 @@ export async function generateBriefing(
   error?: string
 }> {
   try {
-    const { agentId, brokerageId } = await getAgentContext()
+    const context = await getAgentContext()
+    if (!context?.agentId) {
+      return { briefing: null, error: "Agent context not available" }
+    }
+    
+    const { agentId, brokerageId } = context
 
     const briefing = await generateDailyBriefing(agentId, brokerageId, forceRegenerate)
 
@@ -62,7 +72,12 @@ export async function generateBriefing(
 
 export async function markBriefingViewed(): Promise<{ success: boolean; error?: string }> {
   try {
-    const { agentId } = await getAgentContext()
+    const context = await getAgentContext()
+    if (!context?.agentId) {
+      return { success: false, error: "Agent context not available" }
+    }
+    
+    const { agentId } = context
 
     await markBriefingOpened(agentId)
 
@@ -77,7 +92,12 @@ export async function markBriefingViewed(): Promise<{ success: boolean; error?: 
 
 export async function getAgentName(): Promise<{ name: string; error?: string }> {
   try {
-    const { userId } = await getAgentContext()
+    const context = await getAgentContext()
+    if (!context?.userId) {
+      return { name: "Agent" }
+    }
+    
+    const { userId } = context
     const supabase = await createClient()
 
     const { data: user, error } = await supabase
@@ -108,7 +128,12 @@ export async function getUpcomingShowings(): Promise<{
   error?: string
 }> {
   try {
-    const { agentId } = await getAgentContext()
+    const context = await getAgentContext()
+    if (!context?.agentId) {
+      return { showings: [], error: "Agent context not available" }
+    }
+    
+    const { agentId } = context
     const supabase = await createClient()
 
     const twoDaysOut = new Date()
@@ -121,8 +146,8 @@ export async function getUpcomingShowings(): Promise<{
         scheduled_at,
         status,
         notes,
-        listing:listings(id, address, city, state),
-        contact:contacts(id, first_name, last_name, phone, email)
+        listing_id,
+        contact_id
       `)
       .eq("agent_id", agentId)
       .gte("scheduled_at", new Date().toISOString())
@@ -135,7 +160,39 @@ export async function getUpcomingShowings(): Promise<{
       return { showings: [], error: error.message }
     }
 
-    return { showings: data || [] }
+    // Fetch related listings and contacts separately
+    let enrichedShowings = data || []
+    if (enrichedShowings.length > 0) {
+      const listingIds = enrichedShowings.map(s => s.listing_id).filter(Boolean)
+      const contactIds = enrichedShowings.map(s => s.contact_id).filter(Boolean)
+
+      let listingsMap = new Map()
+      let contactsMap = new Map()
+
+      if (listingIds.length > 0) {
+        const { data: listings } = await supabase
+          .from("listings")
+          .select("id, address, city, state")
+          .in("id", listingIds)
+        listingsMap = new Map(listings?.map(l => [l.id, l]) || [])
+      }
+
+      if (contactIds.length > 0) {
+        const { data: contacts } = await supabase
+          .from("contacts")
+          .select("id, first_name, last_name, phone, email")
+          .in("id", contactIds)
+        contactsMap = new Map(contacts?.map(c => [c.id, c]) || [])
+      }
+
+      enrichedShowings = enrichedShowings.map(s => ({
+        ...s,
+        listing: listingsMap.get(s.listing_id),
+        contact: contactsMap.get(s.contact_id)
+      }))
+    }
+
+    return { showings: enrichedShowings }
   } catch (err) {
     console.error("[BriefingActions] getUpcomingShowings failed:", err)
     return { showings: [], error: err instanceof Error ? err.message : "Unknown error" }
@@ -149,7 +206,12 @@ export async function getActiveTransactions(): Promise<{
   error?: string
 }> {
   try {
-    const { agentId } = await getAgentContext()
+    const context = await getAgentContext()
+    if (!context?.agentId) {
+      return { transactions: [], error: "Agent context not available" }
+    }
+    
+    const { agentId } = context
     const supabase = await createClient()
 
     const { data, error } = await supabase
@@ -162,7 +224,7 @@ export async function getActiveTransactions(): Promise<{
         purchase_price,
         close_date,
         health_score,
-        contact:contacts(id, first_name, last_name)
+        contact_id
       `)
       .eq("agent_id", agentId)
       .not("stage", "in", '("closed","cancelled")')
@@ -174,28 +236,41 @@ export async function getActiveTransactions(): Promise<{
       return { transactions: [], error: error.message }
     }
 
-    // Get deal health scores
-    const transactionIds = (data || []).map((t) => t.id)
-    if (transactionIds.length > 0) {
-      const { data: healthScores } = await supabase
-        .from("deal_health_scores")
-        .select("transaction_id, overall_score, risk_level")
-        .in("transaction_id", transactionIds)
+    // Fetch related contacts and deal health scores separately
+    let enrichedTransactions = data || []
+    if (enrichedTransactions.length > 0) {
+      const contactIds = enrichedTransactions.map(t => t.contact_id).filter(Boolean)
+      const transactionIds = enrichedTransactions.map(t => t.id)
 
-      // Merge health scores into transactions
-      const healthMap = new Map(
-        (healthScores || []).map((h) => [h.transaction_id, h])
-      )
+      let contactsMap = new Map()
+      let healthMap = new Map()
 
-      return {
-        transactions: (data || []).map((t) => ({
-          ...t,
-          deal_health: healthMap.get(t.id) || null,
-        })),
+      if (contactIds.length > 0) {
+        const { data: contacts } = await supabase
+          .from("contacts")
+          .select("id, first_name, last_name")
+          .in("id", contactIds)
+        contactsMap = new Map(contacts?.map(c => [c.id, c]) || [])
       }
+
+      if (transactionIds.length > 0) {
+        const { data: healthScores } = await supabase
+          .from("deal_health_scores")
+          .select("transaction_id, overall_score, risk_level")
+          .in("transaction_id", transactionIds)
+        healthMap = new Map(
+          (healthScores || []).map((h) => [h.transaction_id, h])
+        )
+      }
+
+      enrichedTransactions = enrichedTransactions.map(t => ({
+        ...t,
+        contact: contactsMap.get(t.contact_id),
+        deal_health: healthMap.get(t.id) || null,
+      }))
     }
 
-    return { transactions: data || [] }
+    return { transactions: enrichedTransactions }
   } catch (err) {
     console.error("[BriefingActions] getActiveTransactions failed:", err)
     return { transactions: [], error: err instanceof Error ? err.message : "Unknown error" }

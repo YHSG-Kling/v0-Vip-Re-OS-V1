@@ -245,6 +245,7 @@ export async function getUpcomingAnniversaries() {
   const currentMonthDay = today.getDate()
   const endMonthDay = thirtyDaysFromNow.getDate()
 
+  // Query transactions owned or related to agent
   const { data: transactions, error } = await supabase
     .from("transactions")
     .select(`
@@ -252,10 +253,11 @@ export async function getUpcomingAnniversaries() {
       actual_close_date,
       property_address,
       sale_price,
-      contacts!inner(id, first_name, last_name, email, phone)
+      agent_id,
+      contact_id
     `)
+    .eq("agent_id", agentId)
     .eq("status", "closed")
-    .eq("contacts.agent_id", agentId)
     .not("actual_close_date", "is", null)
 
   if (error) {
@@ -263,8 +265,29 @@ export async function getUpcomingAnniversaries() {
     return { success: false, error: error.message }
   }
 
+  // Fetch contacts separately to avoid relationship ambiguity
+  let transactionsWithContacts = transactions || []
+  if (transactionsWithContacts.length > 0) {
+    const contactIds = transactionsWithContacts
+      .map(t => t.contact_id)
+      .filter(Boolean)
+    
+    if (contactIds.length > 0) {
+      const { data: contacts } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, email, phone")
+        .in("id", contactIds)
+
+      const contactMap = new Map(contacts?.map(c => [c.id, c]) || [])
+      transactionsWithContacts = transactionsWithContacts.map(t => ({
+        ...t,
+        contacts: contactMap.get(t.contact_id)
+      }))
+    }
+  }
+
   // Filter for anniversary dates
-  const upcomingAnniversaries = (transactions || []).filter((t) => {
+  const upcomingAnniversaries = transactionsWithContacts.filter((t) => {
     const closeDate = new Date(t.actual_close_date)
     const anniversaryThisYear = new Date(
       today.getFullYear(),

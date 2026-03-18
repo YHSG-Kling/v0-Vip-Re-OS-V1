@@ -159,18 +159,9 @@ export async function enrichContact(
       console.error("[ContactEnrichment] Error saving enrichment data:", upsertError)
     }
 
-    // 6. Process any detected life changes
-    if (osintData?.lifeEvents?.length > 0) {
-      for (const event of osintData.lifeEvents) {
-        await supabase.from("contact_life_changes").insert({
-          contact_id: contactId,
-          change_type: event.type,
-          change_details: event.details,
-          detected_via: "osint",
-          confidence_score: event.confidence || 50,
-        })
-      }
-    }
+    // 6. Process any detected life changes (stored in contact_enrichment_data.life_events)
+    // Life events are already stored in the enrichmentData above
+    // No separate insertion needed as they're part of contact_enrichment_data
 
     // 7. Update contact as enriched
     await supabase
@@ -249,23 +240,30 @@ export async function checkContactLifeChanges(
     if (osintData?.lifeEvents?.length > 0) {
       // Get existing life changes to avoid duplicates
       const { data: existingChanges } = await supabase
-        .from("contact_life_changes")
-        .select("change_type, detected_at")
+        .from("contact_enrichment_data")
+        .select("life_events")
         .eq("contact_id", contactId)
-        .gte("detected_at", new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()) // Last 90 days
+        .single()
 
-      const existingTypes = new Set(existingChanges?.map((c) => c.change_type) || [])
+      const existingEvents = existingChanges?.life_events as any[] || []
+      const existingTypes = new Set(existingEvents.map((e) => e.type))
 
       for (const event of osintData.lifeEvents) {
         // Skip if we already detected this type recently
         if (existingTypes.has(event.type)) continue
 
-        await supabase.from("contact_life_changes").insert({
+        // Update existing record with new life events
+        const updatedEvents = [...existingEvents, {
+          type: event.type,
+          details: event.details,
+          detected_at: new Date().toISOString(),
+          confidence: event.confidence || 50
+        }]
+
+        await supabase.from("contact_enrichment_data").upsert({
           contact_id: contactId,
-          change_type: event.type,
-          change_details: event.details,
-          detected_via: "osint",
-          confidence_score: event.confidence || 50,
+          life_events: updatedEvents,
+          updated_at: new Date().toISOString(),
         })
 
         changesFound++
