@@ -89,7 +89,7 @@ function getEventLink(event: LifecycleEvent): string | null {
   const { entity_type, entity_id, metadata } = event
   
   if (metadata?.contact_id) {
-    return `/dashboard/contacts/${metadata.contact_id}`
+    return `/contacts/${metadata.contact_id}`
   }
   if (metadata?.transaction_id) {
     return `/dashboard/transactions/${metadata.transaction_id}`
@@ -100,7 +100,7 @@ function getEventLink(event: LifecycleEvent): string | null {
   
   switch (entity_type) {
     case "contact":
-      return `/dashboard/contacts/${entity_id}`
+      return `/contacts/${entity_id}`
     case "transaction":
       return `/dashboard/transactions/${entity_id}`
     case "listing":

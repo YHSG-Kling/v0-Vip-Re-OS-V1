@@ -108,7 +108,7 @@ export function HandoffQueuePanel({ queue, brokerageId, agentId }: HandoffQueueP
     setClaiming(null)
     
     // Navigate to contact
-    router.push(`/dashboard/contacts/${contactId}`)
+    router.push(`/contacts/${contactId}`)
   }
 
   return (

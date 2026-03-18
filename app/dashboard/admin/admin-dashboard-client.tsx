@@ -152,7 +152,7 @@ export function AdminDashboardClient({ brokerageId }: AdminDashboardClientProps)
                 </Badge>
               </div>
               <div className="pt-3 border-t border-border">
-                <Link href="/dashboard/admin/analytics">
+                <Link href="/dashboard/analytics">
                   <Button size="sm" variant="outline" className="w-full">
                     View Analytics
                   </Button>

@@ -198,7 +198,7 @@ export default function BusinessCardsPage() {
 
               {result.contactId && (
                 <a
-                  href={`/dashboard/contacts/${result.contactId}`}
+                  href={`/contacts/${result.contactId}`}
                   className="inline-flex items-center gap-1 text-sm text-primary underline underline-offset-2"
                 >
                   View contact record
@@ -288,7 +288,7 @@ export default function BusinessCardsPage() {
                       <td className="px-4 py-3">
                         {s.contact_id ? (
                           <a
-                            href={`/dashboard/contacts/${s.contact_id}`}
+                            href={`/contacts/${s.contact_id}`}
                             className="text-primary underline underline-offset-2"
                           >
                             View

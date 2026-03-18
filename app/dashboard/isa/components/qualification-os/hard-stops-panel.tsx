@@ -197,7 +197,7 @@ export function HardStopsPanel({ hardStops, onRequestReview }: HardStopsPanelPro
                             Review
                           </Button>
                         )}
-                        <Link href={`/dashboard/contacts/${stop.contactId}`}>
+                        <Link href={`/contacts/${stop.contactId}`}>
                           <Button variant="ghost" size="sm" className="h-6 text-xs">
                             View
                             <ArrowRight className="h-3 w-3 ml-1" />

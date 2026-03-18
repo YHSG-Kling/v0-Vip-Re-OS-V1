@@ -113,7 +113,7 @@ export function CallReviewPanel({ insights, summary }: CallReviewPanelProps) {
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <Link
-                            href={`/dashboard/contacts/${insight.contact_id}`}
+                            href={`/contacts/${insight.contact_id}`}
                             className="text-sm font-medium hover:underline"
                           >
                             {insight.contact_name}

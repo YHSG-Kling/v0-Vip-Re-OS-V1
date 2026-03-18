@@ -201,7 +201,7 @@ export default async function MobileVoicePage() {
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-medium">Recent Calls</h2>
             <Link
-              href="/dashboard/voice/history"
+              href="/dashboard/voice"
               className="text-xs text-primary min-h-[44px] flex items-center"
             >
               View All

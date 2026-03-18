@@ -251,7 +251,7 @@ export function ContactHistorySheet({ contactId, open, onOpenChange }: ContactHi
             {/* Actions */}
             <div className="flex gap-2 pt-4">
               <Button asChild className="flex-1">
-                <Link href={`/dashboard/contacts/${contact.id}`}>
+                <Link href={`/contacts/${contact.id}`}>
                   View Full Contact
                   <ExternalLink className="h-4 w-4 ml-2" />
                 </Link>

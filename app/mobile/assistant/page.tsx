@@ -112,7 +112,7 @@ export default async function MobileAssistantPage() {
             <h1 className="text-lg font-semibold">{agentFirstName}</h1>
             <p className="text-xs text-muted-foreground">Mobile Assistant</p>
           </div>
-          <Link href="/dashboard/notifications" className="p-2 min-h-[44px] min-w-[44px] flex items-center justify-center">
+          <Link href="/notifications" className="p-2 min-h-[44px] min-w-[44px] flex items-center justify-center">
             <Badge variant="destructive" className="h-6 w-6 rounded-full p-0 flex items-center justify-center text-xs">
               3
             </Badge>
