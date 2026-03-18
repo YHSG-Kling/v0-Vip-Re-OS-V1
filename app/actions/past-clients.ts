@@ -151,59 +151,75 @@ export async function getPastClients({
   const { agentId, brokerageId } = await getAgentContext()
 
   // Get past clients (contacts with closed transactions)
-  let query = supabase
+  // Fetch contacts first, then get their closed transactions separately
+  const { data: contacts, error: contactError } = await supabase
     .from("contacts")
-    .select(`
-      *,
-      transactions!inner(id, actual_close_date, status, property_address, sale_price),
-      client_engagement_scores(engagement_score, referral_potential_score, last_touchpoint_date, computed_at)
-    `)
+    .select("*")
     .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
-    .eq("transactions.status", "closed")
 
+  if (contactError || !contacts) {
+    console.error("Error fetching contacts:", contactError)
+    return { success: false, error: contactError?.message }
+  }
+
+  // Filter by search if provided
+  let filteredContacts = contacts
   if (search) {
-    query = query.or(`first_name.ilike.%${search}%,last_name.ilike.%${search}%,email.ilike.%${search}%`)
+    const searchLower = search.toLowerCase()
+    filteredContacts = contacts.filter(c =>
+      (c.first_name?.toLowerCase().includes(searchLower)) ||
+      (c.last_name?.toLowerCase().includes(searchLower)) ||
+      (c.email?.toLowerCase().includes(searchLower))
+    )
   }
 
-  const { data: pastClients, error } = await query
-
-  if (error) {
-    console.error("Error fetching past clients:", error)
-    return { success: false, error: error.message }
+  if (filteredContacts.length === 0) {
+    return { success: true, data: [] }
   }
 
-  // Post-filter by engagement if needed
-  let filtered = pastClients || []
+  // Get closed transactions for these contacts
+  const contactIds = filteredContacts.map(c => c.id)
+  const { data: transactions, error: transError } = await supabase
+    .from("transactions")
+    .select("id, contact_id, actual_close_date, status, property_address, sale_price")
+    .in("contact_id", contactIds)
+    .eq("status", "closed")
 
-  if (engagementFilter && engagementFilter !== "all") {
-    filtered = filtered.filter((client) => {
-      const score = client.client_engagement_scores?.[0]?.engagement_score || 0
-      if (engagementFilter === "hot") return score >= 70
-      if (engagementFilter === "warm") return score >= 40 && score < 70
-      if (engagementFilter === "cold") return score < 40
-      return true
-    })
+  if (transError) {
+    console.error("Error fetching transactions:", transError)
+    return { success: false, error: transError.message }
   }
 
-  // Post-filter by last contact
-  if (lastContactFilter && lastContactFilter !== "all") {
-    const now = new Date()
-    filtered = filtered.filter((client) => {
-      const lastTouchpoint = client.client_engagement_scores?.[0]?.last_touchpoint_date
-      if (!lastTouchpoint) return lastContactFilter === "never"
+  // Get engagement scores for these contacts
+  const { data: engagementScores } = await supabase
+    .from("client_engagement_scores")
+    .select("contact_id, engagement_score, referral_potential_score, last_touchpoint_date, computed_at")
+    .in("contact_id", contactIds)
 
-      const daysSince = Math.floor((now.getTime() - new Date(lastTouchpoint).getTime()) / (1000 * 60 * 60 * 24))
-      if (lastContactFilter === "1m") return daysSince <= 30
-      if (lastContactFilter === "3m") return daysSince <= 90
-      if (lastContactFilter === "6m") return daysSince <= 180
-      if (lastContactFilter === "1yr") return daysSince <= 365
-      if (lastContactFilter === "never") return !lastTouchpoint
-      return true
-    })
-  }
+  // Merge data together
+  const transactionMap = new Map()
+  ;(transactions || []).forEach(t => {
+    if (!transactionMap.has(t.contact_id)) {
+      transactionMap.set(t.contact_id, [])
+    }
+    transactionMap.get(t.contact_id).push(t)
+  })
 
-  return { success: true, clients: filtered }
+  const engagementMap = new Map(
+    (engagementScores || []).map(e => [e.contact_id, e])
+  )
+
+  let pastClients = filteredContacts
+    .filter(c => transactionMap.has(c.id)) // Only include contacts with closed transactions
+    .map(c => ({
+      ...c,
+      transactions: transactionMap.get(c.id) || [],
+      client_engagement_scores: engagementMap.get(c.id) ? [engagementMap.get(c.id)] : []
+    }))
+
+
+  return { success: true, clients: pastClients }
 }
 
 /**

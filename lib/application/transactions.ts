@@ -2210,15 +2210,55 @@ function calculateRiskPriority(transaction: any): number {
 
 async function getUpcomingMilestones(agentId: string) {
   const supabase = await createClient()
-  const { data } = await supabase
+  
+  // Get milestones first
+  const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select(`*, transactions!inner(agent_id, property_address, contacts(name))`)
-    .eq("transactions.agent_id", agentId)
+    .select("id, transaction_id, status, target_date")
     .eq("status", "pending")
     .gte("target_date", new Date().toISOString())
     .order("target_date", { ascending: true })
     .limit(10)
-  return data || []
+
+  if (!milestones || milestones.length === 0) return []
+
+  // Get transactions for these milestones
+  const transactionIds = milestones.map(m => m.transaction_id).filter(Boolean)
+  const { data: transactions } = await supabase
+    .from("transactions")
+    .select("id, agent_id, property_address, contact_id")
+    .in("id", transactionIds)
+    .eq("agent_id", agentId)
+
+  if (!transactions || transactions.length === 0) return []
+
+  // Get contacts
+  const contactIds = transactions.map(t => t.contact_id).filter(Boolean)
+  let contactMap = new Map()
+  if (contactIds.length > 0) {
+    const { data: contacts } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name")
+      .in("id", contactIds)
+    contactMap = new Map(contacts?.map(c => [c.id, { name: `${c.first_name} ${c.last_name}` }]) || [])
+  }
+
+  const transactionMap = new Map(transactions.map(t => [t.id, t]))
+
+  // Merge data
+  return milestones
+    .filter(m => transactionMap.has(m.transaction_id))
+    .map(m => {
+      const transaction = transactionMap.get(m.transaction_id)
+      return {
+        ...m,
+        transactions: {
+          agent_id: transaction.agent_id,
+          property_address: transaction.property_address,
+          contacts: contactMap.get(transaction.contact_id) || { name: "Unknown" }
+        }
+      }
+    })
 }
 
 function getNextStage(currentMilestone: string, persona: string): string | null {

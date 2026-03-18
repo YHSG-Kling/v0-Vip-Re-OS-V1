@@ -16,7 +16,7 @@ export async function getTodaysBriefing(): Promise<{
 }> {
   try {
     const context = await getAgentContext()
-    if (!context?.agentId) {
+    if (!context?.agentId || context.agentId === "null" || context.agentId === "undefined") {
       return { briefing: null, error: "Agent context not available" }
     }
     
@@ -129,7 +129,7 @@ export async function getUpcomingShowings(): Promise<{
 }> {
   try {
     const context = await getAgentContext()
-    if (!context?.agentId) {
+    if (!context?.agentId || context.agentId === "null" || context.agentId === "undefined") {
       return { showings: [], error: "Agent context not available" }
     }
     
@@ -207,7 +207,7 @@ export async function getActiveTransactions(): Promise<{
 }> {
   try {
     const context = await getAgentContext()
-    if (!context?.agentId) {
+    if (!context?.agentId || context.agentId === "null" || context.agentId === "undefined") {
       return { transactions: [], error: "Agent context not available" }
     }
     

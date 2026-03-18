@@ -171,32 +171,70 @@ export async function sendReferralRequest(contactId: string) {
 
 // Get past client contacts for agent
 export async function getPastClientContacts() {
-  const { agentId, brokerageId } = await getAgentContext()
-  const supabase = await createClient()
-
-  // Get contacts that have closed transactions (past clients)
-  const { data, error } = await supabase
-    .from("contacts")
-    .select(`
-      *,
-      transactions!inner(
-        id,
-        status,
-        close_date,
-        sale_price
-      )
-    `)
-    .eq("agent_id", agentId)
-    .eq("brokerage_id", brokerageId)
-    .in("transactions.status", ["closed", "sold"])
-    .order("transactions.close_date", { ascending: false })
-
-  if (error) {
-    console.error("Error fetching past client contacts:", error)
-    return { success: false, error: error.message, contacts: [] }
+  const context = await getAgentContext()
+  if (!context?.agentId) {
+    return { success: false, error: "Agent context not available", contacts: [] }
   }
 
-  return { success: true, contacts: data || [] }
+  const { agentId, brokerageId } = context
+  const supabase = await createClient()
+
+  // Get contacts for this agent
+  const { data: contacts, error: contactError } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
+
+  if (contactError || !contacts) {
+    console.error("Error fetching contacts:", contactError)
+    return { success: false, error: contactError?.message, contacts: [] }
+  }
+
+  if (contacts.length === 0) {
+    return { success: true, contacts: [] }
+  }
+
+  // Get closed transactions for these contacts
+  const contactIds = contacts.map(c => c.id)
+  const { data: transactions, error: transError } = await supabase
+    .from("transactions")
+    .select("id, contact_id, status, close_date, sale_price")
+    .in("contact_id", contactIds)
+    .in("status", ["closed", "sold"])
+
+  if (transError) {
+    console.error("Error fetching transactions:", transError)
+    return { success: false, error: transError.message, contacts: [] }
+  }
+
+  if (!transactions || transactions.length === 0) {
+    return { success: true, contacts: [] }
+  }
+
+  // Build map of transactions by contact_id
+  const transactionMap = new Map()
+  transactions.forEach(t => {
+    if (!transactionMap.has(t.contact_id)) {
+      transactionMap.set(t.contact_id, [])
+    }
+    transactionMap.get(t.contact_id).push(t)
+  })
+
+  // Merge contacts with their transactions
+  const pastClients = contacts
+    .filter(c => transactionMap.has(c.id))
+    .map(c => ({
+      ...c,
+      transactions: transactionMap.get(c.id) || []
+    }))
+    .sort((a, b) => {
+      const aLatest = Math.max(...(a.transactions?.map(t => new Date(t.close_date).getTime()) || [0]))
+      const bLatest = Math.max(...(b.transactions?.map(t => new Date(t.close_date).getTime()) || [0]))
+      return bLatest - aLatest
+    })
+
+  return { success: true, contacts: pastClients }
 }
 
 // Get touchpoint calendar for agent
