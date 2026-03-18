@@ -3,6 +3,15 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { KernelEvent } from "@/lib/kernel/events"
+import {
+  aiScoreSphereEngagement,
+  aiSegmentSphere,
+  aiGetUpcomingMilestones,
+  aiGenerateTouchpoint,
+  aiOptimizeReferralAsk,
+} from "@/app/actions/ai-sphere-management"
+import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
+import { identifyReferralOpportunities } from "@/app/actions/ai-referral-management"
 
 /**
  * Log a touchpoint for a past client
@@ -395,4 +404,50 @@ export async function getAISuggestedTouchpoint(contactId: string) {
     daysSinceContact,
     engagementScore,
   }
+}
+
+// ============================================
+// SPHERE INTELLIGENCE WRAPPERS
+// ============================================
+
+export async function scoreSphereEngagement() {
+  const { agentId } = await getAgentContext()
+  return aiScoreSphereEngagement({ agentId })
+}
+
+export async function segmentSphere() {
+  const { agentId } = await getAgentContext()
+  return aiSegmentSphere({ agentId })
+}
+
+export async function getUpcomingMilestones(daysAhead = 30) {
+  const { agentId } = await getAgentContext()
+  return aiGetUpcomingMilestones({ agentId, daysAhead })
+}
+
+export async function generateTouchpoint(params: {
+  contactId: string
+  touchpointType: 'anniversary' | 'birthday' | 'check_in' | 'market_update' | 'holiday' | 'referral_ask'
+}) {
+  const { agentId } = await getAgentContext()
+  return aiGenerateTouchpoint({ agentId, ...params })
+}
+
+export async function optimizeReferralAsk(contactId: string) {
+  const { agentId } = await getAgentContext()
+  return aiOptimizeReferralAsk({ agentId, contactId })
+}
+
+export async function getLifeChangeSignals(daysBack = 7) {
+  try {
+    const { agentId } = await getAgentContext()
+    return await getRecentLifeChanges(agentId, daysBack)
+  } catch {
+    return []
+  }
+}
+
+export async function findReferralOpportunities() {
+  const { agentId } = await getAgentContext()
+  return identifyReferralOpportunities(agentId)
 }
