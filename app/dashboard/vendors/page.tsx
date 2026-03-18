@@ -14,6 +14,15 @@ import {
   getVendorReviews,
 } from "@/app/actions/vendor-marketplace"
 import { Store, FileText, Star, CheckCircle2 } from "lucide-react"
+import {
+  PartnerCommandStrip,
+  VendorPerformanceRadar,
+  ReferralTrackingPanel,
+  LenderStatusPanel,
+  TitlePipelinePanel,
+  VendorSlaPanel,
+  AiVendorInsightsPanel,
+} from "@/app/dashboard/partners/components/os"
 
 export const dynamic = "force-dynamic"
 
@@ -77,6 +86,23 @@ export default async function VendorsPage() {
         <p className="text-muted-foreground mt-1">
           Browse vendors, manage assignments, and track service bookings
         </p>
+      </div>
+
+      {/* OS Command Strip */}
+      <PartnerCommandStrip brokerageId={profile.brokerage_id} />
+
+      {/* OS Intelligence Panels - First Row */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <VendorPerformanceRadar brokerageId={profile.brokerage_id} />
+        <VendorSlaPanel brokerageId={profile.brokerage_id} />
+        <AiVendorInsightsPanel brokerageId={profile.brokerage_id} />
+      </div>
+
+      {/* OS Intelligence Panels - Second Row */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        <LenderStatusPanel brokerageId={profile.brokerage_id} />
+        <TitlePipelinePanel brokerageId={profile.brokerage_id} />
+        <ReferralTrackingPanel brokerageId={profile.brokerage_id} />
       </div>
 
       <Tabs defaultValue="marketplace" className="space-y-6">

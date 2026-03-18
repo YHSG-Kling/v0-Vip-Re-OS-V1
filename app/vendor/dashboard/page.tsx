@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Briefcase, DollarSign, Star, Clock, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
+import { VendorCommandStrip, JobPerformancePanel } from '../components/os'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,6 +14,15 @@ export default async function VendorDashboardPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
+
+  // Get vendor ID for this user
+  const { data: vendor } = await supabase
+    .from('vendors')
+    .select('id')
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  const vendorId = vendor?.id || user.id
 
   let bookings: any[] = []
   try {
@@ -36,23 +46,34 @@ export default async function VendorDashboardPage() {
         </Link>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          { label: 'Active Jobs', value: active.length, icon: Briefcase, color: 'text-blue-600' },
-          { label: 'Pending', value: pending.length, icon: Clock, color: 'text-yellow-600' },
-          { label: 'Completed', value: completed.length, icon: CheckCircle2, color: 'text-green-600' },
-          { label: 'Total Jobs', value: bookings.length, icon: Star, color: 'text-purple-600' },
-        ].map((stat) => (
-          <Card key={stat.label}>
-            <CardContent className="p-4 flex items-center gap-3">
-              <stat.icon className={`w-8 h-8 ${stat.color}`} />
-              <div>
-                <p className="text-2xl font-bold">{stat.value}</p>
-                <p className="text-xs text-gray-500">{stat.label}</p>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+      {/* OS Command Strip */}
+      <VendorCommandStrip vendorId={vendorId} />
+
+      {/* OS Panel + Stats Grid */}
+      <div className="grid lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-1">
+          <JobPerformancePanel vendorId={vendorId} />
+        </div>
+        <div className="lg:col-span-2">
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { label: 'Active Jobs', value: active.length, icon: Briefcase, color: 'text-blue-600' },
+              { label: 'Pending', value: pending.length, icon: Clock, color: 'text-yellow-600' },
+              { label: 'Completed', value: completed.length, icon: CheckCircle2, color: 'text-green-600' },
+              { label: 'Total Jobs', value: bookings.length, icon: Star, color: 'text-purple-600' },
+            ].map((stat) => (
+              <Card key={stat.label}>
+                <CardContent className="p-4 flex items-center gap-3">
+                  <stat.icon className={`w-8 h-8 ${stat.color}`} />
+                  <div>
+                    <p className="text-2xl font-bold">{stat.value}</p>
+                    <p className="text-xs text-gray-500">{stat.label}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">

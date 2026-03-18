@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { FileCheck, Clock, Calendar, Package, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
+import { TitleCommandStrip, TitleOperationsPanel } from '../components/os'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,6 +13,16 @@ export default async function TitleDashboardPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
+
+  // Get title company/vendor ID for this user
+  const { data: vendor } = await supabase
+    .from('vendors')
+    .select('id')
+    .eq('user_id', user.id)
+    .eq('category', 'title')
+    .maybeSingle()
+
+  const titleCompanyId = vendor?.id || user.id
 
   const { data: transactions } = await supabase
     .from('transactions')
@@ -37,23 +48,34 @@ export default async function TitleDashboardPage() {
         <Link href="/title/orders"><Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">View Orders</Button></Link>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          { label: 'Total Orders', value: transactions?.length || 0, icon: Package, color: 'text-blue-600' },
-          { label: 'Closing This Week', value: upcoming.length, icon: Calendar, color: 'text-orange-600' },
-          { label: 'Pending', value: (transactions || []).filter((t: any) => t.status === 'pending').length, icon: Clock, color: 'text-yellow-600' },
-          { label: 'Completed', value: (transactions || []).filter((t: any) => t.status === 'closed').length, icon: CheckCircle2, color: 'text-green-600' },
-        ].map((stat) => (
-          <Card key={stat.label}>
-            <CardContent className="p-4 flex items-center gap-3">
-              <stat.icon className={`w-8 h-8 ${stat.color}`} />
-              <div>
-                <p className="text-2xl font-bold">{stat.value}</p>
-                <p className="text-xs text-gray-500">{stat.label}</p>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+      {/* OS Command Strip */}
+      <TitleCommandStrip titleCompanyId={titleCompanyId} />
+
+      {/* OS Panel + Stats Grid */}
+      <div className="grid lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-1">
+          <TitleOperationsPanel titleCompanyId={titleCompanyId} />
+        </div>
+        <div className="lg:col-span-2">
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { label: 'Total Orders', value: transactions?.length || 0, icon: Package, color: 'text-blue-600' },
+              { label: 'Closing This Week', value: upcoming.length, icon: Calendar, color: 'text-orange-600' },
+              { label: 'Pending', value: (transactions || []).filter((t: any) => t.status === 'pending').length, icon: Clock, color: 'text-yellow-600' },
+              { label: 'Completed', value: (transactions || []).filter((t: any) => t.status === 'closed').length, icon: CheckCircle2, color: 'text-green-600' },
+            ].map((stat) => (
+              <Card key={stat.label}>
+                <CardContent className="p-4 flex items-center gap-3">
+                  <stat.icon className={`w-8 h-8 ${stat.color}`} />
+                  <div>
+                    <p className="text-2xl font-bold">{stat.value}</p>
+                    <p className="text-xs text-gray-500">{stat.label}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
       </div>
 
       <Card>

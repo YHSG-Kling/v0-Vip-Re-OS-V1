@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DollarSign, TrendingUp, CheckCircle2, Clock, FileCheck, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
+import { LenderCommandStrip, LenderPipelinePanel } from '../components/os'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,7 +14,17 @@ export default async function LenderDashboardPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  // Fetch lender's transactions (they see transactions where lender_id = their user)
+  // Get lender/vendor ID for this user
+  const { data: vendor } = await supabase
+    .from('vendors')
+    .select('id')
+    .eq('user_id', user.id)
+    .eq('category', 'lender')
+    .maybeSingle()
+
+  const lenderId = vendor?.id || user.id
+
+  // Fetch lender's transactions
   const { data: transactions } = await supabase
     .from('transactions')
     .select('id, property_address, status, contract_price, client_name, close_date, transaction_type')
@@ -35,23 +46,34 @@ export default async function LenderDashboardPage() {
         </Link>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          { label: 'Total in Pipeline', value: transactions?.length || 0, icon: TrendingUp, color: 'text-blue-600' },
-          { label: 'Active Loans', value: active.length, icon: DollarSign, color: 'text-green-600' },
-          { label: 'Closing Soon', value: closing.length, icon: Clock, color: 'text-orange-600' },
-          { label: 'Pending Approvals', value: 0, icon: FileCheck, color: 'text-purple-600' },
-        ].map((stat) => (
-          <Card key={stat.label}>
-            <CardContent className="p-4 flex items-center gap-3">
-              <stat.icon className={`w-8 h-8 ${stat.color}`} />
-              <div>
-                <p className="text-2xl font-bold">{stat.value}</p>
-                <p className="text-xs text-gray-500">{stat.label}</p>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+      {/* OS Command Strip */}
+      <LenderCommandStrip lenderId={lenderId} />
+
+      {/* OS Panel + Stats Grid */}
+      <div className="grid lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-1">
+          <LenderPipelinePanel lenderId={lenderId} />
+        </div>
+        <div className="lg:col-span-2">
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { label: 'Total in Pipeline', value: transactions?.length || 0, icon: TrendingUp, color: 'text-blue-600' },
+              { label: 'Active Loans', value: active.length, icon: DollarSign, color: 'text-green-600' },
+              { label: 'Closing Soon', value: closing.length, icon: Clock, color: 'text-orange-600' },
+              { label: 'Pending Approvals', value: 0, icon: FileCheck, color: 'text-purple-600' },
+            ].map((stat) => (
+              <Card key={stat.label}>
+                <CardContent className="p-4 flex items-center gap-3">
+                  <stat.icon className={`w-8 h-8 ${stat.color}`} />
+                  <div>
+                    <p className="text-2xl font-bold">{stat.value}</p>
+                    <p className="text-xs text-gray-500">{stat.label}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">
