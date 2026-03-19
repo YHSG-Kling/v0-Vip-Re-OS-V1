@@ -11,7 +11,7 @@ import {
   ExternalActiveFilesPanel,
   ExternalDocStatusPanel,
   ExternalCommunicationPanel,
-} from '@/(external-portal)/components/os'
+} from '../../(external-portal)/components/os'
 
 export const dynamic = 'force-dynamic'
 

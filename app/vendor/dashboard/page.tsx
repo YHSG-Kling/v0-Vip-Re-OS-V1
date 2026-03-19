@@ -12,7 +12,7 @@ import {
   ExternalActiveFilesPanel,
   ExternalNextActionsPanel,
   ExternalBillingEarningsPanel,
-} from '@/(external-portal)/components/os'
+} from '../../(external-portal)/components/os'
 
 export const dynamic = 'force-dynamic'
 
