@@ -1,0 +1,212 @@
+"use client"
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import {
+  CheckCircle2,
+  FileUp,
+  Send,
+  RefreshCw,
+  AlertTriangle,
+} from "lucide-react"
+import { useState } from "react"
+import { toast } from "sonner"
+
+interface BatchItem {
+  id: string
+  label: string
+  type: "file" | "milestone" | "document" | "status"
+  status: "pending" | "ready" | "completed"
+  relatedId?: string
+}
+
+interface ExternalBatchActionsPanelProps {
+  partnerType: "vendor" | "lender" | "title"
+  partnerId: string
+  items: BatchItem[]
+  onBatchConfirm?: (ids: string[]) => Promise<{ success: boolean; count: number; error?: string }>
+  onBatchUpdate?: (ids: string[], newStatus: string) => Promise<{ success: boolean; count: number; error?: string }>
+}
+
+export function ExternalBatchActionsPanel({
+  partnerType,
+  partnerId,
+  items,
+  onBatchConfirm,
+  onBatchUpdate,
+}: ExternalBatchActionsPanelProps) {
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [processing, setProcessing] = useState(false)
+
+  const pendingItems = items.filter((i) => i.status !== "completed")
+  const readyItems = items.filter((i) => i.status === "ready")
+
+  const toggleItem = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    )
+  }
+
+  const toggleAll = () => {
+    if (selectedIds.length === pendingItems.length) {
+      setSelectedIds([])
+    } else {
+      setSelectedIds(pendingItems.map((i) => i.id))
+    }
+  }
+
+  const handleBatchConfirm = async () => {
+    if (selectedIds.length === 0 || !onBatchConfirm) return
+
+    setProcessing(true)
+    try {
+      const result = await onBatchConfirm(selectedIds)
+      if (result.success) {
+        toast.success(`${result.count} items confirmed`)
+        setSelectedIds([])
+      } else {
+        toast.error(result.error || "Failed to confirm items")
+      }
+    } catch (error) {
+      toast.error("An error occurred")
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  const handleBatchUpdate = async (newStatus: string) => {
+    if (selectedIds.length === 0 || !onBatchUpdate) return
+
+    setProcessing(true)
+    try {
+      const result = await onBatchUpdate(selectedIds, newStatus)
+      if (result.success) {
+        toast.success(`${result.count} items updated`)
+        setSelectedIds([])
+      } else {
+        toast.error(result.error || "Failed to update items")
+      }
+    } catch (error) {
+      toast.error("An error occurred")
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  const getTypeIcon = (type: BatchItem["type"]) => {
+    switch (type) {
+      case "file":
+        return <FileUp className="h-4 w-4" />
+      case "milestone":
+        return <CheckCircle2 className="h-4 w-4" />
+      case "document":
+        return <FileUp className="h-4 w-4" />
+      default:
+        return <RefreshCw className="h-4 w-4" />
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4" />
+            Batch Actions
+          </CardTitle>
+          {pendingItems.length > 0 && (
+            <Badge variant="outline" className="text-xs">
+              {pendingItems.length} Pending
+            </Badge>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        {pendingItems.length === 0 ? (
+          <div className="text-center py-6 text-muted-foreground">
+            <CheckCircle2 className="h-8 w-8 mx-auto mb-2 opacity-50 text-green-500" />
+            <p className="text-sm">Nothing to process</p>
+          </div>
+        ) : (
+          <>
+            {/* Select All */}
+            <div className="flex items-center justify-between p-2 bg-muted/50 rounded-lg mb-3">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="select-all"
+                  checked={selectedIds.length === pendingItems.length}
+                  onCheckedChange={toggleAll}
+                />
+                <label htmlFor="select-all" className="text-sm font-medium cursor-pointer">
+                  Select All ({pendingItems.length})
+                </label>
+              </div>
+              {selectedIds.length > 0 && (
+                <Badge className="bg-primary text-primary-foreground">
+                  {selectedIds.length} Selected
+                </Badge>
+              )}
+            </div>
+
+            {/* Items List */}
+            <div className="space-y-2 max-h-[200px] overflow-y-auto">
+              {pendingItems.map((item) => (
+                <div
+                  key={item.id}
+                  className={`flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors ${
+                    selectedIds.includes(item.id) ? "bg-primary/10" : "hover:bg-muted/50"
+                  }`}
+                  onClick={() => toggleItem(item.id)}
+                >
+                  <Checkbox
+                    checked={selectedIds.includes(item.id)}
+                    onCheckedChange={() => toggleItem(item.id)}
+                  />
+                  <span className="text-muted-foreground">{getTypeIcon(item.type)}</span>
+                  <span className="text-sm flex-1">{item.label}</span>
+                  <Badge
+                    variant="outline"
+                    className={`text-[10px] ${
+                      item.status === "ready"
+                        ? "bg-green-50 text-green-700 border-green-200"
+                        : "bg-yellow-50 text-yellow-700 border-yellow-200"
+                    }`}
+                  >
+                    {item.status}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+
+            {/* Batch Action Buttons */}
+            <div className="flex gap-2 mt-4 pt-4 border-t">
+              {onBatchConfirm && (
+                <Button
+                  className="flex-1"
+                  onClick={handleBatchConfirm}
+                  disabled={selectedIds.length === 0 || processing}
+                >
+                  <CheckCircle2 className="h-4 w-4 mr-1" />
+                  Confirm ({selectedIds.length})
+                </Button>
+              )}
+              {onBatchUpdate && (
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => handleBatchUpdate("completed")}
+                  disabled={selectedIds.length === 0 || processing}
+                >
+                  <RefreshCw className="h-4 w-4 mr-1" />
+                  Mark Complete
+                </Button>
+              )}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
