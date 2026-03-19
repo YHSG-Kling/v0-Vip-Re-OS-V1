@@ -105,7 +105,7 @@ export function AdminCommandStrip({ brokerageId }: AdminCommandStripProps) {
           label: "Approvals Pending",
           sublabel: `${approvals} item${approvals > 1 ? "s" : ""} awaiting admin review`,
           action: "Review Now",
-          href: "/approvals",
+          href: "/dashboard/admin/approvals",
           blocked: 0,
           actionable: approvals,
         }
