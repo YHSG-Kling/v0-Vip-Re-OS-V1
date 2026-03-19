@@ -167,8 +167,8 @@ export default async function ReferralsPage({
           </Card>
         </Link>
       </div>
-    </div>
 
-    {isCreateOpen && <CreateReferralSheet />}
+      {isCreateOpen && <CreateReferralSheet />}
+    </div>
   )
 }
