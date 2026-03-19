@@ -1,15 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Badge } from '@/components/ui/badge'
-import { 
-  CheckCircle2, 
-  AlertTriangle, 
-  XCircle,
-  Activity,
-  Loader2 
-} from 'lucide-react'
 import { getServiceStatuses, type ServiceStatus } from '@/app/actions/system-health'
+import { CheckCircle2, AlertTriangle, XCircle, Activity, Loader2, Badge } from 'lucide-react'
 
 type OverallStatus = 'healthy' | 'degraded' | 'down' | 'unknown'
 
@@ -133,9 +126,9 @@ export function RootSystemStatusStrip() {
       <Icon className={`h-3.5 w-3.5 ${config.color}`} />
       <span className={`text-xs font-medium ${config.color}`}>{config.label}</span>
       {status.overall === 'healthy' && (
-        <Badge variant="outline" className="text-xs py-0 h-5 ml-auto">
+        <span className="text-xs py-0 ml-auto bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded">
           {status.healthyCount} services
-        </Badge>
+        </span>
       )}
     </div>
   )
