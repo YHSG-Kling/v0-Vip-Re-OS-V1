@@ -6,6 +6,12 @@ import { Button } from '@/components/ui/button'
 import { DollarSign, TrendingUp, CheckCircle2, Clock, FileCheck, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
 import { LenderCommandStrip, LenderPipelinePanel } from '../components/os'
+import {
+  ExternalPartnerCommandStrip,
+  ExternalActiveFilesPanel,
+  ExternalDocStatusPanel,
+  ExternalCommunicationPanel,
+} from '@/(external-portal)/components/os'
 
 export const dynamic = 'force-dynamic'
 
@@ -48,6 +54,7 @@ export default async function LenderDashboardPage() {
 
       {/* OS Command Strip */}
       <LenderCommandStrip lenderId={lenderId} />
+      <ExternalPartnerCommandStrip partnerType="lender" partnerId={lenderId} />
 
       {/* OS Panel + Stats Grid */}
       <div className="grid lg:grid-cols-3 gap-6">
@@ -113,6 +120,14 @@ export default async function LenderDashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* External Partner OS Panels */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <ExternalActiveFilesPanel partnerType="lender" partnerId={lenderId} />
+        <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} />
+      </div>
+
+      <ExternalCommunicationPanel partnerType="lender" partnerId={lenderId} />
     </div>
   )
 }

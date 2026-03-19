@@ -7,6 +7,12 @@ import { Button } from '@/components/ui/button'
 import { Briefcase, DollarSign, Star, Clock, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 import { VendorCommandStrip, JobPerformancePanel } from '../components/os'
+import {
+  ExternalPartnerCommandStrip,
+  ExternalActiveFilesPanel,
+  ExternalNextActionsPanel,
+  ExternalBillingEarningsPanel,
+} from '@/(external-portal)/components/os'
 
 export const dynamic = 'force-dynamic'
 
@@ -48,6 +54,7 @@ export default async function VendorDashboardPage() {
 
       {/* OS Command Strip */}
       <VendorCommandStrip vendorId={vendorId} />
+      <ExternalPartnerCommandStrip partnerType="vendor" partnerId={vendorId} />
 
       {/* OS Panel + Stats Grid */}
       <div className="grid lg:grid-cols-3 gap-6">
@@ -113,6 +120,14 @@ export default async function VendorDashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* External Partner OS Panels */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <ExternalActiveFilesPanel partnerType="vendor" partnerId={vendorId} />
+        <ExternalNextActionsPanel partnerType="vendor" partnerId={vendorId} />
+      </div>
+
+      <ExternalBillingEarningsPanel partnerType="vendor" partnerId={vendorId} />
     </div>
   )
 }
