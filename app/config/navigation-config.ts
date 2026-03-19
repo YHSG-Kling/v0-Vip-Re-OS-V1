@@ -419,7 +419,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
 
   compliance_officer: {
     sidebarItems: [
-      { id: 'dashboard', label: 'Compliance Dashboard', href: '/compliance/dashboard', icon: 'LayoutGrid' },
+      { id: 'dashboard', label: 'Compliance Command', href: '/dashboard/compliance', icon: 'LayoutGrid' },
       { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badge: { count: 2, color: 'red' } },
       { id: 'audits', label: 'Audit Logs', href: '/compliance/audits', icon: 'Eye' },
       { id: 'policies', label: 'Policies', href: '/compliance/policies', icon: 'FileText' },
@@ -436,11 +436,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
-      { id: 'dashboard', label: 'Dashboard', href: '/compliance/dashboard', icon: 'LayoutGrid' },
+      { id: 'dashboard', label: 'Dashboard', href: '/dashboard/compliance', icon: 'LayoutGrid' },
       { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle' },
       { id: 'audits', label: 'Audits', href: '/compliance/audits', icon: 'Eye' },
       { id: 'reports', label: 'Reports', href: '/compliance/reports', icon: 'BarChart3' },
-      { id: 'more', label: 'More', href: '/compliance/menu', icon: 'Menu' },
+      { id: 'more', label: 'More', href: '/dashboard/compliance', icon: 'Menu' },
     ],
     commandPaletteItems: [
       { id: 'flag-violation', label: 'Flag Violation', href: '/compliance/violations/new' },
@@ -451,7 +451,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
 
   tc: {
     sidebarItems: [
-      { id: 'dashboard', label: 'Coordinator Dashboard', href: '/transaction/dashboard', icon: 'LayoutGrid' },
+      { id: 'dashboard', label: 'Coordinator Command', href: '/dashboard/coordinator', icon: 'LayoutGrid' },
       { id: 'deals', label: 'Active Deals', href: '/transaction/deals', icon: 'Handshake', badge: { count: 8, color: 'red' } },
       { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
       { id: 'documents', label: 'Documents', href: '/transaction/documents', icon: 'Folder' },
@@ -463,11 +463,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
-      { id: 'dashboard', label: 'Dashboard', href: '/transaction/dashboard', icon: 'LayoutGrid' },
+      { id: 'dashboard', label: 'Dashboard', href: '/dashboard/coordinator', icon: 'LayoutGrid' },
       { id: 'deals', label: 'Deals', href: '/transaction/deals', icon: 'Handshake' },
       { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
       { id: 'vendors', label: 'Vendors', href: '/transaction/vendors', icon: 'Users' },
-      { id: 'more', label: 'More', href: '/transaction/menu', icon: 'Menu' },
+      { id: 'more', label: 'More', href: '/dashboard/coordinator', icon: 'Menu' },
     ],
     commandPaletteItems: [
       { id: 'new-deal', label: 'New Deal', href: '/transaction/deals/new' },

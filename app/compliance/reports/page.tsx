@@ -31,7 +31,7 @@ export default async function ComplianceReportsPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link href="/compliance/dashboard">
+          <Link href="/dashboard/compliance">
             <Button variant="ghost" size="sm"><ArrowLeft className="w-4 h-4" /></Button>
           </Link>
           <div>
