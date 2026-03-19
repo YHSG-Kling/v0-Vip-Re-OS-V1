@@ -7,8 +7,20 @@ import { CommunicationsOSClient } from "./communications-os-client"
 
 export const metadata = {
   title: "Communications OS | VIP Real Estate OS",
-  description: "Unified communications command center — inbox, outreach, AI-assisted messaging",
+  description: "Unified communications command center — inbox, outreach, AI-assisted messaging across all channels including social media",
 }
+
+// Supported social platforms for DM tracking
+const SOCIAL_PLATFORMS = [
+  { platform: "facebook", label: "Facebook" },
+  { platform: "instagram", label: "Instagram" },
+  { platform: "linkedin", label: "LinkedIn" },
+  { platform: "twitter", label: "Twitter/X" },
+  { platform: "tiktok", label: "TikTok" },
+  { platform: "youtube", label: "YouTube" },
+  { platform: "pinterest", label: "Pinterest" },
+  { platform: "google_business", label: "Google Business" },
+]
 
 export default async function CommunicationsOSPage() {
   const supabase = await createClient()
@@ -50,6 +62,8 @@ export default async function CommunicationsOSPage() {
     templatesRes,
     sequenceEnrollmentsRes,
     unreadCountRes,
+    socialAccountsRes,
+    socialMessagesRes,
   ] = await Promise.all([
     // All conversations
     getConversations({ brokerageId, limit: 100 }),
@@ -80,11 +94,24 @@ export default async function CommunicationsOSPage() {
       .eq("status", "active")
       .order("enrolled_at", { ascending: false })
       .limit(20),
-    // Unread count by channel
+    // Unread count by channel (traditional channels)
     service
       .from("conversations")
       .select("type, unread_count")
       .eq("brokerage_id", brokerageId)
+      .gt("unread_count", 0),
+    // Connected social media accounts
+    service
+      .from("social_media_accounts")
+      .select("id, platform, account_name, is_active")
+      .or(`brokerage_id.eq.${brokerageId},agent_id.eq.${agentId}`)
+      .eq("is_active", true),
+    // Social DM conversations (using conversations table with social types)
+    service
+      .from("conversations")
+      .select("type, unread_count")
+      .eq("brokerage_id", brokerageId)
+      .in("type", ["facebook", "instagram", "linkedin", "twitter", "tiktok", "youtube", "pinterest", "google_business", "social_dm"])
       .gt("unread_count", 0),
   ])
 
@@ -125,7 +152,7 @@ export default async function CommunicationsOSPage() {
     nextStepChannel: "email" as const,
   }))
 
-  // Calculate unread counts by channel
+  // Calculate unread counts by channel (traditional)
   const unreadData = unreadCountRes.data ?? []
   const emailUnread = unreadData
     .filter((c: any) => c.type === "email")
@@ -133,13 +160,37 @@ export default async function CommunicationsOSPage() {
   const smsUnread = unreadData
     .filter((c: any) => c.type === "sms")
     .reduce((sum: number, c: any) => sum + (c.unread_count || 0), 0)
-  const totalUnread = unreadData.reduce((sum: number, c: any) => sum + (c.unread_count || 0), 0)
+  const totalUnread = unreadData
+    .filter((c: any) => !["facebook", "instagram", "linkedin", "twitter", "tiktok", "youtube", "pinterest", "google_business", "social_dm"].includes(c.type))
+    .reduce((sum: number, c: any) => sum + (c.unread_count || 0), 0)
+
+  // Calculate social media DM counts
+  const socialMessagesData = socialMessagesRes.data ?? []
+  const connectedAccounts = socialAccountsRes.data ?? []
+  
+  // Build social channel counts
+  const socialChannels = SOCIAL_PLATFORMS.map((p) => {
+    const platformUnread = socialMessagesData
+      .filter((c: any) => c.type === p.platform || c.type === `${p.platform}_dm`)
+      .reduce((sum: number, c: any) => sum + (c.unread_count || 0), 0)
+    
+    const isConnected = connectedAccounts.some((a: any) => a.platform === p.platform)
+    
+    return {
+      platform: p.platform,
+      label: p.label,
+      unread: platformUnread,
+      connected: isConnected,
+    }
+  }).filter((p) => p.connected || p.unread > 0) // Only show connected or those with messages
+
+  const totalSocialUnread = socialChannels.reduce((sum, c) => sum + c.unread, 0)
 
   // Build pressure items from prioritized messages
   const pressureItems = prioritizedMessages.slice(0, 20).map((msg: any) => ({
     id: msg.id,
     contactName: msg.contacts ? `${msg.contacts.first_name} ${msg.contacts.last_name}` : "Unknown",
-    channel: msg.type as "email" | "sms" | "voicemail",
+    channel: msg.type as "email" | "sms" | "voicemail" | "facebook" | "instagram" | "linkedin" | "twitter",
     subject: msg.subject,
     preview: msg.content?.slice(0, 100) ?? "",
     waitingHours: msg.created_at
@@ -187,7 +238,15 @@ export default async function CommunicationsOSPage() {
         avgResponseTime: 45,
         responseTimeTrend: "stable" as const,
         oldestUnreadHours: pressureItems[0]?.waitingHours ?? 0,
+        // Social media stats
+        socialChannels,
+        totalSocialUnread,
       }}
+      connectedSocialAccounts={connectedAccounts.map((a: any) => ({
+        id: a.id,
+        platform: a.platform,
+        accountName: a.account_name,
+      }))}
     />
   )
 }

@@ -56,10 +56,13 @@ interface SequenceEnrollment {
   nextStepChannel?: "email" | "sms"
 }
 
+// All supported channel types including social platforms
+type ChannelType = "email" | "sms" | "voicemail" | "facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "youtube" | "pinterest" | "google_business"
+
 interface PressureItem {
   id: string
   contactName: string
-  channel: "email" | "sms" | "voicemail"
+  channel: ChannelType
   subject?: string
   preview: string
   waitingHours: number
@@ -80,6 +83,19 @@ interface SentimentItem {
   requiresAction: boolean
 }
 
+interface SocialChannelCount {
+  platform: string
+  label: string
+  unread: number
+  connected?: boolean
+}
+
+interface ConnectedSocialAccount {
+  id: string
+  platform: string
+  accountName: string
+}
+
 interface InboxStats {
   totalUnread: number
   emailUnread: number
@@ -89,6 +105,9 @@ interface InboxStats {
   avgResponseTime: number
   responseTimeTrend: "up" | "down" | "stable"
   oldestUnreadHours: number
+  // Social media stats
+  socialChannels?: SocialChannelCount[]
+  totalSocialUnread?: number
 }
 
 interface CommunicationsOSClientProps {
@@ -102,6 +121,7 @@ interface CommunicationsOSClientProps {
   pressureItems: PressureItem[]
   sentimentItems: SentimentItem[]
   inboxStats: InboxStats
+  connectedSocialAccounts?: ConnectedSocialAccount[]
 }
 
 export function CommunicationsOSClient({
@@ -115,6 +135,7 @@ export function CommunicationsOSClient({
   pressureItems,
   sentimentItems,
   inboxStats,
+  connectedSocialAccounts = [],
 }: CommunicationsOSClientProps) {
   const router = useRouter()
   const [selectedConversation, setSelectedConversation] = useState<PressureItem | null>(null)
@@ -122,6 +143,19 @@ export function CommunicationsOSClient({
   const [composeChannel, setComposeChannel] = useState<"email" | "sms">("email")
   const [healthAnalysis, setHealthAnalysis] = useState<any>(null)
   const [replyCoachMessage, setReplyCoachMessage] = useState<string>("")
+
+  // Helper to determine if channel is social
+  const isSocialChannel = (channel: ChannelType): boolean => {
+    return ["facebook", "instagram", "linkedin", "twitter", "tiktok", "youtube", "pinterest", "google_business"].includes(channel)
+  }
+
+  // Get appropriate channel for sending based on conversation type
+  const getSendableChannel = (channel: ChannelType): "email" | "sms" | "in_app" => {
+    if (channel === "email") return "email"
+    if (channel === "sms") return "sms"
+    // Social channels and voicemail default to in_app for now
+    return "in_app"
+  }
 
   // Command Strip Handlers
   const handleComposeEmail = useCallback(() => {
@@ -165,7 +199,6 @@ export function CommunicationsOSClient({
   }, [router])
 
   const handlePrioritize = useCallback(async (contactId: string) => {
-    // Analyze conversation health
     try {
       const result = await analyzeConversationHealth({
         contactId,
@@ -243,9 +276,11 @@ export function CommunicationsOSClient({
 
   // AI Reply Coach Handlers
   const handleApplyResponse = useCallback((response: string) => {
-    // This would populate the compose field
     toast.success("Response applied to composer")
   }, [])
+
+  // Calculate grand total including social
+  const grandTotalUnread = inboxStats.totalUnread + (inboxStats.totalSocialUnread ?? 0)
 
   return (
     <div className="min-h-screen bg-background">
@@ -256,11 +291,11 @@ export function CommunicationsOSClient({
           onComposeSms={handleComposeSms}
           onStartCall={handleStartCall}
           onQuickReply={handleQuickReply}
-          unreadCount={inboxStats.totalUnread}
+          unreadCount={grandTotalUnread}
           urgentCount={inboxStats.urgentCount}
         />
 
-        {/* Inbox Radar */}
+        {/* Inbox Radar - Now includes social channels */}
         <InboxRadar
           totalUnread={inboxStats.totalUnread}
           emailUnread={inboxStats.emailUnread}
@@ -270,6 +305,8 @@ export function CommunicationsOSClient({
           avgResponseTime={inboxStats.avgResponseTime}
           responseTimeTrend={inboxStats.responseTimeTrend}
           oldestUnreadHours={inboxStats.oldestUnreadHours}
+          socialChannels={inboxStats.socialChannels}
+          totalSocialUnread={inboxStats.totalSocialUnread}
         />
 
         {/* Main Grid */}
@@ -308,7 +345,7 @@ export function CommunicationsOSClient({
               contactId={selectedConversation.contactId}
               contactName={selectedConversation.contactName}
               conversationId={selectedConversation.conversationId}
-              channel={selectedConversation.channel === "voicemail" ? "email" : selectedConversation.channel}
+              channel={getSendableChannel(selectedConversation.channel)}
               templates={templates}
               onSendMessage={handleSendMessage}
               onAddToSequence={handleAddToSequence}
@@ -323,12 +360,12 @@ export function CommunicationsOSClient({
               contactId={selectedConversation.contactId}
               agentId={agentId}
               incomingMessage={replyCoachMessage || selectedConversation.preview}
-              channel={selectedConversation.channel === "voicemail" ? "email" : selectedConversation.channel}
+              channel={getSendableChannel(selectedConversation.channel)}
               contactName={selectedConversation.contactName}
               onApplyResponse={handleApplyResponse}
               onSendResponse={async (response) => {
                 await handleSendMessage({
-                  channel: selectedConversation.channel === "voicemail" ? "email" : selectedConversation.channel,
+                  channel: getSendableChannel(selectedConversation.channel),
                   body: response,
                 })
               }}
