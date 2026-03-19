@@ -3,8 +3,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { redirect } from "next/navigation"
 import { PlatformOwnerOSClient } from "./platform-owner-os-client"
 import { getAdminStats } from "@/app/actions/admin/platform-stats"
-import { getPlatformSystemHealth } from "@/app/actions/system-health"
-import { getBillingMetrics } from "@/app/actions/billing"
+import { getServiceStatuses, getAutomationErrors } from "@/app/actions/system-health"
+import { getAllBrokeragesBilling } from "@/app/actions/billing"
 import { getAuditTrail } from "@/app/actions/audit-trail"
 
 export const metadata = {
@@ -35,23 +35,18 @@ export default async function PlatformOwnerOSPage() {
     systemHealth,
     billingMetrics,
     auditTrail,
+    automationErrorsData,
     { data: brokerages },
     { data: integrations },
   ] = await Promise.all([
     getAdminStats(),
-    getPlatformSystemHealth(),
-    getBillingMetrics(),
+    getServiceStatuses(),
+    getAllBrokeragesBilling(),
     getAuditTrail({ limit: 50 }),
+    getAutomationErrors(7),
     service.from("brokerages").select("*").order("created_at", { ascending: false }).limit(100),
     service.from("brokerage_integrations").select("*"),
   ])
-  
-  const { data: automationErrors } = await service
-    .from("automation_errors")
-    .select("*")
-    .eq("resolved", false)
-    .order("created_at", { ascending: false })
-    .limit(20)
   
   const { data: aiAuditLog } = await service
     .from("ai_feedback_log")
@@ -67,7 +62,7 @@ export default async function PlatformOwnerOSPage() {
       auditTrail={auditTrail}
       brokerages={brokerages || []}
       integrations={integrations || []}
-      automationErrors={automationErrors || []}
+      automationErrors={automationErrorsData?.errors || []}
       aiAuditLog={aiAuditLog || []}
       currentUserId={user.id}
     />
