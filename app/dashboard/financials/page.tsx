@@ -198,7 +198,7 @@ export default async function FinancialsPage() {
               <CardTitle>Recent Transactions</CardTitle>
               <CardDescription>Your latest deals and commission status</CardDescription>
             </div>
-            <Link href="/transactions">
+            <Link href="/dashboard/transactions">
               <Button variant="ghost" size="sm">
                 View All <ArrowRight className="w-4 h-4 ml-1" />
               </Button>

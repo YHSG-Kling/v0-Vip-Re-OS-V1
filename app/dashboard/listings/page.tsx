@@ -204,7 +204,7 @@ export default async function ListingsPage() {
               <div className="p-8 text-center">
                 <Home className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
                 <p className="text-muted-foreground mb-4">No listings found. Create your first listing to get started.</p>
-                <Link href="/listings/new">
+<Link href="/dashboard/listings/new">
                   <Button>
                     <Plus className="h-4 w-4 mr-2" />
                     Create Listing

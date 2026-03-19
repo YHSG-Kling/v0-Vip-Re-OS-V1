@@ -81,7 +81,7 @@ export default async function TransactionsPage() {
     <div className="space-y-6">
       {/* Command Strip */}
       <div className="flex items-center gap-2 px-6 py-3 border-b border-border bg-muted/30">
-        <Link href="/transactions/new">
+        <Link href="/dashboard/transactions/new">
           <Button size="sm" className="gap-2">
             <Plus className="h-4 w-4" />
             New Transaction
@@ -273,7 +273,7 @@ export default async function TransactionsPage() {
                       <td colSpan={7} className="px-4 py-8 text-center">
                         <FileText className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
                         <p className="text-muted-foreground mb-4">No transactions found. Start a new transaction to track your deals.</p>
-                        <Link href="/transactions/new">
+                        <Link href="/dashboard/transactions/new">
                           <Button>
                             <Plus className="h-4 w-4 mr-2" />
                             New Transaction
