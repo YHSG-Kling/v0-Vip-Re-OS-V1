@@ -36,6 +36,6 @@ export async function GET(request: NextRequest) {
     )
   }
 
-  // Redirect to dashboard
-  return NextResponse.redirect(new URL('/agent/dashboard', request.url))
+  // Redirect to dashboard - role-based routing happens at /dashboard
+  return NextResponse.redirect(new URL('/dashboard', request.url))
 }

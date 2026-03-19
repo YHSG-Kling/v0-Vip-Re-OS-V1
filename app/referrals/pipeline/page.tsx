@@ -138,7 +138,7 @@ export default async function ReferralPipelinePage() {
           <Card className="p-12">
             <div className="text-center">
               <p className="text-muted-foreground mb-4">No referrals yet</p>
-              <Link href="/referrals/new">
+              <Link href="/referrals?action=create">
                 <Button>Add Your First Referral</Button>
               </Link>
             </div>
