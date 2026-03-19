@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation"
-import { createClient, createServiceClient } from "@/utils/supabase/server"
+import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft, Share2, Mail, Video, FileText, Megaphone, Instagram, ArrowRight } from "lucide-react"
