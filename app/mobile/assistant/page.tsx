@@ -158,6 +158,13 @@ export default async function MobileAssistantPage() {
             </Link>
           </div>
 
+          {/* Mobile OS Showing & Open House Panels */}
+          <ShowingDayPanel agentId={agentId} />
+          <div className="mt-4">
+            <OpenHousePanel agentId={agentId} />
+          </div>
+        </section>
+
         {/* Section 4: Recent Activity Feed */}
         <section>
           <h2 className="text-sm font-medium mb-3">Recent Activity</h2>
