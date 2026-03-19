@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
-import { requestReviewAutomation, sendFollowUpMessage } from "@/app/actions/ai-review-automation"
+import { aiGenerateReviewRequest } from "@/app/actions/ai-review-automation"
 
 interface ReputationClientProps {
   agentId: string
@@ -38,7 +38,12 @@ export function ReputationClient({
     if (selectedClosings.size === 0) return
     startTransition(async () => {
       for (const closingId of selectedClosings) {
-        await requestReviewAutomation(closingId, agentId)
+        await aiGenerateReviewRequest({
+          transactionId: closingId,
+          agentId,
+          platform: "google",
+          channel: "email",
+        })
       }
       setSelectedClosings(new Set())
     })

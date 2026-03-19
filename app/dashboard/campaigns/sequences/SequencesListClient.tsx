@@ -254,15 +254,6 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
           )}
         </div>
       </div>
-              <Icon className="h-4 w-4 text-primary" />
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">{label}</p>
-              <p className="text-xl font-semibold text-foreground">{value}</p>
-            </div>
-          </div>
-        ))}
-      </div>
 
       {/* Sequence cards */}
       {sequences.length === 0 ? (
