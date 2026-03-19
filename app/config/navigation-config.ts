@@ -46,6 +46,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Campaigns',
         icon: 'Megaphone',
         children: [
+          { id: 'campaigns-hub', label: 'Campaigns Hub', href: '/dashboard/campaigns' },
           { id: 'sequences', label: 'Sequences', href: '/dashboard/campaigns/sequences' },
           { id: 'ads', label: 'Ad Campaigns', href: '/dashboard/campaigns/ads' },
           { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/mail' },
