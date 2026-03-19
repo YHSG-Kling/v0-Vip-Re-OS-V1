@@ -16,7 +16,9 @@ import {
   Zap,
   Calendar,
   PlayCircle,
-  RefreshCw
+  RefreshCw,
+  Plus,
+  Share2
 } from "lucide-react"
 
 export const dynamic = "force-dynamic"
@@ -84,11 +86,27 @@ export default async function CampaignsPage() {
   return (
     <div className="flex flex-col gap-6 p-6">
       {/* Header */}
-      <div className="flex flex-col gap-2">
-        <h1 className="text-3xl font-bold tracking-tight">Marketing Campaigns</h1>
-        <p className="text-muted-foreground">
-          Orchestrate your multi-channel marketing from one command center
-        </p>
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-3xl font-bold tracking-tight">Marketing Campaigns</h1>
+          <p className="text-muted-foreground">
+            Orchestrate your multi-channel marketing from one command center
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Link href="/dashboard/campaigns/sequences?action=create">
+            <Button className="gap-2">
+              <Plus className="h-4 w-4" />
+              Create Drip Campaign
+            </Button>
+          </Link>
+          <Link href="/dashboard/social?action=create">
+            <Button variant="outline" className="gap-2">
+              <Share2 className="h-4 w-4" />
+              Schedule Social Post
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {/* Command Strip */}
@@ -121,6 +139,18 @@ export default async function CampaignsPage() {
           <Button variant="outline" size="sm" className="gap-2">
             <Video className="h-4 w-4" />
             AI Video
+          </Button>
+        </Link>
+        <Link href="/dashboard/social">
+          <Button variant="outline" size="sm" className="gap-2">
+            <Calendar className="h-4 w-4" />
+            Social Scheduler
+          </Button>
+        </Link>
+        <Link href="/social-planner">
+          <Button variant="outline" size="sm" className="gap-2">
+            <Share2 className="h-4 w-4" />
+            Social Planner
           </Button>
         </Link>
       </div>

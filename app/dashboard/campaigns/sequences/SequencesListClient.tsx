@@ -51,6 +51,7 @@ interface Props {
   sequences: CampaignSequence[]
   brokerageId: string
   userId: string
+  openCreate?: boolean
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -88,10 +89,10 @@ const CHANNEL_ICONS: Record<string, React.ElementType> = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function SequencesListClient({ sequences: initial, brokerageId, userId }: Props) {
+export default function SequencesListClient({ sequences: initial, brokerageId, userId, openCreate = false }: Props) {
   const router = useRouter()
   const [sequences, setSequences]   = useState<CampaignSequence[]>(initial)
-  const [showCreate, setShowCreate] = useState(false)
+  const [showCreate, setShowCreate] = useState(openCreate)
   const [deleting, setDeleting]     = useState<string | null>(null)
   const [busy, setBusy]             = useState(false)
 

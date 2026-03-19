@@ -10,8 +10,13 @@ export const metadata = {
   description: "Manage and schedule your social media posts",
 }
 
-export default async function SocialDashboardPage() {
+export default async function SocialDashboardPage({
+  searchParams,
+}: {
+  searchParams: { action?: string }
+}) {
   const supabase = await createClient()
+  const openCreate = searchParams.action === "create"
 
   // Get current user
   const {
@@ -78,6 +83,7 @@ export default async function SocialDashboardPage() {
       accounts={accounts || []}
       initialPosts={posts || []}
       publishLogs={publishLogs}
+      openCreate={openCreate}
     />
   )
 }

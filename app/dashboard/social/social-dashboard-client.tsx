@@ -96,6 +96,7 @@ interface SocialDashboardClientProps {
   accounts: any[]
   initialPosts: any[]
   publishLogs: any[]
+  openCreate?: boolean
 }
 
 export function SocialDashboardClient({
@@ -106,13 +107,14 @@ export function SocialDashboardClient({
   accounts,
   initialPosts,
   publishLogs,
+  openCreate = false,
 }: SocialDashboardClientProps) {
   const router = useRouter()
   const [posts, setPosts] = useState(initialPosts)
   const [activeTab, setActiveTab] = useState("scheduled")
   const [platformFilter, setPlatformFilter] = useState<string | null>(null)
   const [selectedAccount, setSelectedAccount] = useState<string | null>(null)
-  const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const [isCreateOpen, setIsCreateOpen] = useState(openCreate)
   const [isLoading, setIsLoading] = useState(false)
   
   // Prediction widget state
