@@ -2,7 +2,12 @@
 
 import { createServerClient } from "@/lib/supabase/server"
 import { logVideoGenerated } from "@/lib/events"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { resolveProvider } from "@/lib/kernel/providers"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 // =====================================================
 // VIDEO CONTENT GENERATION SERVER ACTIONS
@@ -27,9 +32,12 @@ export async function generateVideoScript(params: {
   const { data: profile } = await supabase.from("users").select("brokerage_id").eq("id", user.id).single()
   if (!profile?.brokerage_id) throw new Error("No brokerage found")
 
+  // Resolve agent ID - never use user.id for agent_id column
+  const agentId = await resolveAgentId(supabase, user.id)
+  if (!agentId) throw new Error("Agent profile not found")
+
   // Generate script using AI
-  const { text: script } = await generateText({
-    model: "openai/gpt-4o-mini",
+  const scriptResponse = await generateAIResponse({
     prompt: `Generate a ${params.video_type} video script for ${params.audience_segment || "general audience"}.
     
 Tone: ${params.tone || "professional and friendly"}
@@ -37,20 +45,29 @@ Key points to cover: ${params.key_points?.join(", ") || "none specified"}
 Context: ${params.context_type}
 
 Make it conversational, engaging, and authentic. Keep it under 90 seconds.`,
+    metadata: {
+      userId: user.id,
+      brokerageId: profile.brokerage_id,
+      agentId: agentId,
+      feature: "video_script_generation",
+    },
   })
+
+  const script = scriptResponse.text
 
   // Save video asset record
   const { data: video, error } = await supabase
     .from("video_assets")
     .insert({
       brokerage_id: profile.brokerage_id,
-      agent_id: user.id,
+      agent_id: agentId,
       video_type: params.video_type,
       context_type: params.context_type,
       context_id: params.context_id,
       audience_segment: params.audience_segment,
       script,
       status: "draft",
+      compliance_approved: false,
     })
     .select()
     .single()
@@ -97,7 +114,7 @@ export async function approveAndGenerateVideo(payload: any) {
 
   // Update script status
   await supabase
-    .from("video_scripts")
+    .from("video_scripts_library")
     .update({
       approval_status: "approved",
       approved_by: user_id,
@@ -191,7 +208,7 @@ export async function createShortClip(params: {
 
   // Create short clip record
   const { data: clip, error } = await supabase
-    .from("short_clip")
+    .from("video_snippets")
     .insert({
       long_form_video_id: params.long_form_video_id,
       clip_start_sec: params.clip_start_sec,

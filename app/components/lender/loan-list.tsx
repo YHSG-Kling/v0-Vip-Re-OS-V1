@@ -1,223 +1,229 @@
 "use client"
 
-import { useState, useTransition } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { useState } from "react"
+import Link from "next/link"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Progress } from "@/components/ui/progress"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  DialogFooter,
-} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
-import { Label } from "@/components/ui/label"
-import { FileText, User, MapPin, Calendar, DollarSign, Edit } from "lucide-react"
-import { updateLoanStatus } from "@/app/actions/multi-persona"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { ChevronRight, Search, Filter, ArrowUpDown } from "lucide-react"
 
 interface Loan {
   id: string
-  loan_amount: number
-  loan_type: string
-  interest_rate: number
-  underwriting_status: string
-  conditions_cleared: number
-  conditions_list?: any[]
+  loan_type?: string
+  loan_amount?: number
+  loan_status?: string
+  underwriting_status?: string
+  lender_email?: string
   transactions?: {
     id: string
-    property_address: string
-    contract_price: number
-    closing_date: string
+    property_address?: string
+    status?: string
+    close_date?: string
+    contract_price?: number
+    buyer_contact_id?: string
     leads?: {
-      first_name: string
-      last_name: string
-      email: string
+      first_name?: string
+      last_name?: string
     }
     agents?: {
-      first_name: string
-      last_name: string
+      first_name?: string
+      last_name?: string
     }
   }
 }
 
-export function LenderLoanList({ loans }: { loans: Loan[] }) {
-  const [selectedLoan, setSelectedLoan] = useState<Loan | null>(null)
-  const [updateDialogOpen, setUpdateDialogOpen] = useState(false)
-  const [newStatus, setNewStatus] = useState("")
-  const [notes, setNotes] = useState("")
-  const [isPending, startTransition] = useTransition()
+const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+  submitted: { label: "Submitted", color: "bg-blue-100 text-blue-800" },
+  in_review: { label: "In Review", color: "bg-amber-100 text-amber-800" },
+  pending_conditions: { label: "Pending Conditions", color: "bg-orange-100 text-orange-800" },
+  approved: { label: "Approved", color: "bg-green-100 text-green-800" },
+  clear_to_close: { label: "Clear to Close", color: "bg-emerald-100 text-emerald-800" },
+  funded: { label: "Funded", color: "bg-slate-100 text-slate-600" },
+  denied: { label: "Denied", color: "bg-red-100 text-red-800" },
+  withdrawn: { label: "Withdrawn", color: "bg-slate-100 text-slate-500" },
+}
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "clear_to_close":
-        return "bg-green-100 text-green-800"
-      case "approved":
-        return "bg-blue-100 text-blue-800"
-      case "pending_conditions":
-        return "bg-yellow-100 text-yellow-800"
-      case "in_underwriting":
-        return "bg-purple-100 text-purple-800"
-      case "denied":
-        return "bg-red-100 text-red-800"
-      default:
-        return "bg-gray-100 text-gray-800"
+function formatCurrency(amount: number | null | undefined): string {
+  if (!amount) return "N/A"
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(amount)
+}
+
+function formatDate(date: string | null | undefined): string {
+  if (!date) return "TBD"
+  return new Date(date).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  })
+}
+
+export function LenderLoanList({ loans }: { loans: Loan[] }) {
+  const [search, setSearch] = useState("")
+  const [statusFilter, setStatusFilter] = useState<string>("all")
+  const [sortField, setSortField] = useState<"close_date" | "amount">("close_date")
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc")
+
+  // Filter and sort loans
+  const filteredLoans = loans
+    .filter((loan) => {
+      const address = loan.transactions?.property_address?.toLowerCase() || ""
+      const buyerName = `${loan.transactions?.leads?.first_name || ""} ${loan.transactions?.leads?.last_name || ""}`.toLowerCase()
+      const searchLower = search.toLowerCase()
+
+      const matchesSearch = address.includes(searchLower) || buyerName.includes(searchLower)
+      const matchesStatus = statusFilter === "all" || loan.underwriting_status === statusFilter
+
+      return matchesSearch && matchesStatus
+    })
+    .sort((a, b) => {
+      if (sortField === "close_date") {
+        const dateA = a.transactions?.close_date ? new Date(a.transactions.close_date).getTime() : 0
+        const dateB = b.transactions?.close_date ? new Date(b.transactions.close_date).getTime() : 0
+        return sortDirection === "asc" ? dateA - dateB : dateB - dateA
+      } else {
+        const amountA = a.loan_amount || 0
+        const amountB = b.loan_amount || 0
+        return sortDirection === "asc" ? amountA - amountB : amountB - amountA
+      }
+    })
+
+  const toggleSort = (field: "close_date" | "amount") => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc")
+    } else {
+      setSortField(field)
+      setSortDirection("asc")
     }
   }
 
-  const handleUpdateStatus = () => {
-    if (!selectedLoan || !newStatus) return
-
-    startTransition(async () => {
-      await updateLoanStatus({
-        loanId: selectedLoan.id,
-        status: newStatus,
-        notes,
-      })
-      setUpdateDialogOpen(false)
-      setNewStatus("")
-      setNotes("")
-      setSelectedLoan(null)
-    })
-  }
-
-  const conditionsProgress = (loan: Loan) => {
-    if (!loan.conditions_list?.length) return 100
-    const cleared = loan.conditions_list.filter((c: any) => c.status === "cleared").length
-    return (cleared / loan.conditions_list.length) * 100
-  }
-
   return (
-    <>
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <FileText className="h-5 w-5" />
-            Loan Pipeline
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <div className="divide-y">
-            {loans.length === 0 ? (
-              <div className="p-8 text-center text-muted-foreground">No loans in your pipeline</div>
-            ) : (
-              loans.map((loan) => (
-                <div key={loan.id} className="p-4 hover:bg-muted/50 transition-colors">
-                  <div className="flex items-start justify-between">
-                    <div className="space-y-2 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <MapPin className="h-4 w-4 text-muted-foreground" />
-                        <span className="font-medium">{loan.transactions?.property_address || "Address pending"}</span>
-                        <Badge className={getStatusColor(loan.underwriting_status)}>
-                          {loan.underwriting_status?.replace(/_/g, " ")}
+    <Card>
+      <CardHeader>
+        <CardTitle>Loan Pipeline</CardTitle>
+        <CardDescription>All assigned loans and their current status</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {/* Filters */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-4">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search by address or buyer..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger className="w-full sm:w-[180px]">
+              <Filter className="h-4 w-4 mr-2" />
+              <SelectValue placeholder="Filter by status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Statuses</SelectItem>
+              <SelectItem value="submitted">Submitted</SelectItem>
+              <SelectItem value="in_review">In Review</SelectItem>
+              <SelectItem value="pending_conditions">Pending Conditions</SelectItem>
+              <SelectItem value="approved">Approved</SelectItem>
+              <SelectItem value="clear_to_close">Clear to Close</SelectItem>
+              <SelectItem value="funded">Funded</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Table */}
+        <div className="rounded-md border">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Property</TableHead>
+                <TableHead>Buyer</TableHead>
+                <TableHead>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 p-0 font-medium"
+                    onClick={() => toggleSort("amount")}
+                  >
+                    Loan Amount
+                    <ArrowUpDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 p-0 font-medium"
+                    onClick={() => toggleSort("close_date")}
+                  >
+                    Close Date
+                    <ArrowUpDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </TableHead>
+                <TableHead className="w-[50px]"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredLoans.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} className="h-24 text-center">
+                    <p className="text-muted-foreground">No loans found</p>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredLoans.map((loan) => {
+                  const status = STATUS_CONFIG[loan.underwriting_status || "submitted"] || STATUS_CONFIG.submitted
+                  const transactionId = loan.transactions?.id
+
+                  return (
+                    <TableRow key={loan.id} className="hover:bg-muted/50">
+                      <TableCell className="font-medium">
+                        {loan.transactions?.property_address || "Address pending"}
+                      </TableCell>
+                      <TableCell>
+                        {loan.transactions?.leads?.first_name
+                          ? `${loan.transactions.leads.first_name} ${loan.transactions.leads.last_name || ""}`
+                          : "N/A"}
+                      </TableCell>
+                      <TableCell>{formatCurrency(loan.loan_amount || loan.transactions?.contract_price)}</TableCell>
+                      <TableCell>
+                        <Badge variant="secondary" className={status.color}>
+                          {status.label}
                         </Badge>
-                        <Badge variant="outline">{loan.loan_type}</Badge>
-                      </div>
-
-                      <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
-                        {loan.transactions?.leads && (
-                          <span className="flex items-center gap-1">
-                            <User className="h-3 w-3" />
-                            {loan.transactions.leads.first_name} {loan.transactions.leads.last_name}
-                          </span>
+                      </TableCell>
+                      <TableCell>{formatDate(loan.transactions?.close_date)}</TableCell>
+                      <TableCell>
+                        {transactionId && (
+                          <Button variant="ghost" size="icon" asChild>
+                            <Link href={`/portal/lender/${transactionId}`}>
+                              <ChevronRight className="h-4 w-4" />
+                            </Link>
+                          </Button>
                         )}
-                        <span className="flex items-center gap-1">
-                          <DollarSign className="h-3 w-3" />
-                          Loan: ${(loan.loan_amount || 0).toLocaleString()}
-                        </span>
-                        {loan.interest_rate && <span>{loan.interest_rate}% rate</span>}
-                        {loan.transactions?.closing_date && (
-                          <span className="flex items-center gap-1">
-                            <Calendar className="h-3 w-3" />
-                            Closing: {new Date(loan.transactions.closing_date).toLocaleDateString()}
-                          </span>
-                        )}
-                      </div>
-
-                      {loan.conditions_list && loan.conditions_list.length > 0 && (
-                        <div className="flex items-center gap-2 mt-2">
-                          <span className="text-xs text-muted-foreground">Conditions:</span>
-                          <Progress value={conditionsProgress(loan)} className="flex-1 h-2 max-w-48" />
-                          <span className="text-xs text-muted-foreground">
-                            {loan.conditions_list.filter((c: any) => c.status === "cleared").length}/
-                            {loan.conditions_list.length}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="bg-transparent"
-                      onClick={() => {
-                        setSelectedLoan(loan)
-                        setNewStatus(loan.underwriting_status)
-                        setUpdateDialogOpen(true)
-                      }}
-                    >
-                      <Edit className="h-4 w-4 mr-1" />
-                      Update
-                    </Button>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Dialog open={updateDialogOpen} onOpenChange={setUpdateDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Update Loan Status</DialogTitle>
-            <DialogDescription>{selectedLoan?.transactions?.property_address}</DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Underwriting Status</Label>
-              <Select value={newStatus} onValueChange={setNewStatus}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="submitted">Submitted</SelectItem>
-                  <SelectItem value="in_underwriting">In Underwriting</SelectItem>
-                  <SelectItem value="pending_conditions">Pending Conditions</SelectItem>
-                  <SelectItem value="approved">Approved</SelectItem>
-                  <SelectItem value="clear_to_close">Clear to Close</SelectItem>
-                  <SelectItem value="suspended">Suspended</SelectItem>
-                  <SelectItem value="denied">Denied</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Notes</Label>
-              <Textarea
-                placeholder="Add notes about this status update..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={3}
-              />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setUpdateDialogOpen(false)} className="bg-transparent">
-              Cancel
-            </Button>
-            <Button onClick={handleUpdateStatus} disabled={isPending || !newStatus}>
-              {isPending ? "Updating..." : "Update Status"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
   )
 }

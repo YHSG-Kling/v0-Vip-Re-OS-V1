@@ -131,15 +131,17 @@ export async function generateAIResponse(params: {
   const aiResponse = await generateSmartReply(context)
 
   // Log the AI response
+  const { agentId } = await getAgentContext()
   await supabase.from("messages").insert({
     conversation_id: params.conversationId,
     contact_id: params.contactId,
-    agent_id: user.id,
+    agent_id: agentId,
     content: aiResponse,
     direction: "outbound",
     channel: "ai_auto",
     is_ai_generated: true,
     sent_at: new Date().toISOString(),
+    compliance_approved: false,
   })
 
   return { success: true, response: aiResponse }
@@ -186,10 +188,10 @@ export async function trackBehavioralEvent(params: {
     return { success: false, error: "Not authenticated" }
   }
 
-  const { error } = await supabase.from("behavioral_events").insert({
+  const { error } = await supabase.from("behavioral_patterns").insert({
     contact_id: params.contactId,
-    event_type: params.eventType,
-    event_data: params.eventData || {},
+    pattern_type: params.eventType,
+    pattern_data: params.eventData || {},
     points_awarded: params.pointsAwarded || 0,
     tracked_at: new Date().toISOString(),
   })
@@ -211,7 +213,7 @@ export async function calculateLeadScore(contactId: string) {
 
   // Get all behavioral events for this contact
   const { data: events } = await supabase
-    .from("behavioral_events")
+    .from("behavioral_patterns")
     .select("*")
     .eq("contact_id", contactId)
     .order("tracked_at", { ascending: false })
@@ -254,7 +256,7 @@ export async function calculateLeadScore(contactId: string) {
 
   events.forEach((event) => {
     const eventDate = new Date(event.tracked_at)
-    const points = eventPoints[event.event_type] || event.points_awarded || 0
+    const points = eventPoints[event.pattern_type] || event.points_awarded || 0
 
     score += points
 
@@ -276,9 +278,9 @@ export async function calculateLeadScore(contactId: string) {
   // Intent score based on high-value actions
   const highIntentEvents = events.filter(
     (e) =>
-      e.event_type === "showing_request" ||
-      e.event_type === "cma_request" ||
-      e.event_type === "document_download"
+      e.pattern_type === "showing_request" ||
+      e.pattern_type === "cma_request" ||
+      e.pattern_type === "document_download"
   )
   intent = highIntentEvents.length * 20
 
@@ -296,15 +298,21 @@ export async function calculateLeadScore(contactId: string) {
     priority = "warm"
   }
 
-  // Update or insert lead score
+  // Update or insert lead score - using actual schema columns
+  // Schema: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
+  const { agentId } = await getAgentContext()
   const { error } = await supabase.from("lead_scores").upsert({
     contact_id: contactId,
-    total_score: totalScore,
-    engagement_score: engagementScore,
-    recency_score: recencyScore,
-    intent_score: intentScore,
-    priority_tier: priority,
-    last_calculated_at: new Date().toISOString(),
+    agent_id: agentId,
+    score: totalScore,
+    score_factors: {
+      engagement: engagementScore,
+      recency: recencyScore,
+      intent: intentScore,
+      priority,
+    },
+    ai_confidence: 0.8,
+    computed_at: new Date().toISOString(),
   })
 
   if (error) {
@@ -350,38 +358,80 @@ export async function getLeadScore(contactId: string) {
   return { success: true, score: data }
 }
 
-// Get hot leads (priority scoring)
+// Get hot leads (priority scoring) - using actual schema columns
+// Schema: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
 export async function getHotLeads(limit = 50) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const context = await getAgentContext()
+  if (!context?.agentId) {
+    return { success: false, error: "Agent context not available", leads: [] }
+  }
+  
+  const { agentId, brokerageId } = context
   const supabase = await createClient()
 
+  // Try lead_scores first, fallback to contacts with high intent_score
   const { data, error } = await supabase
     .from("lead_scores")
-    .select(
-      `
-      *,
-      contacts (
-        id,
-        first_name,
-        last_name,
-        email,
-        phone,
-        contact_type,
-        source,
-        created_at
-      )
-    `
-    )
-    .eq("contacts.agent_id", agentId)
-    .eq("contacts.brokerage_id", brokerageId)
-    .eq("priority_tier", "hot")
-    .order("total_score", { ascending: false })
+    .select("id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at")
+    .eq("agent_id", agentId)
+    .gte("score", 70)
+    .order("score", { ascending: false })
     .limit(limit)
 
   if (error) {
     console.error("Error fetching hot leads:", error)
-    return { success: false, error: error.message, leads: [] }
+    // Fallback: query contacts directly with high intent_score
+    const { data: contactsData, error: contactsError } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name, email, phone, contact_type, source, intent_score, engagement_score, created_at")
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
+      .or("intent_score.gte.70,engagement_score.gte.70,status.eq.hot")
+      .order("intent_score", { ascending: false, nullsFirst: false })
+      .limit(limit)
+
+    if (contactsError) {
+      console.error("Error fetching contacts fallback:", contactsError)
+      return { success: false, error: contactsError.message, leads: [] }
+    }
+
+    // Map contacts to the expected hot leads format
+    return {
+      success: true,
+      leads: (contactsData || []).map(c => ({
+        id: c.id,
+        contact_id: c.id,
+        agent_id: agentId,
+        score: c.intent_score || c.engagement_score || 70,
+        score_factors: { engagement: c.engagement_score, intent: c.intent_score },
+        ai_confidence: 0.8,
+        computed_at: new Date().toISOString(),
+        contacts: c,
+      })),
+    }
   }
 
-  return { success: true, leads: data || [] }
+  // Fetch contacts separately to avoid relationship issues
+  const leads = data || []
+  if (leads.length > 0) {
+    const contactIds = leads.map(l => l.contact_id).filter(Boolean)
+    if (contactIds.length > 0) {
+      const { data: contacts } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, email, phone, contact_type, source, created_at")
+        .in("id", contactIds)
+        .eq("brokerage_id", brokerageId)
+
+      const contactMap = new Map(contacts?.map(c => [c.id, c]) || [])
+      return {
+        success: true,
+        leads: leads.map(l => ({
+          ...l,
+          contacts: contactMap.get(l.contact_id) || null,
+        })),
+      }
+    }
+  }
+
+  return { success: true, leads: [] }
 }

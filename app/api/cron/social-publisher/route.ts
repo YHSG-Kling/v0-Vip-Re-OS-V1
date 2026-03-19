@@ -20,7 +20,7 @@ export async function GET(request: Request) {
       .from("social_posts")
       .select(`
         *,
-        social_accounts!inner(platform, access_token, refresh_token, account_id)
+        social_media_accounts!inner(platform, access_token, refresh_token, account_id)
       `)
       .eq("status", "scheduled")
       .lte("scheduled_for", now.toISOString())
@@ -40,7 +40,7 @@ export async function GET(request: Request) {
 
         // Publish to each platform
         for (const platform of post.platforms) {
-          const account = (post.social_accounts as any[]).find((acc: any) => acc.platform === platform)
+          const account = (post.social_media_accounts as any[]).find((acc: any) => acc.platform === platform)
 
           if (!account) {
             console.log(`[v0] No account found for platform: ${platform}`)

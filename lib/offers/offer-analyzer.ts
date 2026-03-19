@@ -1,4 +1,4 @@
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -90,8 +90,7 @@ export async function analyzeAndCompareOffers(params: {
     )
     .join("\n\n")
 
-  const { text } = await generateText({
-    model: "anthropic/claude-opus-4.6",
+  const response = await generateAIResponse({
     prompt: `You are an expert real estate advisor helping a listing agent evaluate offers on a property listed at $${listPrice.toLocaleString()}.
 
 Here are the offers:
@@ -108,9 +107,14 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no commenta
   },
   "comparison_summary": "3-4 sentence high-level summary of the competitive landscape"
 }`,
+    metadata: {
+      userId: agentUserId,
+      brokerageId: brokerageId,
+      feature: "offer_analysis",
+    },
   })
 
-  const cleaned = text.trim().replace(/^```json\n?/, "").replace(/\n?```$/, "")
+  const cleaned = response.text.trim().replace(/^```json\n?/, "").replace(/\n?```$/, "")
   let result: OfferAnalysisResult
 
   try {

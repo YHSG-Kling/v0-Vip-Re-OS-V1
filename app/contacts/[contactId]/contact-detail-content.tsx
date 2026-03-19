@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
-import { Phone, Mail, MessageSquare, Video, DollarSign, Lightbulb, TrendingUp } from "lucide-react"
+import { Phone, Mail, MessageSquare, Video, DollarSign, Lightbulb, TrendingUp, Bot } from "lucide-react"
 import {
   getContactCreditAccounts,
   getContactVideoEngagement,
@@ -15,6 +15,12 @@ import {
   getContactCopilotSuggestions,
 } from "@/app/actions/contact-details"
 import { useEffect } from "react"
+import {
+  HandoffContextCard,
+  FirstHumanTouchCard,
+  OriginalLeadAccessCard,
+  ConversionCoachingCard,
+} from "@/app/dashboard/agent/components/conversion"
 
 interface ContactDetailContentProps {
   contact: any
@@ -162,9 +168,35 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
             </TabsContent>
 
             <TabsContent value="copilot" className="space-y-4">
+              {/* ISA Qualification Context Section */}
+              <div className="grid md:grid-cols-2 gap-4">
+                <HandoffContextCard
+                  contactId={contact.id}
+                  leadId={contact.source_lead_id}
+                />
+                <FirstHumanTouchCard
+                  contactId={contact.id}
+                  contactName={`${contact.first_name || ""} ${contact.last_name || ""}`.trim()}
+                  contactPhone={contact.phone}
+                  contactEmail={contact.email}
+                />
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <OriginalLeadAccessCard
+                  contactId={contact.id}
+                  leadId={contact.source_lead_id}
+                />
+                <ConversionCoachingCard contactId={contact.id} />
+              </div>
+
+              {/* AI Copilot Suggestions */}
               <Card>
                 <CardHeader>
-                  <CardTitle>AI Copilot Suggestions</CardTitle>
+                  <CardTitle className="flex items-center gap-2">
+                    <Bot className="h-4 w-4 text-violet-600" />
+                    AI Copilot Suggestions
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {suggestions.length === 0 ? (

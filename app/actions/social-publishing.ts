@@ -97,7 +97,7 @@ function shouldFilterByUser(role: string): boolean {
 export async function getSocialAccounts(userId?: string, userRole?: string) {
   const supabase = createServiceClient()
 
-  let query = supabase.from("social_accounts").select("*").eq("is_active", true).order("platform")
+  let query = supabase.from("social_media_accounts").select("*").eq("is_active", true).order("platform")
 
   if (userId && shouldFilterByUser(userRole || "")) {
     query = query.eq("user_id", userId)
@@ -128,7 +128,7 @@ export async function connectSocialAccount(params: {
   const effectiveUserId = params.userId || "system"
 
   const { data, error } = await supabase
-    .from("social_accounts")
+    .from("social_media_accounts")
     .upsert(
       {
         user_id: effectiveUserId,
@@ -162,7 +162,7 @@ export async function disconnectSocialAccount(accountId: string, userId?: string
   const effectiveUserId = userId || "system"
 
   const { error } = await supabase
-    .from("social_accounts")
+    .from("social_media_accounts")
     .update({ is_active: false })
     .eq("id", accountId)
     .eq("user_id", effectiveUserId)

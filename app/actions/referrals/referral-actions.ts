@@ -203,7 +203,7 @@ export async function createPartner(params: CreatePartnerParams): Promise<{ id: 
   const { data, error } = await db
     .from("referral_partners")
     .insert({
-      agent_id: user.id,
+      agent_id: agentId,
       brokerage_id: brokerageId,
       partner_name: params.partnerName,
       partner_type: params.partnerType,
@@ -237,7 +237,7 @@ export async function listPartnersWithReferrals(): Promise<{
     db
       .from("referral_partners")
       .select("*")
-      .eq("agent_id", user.id)
+      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .eq("active", true)
       .order("created_at", { ascending: false }),

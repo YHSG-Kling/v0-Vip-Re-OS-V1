@@ -146,7 +146,7 @@ Return JSON:
 
     // Save to database
     const { data: saved, error: saveError } = await supabase
-      .from("newsletters")
+      .from("newsletter_campaigns")
       .insert({
         agent_id: params.agentId,
         subject: newsletter.subject,

@@ -50,18 +50,27 @@ import {
   Upload,
   Plus,
   Loader2,
+  MapPin,
+  Sparkles,
+  CheckSquare,
 } from "lucide-react"
+import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
+import { Progress } from "@/components/ui/progress"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
 interface TransactionDetailClientProps {
+  // Uses actual Supabase transactions table columns
   transaction: {
     id: string
     brokerage_id: string
     agent_id: string
     contact_id: string
     property_address: string
+    property_city: string | null
+    property_state: string | null
+    property_zip: string | null
     purchase_price: number
     status: string
     stage: string
@@ -69,8 +78,12 @@ interface TransactionDetailClientProps {
     close_date: string | null
     compliance_passed_at: string | null
     deal_type: string | null
-    offer_id: string | null
+    deal_name: string | null
+    client_name: string | null
     listing_id: string | null
+    health_score: number | null
+    commission_percentage: number | null
+    estimated_commission: number | null
     created_at: string
     updated_at: string
   }
@@ -101,19 +114,29 @@ interface TransactionDetailClientProps {
     company: string | null
   }>
   participantCountsByRole: Record<string, number>
+  // Uses actual Supabase transaction_documents table columns
   documents: Array<{
     id: string
     doc_type: string
-    file_name: string
+    doc_label: string | null
     status: string
+    storage_url: string | null
     uploaded_at: string
+    notes: string | null
+    rejection_reason: string | null
   }>
   documentCountsByStatus: Record<string, number>
+  // Uses actual Supabase deal_health_scores table columns
   healthScore: {
-    score: number
+    id: string
+    overall_score: number
     risk_level: string
-    issues: string[]
-    calculated_at: string
+    score_components: Record<string, number> | null
+    flags: string[] | null
+    ai_narrative: string | null
+    previous_score: number | null
+    score_delta: number | null
+    scored_at: string
   } | null
   unresolvedInterventionsCount: number
   tasks: Array<{
@@ -123,21 +146,38 @@ interface TransactionDetailClientProps {
     due_date: string | null
     assigned_to: string | null
   }>
+  // Uses actual Supabase transaction_timeline table columns
   timeline: Array<{
     id: string
-    event_type: string
+    activity_type: string
     description: string
-    occurred_at: string
-    actor_name: string | null
+    created_at: string
+    performed_by: string | null
+    metadata: Record<string, unknown> | null
   }>
+  // Uses actual Supabase transaction_title_escrow table columns
   titleEscrow: {
     id: string
-    title_company: string | null
-    escrow_company: string | null
+    title_company_name: string | null
+    title_officer_name: string | null
+    title_officer_email: string | null
+    title_officer_phone: string | null
+    escrow_company_name: string | null
+    escrow_officer_name: string | null
+    escrow_officer_email: string | null
+    escrow_officer_phone: string | null
+    escrow_number: string | null
     earnest_money_amount: number | null
-    earnest_money_received_at: string | null
-    earnest_money_holder: string | null
+    earnest_money_received_date: string | null
+    earnest_money_held_by: string | null
+    title_search_ordered_date: string | null
+    title_search_completed_date: string | null
+    title_commitment_date: string | null
+    title_issues: string | null
+    closing_scheduled_date: string | null
+    closing_location: string | null
   } | null
+  // Uses actual Supabase transaction_inspections table columns
   inspections: Array<{
     id: string
     inspection_type: string
@@ -150,7 +190,10 @@ interface TransactionDetailClientProps {
     cost: number | null
     status: string
     report_url: string | null
-    report_received: boolean
+    issues_found: string | null
+    notes: string | null
+    quote_activity_id: string | null
+    quote_approved: boolean | null
   }>
   pendingQuoteApprovals: Array<{
     id: string
@@ -174,36 +217,65 @@ interface TransactionDetailClientProps {
     quote_amount: number | null
     status: string
   }>
+  // Uses actual Supabase transaction_repair_negotiations table columns
   repairs: Array<{
     id: string
-    description: string
+    item_description: string
     status: string
-    cost_estimate: number | null
-    completed_at: string | null
+    estimated_cost: number | null
+    actual_cost: number | null
+    requested_by: string | null
+    priority: string | null
+    notes: string | null
+    response_note: string | null
+    responded_at: string | null
   }>
+  // Uses actual Supabase transaction_lenders table columns
   lenderInfo: {
+    id: string
     lender_name: string | null
-    loan_officer: string | null
+    loan_officer_name: string | null
+    loan_officer_email: string | null
+    loan_officer_phone: string | null
     loan_type: string | null
     loan_amount: number | null
     interest_rate: number | null
+    loan_term_years: number | null
+    pre_approval_date: string | null
     pre_approval_amount: number | null
-    clear_to_close_at: string | null
+    appraisal_ordered_date: string | null
+    appraisal_completed_date: string | null
+    appraisal_value: number | null
+    underwriting_status: string | null
+    clear_to_close_date: string | null
   } | null
-  complianceAlerts: Array<{
+  // Uses actual Supabase transaction_compliance_log table columns
+  complianceLogs: Array<{
     id: string
-    alert_type: string
-    severity: string
-    message: string
+    check_type: string
+    check_label: string | null
+    status: string
+    is_blocking: boolean | null
+    checked_by: string | null
+    checked_at: string | null
+    failure_reason: string | null
+    resolution_notes: string | null
+    resolved_by: string | null
     resolved_at: string | null
   }>
-  commissionSplits: Array<{
+  // Uses actual Supabase transaction_commissions table columns
+  commissions: Array<{
     id: string
     recipient_type: string
     recipient_name: string
-    percentage: number
-    amount: number | null
+    recipient_id: string | null
+    commission_type: string | null
+    rate_percentage: number | null
+    flat_amount: number | null
+    split_percentage: number | null
+    calculated_amount: number | null
     status: string
+    paid_date: string | null
   }>
   stages: TransactionStage[]
   currentStageIndex: number
@@ -233,8 +305,8 @@ export function TransactionDetailClient({
   insuranceQuotes,
   repairs,
   lenderInfo,
-  complianceAlerts,
-  commissionSplits,
+  complianceLogs,
+  commissions,
   stages,
   currentStageIndex,
 }: TransactionDetailClientProps) {
@@ -271,10 +343,17 @@ export function TransactionDetailClient({
   const [insuranceVendorPhone, setInsuranceVendorPhone] = useState("")
   const [insuranceQuoteAmount, setInsuranceQuoteAmount] = useState("")
 
-  // Earnest money form state
+  // Earnest money form state (using actual Supabase column names)
   const [emAmount, setEmAmount] = useState(titleEscrow?.earnest_money_amount?.toString() ?? "")
-  const [emHeldBy, setEmHeldBy] = useState(titleEscrow?.earnest_money_holder ?? "")
-  const [emReceivedDate, setEmReceivedDate] = useState(titleEscrow?.earnest_money_received_at ?? "")
+  const [emHeldBy, setEmHeldBy] = useState(titleEscrow?.earnest_money_held_by ?? "")
+  const [emReceivedDate, setEmReceivedDate] = useState(titleEscrow?.earnest_money_received_date ?? "")
+
+  // Contract review state
+  const [contractReview, setContractReview] = useState<any>(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [docChecklist, setDocChecklist] = useState<any[]>([])
+  const [checklistLoading, setChecklistLoading] = useState(false)
+  const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set())
 
   const currentStage = transaction.stage as TransactionStage
   const allowedNextStages = STAGE_TRANSITIONS[currentStage] || []
@@ -466,7 +545,42 @@ export function TransactionDetailClient({
     })
   }
 
-  // ─── RENDER ──────────────────────────────────────────────────────────────────
+  // ─── CONTRACT REVIEW HANDLERS ─────────────────────────────────────────────────
+
+  const getState = () => transaction.property_state || (() => {
+    const m = (transaction.property_address || '').split(',').pop()?.trim().match(/\b([A-Z]{2})\b/)
+    return m?.[1] || 'FL'
+  })()
+
+  const handleReviewDocuments = async () => {
+    setReviewLoading(true)
+    try {
+      const result = await reviewTransactionDocuments({
+        transactionId: transaction.id,
+        agentId: transaction.agent_id,
+        state: getState(),
+      })
+      if (result.success !== false) setContractReview(result)
+    } catch {}
+    finally { setReviewLoading(false) }
+  }
+
+  const handleGenerateChecklist = async () => {
+    setChecklistLoading(true)
+    try {
+      const txType:'purchase'|'sale'|'lease' = transaction.deal_type === 'seller' ? 'sale' : 'purchase'
+      const result = await generateDocumentChecklist({
+        transactionId: transaction.id,
+        transactionType: txType,
+        state: getState(),
+        agentId: transaction.agent_id,
+      })
+      if ((result as any).checklist) setDocChecklist((result as any).checklist)
+    } catch {}
+    finally { setChecklistLoading(false) }
+  }
+
+  // ─── RENDER ──────────────────────────────���───────────────────────────────────
 
   return (
     <div className="min-h-screen bg-background">
@@ -494,6 +608,14 @@ export function TransactionDetailClient({
             </Link>
             <div className="flex-1">
               <h1 className="text-xl font-semibold">{transaction.property_address}</h1>
+              {(transaction.property_city || transaction.property_state || transaction.property_zip) && (
+                <p className="text-sm text-muted-foreground flex items-center gap-1">
+                  <MapPin className="h-3.5 w-3.5" />
+                  {[transaction.property_city, transaction.property_state, transaction.property_zip]
+                    .filter(Boolean)
+                    .join(', ')}
+                </p>
+              )}
               <p className="text-sm text-muted-foreground">
                 ${transaction.purchase_price?.toLocaleString()} | {transaction.deal_type ?? "Purchase"}
               </p>
@@ -642,7 +764,7 @@ export function TransactionDetailClient({
                           : "destructive"
                       }
                     >
-                      {healthScore.score}/100
+                      {healthScore.overall_score}/100
                     </Badge>
                   )}
                 </div>
@@ -658,18 +780,20 @@ export function TransactionDetailClient({
                           healthScore.risk_level === "at_risk" && "bg-amber-500",
                           healthScore.risk_level === "critical" && "bg-red-500"
                         )}
-                        style={{ width: `${healthScore.score}%` }}
+                        style={{ width: `${healthScore.overall_score}%` }}
                       />
                     </div>
-                    {healthScore.issues.length > 0 && (
-                      <ul className="text-xs text-muted-foreground space-y-1">
-                        {healthScore.issues.slice(0, 3).map((issue, i) => (
-                          <li key={i} className="flex items-start gap-1">
-                            <CircleDot className="h-3 w-3 mt-0.5 shrink-0" />
-                            {issue}
-                          </li>
-                        ))}
-                      </ul>
+                    {healthScore.flags && healthScore.flags.length > 0 && (
+                      <div className="space-y-1">
+                        <ul className="space-y-1">
+                          {healthScore.flags.slice(0, 3).map((issue, i) => (
+                            <li key={i} className="flex items-start gap-1">
+                              <CircleDot className="h-3 w-3 mt-0.5 shrink-0" />
+                              {issue}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
                     )}
                   </div>
                 ) : (
@@ -804,8 +928,8 @@ export function TransactionDetailClient({
                         <div className="flex-1 min-w-0">
                           <p className="truncate">{event.description}</p>
                           <p className="text-xs text-muted-foreground">
-                            {new Date(event.occurred_at).toLocaleString()}
-                            {event.actor_name && ` by ${event.actor_name}`}
+{new Date(event.created_at).toLocaleString()}
+                        {event.performed_by && ` by ${event.performed_by}`}
                           </p>
                         </div>
                       </div>
@@ -956,7 +1080,7 @@ export function TransactionDetailClient({
                       </div>
                       <div>
                         <p className="text-muted-foreground">Loan Officer</p>
-                        <p className="font-medium">{lenderInfo.loan_officer ?? "Not set"}</p>
+                        <p className="font-medium">{lenderInfo.loan_officer_name ?? "Not set"}</p>
                       </div>
                       <div>
                         <p className="text-muted-foreground">Loan Type</p>
@@ -977,8 +1101,8 @@ export function TransactionDetailClient({
                       <div>
                         <p className="text-muted-foreground">Clear to Close</p>
                         <p className="font-medium">
-                          {lenderInfo.clear_to_close_at
-                            ? new Date(lenderInfo.clear_to_close_at).toLocaleDateString()
+{lenderInfo.clear_to_close_date
+                        ? new Date(lenderInfo.clear_to_close_date).toLocaleDateString()
                             : "Pending"}
                         </p>
                       </div>
@@ -998,16 +1122,12 @@ export function TransactionDetailClient({
                 </CardHeader>
                 <CardContent>
                   {/* Title/Escrow Company Info (read-only display) */}
-                  {titleEscrow && (titleEscrow.title_company || titleEscrow.escrow_company) && (
-                    <div className="grid grid-cols-2 gap-4 text-sm mb-6 pb-4 border-b">
-                      <div>
-                        <p className="text-muted-foreground">Title Company</p>
-                        <p className="font-medium">{titleEscrow.title_company ?? "Not set"}</p>
-                      </div>
-                      <div>
-                        <p className="text-muted-foreground">Escrow Company</p>
-                        <p className="font-medium">{titleEscrow.escrow_company ?? "Not set"}</p>
-                      </div>
+{titleEscrow && (titleEscrow.title_company_name || titleEscrow.escrow_company_name) && (
+                    <div className="space-y-2 pt-4 border-t">
+                      <p className="text-sm text-muted-foreground">Title Company</p>
+                      <p className="font-medium">{titleEscrow.title_company_name ?? "Not set"}</p>
+                      <p className="text-sm text-muted-foreground">Escrow Company</p>
+                      <p className="font-medium">{titleEscrow.escrow_company_name ?? "Not set"}</p>
                     </div>
                   )}
 
@@ -1246,7 +1366,7 @@ export function TransactionDetailClient({
                             <div className="flex items-center gap-2">
                               <Badge
                                 variant={
-                                  insp.status === "report_received"
+                                  insp.report_url !== null
                                     ? "default"
                                     : insp.status === "scheduled"
                                     ? "secondary"
@@ -1449,7 +1569,7 @@ export function TransactionDetailClient({
                       {documents.map((d) => (
                         <div key={d.id} className="flex items-center justify-between py-2 border-b last:border-0">
                           <div>
-                            <p className="text-sm font-medium">{d.file_name}</p>
+                            <p className="text-sm font-medium">{d.doc_label ?? d.doc_type}</p>
                             <p className="text-xs text-muted-foreground">{d.doc_type.replace(/_/g, " ")}</p>
                           </div>
                           <Badge
@@ -1469,6 +1589,114 @@ export function TransactionDetailClient({
                   ) : (
                     <p className="text-sm text-muted-foreground">No documents uploaded.</p>
                   )}
+
+                  <div className="mt-6 border-t pt-6 space-y-4">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div>
+                        <h3 className="font-semibold text-sm flex items-center gap-2">
+                          <Sparkles className="h-4 w-4 text-indigo-600" />
+                          AI Contract Intelligence
+                          {transaction.property_state && (
+                            <Badge variant="outline" className="text-xs font-normal">{transaction.property_state}</Badge>
+                          )}
+                        </h3>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Flag critical issues, missing signatures, and key dates before they become problems
+                          {transaction.property_state
+                            ? ` · ${transaction.property_state} compliance rules applied`
+                            : ' · state rules applied from address'}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={handleReviewDocuments} disabled={reviewLoading}>
+                          {reviewLoading ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin"/> : <Sparkles className="h-3.5 w-3.5 mr-1.5"/>}
+                          Review Documents
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={handleGenerateChecklist} disabled={checklistLoading}>
+                          {checklistLoading ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin"/> : <CheckSquare className="h-3.5 w-3.5 mr-1.5"/>}
+                          Generate Checklist
+                        </Button>
+                      </div>
+                    </div>
+
+                    {contractReview && (
+                      <div className="space-y-3">
+                        <div className="p-4 bg-muted/40 rounded-lg">
+                          <div className="flex justify-between items-center mb-2">
+                            <span className="text-sm font-medium">Document Score</span>
+                            <span className={`text-sm font-bold ${contractReview.overallScore>=80?'text-green-700':contractReview.overallScore>=60?'text-amber-700':'text-red-700'}`}>
+                              {contractReview.overallScore}/100 · {contractReview.overallScore>=80?'All Clear':contractReview.overallScore>=60?'Review Needed':'Issues Found'}
+                            </span>
+                          </div>
+                          <Progress value={contractReview.overallScore} className="h-2" />
+                          <p className="text-xs text-muted-foreground mt-1">{contractReview.overallAssessment}</p>
+                        </div>
+                        {contractReview.issues?.filter((i:any)=>i.severity==='critical').length > 0 && (
+                          <div className="border border-red-200 rounded-lg p-3 bg-red-50">
+                            <p className="text-sm font-semibold text-red-700 mb-1 flex items-center gap-1">
+                              <AlertTriangle className="h-4 w-4"/>
+                              {contractReview.issues.filter((i:any)=>i.severity==='critical').length} Critical Issues
+                            </p>
+                            {contractReview.issues.filter((i:any)=>i.severity==='critical').map((issue:any,idx:number)=>(
+                              <div key={idx} className="text-xs mb-1.5">
+                                <span className="font-medium">{issue.category}: </span>{issue.description}
+                                <p className="text-red-700 mt-0.5">→ {issue.recommendation}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {contractReview.missingItems?.length > 0 && (
+                          <div>
+                            <p className="text-sm font-medium mb-1">Missing Items</p>
+                            {contractReview.missingItems.map((item:any,idx:number)=>(
+                              <div key={idx} className="flex items-center gap-2 text-xs p-2 bg-muted/40 rounded mb-1">
+                                <Badge variant={item.required?"destructive":"secondary"} className="text-xs shrink-0">
+                                  {item.required?"Required":"Optional"}
+                                </Badge>
+                                <span>{item.item}</span>
+                                {item.deadline && <span className="ml-auto text-muted-foreground">Due: {item.deadline}</span>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {contractReview.keyDates?.length > 0 && (
+                          <div>
+                            <p className="text-sm font-medium mb-1">Key Dates</p>
+                            {contractReview.keyDates.map((kd:any,idx:number)=>(
+                              <div key={idx} className="flex justify-between text-xs p-2 bg-muted/40 rounded mb-1">
+                                <span>{kd.event}</span>
+                                <span className={kd.daysRemaining<=7?'text-red-600 font-semibold':kd.daysRemaining<=14?'text-amber-600':'text-green-600'}>
+                                  {kd.date}{kd.daysRemaining!==undefined?` (${kd.daysRemaining}d)`:''}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {docChecklist.length > 0 && (
+                      <div>
+                        <div className="flex justify-between items-center mb-2">
+                          <p className="text-sm font-medium">Document Checklist</p>
+                          <p className="text-xs text-muted-foreground">{checkedItems.size}/{docChecklist.length} complete</p>
+                        </div>
+                        <Progress value={(checkedItems.size/docChecklist.length)*100} className="h-1.5 mb-3"/>
+                        {docChecklist.map((item:any,idx:number)=>(
+                          <label key={idx} className="flex items-start gap-2 p-2 rounded hover:bg-muted/40 cursor-pointer mb-1">
+                            <input type="checkbox" className="mt-0.5 shrink-0"
+                              checked={checkedItems.has(String(idx))}
+                              onChange={e=>{const n=new Set(checkedItems);e.target.checked?n.add(String(idx)):n.delete(String(idx));setCheckedItems(n)}}
+                            />
+                            <div>
+                              <span className={`text-xs ${checkedItems.has(String(idx))?'line-through text-muted-foreground':''}`}>{item.item}</span>
+                              {item.required && <Badge variant="outline" className="text-[10px] h-4 px-1 ml-1">Required</Badge>}
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>
@@ -1482,9 +1710,9 @@ export function TransactionDetailClient({
                       {repairs.map((r) => (
                         <div key={r.id} className="flex items-center justify-between py-2 border-b last:border-0">
                           <div>
-                            <p className="text-sm font-medium">{r.description}</p>
+                            <p className="text-sm font-medium">{r.item_description}</p>
                             <p className="text-xs text-muted-foreground">
-                              Est: {r.cost_estimate ? `$${r.cost_estimate.toLocaleString()}` : "TBD"}
+                              Est: {r.estimated_cost ? `$${r.estimated_cost.toLocaleString()}` : "TBD"}
                             </p>
                           </div>
                           <Badge>{r.status}</Badge>
@@ -1502,23 +1730,28 @@ export function TransactionDetailClient({
             <TabsContent value="compliance" className="mt-4">
               <Card>
                 <CardContent className="pt-4">
-                  {complianceAlerts.length > 0 ? (
-                    <div className="space-y-2">
-                      {complianceAlerts.map((a) => (
+{complianceLogs.length > 0 ? (
+                <div className="space-y-3">
+                  {complianceLogs.map((a) => (
                         <div key={a.id} className="flex items-start gap-3 py-2 border-b last:border-0">
                           <AlertTriangle
                             className={cn(
                               "h-4 w-4 mt-0.5 shrink-0",
-                              a.severity === "critical" && "text-red-500",
-                              a.severity === "warning" && "text-amber-500",
-                              a.severity === "info" && "text-blue-500"
+                              a.status === "fail" && "text-red-500",
+                              a.status === "pending" && "text-amber-500",
+                              a.status === "needs_review" && "text-orange-500",
+                              a.status === "pass" && "text-green-500",
+                              a.status === "waived" && "text-slate-500"
                             )}
                           />
                           <div className="flex-1">
-                            <p className="text-sm">{a.message}</p>
+                            <p className="text-sm">{a.check_label ?? a.check_type}</p>
                             <p className="text-xs text-muted-foreground">
-                              {a.alert_type} | {a.resolved_at ? "Resolved" : "Open"}
+                              {a.check_type} | {a.status}{a.is_blocking ? " (Blocking)" : ""}
                             </p>
+                            {a.failure_reason && (
+                              <p className="text-xs text-red-500 mt-1">{a.failure_reason}</p>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -1534,18 +1767,18 @@ export function TransactionDetailClient({
             <TabsContent value="commissions" className="mt-4">
               <Card>
                 <CardContent className="pt-4">
-                  {commissionSplits.length > 0 ? (
-                    <div className="space-y-2">
-                      {commissionSplits.map((c) => (
+{commissions.length > 0 ? (
+                <div className="space-y-3">
+                  {commissions.map((c) => (
                         <div key={c.id} className="flex items-center justify-between py-2 border-b last:border-0">
                           <div>
                             <p className="text-sm font-medium">{c.recipient_name}</p>
                             <p className="text-xs text-muted-foreground">{c.recipient_type}</p>
                           </div>
                           <div className="text-right">
-                            <p className="text-sm font-medium">{c.percentage}%</p>
-                            {c.amount && (
-                              <p className="text-xs text-muted-foreground">${c.amount.toLocaleString()}</p>
+                            <p className="text-sm font-medium">{c.rate_percentage ?? c.split_percentage ?? 0}%</p>
+{(c.calculated_amount || c.flat_amount) && (
+                            <p className="text-xs text-muted-foreground">${(c.calculated_amount ?? c.flat_amount ?? 0).toLocaleString()}</p>
                             )}
                           </div>
                         </div>

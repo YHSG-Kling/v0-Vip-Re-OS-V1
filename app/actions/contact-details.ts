@@ -50,7 +50,7 @@ export async function getContactVideoEngagement(contactId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("video_scripts")
+    .from("video_scripts_library")
     .select("*")
     .eq("target_contact_id", contactId)
     .order("created_at", { ascending: false })
@@ -155,8 +155,8 @@ export async function getContactDocuments(contactId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("documents")
-    .select("*, uploaded_by_agent:agents!documents_uploaded_by_fkey(first_name, last_name)")
+    .from("transaction_documents")
+    .select("*, uploaded_by_agent:agents!transaction_documents_uploaded_by_fkey(first_name, last_name)")
     .eq("contact_id", contactId)
     .order("uploaded_at", { ascending: false })
 

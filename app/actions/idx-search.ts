@@ -187,7 +187,7 @@ export async function saveProperty(data: {
       listing_url: data.propertyData.url,
     })
 
-    await supabase.from("events").insert({
+    await supabase.from("lifecycle_events").insert({
       event_type: "property_saved",
       brokerage_id: data.propertyData.brokerageId,
       user_id: data.contactId,

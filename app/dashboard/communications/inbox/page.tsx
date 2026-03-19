@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { getConversations } from "@/app/actions/ai-communication-hub"
 import InboxClient from "./InboxClient"
 
@@ -40,7 +41,8 @@ export default async function InboxPage() {
   const brokerageId: string  = profile.brokerage_id
   const assistantName: string = profile.assistant_wake_name ?? "VIP"
   const role: string          = profile.user_type ?? "agent"
-  const agentId: string       = agentRes.data?.id ?? user.id
+  const agentId = await resolveAgentId(service, user.id)
+  if (!agentId) redirect("/onboarding")
 
   // Fetch conversations + email_templates in parallel
   const [conversationsResult, templatesRes] = await Promise.all([

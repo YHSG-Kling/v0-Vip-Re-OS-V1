@@ -384,7 +384,7 @@ export async function syncQuickBooksExpense(params: {
     }
 
     const { data: expense } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("*")
       .eq("id", params.expenseId)
       .single()
@@ -428,7 +428,7 @@ export async function syncQuickBooksExpense(params: {
     // Update expense with QB ID
     if (qbData.Purchase?.Id) {
       await supabase
-        .from("expenses")
+        .from("business_expenses")
         .update({ quickbooks_id: qbData.Purchase.Id })
         .eq("id", params.expenseId)
     }
@@ -463,7 +463,7 @@ export async function syncQuickBooksCommission(params: {
     }
 
     const { data: commission } = await supabase
-      .from("commission_records")
+      .from("commissions")
       .select("*, transactions(*)")
       .eq("id", params.commissionId)
       .single()
@@ -505,7 +505,7 @@ export async function syncQuickBooksCommission(params: {
 
     if (qbData.SalesReceipt?.Id) {
       await supabase
-        .from("commission_records")
+        .from("commissions")
         .update({ quickbooks_id: qbData.SalesReceipt.Id })
         .eq("id", params.commissionId)
     }
@@ -544,40 +544,43 @@ export async function syncGoogleCalendarEvent(params: {
       return { success: false, error: "Google Calendar not connected" }
     }
 
-    const { data: appointment } = await supabase
-      .from("appointments")
+    const { data: showing } = await supabase
+      .from("showings")
       .select("*, contacts(*)")
       .eq("id", params.appointmentId)
       .single()
 
-    if (!appointment) {
-      return { success: false, error: "Appointment not found" }
+    if (!showing) {
+      return { success: false, error: "Showing not found" }
     }
 
     if (params.direction === "push") {
+      // Calculate end time from scheduled_at + duration_minutes
+      const startTime = new Date(showing.scheduled_at)
+      const endTime = new Date(startTime.getTime() + (showing.duration_minutes || 30) * 60000)
+
       const eventBody = {
-        summary: appointment.title,
-        description: appointment.notes,
+        summary: showing.notes || "Showing",
+        description: showing.notes,
         start: {
-          dateTime: appointment.start_time,
+          dateTime: startTime.toISOString(),
           timeZone: "America/New_York",
         },
         end: {
-          dateTime: appointment.end_time,
+          dateTime: endTime.toISOString(),
           timeZone: "America/New_York",
         },
-        location: appointment.location,
-        attendees: appointment.contacts?.email
-          ? [{ email: appointment.contacts.email }]
+        attendees: showing.contacts?.email
+          ? [{ email: showing.contacts.email }]
           : [],
       }
 
-      const url = appointment.google_event_id
-        ? `https://www.googleapis.com/calendar/v3/calendars/primary/events/${appointment.google_event_id}`
+      const url = showing.google_event_id
+        ? `https://www.googleapis.com/calendar/v3/calendars/primary/events/${showing.google_event_id}`
         : "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 
       const response = await fetch(url, {
-        method: appointment.google_event_id ? "PUT" : "POST",
+        method: showing.google_event_id ? "PUT" : "POST",
         headers: {
           Authorization: `Bearer ${credentials.access_token}`,
           "Content-Type": "application/json",
@@ -589,7 +592,7 @@ export async function syncGoogleCalendarEvent(params: {
 
       if (eventData.id) {
         await supabase
-          .from("appointments")
+          .from("showings")
           .update({ google_event_id: eventData.id })
           .eq("id", params.appointmentId)
       }

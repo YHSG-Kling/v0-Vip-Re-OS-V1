@@ -2,11 +2,17 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { AI_MODELS } from "@/lib/constants"
 import { generateContent } from "@/lib/services/content-generation.service"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { resolveProvider } from "@/lib/kernel/providers"
+import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 
 function parseAIJsonResponse(text: string) {
   let cleanText = text.trim()
@@ -196,6 +202,7 @@ export async function createGeneratedContent(data: {
       target_audience: data.targetAudience,
       metadata: data.metadata,
       scheduled_for: data.scheduledFor,
+      compliance_approved: false,
     })
     .select()
     .single()
@@ -518,15 +525,19 @@ export async function logContentGeneration(data: {
 }) {
   const supabase = await createClient()
 
-  const { error } = await supabase.from("content_generation_logs").insert({
+  const { error } = await supabase.from("ai_generated_content").insert({
     agent_id: data.agentId,
     content_type: data.contentType,
-    prompt: data.prompt,
-    model: data.model,
-    tokens_used: data.tokensUsed,
-    generation_time_ms: data.generationTime,
-    success: data.success,
-    error_message: data.errorMessage,
+    content: data.prompt,
+    metadata: {
+      model: data.model,
+      tokens_used: data.tokensUsed,
+      generation_time_ms: data.generationTime,
+      success: data.success,
+      error_message: data.errorMessage,
+      is_log: true,
+    },
+    compliance_approved: false,
   })
 
   if (error) {
@@ -546,7 +557,7 @@ export async function getContentGenerationStats(agentId: string, dateRange?: { s
 
   const supabase = await createClient()
 
-  let query = supabase.from("content_generation_logs").select("*").eq("agent_id", agentId)
+  let query = supabase.from("ai_generated_content").select("*").eq("agent_id", agentId).eq("metadata->>is_log", "true")
 
   if (dateRange) {
     query = query.gte("created_at", dateRange.start).lte("created_at", dateRange.end)
@@ -598,12 +609,20 @@ export async function generateListingDescription(params: {
 
     const prompt = buildListingDescriptionPrompt(propertyData, params, brandVoice)
 
-    const { text, usage } = await generateText({
-      model: "openai/gpt-4o",
+    // Get agent context for AI routing
+    const agentContext = await getAgentContext()
+
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: agentContext.userId,
+        brokerageId: agentContext.brokerageId,
+        agentId: agentContext.agentId,
+        feature: "listing_description",
+      },
     })
 
-    const result = parseAIJsonResponse(text)
+    const result = parseAIJsonResponse(response.text)
     const generationTime = Date.now() - startTime
 
     const { data: savedContent } = await supabase
@@ -615,9 +634,10 @@ export async function generateListingDescription(params: {
         content_subtype: params.length,
         generated_content: result,
         target_persona: params.targetPersona,
-        ai_model_used: "openai/gpt-4o",
+        ai_model_used: response.model,
         compliance_status: result.compliance_status || "pending",
         seo_keywords: result.seo_keywords_used,
+        compliance_approved: false,
       })
       .select()
       .single()
@@ -626,8 +646,8 @@ export async function generateListingDescription(params: {
       agentId: params.agentId,
       contentType: "listing_description",
       prompt: prompt.substring(0, 500),
-      model: "openai/gpt-4o",
-      tokensUsed: usage?.totalTokens,
+      model: response.model,
+      tokensUsed: response.tokensUsed.total,
       generationTime,
       success: true,
     })
@@ -769,12 +789,20 @@ export async function generateBlogPost(params: {
 
     const prompt = buildBlogPostPrompt(params, brandVoice)
 
-    const { text, usage } = await generateText({
-      model: "openai/gpt-4o",
+    // Get agent context for AI routing
+    const agentContext = await getAgentContext()
+
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: agentContext.userId,
+        brokerageId: agentContext.brokerageId,
+        agentId: agentContext.agentId,
+        feature: "blog_post_generation",
+      },
     })
 
-    const result = parseAIJsonResponse(text)
+    const result = parseAIJsonResponse(response.text)
     const generationTime = Date.now() - startTime
 
     const { data: savedContent } = await supabase
@@ -784,9 +812,10 @@ export async function generateBlogPost(params: {
         content_type: "blog_post",
         generated_content: result,
         target_persona: params.targetPersona,
-        ai_model_used: "openai/gpt-4o",
+        ai_model_used: response.model,
         compliance_status: "pending",
         seo_keywords: result.seo_keywords_used,
+        compliance_approved: false,
       })
       .select()
       .single()
@@ -809,8 +838,8 @@ export async function generateBlogPost(params: {
       agentId: params.agentId,
       contentType: "blog_post",
       prompt: prompt.substring(0, 500),
-      model: "openai/gpt-4o",
-      tokensUsed: usage?.totalTokens,
+      model: response.model,
+      tokensUsed: response.tokensUsed.total,
       generationTime,
       success: true,
     })
@@ -1131,12 +1160,20 @@ OUTPUT FORMAT (JSON):
   "banned_tags_avoided": ["tag1"]
 }`
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    // Get agent context for AI routing
+    const agentContext = await getAgentContext()
+
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: agentContext.userId,
+        brokerageId: agentContext.brokerageId,
+        agentId: agentContext.agentId,
+        feature: "tag_classification",
+      },
     })
 
-    const result = parseAIJsonResponse(text)
+    const result = parseAIJsonResponse(response.text)
 
     return result
   } catch (error) {
@@ -1192,12 +1229,20 @@ OUTPUT FORMAT (JSON):
   "formality_shift": "more casual" or "more formal" or "no change"
 }`
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    // Get agent context for AI routing
+    const agentContext = await getAgentContext()
+
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: agentContext.userId,
+        brokerageId: agentContext.brokerageId,
+        agentId: agentContext.agentId,
+        feature: "tag_classification",
+      },
     })
 
-    const learnings = parseAIJsonResponse(text)
+    const learnings = parseAIJsonResponse(response.text)
 
     // Get existing brand voice
     const { data: brandVoice } = await supabase
@@ -1449,12 +1494,20 @@ OUTPUT FORMAT (JSON):
   ]
 }`
 
-  const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
+  // Get agent context for AI routing
+  const agentContext = await getAgentContext()
+
+  const response = await generateAIResponse({
     prompt,
+    metadata: {
+      userId: agentContext.userId,
+      brokerageId: agentContext.brokerageId,
+      agentId: agentContext.agentId,
+      feature: "social_post_generation",
+    },
   })
 
-  const result = parseAIJsonResponse(text)
+  const result = parseAIJsonResponse(response.text)
   return result.posts || []
 }
 
@@ -1473,12 +1526,20 @@ OUTPUT FORMAT (JSON):
   "email_body": "..."
 }`
 
-  const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
+  // Get agent context for AI routing
+  const agentContext = await getAgentContext()
+
+  const response = await generateAIResponse({
     prompt,
+    metadata: {
+      userId: agentContext.userId,
+      brokerageId: agentContext.brokerageId,
+      agentId: agentContext.agentId,
+      feature: "email_generation",
+    },
   })
 
-  return parseAIJsonResponse(text)
+  return parseAIJsonResponse(response.text)
 }
 
 // ============================================
@@ -1571,12 +1632,20 @@ OUTPUT FORMAT (JSON):
   }
 }`
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o",
+    // Get agent context for AI routing
+    const agentContext = await getAgentContext()
+
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: agentContext.userId,
+        brokerageId: agentContext.brokerageId,
+        agentId: agentContext.agentId,
+        feature: "blog_post_generation",
+      },
     })
 
-    const plan = parseAIJsonResponse(text)
+    const plan = parseAIJsonResponse(response.text)
 
     // Save to content calendar
     if (plan.plan && Array.isArray(plan.plan)) {
@@ -1744,9 +1813,17 @@ New tone: ${["more professional", "more casual", "more energetic", "more empathe
 Keep same information, change how it's presented.`,
   }
 
-  const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
+  // Get agent context for AI routing
+  const agentContext = await getAgentContext()
+
+  const response = await generateAIResponse({
     prompt: prompts[testVariable] || prompts.subject_line,
+    metadata: {
+      userId: agentContext.userId,
+      brokerageId: agentContext.brokerageId,
+      agentId: agentContext.agentId,
+      feature: "email_generation",
+    },
   })
 
   const supabase = await createClient()
@@ -1757,14 +1834,15 @@ Keep same information, change how it's presented.`,
     .insert({
       agent_id: baseContent.agent_id,
       content_type: baseContent.content_type,
-      generated_text: text,
-      ai_model_used: "openai/gpt-4o-mini",
+      generated_text: response.text,
+      ai_model_used: response.model,
       prompt_used: prompts[testVariable],
       metadata: {
         ...baseContent.metadata,
         ab_test_variant: "B",
         original_content_id: baseContent.id,
       },
+      compliance_approved: false,
     })
     .select()
     .single()
@@ -2453,6 +2531,7 @@ export async function trackContentUsage(params: {
       performance_score: params.performanceScore,
       tracked_at: new Date().toISOString(),
     },
+    compliance_approved: false,
   })
 
   return { success: true }

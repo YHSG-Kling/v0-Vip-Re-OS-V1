@@ -1,42 +1,397 @@
 import { createClient } from "@/lib/supabase/server"
-import SellerListingDashboard from "@/components/portal/SellerListingDashboard"
 import { redirect } from "next/navigation"
+import Link from "next/link"
+import { resolveSellerContext, getShowingStats, getRecentFeedback, getOfferSummary } from "@/lib/portal/resolve-seller-context"
+import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
+import {
+  SellerJourneyMeaningCard,
+  ListingActivityCard,
+  SellerMarketingLiveCard,
+  ShowingFeedbackSummaryCard,
+  OfferPostureCard,
+  NextStepCard,
+  AgentUpdateVideoCard,
+} from "../components/seller-mode"
+import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
+import { Button } from "@/app/components/ui/button"
+import { Badge } from "@/app/components/ui/badge"
+import { Home, ArrowLeft, MapPin, DollarSign, Calendar } from "lucide-react"
 
 export default async function ListingPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
   const supabase = await createClient()
 
-  // Fetch contact with listing
-  const { data: contact } = await supabase.from("contacts").select("*, listings(*)").eq("id", contactId).single()
+  // Verify contact exists and get seller context
+  const context = await resolveSellerContext(supabase, contactId)
 
-  if (!contact) {
-    redirect("/")
+  if (!context.listing) {
+    redirect(`/portal/${contactId}`)
   }
 
-  const listing = contact.listings?.[0]
+  const listing = context.listing
 
-  // Fetch showing requests for this listing
-  const { data: showings } = listing
+  // Seller access verification: ensure this contact is the seller_contact_id
+  const { data: listingOwnerCheck } = await supabase
+    .from("listings")
+    .select("contact_id, seller_contact_id")
+    .eq("id", listing.id)
+    .single()
+
+  // Verify seller identity (contact_id or seller_contact_id must match)
+  const isVerifiedSeller =
+    listingOwnerCheck?.contact_id === contactId ||
+    listingOwnerCheck?.seller_contact_id === contactId
+
+  if (!isVerifiedSeller) {
+    redirect(`/portal/${contactId}?error=unauthorized`)
+  }
+
+  // Parallel data fetches for listing details
+  const [
+    showingStats,
+    recentFeedback,
+    offerSummary,
+    openHouseData,
+    metricsResult,
+    mediaResult,
+    socialPostsResult,
+    agentResult,
+    nextMilestoneResult,
+    updatesResult,
+  ] = await Promise.all([
+    // Showing statistics
+    getShowingStats(supabase, listing.id),
+    // Recent feedback
+    getRecentFeedback(supabase, listing.id, 10),
+    // Offer summary
+    getOfferSummary(supabase, listing.id),
+    // Open house data
+    getOpenHouseDashboard(listing.id),
+    // Listing metrics
+    supabase
+      .from("listing_metrics")
+      .select("total_views, showing_count, inquiry_count, favorite_count")
+      .eq("listing_id", listing.id)
+      .order("date", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    // Media count
+    supabase
+      .from("listing_media")
+      .select("id", { count: "exact" })
+      .eq("listing_id", listing.id)
+      .eq("media_type", "photo"),
+    // Social posts / marketing
+    supabase
+      .from("social_posts")
+      .select("id, platform, status, published_at")
+      .eq("listing_id", listing.id)
+      .eq("status", "published"),
+    // Agent info
+    context.agentId
+      ? supabase
+          .from("agents")
+          .select("id, first_name, last_name")
+          .eq("id", context.agentId)
+          .single()
+      : Promise.resolve({ data: null }),
+    // Next milestone if under contract
+    context.transactionId
+      ? supabase
+          .from("transaction_milestones")
+          .select("milestone_name, milestone_date, status")
+          .eq("transaction_id", context.transactionId)
+          .neq("status", "completed")
+          .order("milestone_date", { ascending: true })
+          .limit(1)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+    // Latest seller update
+    supabase
+      .from("seller_updates")
+      .select("id, subject, body, video_url, thumbnail_url, created_at")
+      .eq("listing_id", listing.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+
+  // Compute metrics
+  const metrics = metricsResult.data ?? { total_views: 0, showing_count: 0, inquiry_count: 0, favorite_count: 0 }
+  const photoCount = mediaResult.count ?? 0
+  const socialPosts = socialPostsResult.data ?? []
+  const agent = agentResult.data
+  const agentName = agent ? `${agent.first_name} ${agent.last_name}`.trim() : null
+  const nextMilestone = nextMilestoneResult.data
+  const latestUpdate = updatesResult.data
+
+  // Calculate days on market
+  const listingDate = listing.listing_date ? new Date(listing.listing_date) : null
+  const daysOnMarket = listingDate
+    ? Math.floor((Date.now() - listingDate.getTime()) / (1000 * 60 * 60 * 24))
+    : null
+
+  // Build marketing channels from real data
+  const marketingChannels = [
+    { name: "MLS", status: listing.status === "active" ? "live" as const : "scheduled" as const },
+    { name: "Zillow", status: listing.status === "active" ? "live" as const : "scheduled" as const },
+    { name: "Realtor.com", status: listing.status === "active" ? "live" as const : "scheduled" as const },
+    ...socialPosts.filter(p => p.platform === "instagram").length > 0
+      ? [{ name: "Instagram", status: "live" as const }]
+      : [],
+    ...socialPosts.filter(p => p.platform === "facebook").length > 0
+      ? [{ name: "Facebook", status: "live" as const }]
+      : [],
+  ]
+
+  // Build feedback summary
+  const feedbackSummary = {
+    positivePatterns: extractPositivePatterns(recentFeedback),
+    commonConcerns: extractConcerns(recentFeedback),
+    pricingSignal: derivePricingSignal(recentFeedback),
+    averageRating: calculateAverageRating(recentFeedback),
+    totalFeedback: recentFeedback.length,
+  }
+
+  // Open house visibility
+  const upcomingOpenHouse = openHouseData?.events?.find((e: any) => new Date(e.event_date) > new Date())
+
+  // Under contract check
+  const isUnderContract = listing.status === "pending" || listing.status === "under_contract"
+
+  // Transaction close date
+  const { data: transaction } = context.transactionId
     ? await supabase
-        .from("showing_requests")
-        .select("*")
-        .eq("listing_id", listing.id)
-        .order("requested_date", { ascending: false })
-        .limit(20)
-    : { data: [] }
-
-  // Fetch offers for this listing
-  const { data: offers } = listing
-    ? await supabase.from("offers").select("*").eq("listing_id", listing.id).order("created_at", { ascending: false })
-    : { data: [] }
+        .from("transactions")
+        .select("close_date")
+        .eq("id", context.transactionId)
+        .single()
+    : { data: null }
 
   return (
-    <SellerListingDashboard
-      contact={contact}
-      listing={listing}
-      showings={showings || []}
-      offers={offers || []}
-      contactId={contactId}
-    />
+    <div className="min-h-screen bg-background">
+      {/* Header */}
+      <div className="bg-gradient-to-br from-emerald-700 via-teal-700 to-emerald-800 text-white px-6 pt-6 pb-10">
+        <div className="max-w-2xl mx-auto">
+          <Link href={`/portal/${contactId}`} className="inline-flex items-center gap-1 text-emerald-200 hover:text-white text-sm mb-4">
+            <ArrowLeft className="h-4 w-4" />
+            Back to Portal
+          </Link>
+          <div className="flex items-start gap-3">
+            <div className="w-12 h-12 rounded-lg bg-white/10 flex items-center justify-center shrink-0">
+              <Home className="h-6 w-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold">{listing.address || listing.property_address}</h1>
+              <p className="text-emerald-200 text-sm flex items-center gap-1 mt-0.5">
+                <MapPin className="h-3.5 w-3.5" />
+                {listing.city}, {listing.state}
+              </p>
+              {listing.list_price && (
+                <p className="text-lg font-semibold mt-1 flex items-center gap-1">
+                  <DollarSign className="h-4 w-4" />
+                  {listing.list_price.toLocaleString()}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="max-w-2xl mx-auto px-4 -mt-4 pb-12 space-y-5">
+        {/* Journey Meaning Card */}
+        <SellerJourneyMeaningCard
+          listingStatus={listing.status}
+          offerCount={offerSummary.total}
+          showingCount={showingStats.total}
+          daysOnMarket={daysOnMarket}
+          agentName={agentName}
+        />
+
+        {/* Open House Alert if upcoming */}
+        {upcomingOpenHouse && (
+          <Card className="border-purple-200 bg-purple-50">
+            <CardContent className="p-4 flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-purple-900">Open House Scheduled</p>
+                <p className="text-xs text-purple-700">
+                  {new Date(upcomingOpenHouse.event_date).toLocaleDateString("en-US", {
+                    weekday: "long",
+                    month: "long",
+                    day: "numeric",
+                  })}
+                  {upcomingOpenHouse.start_time && ` at ${upcomingOpenHouse.start_time}`}
+                </p>
+              </div>
+              <Badge className="bg-purple-600 text-white">Upcoming</Badge>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Next Step Card */}
+        <NextStepCard
+          listingStatus={listing.status}
+          hasOffers={offerSummary.total > 0}
+          isUnderContract={isUnderContract}
+          nextMilestone={nextMilestone ? { name: nextMilestone.milestone_name, date: nextMilestone.milestone_date, status: nextMilestone.status } : null}
+          closeDate={transaction?.close_date}
+        />
+
+        {/* Two Column Grid */}
+        <div className="grid md:grid-cols-2 gap-4">
+          {/* Listing Activity */}
+          <ListingActivityCard
+            contactId={contactId}
+            listingStatus={listing.status}
+            showingsThisWeek={showingStats.thisWeek}
+            totalShowings={showingStats.total}
+            totalViews={metrics.total_views}
+            photoCount={photoCount}
+            isPublished={listing.status === "active"}
+            launchDate={listing.listing_date}
+          />
+
+          {/* Marketing Live */}
+          <SellerMarketingLiveCard
+            channels={marketingChannels}
+            marketingTier={null}
+            totalReach={metrics.total_views > 0 ? metrics.total_views * 10 : undefined}
+          />
+        </div>
+
+        {/* Offer Posture */}
+        <OfferPostureCard
+          contactId={contactId}
+          totalOffers={offerSummary.total}
+          pendingOffers={offerSummary.pending}
+          highestOffer={offerSummary.highest}
+          listPrice={listing.list_price}
+          hasAcceptedOffer={!!offerSummary.accepted}
+          needsAction={offerSummary.pending > 0}
+        />
+
+        {/* Showing Feedback Summary */}
+        <ShowingFeedbackSummaryCard
+          contactId={contactId}
+          summary={feedbackSummary}
+        />
+
+        {/* Agent Update Video */}
+        <AgentUpdateVideoCard
+          contactId={contactId}
+          latestUpdate={latestUpdate ? {
+            id: latestUpdate.id,
+            title: latestUpdate.subject || "Weekly Update",
+            videoUrl: latestUpdate.video_url,
+            thumbnailUrl: latestUpdate.thumbnail_url,
+            createdAt: latestUpdate.created_at,
+            summary: latestUpdate.body?.substring(0, 200),
+          } : null}
+          agentName={agentName}
+        />
+
+        {/* Quick Actions */}
+        <Card>
+          <CardContent className="py-4">
+            <div className="flex flex-wrap gap-3 justify-center">
+              <Button variant="outline" asChild>
+                <Link href={`/portal/${contactId}/showings`}>
+                  <Calendar className="h-4 w-4 mr-2" />
+                  View Showings
+                </Link>
+              </Button>
+              <Button variant="outline" asChild>
+                <Link href={`/portal/${contactId}/offers`}>
+                  <DollarSign className="h-4 w-4 mr-2" />
+                  View Offers
+                </Link>
+              </Button>
+              <Button variant="outline" asChild>
+                <Link href={`/portal/${contactId}/messages`}>
+                  Message Agent
+                </Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
   )
+}
+
+// Helper functions for feedback analysis
+function extractPositivePatterns(feedback: any[]): string[] {
+  const patterns: string[] = []
+  const patternCounts: Record<string, number> = {}
+
+  for (const fb of feedback) {
+    if (fb.buyer_favorite_features) {
+      const features = fb.buyer_favorite_features.split(",").map((f: string) => f.trim())
+      for (const feature of features) {
+        patternCounts[feature] = (patternCounts[feature] || 0) + 1
+      }
+    }
+    if (fb.overall_impression === "loved_it" || fb.overall_impression === "liked_it") {
+      if (fb.presentation_rating >= 4) patternCounts["Great presentation"] = (patternCounts["Great presentation"] || 0) + 1
+      if (fb.cleanliness_rating >= 4) patternCounts["Clean & well-maintained"] = (patternCounts["Clean & well-maintained"] || 0) + 1
+    }
+  }
+
+  return Object.entries(patternCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([pattern]) => pattern)
+}
+
+function extractConcerns(feedback: any[]): string[] {
+  const concerns: string[] = []
+  const concernCounts: Record<string, number> = {}
+
+  for (const fb of feedback) {
+    if (fb.specific_concerns) {
+      concernCounts[fb.specific_concerns] = (concernCounts[fb.specific_concerns] || 0) + 1
+    }
+    if (fb.price_opinion === "too_high") {
+      concernCounts["Price perception"] = (concernCounts["Price perception"] || 0) + 1
+    }
+  }
+
+  return Object.entries(concernCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([concern]) => concern)
+}
+
+function derivePricingSignal(feedback: any[]): "priced_right" | "too_high" | "good_value" | null {
+  if (feedback.length === 0) return null
+
+  const opinions = feedback
+    .filter(fb => fb.price_opinion)
+    .map(fb => fb.price_opinion)
+
+  if (opinions.length === 0) return null
+
+  const counts = {
+    priced_right: opinions.filter(o => o === "priced_right").length,
+    too_high: opinions.filter(o => o === "too_high").length,
+    good_value: opinions.filter(o => o === "good_value").length,
+  }
+
+  const max = Math.max(counts.priced_right, counts.too_high, counts.good_value)
+  if (counts.priced_right === max) return "priced_right"
+  if (counts.too_high === max) return "too_high"
+  if (counts.good_value === max) return "good_value"
+
+  return null
+}
+
+function calculateAverageRating(feedback: any[]): number | null {
+  const ratings = feedback
+    .filter(fb => fb.sentiment_score !== null)
+    .map(fb => fb.sentiment_score)
+
+  if (ratings.length === 0) return null
+
+  return ratings.reduce((sum, r) => sum + r, 0) / ratings.length
 }

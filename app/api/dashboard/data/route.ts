@@ -2,6 +2,7 @@
 
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 
 // Consolidated API endpoint for fetching dashboard data
 // Reduces duplicate API routes and centralizes data fetching
@@ -17,7 +18,11 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url)
     const dataType = searchParams.get("type")
-    const agentId = searchParams.get("agent_id") || user.id
+    // Resolve agent ID - never use user.id for agent_id
+    const agentId = searchParams.get("agent_id") || await resolveAgentId(supabase, user.id)
+    if (!agentId) {
+      return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
+    }
 
     let data: any = null
 
@@ -52,11 +57,11 @@ export async function GET(request: NextRequest) {
 
       case "appointments":
         const { data: appointments } = await supabase
-          .from("appointments")
+          .from("showings")
           .select("*")
           .eq("agent_id", agentId)
-          .gte("start_time", new Date().toISOString())
-          .order("start_time", { ascending: true })
+          .gte("scheduled_at", new Date().toISOString())
+          .order("scheduled_at", { ascending: true })
         data = appointments || []
         break
 
@@ -89,7 +94,7 @@ export async function GET(request: NextRequest) {
 
       case "reviews":
         const { data: reviews } = await supabase
-          .from("reviews")
+          .from("agent_reviews")
           .select("*, contacts(*)")
           .eq("agent_id", agentId)
           .order("created_at", { ascending: false })
@@ -98,7 +103,7 @@ export async function GET(request: NextRequest) {
 
       case "expenses":
         const { data: expenses } = await supabase
-          .from("expenses")
+          .from("business_expenses")
           .select("*")
           .eq("agent_id", agentId)
           .order("expense_date", { ascending: false })
@@ -107,7 +112,7 @@ export async function GET(request: NextRequest) {
 
       case "commissions":
         const { data: commissions } = await supabase
-          .from("commission_records")
+          .from("commissions")
           .select("*, transactions(*)")
           .eq("agent_id", agentId)
           .order("created_at", { ascending: false })
@@ -146,7 +151,7 @@ export async function GET(request: NextRequest) {
 
       case "documents":
         const { data: documents } = await supabase
-          .from("documents")
+          .from("transaction_documents")
           .select("*, transactions(*)")
           .eq("uploaded_by", agentId)
           .order("created_at", { ascending: false })
@@ -194,7 +199,7 @@ export async function GET(request: NextRequest) {
       case "communications":
         const contactId = searchParams.get("contact_id")
         let commQuery = supabase
-          .from("communications")
+          .from("messages")
           .select("*, contacts(*)")
           .order("created_at", { ascending: false })
           .limit(100)

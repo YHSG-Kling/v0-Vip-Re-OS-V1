@@ -96,7 +96,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
   }
 
   const { data: agent } = await supabase
-    .from("profiles")
+    .from("users")
     .select("first_name, last_name, phone, brokerage:brokerages(name)")
     .eq("id", loginId)
     .single()
@@ -211,24 +211,23 @@ export async function handleVapiCallCompleteService(payload: any) {
     .eq("id", call.campaign_id)
 
   if (analysis?.outcome === "appointment_booked" && analysis?.appointment_time) {
-    const { data: appointment } = await supabase
-      .from("appointments")
+    const { data: showing } = await supabase
+      .from("showings")
       .insert({
         agent_id: call.login_id,
         contact_id: call.contact_id,
-        appointment_type: "consultation",
-        scheduled_start: analysis.appointment_time,
-        scheduled_end: new Date(new Date(analysis.appointment_time).getTime() + 30 * 60000).toISOString(),
+        scheduled_at: analysis.appointment_time,
+        duration_minutes: 30,
         status: "scheduled",
         notes: `Booked by AI ISA - ${summary || ""}`,
       })
       .select()
       .single()
 
-    if (appointment) {
+    if (showing) {
       await supabase
         .from("ai_isa_calls")
-        .update({ appointment_scheduled_id: appointment.id })
+        .update({ showing_scheduled_id: showing.id })
         .eq("id", call.id)
 
       await supabase

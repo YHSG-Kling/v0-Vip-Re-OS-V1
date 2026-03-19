@@ -267,16 +267,6 @@ export const CACHE_TTL = {
   VERY_LONG: 24 * TIME.HOUR,
 } as const
 
-// ============================================
-// AI/ML CONSTANTS
-// ============================================
-
-export const AI_MODELS = {
-  DEFAULT: "openai/gpt-4o",
-  FAST: "openai/gpt-4o-mini",
-  ADVANCED: "anthropic/claude-sonnet-4.5",
-} as const
-
 export const AI_LIMITS = {
   MAX_TOKENS: 4096,
   TEMPERATURE: 0.7,

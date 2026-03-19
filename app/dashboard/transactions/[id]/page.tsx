@@ -19,7 +19,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
 
   // Get user profile with brokerage
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("id, role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -30,6 +30,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   const userRole = profile.role ?? "agent"
 
   // Fetch transaction with ownership/brokerage check
+  // Uses actual Supabase transactions table columns
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .select(`
@@ -38,6 +39,9 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       agent_id,
       contact_id,
       property_address,
+      property_city,
+      property_state,
+      property_zip,
       purchase_price,
       status,
       stage,
@@ -45,8 +49,12 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       close_date,
       compliance_passed_at,
       deal_type,
-      offer_id,
+      deal_name,
+      client_name,
       listing_id,
+      health_score,
+      commission_percentage,
+      estimated_commission,
       created_at,
       updated_at
     `)
@@ -63,7 +71,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     redirect("/dashboard")
   }
 
-  // Fetch all related data in parallel
+  // Fetch all related data in parallel — using actual Supabase tables
   const [
     { data: milestones },
     { data: deadlines },
@@ -79,17 +87,17 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     { data: vendorServices },
     { data: repairs },
     { data: lenderInfo },
-    { data: complianceAlerts },
-    { data: commissionSplits },
+    { data: complianceLogs },
+    { data: commissions },
   ] = await Promise.all([
-    // All milestones ordered by date
+    // transaction_milestones
     supabase
       .from("transaction_milestones")
       .select("*")
       .eq("transaction_id", id)
       .order("milestone_date", { ascending: true, nullsFirst: false }),
 
-    // Next 3 pending deadlines
+    // transaction_deadlines
     supabase
       .from("transaction_deadlines")
       .select("*")
@@ -98,35 +106,35 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .order("deadline_date", { ascending: true })
       .limit(3),
 
-    // All participants
+    // transaction_participants
     supabase
       .from("transaction_participants")
       .select("*")
       .eq("transaction_id", id),
 
-    // All documents
+    // transaction_documents
     supabase
       .from("transaction_documents")
       .select("*")
       .eq("transaction_id", id),
 
-    // Latest deal health score
+    // deal_health_scores
     supabase
       .from("deal_health_scores")
       .select("*")
       .eq("transaction_id", id)
-      .order("calculated_at", { ascending: false })
+      .order("scored_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
 
-    // Unresolved proactive interventions
+    // proactive_interventions
     supabase
       .from("proactive_interventions")
       .select("id")
       .eq("transaction_id", id)
       .eq("resolved", false),
 
-    // Active tasks
+    // transaction_tasks
     supabase
       .from("transaction_tasks")
       .select("*")
@@ -135,29 +143,29 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .order("due_date", { ascending: true })
       .limit(10),
 
-    // Recent timeline events
+    // transaction_timeline
     supabase
       .from("transaction_timeline")
       .select("*")
       .eq("transaction_id", id)
-      .order("occurred_at", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(15),
 
-    // Title & escrow info
+    // transaction_title_escrow
     supabase
       .from("transaction_title_escrow")
       .select("*")
       .eq("transaction_id", id)
       .maybeSingle(),
 
-    // Inspections
+    // transaction_inspections
     supabase
       .from("transaction_inspections")
       .select("*")
       .eq("transaction_id", id)
       .order("created_at", { ascending: false }),
 
-    // Pending quote approvals (activities)
+    // activities (pending quote approvals)
     supabase
       .from("activities")
       .select("*")
@@ -165,35 +173,35 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .eq("activity_type", "client_quote_approval_needed")
       .eq("status", "pending"),
 
-    // Vendor services (insurance quotes, etc.)
+    // transaction_vendor_services
     supabase
       .from("transaction_vendor_services")
       .select("*")
       .eq("transaction_id", id),
 
-    // Repairs
+    // transaction_repair_negotiations (actual Supabase table)
     supabase
-      .from("transaction_repairs")
+      .from("transaction_repair_negotiations")
       .select("*")
       .eq("transaction_id", id),
 
-    // Lender info
+    // transaction_lenders (actual Supabase table)
     supabase
-      .from("transaction_lender_info")
+      .from("transaction_lenders")
       .select("*")
       .eq("transaction_id", id)
       .maybeSingle(),
 
-    // Compliance alerts
+    // transaction_compliance_log (actual Supabase table)
     supabase
-      .from("compliance_alerts")
+      .from("transaction_compliance_log")
       .select("*")
       .eq("transaction_id", id)
       .order("created_at", { ascending: false }),
 
-    // Commission splits
+    // transaction_commissions (actual Supabase table)
     supabase
-      .from("commission_splits")
+      .from("transaction_commissions")
       .select("*")
       .eq("transaction_id", id),
   ])
@@ -240,8 +248,8 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       insuranceQuotes={insuranceQuotes}
       repairs={repairs ?? []}
       lenderInfo={lenderInfo}
-      complianceAlerts={complianceAlerts ?? []}
-      commissionSplits={commissionSplits ?? []}
+      complianceLogs={complianceLogs ?? []}
+      commissions={commissions ?? []}
       stages={stages}
       currentStageIndex={currentStageIndex}
     />

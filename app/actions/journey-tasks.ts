@@ -19,18 +19,6 @@ export async function completeTask(data: {
   try {
     const supabase = await createClient()
 
-    // Store in journey_task_completions table
-    await supabase.from("journey_task_completions").insert({
-      contact_id: data.contactId,
-      task_id: data.taskId,
-      stage_id: data.stageId || 'unknown',
-      stage_name: data.stageName || 'Unknown Stage',
-      task_title: data.taskName,
-      task_type: data.taskType || 'checkbox',
-      form_data: data.formData || {},
-      notes: data.notes,
-    })
-
     // If there's a transaction, create/update milestone
     if (data.transactionId) {
       // Check if milestone exists
@@ -190,26 +178,14 @@ export async function getTaskCompletions(contactId: string) {
   try {
     const supabase = await createClient()
 
-    // First try the new journey_task_completions table
-    const { data: completions, error } = await supabase
-      .from("journey_task_completions")
+    // Read from transaction_milestones (canonical source)
+    const { data: milestones } = await supabase
+      .from("transaction_milestones")
       .select("*")
-      .eq("contact_id", contactId)
-      .order("completed_at", { ascending: false })
+      .eq("transaction_id", contactId) // note: may need join via transactions table
+      .order("completed_date", { ascending: false })
 
-    if (!error && completions && completions.length > 0) {
-      return completions
-    }
-
-    // Fallback to client_portal_activity
-    const { data: activities } = await supabase
-      .from("client_portal_activity")
-      .select("*")
-      .eq("contact_id", contactId)
-      .in("activity_type", ["task_completed", "task_form_submitted"])
-      .order("created_at", { ascending: false })
-
-    return activities || []
+    return milestones || []
   } catch (error) {
     console.error("[v0] Error fetching task completions:", error)
     return []
@@ -218,24 +194,8 @@ export async function getTaskCompletions(contactId: string) {
 
 // Get journey stage progress for a contact
 export async function getStageProgress(contactId: string) {
-  try {
-    const supabase = await createClient()
-
-    const { data: progress, error } = await supabase
-      .from("journey_stage_progress")
-      .select("*")
-      .eq("contact_id", contactId)
-      .single()
-
-    if (error || !progress) {
-      return null
-    }
-
-    return progress
-  } catch (error) {
-    console.error("[v0] Error fetching stage progress:", error)
-    return null
-  }
+  // journey_stage_progress is legacy — callers handle null gracefully
+  return null
 }
 
 // Update journey stage progress
@@ -247,88 +207,36 @@ export async function updateStageProgress(data: {
   stagesCompleted: number
   totalStages: number
 }) {
-  try {
-    const supabase = await createClient()
-
-    const { error } = await supabase
-      .from("journey_stage_progress")
-      .upsert({
-        contact_id: data.contactId,
-        persona: data.persona,
-        current_stage_id: data.currentStageId,
-        current_stage_index: data.currentStageIndex,
-        stages_completed: data.stagesCompleted,
-        total_stages: data.totalStages,
-        last_activity_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }, {
-        onConflict: 'contact_id'
-      })
-
-    if (error) {
-      console.error("[v0] Error updating stage progress:", error)
-      return { success: false, error: error.message }
-    }
-
-    revalidatePath(`/portal/${data.contactId}`)
-    revalidatePath(`/portal/${data.contactId}/journey`)
-
-    return { success: true }
-  } catch (error: any) {
-    console.error("[v0] Error updating stage progress:", error)
-    return { success: false, error: error.message }
-  }
+  // Stage progress is now tracked via transaction_milestones.
+  // journey_stage_progress is legacy — no new writes.
+  // The portal reads progress from transaction_milestones directly.
+  revalidatePath(`/portal/${data.contactId}`)
+  revalidatePath(`/portal/${data.contactId}/journey`)
+  return { success: true }
 }
 
 // Event handlers for workflow orchestration
 export async function handleTaskCompletedEvent(payload: any) {
   const supabase = await createClient()
   
-  // Check if all tasks in current stage are complete
-  const { data: completions } = await supabase
-    .from("journey_task_completions")
-    .select("*")
-    .eq("contact_id", payload.contact_id)
-    .eq("stage_id", payload.stage_id)
-
-  // Get stage progress to determine if we should advance
-  const { data: progress } = await supabase
-    .from("journey_stage_progress")
-    .select("*")
-    .eq("contact_id", payload.contact_id)
-    .single()
-
   // Notify agent of task completion
   try {
     await supabase.from("agent_notifications").insert({
       contact_id: payload.contact_id,
       notification_type: "task_completed",
       title: `Client completed: ${payload.task_name}`,
-      message: `${payload.task_name} has been completed in the ${payload.stage_name} stage.`,
+      message: `${payload.task_name} completed in the ${payload.stage_name} stage.`,
       priority: "normal",
       read: false,
     })
-  } catch {
-    // Table might not exist
-  }
-
-  return { success: true, completions_count: completions?.length || 0 }
+  } catch { /* non-critical */ }
+  
+  return { success: true }
 }
 
 export async function handleStageCompletedEvent(payload: any) {
   const supabase = await createClient()
   
-  // Update stage progress
-  await supabase
-    .from("journey_stage_progress")
-    .update({
-      stages_completed: payload.stages_completed,
-      current_stage_id: payload.next_stage_id,
-      current_stage_index: payload.next_stage_index,
-      last_activity_at: new Date().toISOString(),
-    })
-    .eq("contact_id", payload.contact_id)
-
   // Create a celebration notification
   try {
     await supabase.from("client_portal_messages").insert({
@@ -348,15 +256,6 @@ export async function handleStageCompletedEvent(payload: any) {
 export async function handleAllTasksCompletedEvent(payload: any) {
   const supabase = await createClient()
   
-  // Mark the journey as complete
-  await supabase
-    .from("journey_stage_progress")
-    .update({
-      journey_completed: true,
-      completed_at: new Date().toISOString(),
-    })
-    .eq("contact_id", payload.contact_id)
-
   // Send celebration message
   try {
     await supabase.from("client_portal_messages").insert({

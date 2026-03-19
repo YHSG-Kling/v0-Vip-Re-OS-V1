@@ -43,7 +43,7 @@ export async function analyzeAgentPerformance(params: {
 
     // Get agent's activities
     const { data: activities } = await supabase
-      .from("agent_activities")
+      .from("activities")
       .select("*")
       .eq("agent_id", params.agentId)
       .order("created_at", { ascending: false })

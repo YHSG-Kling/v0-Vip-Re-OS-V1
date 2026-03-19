@@ -78,9 +78,17 @@ export function getTimelineUrgency(timeline: ContactTimeline): "urgent" | "soon"
   }
 }
 
-export function getPersonaDashboardRoute(persona: ContactPersona | null | undefined): string {
-  if (!persona) return "/dashboard/contact/other"
-  return `/dashboard/contact/${persona}`
+/**
+ * Returns the canonical portal URL for a contact.
+ * Persona-specific view is determined automatically by lib/kernel/portal.ts.
+ * The old /portal/[contactId]/dashboard/[persona] route has been removed.
+ * The old /dashboard/contact/[persona] route never existed.
+ */
+export function getPersonaDashboardRoute(
+  contactId: string,
+  persona?: ContactPersona | null
+): string {
+  return `/portal/${contactId}`
 }
 
 export function getPersonaDescription(persona: ContactPersona): string {

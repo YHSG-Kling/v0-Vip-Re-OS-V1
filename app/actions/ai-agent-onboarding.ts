@@ -273,7 +273,7 @@ Provide a brief 2-3 sentence summary with encouragement and next priority action
 /**
  * Complete an onboarding step with AI verification
  */
-export async function completeOnboardingStep(params: {
+export async function completeAISessionStep(params: {
   sessionId: string
   stepId: string
   completedBy: string
@@ -394,7 +394,7 @@ export async function completeOnboardingStep(params: {
     }
   } catch (error) {
     console.error("Complete step error:", error)
-    return handleError(error, "completeOnboardingStep")
+    return handleError(error, "completeAISessionStep")
   }
 }
 
@@ -571,10 +571,10 @@ Check if license format matches ${params.licenseState} standards.`,
           .eq("name", "License Verification")
           .single()
 
-        if (step) {
-          await completeOnboardingStep({
-            sessionId: session.id,
-            stepId: step.id,
+  if (step) {
+    await completeAISessionStep({
+      sessionId: session.id,
+      stepId: step.id,
             completedBy: "system",
             notes: `AI verified with ${verification.confidenceScore}% confidence`,
           })
@@ -764,11 +764,11 @@ export async function submitQuizAttempt(params: {
       created_at: new Date().toISOString(),
     })
 
-    // If passed, complete the step
-    if (passed) {
-      await completeOnboardingStep({
-        sessionId: params.sessionId,
-        stepId: params.stepId,
+  // If passed, complete the step
+  if (passed) {
+    await completeAISessionStep({
+      sessionId: params.sessionId,
+      stepId: params.stepId,
         completedBy: params.agentId,
         notes: `Quiz passed with ${score}% on attempt ${attemptNumber}`,
       })

@@ -185,25 +185,24 @@ async function resolveRecipients(params: {
       KernelEvent.LISTING_REPAIR_FAILED,
     ].includes(params.event)) {
       const { data: policy } = await supabase
-        .from("brokerage_settings")
+        .from("global_settings")
         .select("seller_notification_enabled")
         .eq("brokerage_id", params.brokerageId)
         .maybeSingle()
 
       if (policy?.seller_notification_enabled) {
-        // Resolve seller user_id via listing → contacts → user
-        const { data: listingContact } = await supabase
-          .from("listing_contacts")
-          .select("contact_id")
+        // Resolve seller user_id via listing_agreements → contacts → user
+        const { data: listingAgreement } = await supabase
+          .from("listing_agreements")
+          .select("seller_contact_id")
           .eq("listing_id", params.entityId)
-          .eq("role", "seller")
           .maybeSingle()
 
-        if (listingContact?.contact_id) {
+        if (listingAgreement?.seller_contact_id) {
           const { data: contact } = await supabase
             .from("contacts")
             .select("user_id")
-            .eq("id", listingContact.contact_id)
+            .eq("id", listingAgreement.seller_contact_id)
             .maybeSingle()
 
           if (contact?.user_id) {

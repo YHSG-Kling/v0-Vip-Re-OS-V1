@@ -83,7 +83,7 @@ export async function GET(request: Request) {
     }
 
     // Log results
-    const { error: logError } = await supabase.from("system_logs").insert({
+    const { error: logError } = await supabase.from("audit_log").insert({
       log_type: "cron_job",
       source: "contact-enrichment",
       message: "Contact enrichment cron completed",

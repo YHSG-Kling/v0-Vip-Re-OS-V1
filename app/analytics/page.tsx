@@ -27,6 +27,7 @@ import {
   Activity,
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
+import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { loadValueDrivenDashboard, getLeadValueJourneys } from "@/app/actions/analytics"
 import { cn } from "@/lib/utils"
 
@@ -53,9 +54,12 @@ export default function AnalyticsDashboard() {
         return
       }
 
-      // Get agent ID from user
-      const { data: agent } = await supabase.from("agents").select("*").eq("user_id", user.id).maybeSingle()
-      const agentId = agent?.id || user.id
+      // Get agent ID from user using kernel resolver
+      const agentId = await resolveAgentId(supabase, user.id)
+      if (!agentId) {
+        setLoading(false)
+        return
+      }
 
       const [dashboard, journeys] = await Promise.all([
         loadValueDrivenDashboard(agentId, period),

@@ -231,7 +231,7 @@ export async function getAgentOnboardingDashboard(params: {
   }
 }
 
-export async function completeOnboardingStep(params: {
+export async function completeAISessionStep(params: {
   userId: string
   agentId: string
   stepId: string

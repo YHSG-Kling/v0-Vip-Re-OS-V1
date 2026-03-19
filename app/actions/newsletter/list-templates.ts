@@ -16,7 +16,10 @@ export async function listTemplates(status?: string) {
     .eq('id', user.id)
     .single()
 
-  if (!userData?.brokerage_id) throw new Error('User has no brokerage assigned')
+  // If user has no brokerage, return empty array instead of throwing error
+  if (!userData?.brokerage_id) {
+    return []
+  }
 
   let query = supabase
     .from('newsletter_brokers_templates')

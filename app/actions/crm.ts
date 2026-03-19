@@ -137,7 +137,7 @@ export async function getContactTimeline(contactId: string) {
         .eq("contact_id", contactId)
         .order("created_at", { ascending: false }),
       supabase
-        .from("communications")
+        .from("messages")
         .select("*")
         .eq("contact_id", contactId)
         .order("sent_at", { ascending: false }),

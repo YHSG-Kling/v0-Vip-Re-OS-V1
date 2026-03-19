@@ -7,14 +7,25 @@ export async function GET() {
     const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
 
-    // Fetch pending approval items
-    const { data, error, count } = await supabase
+    // If user has no brokerage association, return empty results
+    if (!brokerageId) {
+      return NextResponse.json({ items: [], total: 0 })
+    }
+
+    // Build query - filter by agent_id if user is an agent, otherwise show brokerage-wide for admins/brokers
+    let query = supabase
       .from("approval_items")
       .select("*", { count: "exact" })
-      .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .eq("status", "pending")
-      .order("created_at", { ascending: false })
+      .order("submitted_at", { ascending: false })
+
+    // If user is an agent, only show their approvals
+    if (agentId) {
+      query = query.eq("agent_id", agentId)
+    }
+
+    const { data, error, count } = await query
 
     if (error) {
       console.error("[v0] Error fetching pending approvals:", error)

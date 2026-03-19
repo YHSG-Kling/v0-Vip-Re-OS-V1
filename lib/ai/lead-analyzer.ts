@@ -33,7 +33,6 @@ Extract and determine:
 Return JSON only, no markdown or preamble.`
 
   const text = await runPipelineSimple(prompt, {
-    model: "gpt-4o",
     feature: "lead_analysis",
   })
 

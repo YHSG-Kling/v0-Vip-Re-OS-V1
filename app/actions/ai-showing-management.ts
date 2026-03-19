@@ -31,7 +31,7 @@ export async function getTours(agentId: string) {
   }
 }
 
-export async function createTour(params: { agentId: string; tourDate: string; tourName?: string }) {
+export async function createTour(params: { agentId: string; tourDate: string; notes?: string }) {
   try {
     const supabase = await createClient()
     const { data, error } = await supabase
@@ -39,7 +39,7 @@ export async function createTour(params: { agentId: string; tourDate: string; to
       .insert({
         agent_id: params.agentId,
         tour_date: params.tourDate,
-        tour_name: params.tourName || `Tour ${new Date(params.tourDate).toLocaleDateString()}`,
+        notes: params.notes || `Tour ${new Date(params.tourDate).toLocaleDateString()}`,
         status: "planned",
       })
       .select()

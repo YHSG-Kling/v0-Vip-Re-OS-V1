@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { getAgentOnboardingDashboard, completeOnboardingStep } from "@/lib/kernel"
+import { getAgentOnboardingDashboard, completeAISessionStep } from "@/lib/kernel"
 
 export async function fetchMyOnboardingDashboard() {
   const supabase = await createClient()
@@ -25,5 +25,5 @@ export async function completeMyOnboardingStep(stepId: string, data?: {
 
   const { agentId } = await getAgentContext()
 
-  await completeOnboardingStep({ userId: user.id, agentId, stepId, data })
+  await completeAISessionStep({ userId: user.id, agentId, stepId, data })
 }

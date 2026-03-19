@@ -140,7 +140,7 @@ export async function getJourneyMilestones(params: {
       const { data: transactions } = await supabase
         .from("transactions")
         .select("id")
-        .or(`buyer_contact_id.eq.${params.contactId},seller_contact_id.eq.${params.contactId}`)
+        .eq("contact_id", params.contactId)
         .eq("status", "active")
         .limit(1)
 

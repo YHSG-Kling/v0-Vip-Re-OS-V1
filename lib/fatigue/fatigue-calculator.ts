@@ -203,7 +203,7 @@ export async function calculateFatigue(
 
       try {
         const { text } = await generateText({
-          model: "anthropic/claude-opus-4.6" as any,
+          model: "anthropic/claude-opus-4-5" as any,
           messages: [
             {
               role: "system",

@@ -2,6 +2,7 @@ import { generateText } from "ai"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateContentCompliance } from "@/lib/compliance-rules"
 import { validateThemFirstContent } from "@/lib/them-first"
+import { resolveAIModel } from "@/lib/kernel/ai-model"
 import { 
   logAIUsage, 
   calculateCost, 
@@ -21,6 +22,116 @@ const MODEL_CONFIG: Record<AIModel, { provider: string; modelId: string }> = {
   "gemini-flash": { provider: "google", modelId: "gemini-2.0-flash-exp" },
   "perplexity-sonar": { provider: "perplexity", modelId: "sonar" },
   "perplexity-sonar-pro": { provider: "perplexity", modelId: "sonar-pro" }
+}
+
+/**
+ * AI_TASK_ROUTING
+ * ─────────────────────────────────────────────────────────────
+ * Maps every feature/task type to its designated model + fallback.
+ *
+ * ROUTING RULES:
+ *
+ * claude-sonnet  → Long-form content generation, compliance-checked output,
+ *                  anything going to a client or public-facing surface.
+ *                  Best reasoning + instruction following for RE context.
+ *
+ * claude-haiku   → Fast internal tasks: classification, tagging, scoring,
+ *                  short summaries, UI suggestions. Low cost, high volume.
+ *
+ * gpt-4o         → Structured data extraction, JSON output, form parsing,
+ *                  code-adjacent tasks, function calling patterns.
+ *                  Strong at strict schema adherence.
+ *
+ * gpt-4o-mini    → Simple yes/no decisions, sentiment labels, quick filters,
+ *                  routing logic, single-field extractions. Cheapest option.
+ *
+ * perplexity-sonar-pro → Real-time market data, neighborhood research,
+ *                        current news, anything requiring live web search.
+ *                        Has internet access — the others do not.
+ *
+ * perplexity-sonar → Same as above for lighter research tasks.
+ *
+ * gemini-flash   → Vision tasks: property photo analysis, document scanning,
+ *                  image classification. Fastest multimodal option.
+ * ─────────────────────────────────────────────────────────────
+ */
+export const AI_TASK_ROUTING: Record<string, {
+  model: AIModel
+  fallback: AIModel
+  reason: string
+}> = {
+
+  // ── CONTENT CREATION (client-facing, compliance-checked) ──────────────────
+  email_generation:          { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form client email — needs brand voice + Them-First compliance" },
+  sms_generation:            { model: "claude-sonnet", fallback: "gpt-4o-mini",  reason: "Short-form outbound SMS — compliance critical" },
+  newsletter_generation:     { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Full newsletter — long context, brand voice required" },
+  social_post_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Public-facing social content — Them-First + fair housing check" },
+  listing_description:       { model: "claude-sonnet", fallback: "gpt-4o",       reason: "MLS-facing listing copy — fair housing compliance required" },
+  video_script_generation:   { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Video scripts — brand voice, persona-aware, Them-First scored" },
+  direct_mail_copy:          { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Physical mailer copy — compliance + persona targeting" },
+  blog_post_generation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form blog — SEO + brand voice" },
+  ai_reply_coach:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Coaching agent reply drafts — nuanced tone guidance" },
+  listing_presentation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Seller presentation content — high stakes, brand quality" },
+  cma_narrative:             { model: "claude-sonnet", fallback: "gpt-4o",       reason: "CMA written analysis — professional, data-driven narrative" },
+  offer_analysis:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Offer comparison narrative for buyer — decision-critical" },
+  playbook_response:         { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Agent coaching playbook responses — nuanced guidance" },
+  portal_message:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Client portal messages — relationship-critical, client-facing" },
+  ai_isa_response:           { model: "claude-sonnet", fallback: "gpt-4o",       reason: "ISA conversation replies — empathy + conversion critical" },
+  sequence_step_content:     { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Drip sequence email/SMS — must pass compliance pipeline" },
+
+  // ── RESEARCH + LIVE DATA (needs internet) ─────────────────────────────────
+  market_insight_generation: { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live market data + neighborhood stats — requires web search" },
+  neighborhood_research:     { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Current school ratings, walkability, local stats" },
+  competitive_monitoring:    { model: "perplexity-sonar-pro", fallback: "claude-sonnet", reason: "Live competitor listings + market positioning" },
+  pricing_research:          { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Current comp sales data — live MLS/web context" },
+  home_value_estimate:       { model: "perplexity-sonar",     fallback: "claude-sonnet", reason: "Live AVM + recent sales context" },
+
+  // ── STRUCTURED DATA EXTRACTION + JSON OUTPUT ──────────────────────────────
+  offer_data_extraction:     { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Extract structured fields from offer documents — schema strict" },
+  document_parsing:          { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Parse contracts/forms into structured data" },
+  lead_data_extraction:      { model: "gpt-4o", fallback: "claude-haiku",   reason: "Extract contact fields from raw lead payloads" },
+  generate_json:             { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Any task requiring strict JSON schema output" },
+  copilot_plan_generation:   { model: "gpt-4o", fallback: "claude-sonnet",  reason: "Structured daily plan with typed task objects" },
+  transaction_coordinator:   { model: "gpt-4o", fallback: "claude-sonnet",  reason: "TC task list generation — structured milestone output" },
+
+  // ── VISION + IMAGE ANALYSIS ────────────────────────────────────────────────
+  property_image_analysis:   { model: "gemini-flash", fallback: "gpt-4o",   reason: "Photo scoring, feature detection, virtual staging analysis" },
+  document_image_scan:       { model: "gemini-flash", fallback: "gpt-4o",   reason: "Scan uploaded document images for text extraction" },
+
+  // ── FAST INTERNAL TASKS (classification, scoring, routing) ────────────────
+  lead_analysis:             { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Lead scoring + persona classification — high volume, fast" },
+  lead_routing:              { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Assign lead to agent/ISA — decision only, no content" },
+  behavioral_pattern_detect: { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Classify contact behavior signals — runs frequently" },
+  compliance_check:          { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Quick fair housing / Them-First flag detection" },
+  sentiment_analysis:        { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Score inbound message sentiment — runs on every reply" },
+  tag_classification:        { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Auto-tag contacts from conversation — fast, high volume" },
+  deal_health_check:         { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Transaction health score — runs every 4 hours on all deals" },
+  onboarding_step_suggest:   { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Next onboarding action recommendation — internal only" },
+  coaching_insight:          { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Agent performance nudge — internal, runs nightly" },
+
+  // ── SIMPLE DECISIONS + ROUTING (cheapest path) ────────────────────────────
+  intent_classification:     { model: "gpt-4o-mini", fallback: "claude-haiku", reason: "Classify user intent — voice/command bar routing" },
+  yes_no_decision:           { model: "gpt-4o-mini", fallback: "claude-haiku", reason: "Binary decisions — approve/deny heuristics" },
+  generate_text:             { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Generic short text — default fallback for unspecified tasks" },
+  simple:                    { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Generic simple task from pipeline.ts runPipelineSimple" },
+  unspecified:               { model: "claude-sonnet", fallback: "gpt-4o",     reason: "Unknown feature — default to best general model" },
+}
+
+/**
+ * selectModelForTask
+ * Returns the designated model and fallback for a given feature/task name.
+ * Falls back to "unspecified" routing if the feature is not in the table.
+ *
+ * @example
+ * const { model, fallback } = selectModelForTask("email_generation")
+ * // → { model: "claude-sonnet", fallback: "gpt-4o" }
+ */
+export function selectModelForTask(feature: string): {
+  model: AIModel
+  fallback: AIModel
+} {
+  const route = AI_TASK_ROUTING[feature] ?? AI_TASK_ROUTING["unspecified"]
+  return { model: route.model, fallback: route.fallback }
 }
 
 export interface ComplianceContext {
@@ -275,8 +386,41 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
     throw new Error(platformCheck.reason || "AI features are disabled")
   }
   
-  // Set defaults
-  const model = request.model || "claude-sonnet"
+  // Resolve model through kernel cascade.
+  // Priority: governance caps > explicit caller request > feature routing > platform default.
+  // Explicit caller models are NOT exempt from governance — caps always apply when
+  // actor context is available. Only background jobs (no userId/brokerageId) skip caps.
+  let resolvedModel: AIModel
+
+  if (request.metadata.userId && request.metadata.brokerageId) {
+    // Full actor context — run kernel cascade with caller preference (may be undefined)
+    resolvedModel = await resolveAIModel({
+      feature:        request.metadata.feature || "unspecified",
+      actorContext: {
+        userId:      request.metadata.userId,
+        agentId:     request.metadata.agentId   ?? undefined,
+        brokerageId: request.metadata.brokerageId,
+        teamId:      request.metadata.teamId     ?? undefined,
+      },
+      requestedModel: request.model ?? undefined,
+    })
+  } else {
+    // No actor context — background job, webhook, cron.
+    // Cannot evaluate brokerage caps without knowing who the actor is.
+    // Use explicit request.model if provided, else static routing table.
+    const { model: staticDefault } = selectModelForTask(
+      request.metadata.feature || "unspecified"
+    )
+    resolvedModel = request.model ?? staticDefault
+  }
+  const model = resolvedModel
+
+  // Fallback: use routed fallback from static table if no explicit fallback provided
+  const { fallback: routedFallback } = selectModelForTask(
+    request.metadata.feature || "unspecified"
+  )
+  const resolvedFallback = request.fallbackModel ?? routedFallback
+
   const temperature = request.temperature ?? 0.7
   const maxTokens = request.maxTokens ?? 2000
   
@@ -296,10 +440,10 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
     console.error(`[v0] Primary model ${model} failed:`, primaryError)
     
     // Try fallback if provided
-    if (request.fallbackModel) {
+    if (resolvedFallback) {
       try {
         executionResult = await executeModelCall(
-          request.fallbackModel,
+          resolvedFallback,
           request.system,
           request.prompt,
           temperature,
@@ -307,7 +451,7 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
         )
         fallbackUsed = true
       } catch (fallbackError) {
-        console.error(`[v0] Fallback model ${request.fallbackModel} failed:`, fallbackError)
+        console.error(`[v0] Fallback model ${resolvedFallback} failed:`, fallbackError)
         throw new Error("Both primary and fallback models failed")
       }
     } else {

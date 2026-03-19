@@ -12,7 +12,7 @@ export default async function LenderTransactionsPage() {
 
   // Get lender's profile
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("id, role")
     .eq("id", user.id)
     .single()

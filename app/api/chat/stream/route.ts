@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
 
     // Verify user has access to this session
     const { data: session, error: sessionError } = await supabase
-      .from("chat_sessions")
+      .from("conversations")
       .select("*")
       .eq("id", sessionId)
       .eq("agent_id", userId)

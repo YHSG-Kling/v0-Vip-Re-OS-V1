@@ -331,12 +331,38 @@ export async function loadValueDrivenDashboard(agentId: string, period: string =
 export async function getLeadValueJourneys(agentId: string, limit: number = 20) {
   const supabase = await createClient()
 
-  const { data: journeys } = await supabase
+  // Query lead_value_journey first (table may not exist - handle gracefully)
+  const { data: journeys, error } = await supabase
     .from("lead_value_journey")
-    .select("*, contacts!inner(id, name, email, agent_id)")
-    .eq("contacts.agent_id", agentId)
+    .select("*")
     .order("total_value_received", { ascending: false })
-    .limit(limit)
+    .limit(limit * 2) // Fetch extra since we filter after
 
-  return journeys || []
+  if (error) {
+    console.error("Error fetching lead journeys:", error)
+    return []
+  }
+
+  if (!journeys || journeys.length === 0) return []
+
+  // Fetch contacts separately to filter by agent
+  const contactIds = journeys.map(j => j.contact_id).filter(Boolean)
+  if (contactIds.length === 0) return []
+
+  const { data: contacts } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, email, agent_id")
+    .in("id", contactIds)
+    .eq("agent_id", agentId)
+
+  const contactMap = new Map((contacts || []).map(c => [c.id, c]))
+
+  // Filter and enrich journeys
+  return journeys
+    .filter(j => contactMap.has(j.contact_id))
+    .slice(0, limit)
+    .map(j => ({
+      ...j,
+      contacts: contactMap.get(j.contact_id),
+    }))
 }

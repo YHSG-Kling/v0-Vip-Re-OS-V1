@@ -93,6 +93,66 @@
     {
       "path": "/api/deal-health/cron",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/agent-health-check",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/market-data-refresh",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/cron/market-insights-weekly",
+      "schedule": "30 6 * * 1"
+    },
+    {
+      "path": "/api/cron/pattern-scan",
+      "schedule": "0 */4 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-ai-metrics",
+      "schedule": "30 7 * * 1"
+    },
+    {
+      "path": "/api/cron/prompt-calibration",
+      "schedule": "0 8 * * 2"
+    },
+    {
+      "path": "/api/cron/earnings-rollup",
+      "schedule": "0 1 * * *"
+    },
+    {
+      "path": "/api/cron/seller-updates",
+      "schedule": "0 8 * * 1"
+    },
+    {
+      "path": "/api/cron/referral-asks",
+      "schedule": "0 10 * * 2"
+    },
+    {
+      "path": "/api/cron/engagement-scores",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/team-heatmap-snapshot",
+      "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/cron/deal-health-scan",
+      "schedule": "0 */4 * * *"
+    },
+    {
+      "path": "/api/cron/distribute-podcast-episodes",
+      "schedule": "0 10 * * 2"
+    },
+    {
+      "path": "/api/cron/onboarding-health",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/publish-social-posts",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

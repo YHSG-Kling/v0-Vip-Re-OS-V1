@@ -25,17 +25,6 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     .eq("contact_id", contactId)
     .order("created_at", { ascending: false })
 
-  // Fetch collaborative searches (family search boards)
-  const { data: collaborativeSearches } = await supabase
-    .from("collaborative_searches")
-    .select(`
-      *,
-      collaborative_search_members(*),
-      collaborative_search_properties(*)
-    `)
-    .eq("contact_id", contactId)
-    .eq("is_active", true)
-
   // Fetch showing requests
   const { data: showings } = await supabase
     .from("showing_requests")
@@ -50,13 +39,19 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     .eq("contact_id", contactId)
     .order("created_at", { ascending: false })
 
-  // Fetch search history for AI recommendations
-  const { data: searchHistory } = await supabase
-    .from("property_search_log")
-    .select("*")
+  // Fetch property alerts
+  const { data: propertyAlerts } = await supabase
+    .from("property_alerts")
+    .select("id, search_criteria, frequency, is_active, created_at")
     .eq("contact_id", contactId)
     .order("created_at", { ascending: false })
-    .limit(20)
+
+  // Fetch property interests
+  const { data: propertyInterests } = await supabase
+    .from("property_interests")
+    .select("id, property_address, interest_level, notes, created_at")
+    .eq("contact_id", contactId)
+    .order("created_at", { ascending: false })
 
   // Parse custom_fields
   const customFields = typeof contact.custom_fields === "string" 
@@ -70,10 +65,10 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       persona={persona}
       personaConfig={personaConfig}
       savedProperties={savedProperties || []}
-      collaborativeSearches={collaborativeSearches || []}
       showings={showings || []}
       offers={offers || []}
-      searchHistory={searchHistory || []}
+      propertyAlerts={propertyAlerts || []}
+      propertyInterests={propertyInterests || []}
       contactId={contactId}
     />
   )

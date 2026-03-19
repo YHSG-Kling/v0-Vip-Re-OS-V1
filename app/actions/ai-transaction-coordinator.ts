@@ -8,6 +8,21 @@ import { handleError } from "@/lib/errors"
 import { z } from "zod"
 
 // ============================================
+// HELPERS
+// ============================================
+
+function normalizeZip(zip?: string) {
+  if (!zip) return undefined
+
+  const cleaned = zip.replace(/\s+/g, '').replace(/[^0-9]/g, '')
+
+  if (cleaned.length === 5) return cleaned
+  if (cleaned.length === 9) return `${cleaned.slice(0, 5)}-${cleaned.slice(5)}`
+
+  return zip
+}
+
+// ============================================
 // AI TRANSACTION COORDINATOR
 // Smart transaction management with AI insights
 // ============================================
@@ -109,7 +124,7 @@ Analyze for:
 1. Overall health score (0-100)
 2. Risk assessment
 3. Win probability
-4. Missing documents for ${transaction.state || 'FL'} compliance
+4. Missing documents for ${(transaction.property_state || transaction.state || 'FL').toUpperCase()} compliance
 5. Critical deadlines approaching
 6. Communication needs
 7. Potential delays and mitigations
@@ -189,7 +204,7 @@ export async function predictAndManageDeadlines(params: {
 Transaction: ${transaction.property_address}
 Contract Date: ${transaction.contract_date}
 Target Close: ${transaction.target_close_date}
-State: ${transaction.state || 'FL'}
+State: ${(transaction.property_state || transaction.state || 'FL').toUpperCase()}
 Transaction Type: ${transaction.transaction_type}
 
 Current Milestones:
@@ -198,7 +213,7 @@ ${JSON.stringify(transaction.transaction_milestones, null, 2)}
 Current Deadlines:
 ${JSON.stringify(transaction.transaction_deadlines, null, 2)}
 
-Based on typical ${transaction.state || 'Florida'} real estate timelines:
+Based on typical ${(transaction.property_state || transaction.state || 'Florida')} real estate timelines:
 1. Predict realistic close date
 2. Identify critical path items
 3. Suggest missing deadlines
@@ -281,14 +296,14 @@ Property: ${transaction.property_address}
 Price: $${transaction.sale_price?.toLocaleString()}
 Current Stage: ${currentStage}
 Transaction Type: ${transaction.transaction_type}
-State: ${transaction.state || 'FL'}
+State: ${(transaction.property_state || transaction.state || 'FL').toUpperCase()}
 Buyer/Seller: ${transaction.contacts?.first_name} ${transaction.contacts?.last_name}
 
 Completed Milestones:
 ${transaction.transaction_milestones?.filter((m: any) => m.status === 'completed').map((m: any) => m.milestone_name).join('\n')}
 
 Generate appropriate tasks for the ${currentStage} stage considering:
-1. State-specific requirements for ${transaction.state || 'Florida'}
+1. State-specific requirements for ${(transaction.property_state || transaction.state || 'Florida')}
 2. Transaction type (${transaction.transaction_type})
 3. Already completed items
 4. Typical timeline expectations
@@ -297,6 +312,20 @@ Generate appropriate tasks for the ${currentStage} stage considering:
 
     // Save generated tasks
     for (const task of tasks.tasks) {
+      // Check for duplicate task before inserting
+      const existingTask = await supabase
+        .from("transaction_tasks")
+        .select("id")
+        .eq("transaction_id", params.transactionId)
+        .eq("title", task.title)
+        .eq("ai_generated", true)
+        .maybeSingle()
+
+      if (existingTask.data) {
+        // Skip duplicate task
+        continue
+      }
+
       await supabase.from("transaction_tasks").insert({
         transaction_id: params.transactionId,
         title: task.title,
@@ -547,7 +576,7 @@ export async function prepareForClosing(params: {
 Property: ${transaction.property_address}
 Sale Price: $${transaction.sale_price?.toLocaleString()}
 Closing Date: ${params.closingDate}
-State: ${transaction.state || 'FL'}
+State: ${(transaction.property_state || transaction.state || 'FL').toUpperCase()}
 Transaction Type: ${transaction.transaction_type}
 
 Current Documents:
@@ -557,7 +586,7 @@ Participants:
 ${JSON.stringify(transaction.transaction_participants, null, 2)}
 
 Generate a comprehensive closing preparation plan including:
-1. Document checklist for ${transaction.state || 'Florida'}
+1. Document checklist for ${(transaction.property_state || transaction.state || 'Florida')}
 2. Participant readiness assessment
 3. Financial items (earnest money, closing costs, etc.)
 4. Day-of-closing checklist

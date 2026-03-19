@@ -70,10 +70,10 @@ export async function convertOfferToTransaction(
 
     const supabase = createServiceClient();
 
-    // 4. Get offer details for brokerage_id
+    // 4. Get offer details for brokerage_id (from canonical offers table)
     const { data: offer, error: offerError } = await supabase
-      .from("buyer_offers")
-      .select("buyer_agents!inner(brokerage_id)")
+      .from("offers")
+      .select("brokerage_id, agent_id")
       .eq("id", offerId)
       .single();
 
@@ -81,7 +81,7 @@ export async function convertOfferToTransaction(
       return { success: false, error: "Offer not found" };
     }
 
-    const brokerageId = offer.buyer_agents[0]?.brokerage_id;
+    const brokerageId = offer.brokerage_id;
     if (!brokerageId) {
       return { success: false, error: "Brokerage ID not found for offer" };
     }

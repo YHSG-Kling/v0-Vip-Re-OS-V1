@@ -275,7 +275,7 @@ export async function generateDailyGameplan(userId: string) {
 
   // Get approved content ready to post
   const { data: contentReady } = await supabase
-    .from("video_scripts")
+    .from("video_scripts_library")
     .select("*, generated_videos(*), contacts(*)")
     .eq("agent_id", userId)
     .eq("brokerage_id", profile.brokerage_id)
@@ -420,7 +420,7 @@ export async function suggestNextActions(agentId: string) {
 
   // Get agent's recent activity
   const { data: recentActivity } = await supabase
-    .from("communications")
+    .from("messages")
     .select("*, contacts(*)")
     .eq("agent_id", agentId)
     .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
@@ -486,7 +486,7 @@ async function initiateCall(contactId: string, agentId: string) {
   
   // Create call log entry
   const { data: callLog, error } = await supabase
-    .from("call_logs")
+    .from("voice_calls")
     .insert({
       contact_id: contactId,
       agent_id: agentId,

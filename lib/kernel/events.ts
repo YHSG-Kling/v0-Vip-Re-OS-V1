@@ -198,4 +198,234 @@ export enum KernelEvent {
   // ── Enrichment ───────────────────────────────────────────────────────────
   ENRICHMENT_COMPLETED           = 'enrichment_completed',
   ENRICHMENT_FAILED              = 'enrichment_failed',
+
+  // ── Layer 8 — Video / Content Generation ────────────────────────────────
+  SCRIPT_GENERATED               = 'script_generated',
+  SCRIPT_VARIATION_CREATED       = 'script_variation_created',
+  SCRIPT_APPROVED                = 'script_approved',
+  SCRIPT_REJECTED                = 'script_rejected',
+
+  // ── Layer 8.2 — Video Generation Engine ────────────────────────────────
+  VIDEO_GENERATION_REQUESTED     = 'video_generation_requested',
+  VIDEO_PREVIEW_READY            = 'video_preview_ready',
+  VIDEO_PUBLISHED                = 'video_published',
+  VIDEO_GENERATION_FAILED        = 'video_generation_failed',
+
+  // ── Layer 8.3 — Voice Clone Engine ────────────────────────────────────
+  VOICE_CLONE_PROFILE_CREATED    = 'voice_clone_profile_created',
+  VOICE_CLONE_SAMPLE_UPLOADED    = 'voice_clone_sample_uploaded',
+  VOICE_CLONE_TRAINING_STARTED   = 'voice_clone_training_started',
+  VOICE_CLONE_TRAINING_COMPLETED = 'voice_clone_training_completed',
+  VOICE_CLONE_TRAINING_FAILED    = 'voice_clone_training_failed',
+  VOICE_CLONE_READY              = 'voice_clone_ready',
+  VOICE_CLONE_DEFAULT_SET        = 'voice_clone_default_set',
+
+  // ── Layer 8.4 — Snippet & Repurposing Engine ────────────────────────────
+  SNIPPET_CREATED                = 'snippet_created',
+  SNIPPET_APPROVED               = 'snippet_approved',
+  SNIPPET_REJECTED               = 'snippet_rejected',
+  SNIPPET_SCHEDULED              = 'snippet_scheduled',
+  SNIPPET_PUBLISHED              = 'snippet_published',
+  CONTENT_REPURPOSED             = 'content_repurposed',
+  REPURPOSE_BATCH_COMPLETED      = 'repurpose_batch_completed',
+
+  // ── Layer 8.5 — Video Performance Tracking ────────────────────────────
+  VIDEO_PERFORMANCE_UPDATED      = 'video_performance_updated',
+  VIDEO_HIGH_PERFORMER_DETECTED  = 'video_high_performer_detected',
+  VIDEO_LOW_PERFORMER_DETECTED   = 'video_low_performer_detected',
+
+  // ── Layer 9 — Marketing & Automation ────────────────────────────────────
+  MARKETING_CAMPAIGN_CREATED         = 'marketing_campaign_created',
+  MARKETING_CAMPAIGN_APPROVED        = 'marketing_campaign_approved',
+  MARKETING_CAMPAIGN_LAUNCHED        = 'marketing_campaign_launched',
+  MARKETING_CAMPAIGN_PAUSED          = 'marketing_campaign_paused',
+  MARKETING_CAMPAIGN_ENDED           = 'marketing_campaign_ended',
+
+  // ── Layer 9.2 — Social ───────────────────────────────────────────────────
+  SOCIAL_POST_SCHEDULED              = 'social_post_scheduled',
+  SOCIAL_POST_PUBLISHED              = 'social_post_published',
+  SOCIAL_POST_FAILED                 = 'social_post_failed',
+  SOCIAL_POST_SHARED_BY_AGENT        = 'social_post_shared_by_agent',
+
+  // ── Layer 9.3 — Content Predictor ────────────────────────────────────────
+  CONTENT_PERFORMANCE_PREDICTED      = 'content_performance_predicted',
+
+  // ── Layer 9.4 — Competitive Monitor ─────────────────────────────────────
+  COMPETITOR_CONTENT_ALERTED         = 'competitor_content_alerted',
+
+  // ── Layer 9.5 — Ads & Audiences ──────────────────────────────────────────
+  AD_CAMPAIGN_CREATED                = 'ad_campaign_created',
+  AD_CAMPAIGN_LAUNCHED               = 'ad_campaign_launched',
+  RETARGETING_AUDIENCE_CREATED       = 'retargeting_audience_created',
+  RETARGETING_AUDIENCE_SYNCED        = 'retargeting_audience_synced',
+
+  // ── Layer 9.6 — SEO & Blog ───────────────────────────────────────────────
+  BLOG_POST_GENERATED                = 'blog_post_generated',
+  BLOG_POST_PUBLISHED                = 'blog_post_published',
+
+  // ── Layer 9.7 — Newsletter ───────────────────────────────────────────────
+  NEWSLETTER_SCHEDULED               = 'newsletter_scheduled',
+  NEWSLETTER_SENT                    = 'newsletter_sent',
+
+  // ── Layer 9.8 — Podcast ──────────────────────────────────────────────────
+  PODCAST_EPISODE_GENERATED          = 'podcast_episode_generated',
+  PODCAST_EPISODE_DISTRIBUTED        = 'podcast_episode_distributed',
+  PODCAST_EPISODE_FAILED             = 'podcast_episode_failed',
+
+  // ── Layer 9.9 — Direct Mail ──────────────────────────────────────────────
+  DIRECT_MAIL_CAMPAIGN_CREATED       = 'direct_mail_campaign_created',
+  DIRECT_MAIL_SENT                   = 'direct_mail_sent',
+
+  // ── Layer 9.10 — Listing Tier ────────────────────────────────────────────
+  LISTING_TIER_ASSIGNED              = 'listing_tier_assigned',
+
+  // ── Layer 9.11 — Omni-Presence ──────────────────────────────────────────
+  OMNIPRESENCE_PIPELINE_STARTED      = 'omnipresence_pipeline_started',
+  OMNIPRESENCE_PIPELINE_COMPLETED    = 'omnipresence_pipeline_completed',
+
+  // ── Layer 9.12 — ROI ─────────────────────────────────────────────────────
+  CAMPAIGN_ROI_UPDATED               = 'campaign_roi_updated',
+  QR_ATTACHED_TO_ASSET               = 'qr_attached_to_asset',
+
+  // ── Layer 11: Agent Onboarding & Education ─────────────────────────────────
+  AGENT_LICENSE_SUBMITTED            = 'agent_license_submitted',
+  AGENT_LICENSE_VERIFIED             = 'agent_license_verified',
+  AGENT_LICENSE_FAILED               = 'agent_license_failed',
+  CONTRACT_SENT_FOR_SIGNATURE        = 'contract_sent_for_signature',
+  BRAND_SETUP_STARTED                = 'brand_setup_started',
+  BRAND_SETUP_COMPLETED              = 'brand_setup_completed',
+  INTEGRATION_CONNECTED              = 'integration_connected',
+  INTEGRATION_FAILED                 = 'integration_failed',
+  INTEGRATION_DISCONNECTED           = 'integration_disconnected',
+  INTEGRATION_TOKEN_REFRESHED        = 'integration_token_refreshed',
+  INTEGRATION_TOKEN_EXPIRED          = 'integration_token_expired',
+  OAUTH_REAUTH_REQUIRED              = 'oauth_reauth_required',
+  CRM_SYNC_PUSHED                    = 'crm_sync_pushed',
+  CRM_SYNC_FAILED                    = 'crm_sync_failed',
+  SMS_SEND_REQUESTED                 = 'sms_send_requested',
+  EMAIL_SEND_REQUESTED               = 'email_send_requested',
+  ESIGN_ENVELOPE_REQUESTED           = 'esign_envelope_requested',
+  CALENDAR_EVENT_REQUESTED           = 'calendar_event_requested',
+  ACCOUNTING_PUSH_REQUESTED          = 'accounting_push_requested',
+  PAYMENT_REQUESTED                  = 'payment_requested',
+  SHOWING_REQUEST_SENT               = 'showing_request_sent',
+  TRAINING_VIDEO_STARTED             = 'training_video_started',
+  TRAINING_VIDEO_COMPLETED           = 'training_video_completed',
+  TRAINING_COURSE_ENROLLED           = 'training_course_enrolled',
+  TRAINING_COURSE_COMPLETED          = 'training_course_completed',
+  SETUP_ASSISTANT_QUERY_MADE         = 'setup_assistant_query_made',
+  SETUP_ASSISTANT_ESCALATED          = 'setup_assistant_escalated',
+  CERTIFICATION_AWARDED              = 'certification_awarded',
+  ONBOARDING_COMPLETED               = 'onboarding_completed',
+  ONBOARDING_STALLED                 = 'onboarding_stalled',
+
+  // ── Layer 12 — AI Intelligence Mesh ─────────────────────────────────────────
+  DAILY_BRIEFING_GENERATED           = 'daily_briefing_generated',
+  DEAL_HEALTH_SCORE_UPDATED          = 'deal_health_score_updated',
+  DEAL_AT_RISK_DETECTED              = 'deal_at_risk_detected',
+  INTENT_CLASSIFIED                  = 'intent_classified',
+  COACHING_REPORT_GENERATED          = 'coaching_report_generated',
+  PROACTIVE_INTERVENTION_TRIGGERED   = 'proactive_intervention_triggered',
+  KB_ARTICLE_EMBEDDED                = 'kb_article_embedded',
+  MEMORY_CONTEXT_UPDATED             = 'memory_context_updated',
+
+  // ── Layer 12 — Multi-Agent Coordination ─────────────────────────────────────
+  AGENT_SESSION_STARTED              = 'agent_session_started',
+  AGENT_TASK_DISPATCHED              = 'agent_task_dispatched',
+  AGENT_HANDOFF_INITIATED            = 'agent_handoff_initiated',
+  AGENT_HANDOFF_COMPLETED            = 'agent_handoff_completed',
+  AGENT_ESCALATED_TO_HUMAN           = 'agent_escalated_to_human',
+  AGENT_SESSION_ENDED                = 'agent_session_ended',
+
+  // ── Layer 12 — Market Intelligence ──────────────────────────────────────────
+  MARKET_INSIGHT_GENERATED           = 'market_insight_generated',
+  MARKET_DATA_REFRESHED              = 'market_data_refreshed',
+
+  // ── 12.11 — Behavioral Patterns ──────────────────────────────────────────────
+  BEHAVIORAL_PATTERN_DETECTED        = 'behavioral_pattern_detected',
+  PREDICTION_CREATED                 = 'prediction_created',
+  PREDICTION_OUTCOME_RECORDED        = 'prediction_outcome_recorded',
+
+  // ── 12.12 — Continuous Learning ──────────────────────────────────────────────
+  AI_FEEDBACK_RECEIVED               = 'ai_feedback_received',
+  AI_METRICS_COMPUTED                = 'ai_metrics_computed',
+  PROMPT_CALIBRATION_UPDATED         = 'prompt_calibration_updated',
+
+  // ── Layer 10 — Financial & Billing ──────────────────────────────────────────
+  COMMISSION_CALCULATED              = 'commission_calculated',
+  COMMISSION_DISTRIBUTED             = 'commission_distributed',
+  COMMISSION_PAID                    = 'commission_paid',
+  COMMISSION_DISPUTED                = 'commission_disputed',
+  CAP_HIT                            = 'cap_hit',
+  CAP_RESET                          = 'cap_reset',
+  AGENT_EARNINGS_UPDATED             = 'agent_earnings_updated',
+  TEAM_ROLLUP_COMPLETED              = 'team_rollup_completed',
+  BROKERAGE_PL_UPDATED               = 'brokerage_pl_updated',
+  ACCOUNTING_PUSH_COMPLETED          = 'accounting_push_completed',
+  ACCOUNTING_SYNC_FAILED             = 'accounting_sync_failed',
+  SUBSCRIPTION_CREATED               = 'subscription_created',
+  SUBSCRIPTION_UPGRADED              = 'subscription_upgraded',
+  SUBSCRIPTION_DOWNGRADED            = 'subscription_downgraded',
+  SUBSCRIPTION_CANCELLED             = 'subscription_cancelled',
+  BILLING_INVOICE_GENERATED          = 'billing_invoice_generated',
+  USAGE_THRESHOLD_REACHED            = 'usage_threshold_reached',
+  RECRUITING_ROI_CALCULATED          = 'recruiting_roi_calculated',
+  GAMIFICATION_BADGE_AWARDED         = 'gamification_badge_awarded',
+
+  // ── Layer 7 — Lifetime Customer & Referrals ─────────────────────────────────
+  PAST_CLIENT_TOUCHPOINT_SENT        = 'past_client_touchpoint_sent',
+  ANNIVERSARY_TRIGGERED              = 'anniversary_triggered',
+  MARKET_UPDATE_SENT                 = 'market_update_sent',
+  REFERRAL_ASK_SENT                  = 'referral_ask_sent',
+  REFERRAL_PARTNER_CREATED           = 'referral_partner_created',
+  REFERRAL_CONVERTED                 = 'referral_converted',
+  SOI_ENGAGEMENT_SCORED              = 'soi_engagement_scored',
+  LIFETIME_EDUCATION_DELIVERED       = 'lifetime_education_delivered',
+  SELLER_UPDATE_SENT                 = 'seller_update_sent',
+
+  // ── Layer 7 — Portals ───────────────────────────────────────────────────────
+  PORTAL_VIEW_DETERMINED             = 'portal_view_determined',
+  PORTAL_ACCESSED                    = 'portal_accessed',
+  PORTAL_MODULE_VIEWED               = 'portal_module_viewed',
+  CLIENT_PORTAL_MESSAGE_SENT         = 'client_portal_message_sent',
+  JOURNEY_STAGE_UPDATED              = 'journey_stage_updated',
+  PORTAL_EDUCATION_VIEWED            = 'portal_education_viewed',
+  PORTAL_LIFETIME_SECTION_VIEWED     = 'portal_lifetime_section_viewed',
+  LENDER_PORTAL_USER_INVITED         = 'lender_portal_user_invited',
+  TITLE_PORTAL_USER_INVITED          = 'title_portal_user_invited',
+  VENDOR_PORTAL_ASSIGNMENT_CREATED   = 'vendor_portal_assignment_created',
+  SMART_LANDING_VIEWED               = 'smart_landing_viewed',
+  HOME_VALUE_ESTIMATE_REQUESTED      = 'home_value_estimate_requested',
+  HOME_VALUE_CONTACT_CREATED         = 'home_value_contact_created',
+
+  // ── Vendor Marketplace ──────────────────────────────────────────────────────
+  VENDOR_BOOKING_CREATED             = 'vendor_booking_created',
+  VENDOR_BOOKING_COMPLETED           = 'vendor_booking_completed',
+  VENDOR_REVIEW_SUBMITTED            = 'vendor_review_submitted',
+  VENDOR_ASSIGNED_TO_TRANSACTION     = 'vendor_assigned_to_transaction',
+
+  // ── Layer 13 — Voice ────────────────────────────────────────────────────────
+  VOICE_COMMAND_RECEIVED             = 'voice_command_received',
+  VOICE_COMMAND_EXECUTED             = 'voice_command_executed',
+  VOICE_COMMAND_FAILED               = 'voice_command_failed',
+  VOICE_CALL_INITIATED               = 'voice_call_initiated',
+  VOICE_CALL_COMPLETED               = 'voice_call_completed',
+  VOICE_CALL_MISSED                  = 'voice_call_missed',
+  VOICE_TRANSCRIPT_READY             = 'voice_transcript_ready',
+  VOICE_COACHING_INSIGHT_READY       = 'voice_coaching_insight_ready',
+  AI_ISA_CALL_COMPLETED              = 'ai_isa_call_completed',
+  AI_ISA_HANDOFF_TO_AGENT            = 'ai_isa_handoff_to_agent',
+
+  // ── Neighborhood & Heatmap ──────────────────────────────────────────────────
+  NEIGHBORHOOD_REPORT_GENERATED      = 'neighborhood_report_generated',
+  TEAM_HEATMAP_SNAPSHOT_TAKEN        = 'team_heatmap_snapshot_taken',
+  TERRITORY_ALERT_TRIGGERED          = 'territory_alert_triggered',
+  RECRUITING_TERRITORY_SCORED        = 'recruiting_territory_scored',
+
+  // ── Vendor / Integration / Sync Events ─────────────────────────────────
+  DOCUMENT_UPLOADED                  = 'document_uploaded',
+  INTEGRATION_DEACTIVATED            = 'integration_deactivated',
+  MESSAGE_CREATED                    = 'message_created',
+  SYSTEM_SYNC_TRIGGERED              = 'system_sync_triggered',
+  SYSTEM_SYNC_COMPLETED              = 'system_sync_completed',
 }

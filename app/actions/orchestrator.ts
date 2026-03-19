@@ -121,7 +121,7 @@ export async function emitEvent(input: EventInput, processImmediately = false): 
     // Check for duplicate events using dedupe_key
     if (input.dedupe_key) {
       const { data: existing } = await supabase
-        .from("events")
+        .from("lifecycle_events")
         .select("id")
         .eq("dedupe_key", input.dedupe_key)
         .single()
@@ -133,7 +133,7 @@ export async function emitEvent(input: EventInput, processImmediately = false): 
     
     // Insert the event
     const { data: event, error } = await supabase
-      .from("events")
+      .from("lifecycle_events")
       .insert({
         brokerage_id: input.brokerage_id,
         user_id: input.user_id,
@@ -550,7 +550,7 @@ async function handleVideoGenerated(event: Event): Promise<ProcessingResult> {
 async function markEventProcessed(eventId: string): Promise<void> {
   const supabase = await createServerClient()
 
-  await supabase.from("events").update({ processed_at: new Date().toISOString() }).eq("id", eventId)
+  await supabase.from("lifecycle_events").update({ processed_at: new Date().toISOString() }).eq("id", eventId)
 }
 
 async function logProcessingResults(eventId: string, results: ProcessingResult[]): Promise<void> {

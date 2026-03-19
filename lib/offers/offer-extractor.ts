@@ -1,4 +1,4 @@
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -48,15 +48,8 @@ export async function extractOfferFromPdf(params: {
     const pdfBuffer = await pdfResp.arrayBuffer()
     const base64Pdf = Buffer.from(pdfBuffer).toString("base64")
 
-    const { text } = await generateText({
-      model: "anthropic/claude-opus-4.6",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `You are a real estate document parser. Extract ONLY the following fields from this offer document.
+    const response = await generateAIResponse({
+      prompt: `You are a real estate document parser. Extract ONLY the following fields from this offer document.
 Return ONLY a valid JSON object. Do not include any explanation, commentary, or markdown.
 
 Required JSON schema:
@@ -80,6 +73,13 @@ Required JSON schema:
   "contingencies": string[] (list all contingency names),
   "buyer_notes": string or null
 }`,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Extract offer data from this PDF document"
             },
             {
               type: "file",
@@ -89,10 +89,15 @@ Required JSON schema:
           ],
         },
       ],
+      metadata: {
+        userId: "system",
+        brokerageId: brokerageId,
+        feature: "document_parsing",
+      },
     })
 
     // Parse — strip any accidental markdown fences
-    const cleaned = text.trim().replace(/^```json\n?/, "").replace(/\n?```$/, "")
+    const cleaned = response.text.trim().replace(/^```json\n?/, "").replace(/\n?```$/, "")
     const extracted: ExtractedOfferData = JSON.parse(cleaned)
 
     // UPDATE offers row with all extracted columns

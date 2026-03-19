@@ -78,28 +78,35 @@ export function useAuth(): AuthState {
       // Fetch extended profile + roles in parallel
       const [{ data: userData }, { data: rolesData }] = await Promise.all([
         client.from('users').select('*').eq('id', authUser.id).single(),
-        client.from('user_roles').select('role, brokerage_id, team_id, agent_id, vendor_id').eq('user_id', authUser.id),
+        client.from('user_role_assignments').select('role, brokerage_id, team_id, agent_id, vendor_id').eq('user_id', authUser.id),
       ])
 
+      // Priority: auth metadata > role assignments > users table > default
       const rawRole: string = authUser.user_metadata?.user_type
         || rolesData?.[0]?.role
+        || userData?.user_type
         || 'agent'
-
+      
       const canonicalRole = toCanonicalRoleOrDefault(rawRole, 'agent')
       const persona: string | null = authUser.user_metadata?.contact_persona ?? null
+
+      // Build roles array - include users table user_type as fallback
+      const resolvedRoles = rolesData && rolesData.length > 0
+        ? rolesData.map((r: Record<string, unknown>) =>
+            toCanonicalRoleOrDefault(r.role as string, 'agent')
+          )
+        : [canonicalRole]
 
       const ctx: UserContext = {
         id: authUser.id,
         email: authUser.email ?? '',
         firstName: userData?.first_name ?? '',
         lastName: userData?.last_name ?? '',
-        roles: (rolesData ?? []).map((r: Record<string, unknown>) =>
-          toCanonicalRoleOrDefault(r.role as string, 'agent')
-        ),
-        brokerageId: rolesData?.[0]?.brokerage_id,
-        teamId: rolesData?.[0]?.team_id,
-        agentId: rolesData?.[0]?.agent_id,
-        vendorId: rolesData?.[0]?.vendor_id,
+        roles: resolvedRoles,
+        brokerageId: rolesData?.[0]?.brokerage_id ?? userData?.brokerage_id,
+        teamId: rolesData?.[0]?.team_id ?? userData?.team_id,
+        agentId: rolesData?.[0]?.agent_id ?? undefined,
+        vendorId: rolesData?.[0]?.vendor_id ?? undefined,
       }
 
       const domainUser: User = {

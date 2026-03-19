@@ -19,10 +19,9 @@ export class NotificationService {
 
   /**
    * Send notifications via all enabled channels: in-app, email, SMS (if phone + consent), push (if global setting enabled)
+   * Logs every send attempt to notification_log regardless of success/failure
    */
   async sendMultiChannelNotification(params: NotificationParams): Promise<void> {
-    const channels: NotificationChannel[] = ["in_app", "email"]
-
     // Check global push setting
     const { data: settings } = await this.supabase
       .from("global_settings")
@@ -35,19 +34,28 @@ export class NotificationService {
 
     // Get recipient profiles for SMS eligibility (phone + consent)
     const { data: profiles } = await this.supabase
-      .from("profiles")
+      .from("users")
       .select("id, email, full_name, phone, communication_preferences")
       .in("id", params.recipientIds)
 
-    // Send in-app
-    await this.sendInAppNotification(params)
-    await this.logNotification(params, "in_app", true)
+    // Send in-app — log every attempt
+    try {
+      await this.sendInAppNotification(params)
+      await this.logNotification(params, "in_app", true)
+    } catch (err) {
+      await this.logNotification(params, "in_app", false, err instanceof Error ? err.message : "Unknown error")
+    }
 
-    // Send email
-    await this.sendEmailNotification(params, profiles ?? [])
-    await this.logNotification(params, "email", true)
+    // Send email — log every attempt
+    try {
+      await this.sendEmailNotification(params, profiles ?? [])
+      await this.logNotification(params, "email", true)
+    } catch (err) {
+      await this.logNotification(params, "email", false, err instanceof Error ? err.message : "Unknown error")
+    }
 
-    // Send SMS if enabled and recipients have phone + consent
+    // Send SMS if enabled — uses existing provider path via dispatchSms
+    // Log every send attempt regardless of success/failure
     if (smsEnabled && profiles) {
       for (const profile of profiles) {
         const hasPhone   = !!profile.phone
@@ -55,20 +63,38 @@ export class NotificationService {
         const hasConsent = prefs.sms_consent === true || prefs.sms_opt_in === true
 
         if (hasPhone && hasConsent) {
-          await this.sendSmsNotification({
-            ...params,
-            recipientIds: [profile.id],
-            phone: profile.phone!,
-          })
-          await this.logNotification({ ...params, recipientIds: [profile.id] }, "sms", true)
+          try {
+            const result = await this.sendSmsNotification({
+              ...params,
+              recipientIds: [profile.id],
+              phone: profile.phone!,
+            })
+            await this.logNotification(
+              { ...params, recipientIds: [profile.id] },
+              "sms",
+              result.success,
+              result.error
+            )
+          } catch (err) {
+            await this.logNotification(
+              { ...params, recipientIds: [profile.id] },
+              "sms",
+              false,
+              err instanceof Error ? err.message : "Unknown error"
+            )
+          }
         }
       }
     }
 
-    // Send push if global setting enabled
+    // Send push if global setting enabled — log every attempt
     if (pushEnabled) {
-      await this.sendPushNotification(params)
-      await this.logNotification(params, "push", true)
+      try {
+        await this.sendPushNotification(params)
+        await this.logNotification(params, "push", true)
+      } catch (err) {
+        await this.logNotification(params, "push", false, err instanceof Error ? err.message : "Unknown error")
+      }
     }
   }
 
@@ -109,7 +135,7 @@ export class NotificationService {
     let recipientProfiles = profiles
     if (!recipientProfiles) {
       const { data } = await this.supabase
-        .from("profiles")
+        .from("users")
         .select("id, email, full_name")
         .in("id", params.recipientIds)
       recipientProfiles = data ?? []
@@ -137,10 +163,15 @@ export class NotificationService {
     }
   }
 
-  private async sendSmsNotification(params: NotificationParams & { phone: string }): Promise<void> {
+  /**
+   * Send SMS via existing provider path (dispatchSms -> Twilio)
+   * Returns result for logging success/failure
+   */
+  private async sendSmsNotification(params: NotificationParams & { phone: string }): Promise<{ success: boolean; error?: string }> {
     const smsMessage = `${params.title}\n${params.message}`
 
-    await dispatchSms({
+    // SMS sent through existing provider path: dispatchSms -> lib/providers/messaging -> Twilio
+    const result = await dispatchSms({
       brokerageId: params.brokerageId,
       to: params.phone,
       message: smsMessage.slice(0, 1600), // SMS segment limit
@@ -151,6 +182,8 @@ export class NotificationService {
         ...params.metadata,
       },
     })
+
+    return { success: result.success, error: result.error }
   }
 
   private async sendPushNotification(params: NotificationParams): Promise<void> {
@@ -176,7 +209,8 @@ export class NotificationService {
   }
 
   /**
-   * Log every notification send to notification_log for audit and analytics
+   * Log every notification send attempt to notification_log for audit and analytics
+   * Uses existing notification_log table (brokerage_id, delivery_channel, status, response)
    */
   private async logNotification(
     params: NotificationParams,
@@ -184,23 +218,25 @@ export class NotificationService {
     success: boolean,
     errorMessage?: string
   ): Promise<void> {
-    const logEntries = params.recipientIds.map(userId => ({
+    // notification_log schema: brokerage_id, delivery_channel, status, response, created_at
+    const logEntries = params.recipientIds.map(() => ({
       brokerage_id: params.brokerageId,
-      user_id: userId,
-      transaction_id: params.transactionId,
-      channel,
-      event_type: params.eventType,
-      title: params.title,
-      message: params.message,
-      priority: params.priority || "medium",
-      success,
-      error_message: errorMessage ?? null,
-      metadata: params.metadata ?? null,
+      delivery_channel: channel,
+      status: success ? "sent" : "failed",
+      response: {
+        transaction_id: params.transactionId,
+        event_type: params.eventType,
+        title: params.title,
+        message: params.message,
+        priority: params.priority || "medium",
+        error_message: errorMessage ?? null,
+        metadata: params.metadata ?? null,
+      },
       created_at: new Date().toISOString(),
     }))
 
     await this.supabase.from("notification_log").insert(logEntries).catch(() => {
-      // Table may not exist yet — fail silently to avoid blocking notifications
+      // Log failure silently to avoid blocking notifications
     })
   }
 

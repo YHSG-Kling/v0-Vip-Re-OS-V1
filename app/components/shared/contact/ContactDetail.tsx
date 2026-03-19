@@ -86,7 +86,7 @@ export function ContactDetail({
   const [newNote, setNewNote] = useState("")
   const urgencyColors = getUrgencyColor(contact.timeline || "unknown")
   const daysUntil = calculateDaysUntilTimeline(contact.timeline || "unknown")
-  const dashboardRoute = getPersonaDashboardRoute(contact.contact_persona || "other")
+  const portalUrl = getPersonaDashboardRoute(contact.id, contact.contact_persona)
 
   const handleAddNote = () => {
     if (newNote.trim()) {
@@ -329,25 +329,33 @@ export function ContactDetail({
           </CardContent>
         </Card>
 
-        {/* Dashboard Preview */}
+        {/* Client Portal */}
         <Card>
           <CardHeader>
             <CardTitle className="text-lg flex items-center gap-2">
-              <ExternalLink className="w-5 h-5" /> Dashboard Preview
+              <ExternalLink className="w-5 h-5" /> Client Portal
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <p className="text-sm text-slate-600">
-              This contact will see the <strong>{PERSONA_LABELS[contact.contact_persona]}</strong> dashboard when they
-              log in.
+              This contact sees the{" "}
+              <strong>{PERSONA_LABELS[contact.contact_persona] ?? "Contact"}</strong>{" "}
+              view. Portal view is determined automatically from their persona.
             </p>
-            <div className="p-3 bg-slate-50 rounded-lg text-sm">
-              <p className="font-medium">Route: {dashboardRoute}</p>
-            </div>
+            <a
+              href={portalUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block p-3 bg-slate-50 rounded-lg text-sm font-mono text-slate-700 hover:bg-slate-100 transition-colors"
+            >
+              {portalUrl}
+            </a>
             {contact.has_login && (
-              <Button variant="outline" size="sm" className="w-full bg-transparent">
-                <ExternalLink className="w-4 h-4 mr-2" /> Preview Dashboard
-              </Button>
+              <a href={portalUrl} target="_blank" rel="noopener noreferrer">
+                <Button variant="outline" size="sm" className="w-full bg-transparent">
+                  <ExternalLink className="w-4 h-4 mr-2" /> Open Portal
+                </Button>
+              </a>
             )}
           </CardContent>
         </Card>

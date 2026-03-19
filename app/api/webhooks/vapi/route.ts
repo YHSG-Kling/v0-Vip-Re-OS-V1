@@ -62,14 +62,13 @@ async function handleBookAppointment(params: any) {
   const { createClient } = await import("@/lib/supabase/server")
   const supabase = await createClient()
 
-  const { data: appointment } = await supabase
-    .from("appointments")
+  const { data: showing } = await supabase
+    .from("showings")
     .insert({
       contact_id: params.contact_id,
       agent_id: params.agent_id,
-      appointment_type: "consultation",
-      scheduled_start: params.date_time,
-      scheduled_end: new Date(new Date(params.date_time).getTime() + 30 * 60000).toISOString(),
+      scheduled_at: params.date_time,
+      duration_minutes: 30,
       status: "scheduled",
       notes: "Booked by AI ISA",
     })
@@ -79,7 +78,7 @@ async function handleBookAppointment(params: any) {
   return NextResponse.json({
     success: true,
     message: `Great! I've got you scheduled for ${new Date(params.date_time).toLocaleString()}. You'll get a text confirmation.`,
-    appointment_id: appointment?.id,
+    showing_id: showing?.id,
   })
 }
 

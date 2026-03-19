@@ -41,7 +41,7 @@ export async function getAgentById(agentId: string) {
       *,
       user:users(id, name, email, avatar_url, phone),
       commissions:agent_commissions(*),
-      expenses:agent_expenses(*),
+      expenses:business_expenses(*),
       achievements:agent_achievements(*, achievement:achievements(*)),
       goals:agent_goals(*)
     `)
@@ -410,7 +410,7 @@ export async function getAgentExpenses(agentId: string, year?: number) {
   const endDate = `${currentYear}-12-31`
 
   const { data, error } = await supabase
-    .from("agent_expenses")
+    .from("business_expenses")
     .select("*")
     .eq("agent_id", agentId)
     .gte("date", startDate)
@@ -437,7 +437,7 @@ export async function addAgentExpense(expenseData: {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("agent_expenses")
+    .from("business_expenses")
     .insert({
       ...expenseData,
       status: expenseData.is_reimbursable ? "pending" : "n/a",
@@ -460,7 +460,7 @@ export async function updateExpenseStatus(
 ) {
   const supabase = await createClient()
 
-  const { data, error } = await supabase.from("agent_expenses").update({ status }).eq("id", expenseId).select().single()
+  const { data, error } = await supabase.from("business_expenses").update({ status }).eq("id", expenseId).select().single()
 
   if (error) {
     console.error("Error updating expense status:", error)
@@ -479,7 +479,7 @@ export async function getExpenseSummary(agentId: string, year?: number) {
   const endDate = `${currentYear}-12-31`
 
   const { data, error } = await supabase
-    .from("agent_expenses")
+    .from("business_expenses")
     .select("category, amount")
     .eq("agent_id", agentId)
     .gte("date", startDate)

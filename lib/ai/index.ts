@@ -3,7 +3,7 @@ export { generateAIJSON, generateAIText, generateChatResponse, generateAIObject 
 
 // ─── MODELS / RESPONSE PIPELINE ───────────────────────────────────────────────
 export type { ComplianceContext, AIRequest, ComplianceViolation, AIResponse } from "./models"
-export { generateAIResponse, generateSimpleText, generatePublicContent, generateOutboundMessage } from "./models"
+export { generateAIResponse, generateSimpleText, generatePublicContent, generateOutboundMessage, selectModelForTask, AI_TASK_ROUTING } from "./models"
 
 // ─── PIPELINE (persona / brand-voice aware) ───────────────────────────────────
 export type { PersonaContext, BrandVoiceContext, PipelineRequest, PipelineResponse, SimplePipelineOptions } from "./pipeline"

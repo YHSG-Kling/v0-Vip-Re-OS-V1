@@ -82,7 +82,7 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
   // Review dialog state
   const [selectedLog, setSelectedLog] = useState<ComplianceLog | null>(null)
   const [showReviewDialog, setShowReviewDialog] = useState(false)
-  const [reviewStatus, setReviewStatus] = useState<ComplianceCheckStatus>("passed")
+  const [reviewStatus, setReviewStatus] = useState<ComplianceCheckStatus>("pass")
   const [resolutionNotes, setResolutionNotes] = useState("")
   const [failureReason, setFailureReason] = useState("")
 
@@ -95,13 +95,13 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
   })
 
   // Stats
-  const pendingCount = logs.filter(l => l.status === "pending").length
-  const failedCount = logs.filter(l => l.status === "failed").length
-  const blockingFailedCount = logs.filter(l => l.status === "failed" && l.is_blocking).length
+  const pendingCount = logs.filter(l => l.status === "pending" || l.status === "needs_review").length
+  const failedCount = logs.filter(l => l.status === "fail").length
+  const blockingFailedCount = logs.filter(l => l.status === "fail" && l.is_blocking).length
 
   function openReviewDialog(log: ComplianceLog) {
     setSelectedLog(log)
-    setReviewStatus("passed")
+    setReviewStatus("pass")
     setResolutionNotes("")
     setFailureReason("")
     setShowReviewDialog(true)
@@ -137,12 +137,14 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
 
   function getStatusBadge(status: string, isBlocking: boolean) {
     switch (status) {
-      case "passed":
+      case "pass":
         return <Badge variant="default" className="bg-green-500"><CheckCircle2 className="h-3 w-3 mr-1" />Passed</Badge>
-      case "failed":
+      case "fail":
         return <Badge variant="destructive"><XCircle className="h-3 w-3 mr-1" />Failed</Badge>
       case "waived":
         return <Badge variant="secondary"><ShieldCheck className="h-3 w-3 mr-1" />Waived</Badge>
+      case "needs_review":
+        return <Badge variant="outline" className="border-amber-500 text-amber-700"><AlertTriangle className="h-3 w-3 mr-1" />Needs Review</Badge>
       default:
         return <Badge variant="outline"><Clock className="h-3 w-3 mr-1" />Pending</Badge>
     }
@@ -207,9 +209,10 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="passed">Passed</SelectItem>
-                  <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="pass">Passed</SelectItem>
+                  <SelectItem value="fail">Failed</SelectItem>
                   <SelectItem value="waived">Waived</SelectItem>
+                  <SelectItem value="needs_review">Needs Review</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -284,7 +287,7 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                       </TableCell>
                       <TableCell>{getStatusBadge(log.status, log.is_blocking)}</TableCell>
                       <TableCell className="text-right">
-                        {log.status === "pending" ? (
+                        {log.status === "pending" || log.status === "needs_review" ? (
                           <Button
                             size="sm"
                             variant="outline"
@@ -292,7 +295,7 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                           >
                             Review
                           </Button>
-                        ) : log.status === "failed" ? (
+                        ) : log.status === "fail" ? (
                           <Button
                             size="sm"
                             variant="outline"
@@ -341,14 +344,15 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="passed">Passed</SelectItem>
-                  <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="pass">Passed</SelectItem>
+                  <SelectItem value="fail">Failed</SelectItem>
                   <SelectItem value="waived">Waived</SelectItem>
+                  <SelectItem value="needs_review">Needs Review</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            {reviewStatus === "failed" && (
+            {reviewStatus === "fail" && (
               <div className="space-y-2">
                 <Label htmlFor="failure-reason">Failure Reason</Label>
                 <Textarea
@@ -360,7 +364,7 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
               </div>
             )}
 
-            {(reviewStatus === "passed" || reviewStatus === "waived") && (
+            {(reviewStatus === "pass" || reviewStatus === "waived") && (
               <div className="space-y-2">
                 <Label htmlFor="resolution-notes">Notes (optional)</Label>
                 <Textarea
@@ -372,7 +376,7 @@ export function TransactionComplianceTab({ initialLogs }: TransactionComplianceT
               </div>
             )}
 
-            {selectedLog?.is_blocking && reviewStatus === "failed" && (
+            {selectedLog?.is_blocking && (reviewStatus === "fail" || reviewStatus === "needs_review") && (
               <div className="bg-red-50 border border-red-200 rounded-md p-3">
                 <p className="text-sm text-red-800 flex items-center gap-2">
                   <AlertTriangle className="h-4 w-4" />

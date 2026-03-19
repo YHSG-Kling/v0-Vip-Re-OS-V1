@@ -33,7 +33,7 @@ export async function createTransactionFromOffer(params: {
   
   // Get offer details
   const { data: offer, error: offerError } = await supabase
-    .from("buyer_offers")
+    .from("offers")
     .select("*, buyer_agents!inner(agent_id, brokerage_id)")
     .eq("id", params.offerId)
     .single()

@@ -1,266 +1,257 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useEffect, useState, useCallback } from 'react'
 import { useAuth } from '@/lib/auth/client'
-import Sidebar from '@/app/components/Sidebar'
-import LoadingSpinner from '@/app/components/LoadingSpinner'
-import { Users, Search, Plus, Filter, Mail, Phone, MapPin, Calendar } from 'lucide-react'
+import { getContacts } from '@/app/actions/contacts'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
+import { Card, CardContent } from '@/components/ui/card'
+import {
+  Users,
+  Search,
+  Plus,
+  Mail,
+  Phone,
+  MapPin,
+  Loader2,
+  RefreshCw,
+} from 'lucide-react'
+import Link from 'next/link'
+
+interface Contact {
+  id: string
+  first_name: string
+  last_name: string
+  email: string
+  phone?: string
+  contact_type?: string
+  status?: string
+  city?: string
+  state?: string
+  created_at?: string
+}
+
+const STATUS_COLORS: Record<string, string> = {
+  new: 'bg-slate-100 text-slate-700',
+  contacted: 'bg-blue-100 text-blue-700',
+  qualified: 'bg-indigo-100 text-indigo-700',
+  appointment_booked: 'bg-purple-100 text-purple-700',
+  signed_agreement: 'bg-yellow-100 text-yellow-700',
+  active_listing: 'bg-orange-100 text-orange-700',
+  pending: 'bg-amber-100 text-amber-700',
+  sold: 'bg-green-100 text-green-700',
+  lifetime_customer: 'bg-emerald-100 text-emerald-700',
+}
+
+const TYPE_COLORS: Record<string, string> = {
+  buyer: 'bg-blue-50 text-blue-700',
+  seller: 'bg-green-50 text-green-700',
+  investor: 'bg-purple-50 text-purple-700',
+  other: 'bg-gray-50 text-gray-600',
+}
 
 export default function CRMPage() {
-  const router = useRouter()
-  const { user, isLoading, signOut } = useAuth()
-  const [searchQuery, setSearchQuery] = useState('')
+  const { user, loading: authLoading } = useAuth()
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [filtered, setFiltered] = useState<Contact[]>([])
+  const [search, setSearch] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  // Redirect to login if not authenticated
+  const loadContacts = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await getContacts({ limit: 100 })
+      if (result.success) {
+        setContacts(result.contacts)
+        setFiltered(result.contacts)
+      } else {
+        setError(result.error ?? 'Failed to load contacts')
+      }
+    } catch (err) {
+      setError('Failed to load contacts')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
-    if (!isLoading && !user) {
-      router.push('/login')
+    if (!authLoading && user) {
+      loadContacts()
     }
-  }, [user, isLoading, router])
+  }, [authLoading, user, loadContacts])
 
-  const handleLogout = async () => {
-    await signOut()
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-    })
-    logout()
-    router.push('/login')
-  }
+  useEffect(() => {
+    const q = search.toLowerCase()
+    setFiltered(
+      contacts.filter(
+        (c) =>
+          `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
+          c.email.toLowerCase().includes(q) ||
+          c.phone?.includes(q) ||
+          c.city?.toLowerCase().includes(q)
+      )
+    )
+  }, [search, contacts])
 
-  if (isLoading) {
-    return <LoadingSpinner fullScreen size="lg" text="Loading CRM..." />
-  }
-
-  if (!user) {
-    return null
-  }
-
-  // Sample contacts data - in production this would come from your database
-  const contacts = [
-    {
-      id: 1,
-      name: 'John Smith',
-      email: 'john.smith@email.com',
-      phone: '(555) 123-4567',
-      type: 'Buyer',
-      status: 'Active',
-      lastContact: '2 days ago',
-      location: 'Los Angeles, CA'
-    },
-    {
-      id: 2,
-      name: 'Sarah Johnson',
-      email: 'sarah.j@email.com',
-      phone: '(555) 234-5678',
-      type: 'Seller',
-      status: 'Hot Lead',
-      lastContact: '5 hours ago',
-      location: 'Beverly Hills, CA'
-    },
-    {
-      id: 3,
-      name: 'Michael Brown',
-      email: 'mbrown@email.com',
-      phone: '(555) 345-6789',
-      type: 'Buyer',
-      status: 'Nurture',
-      lastContact: '1 week ago',
-      location: 'Santa Monica, CA'
-    },
-    {
-      id: 4,
-      name: 'Emily Davis',
-      email: 'emily.davis@email.com',
-      phone: '(555) 456-7890',
-      type: 'Investor',
-      status: 'Active',
-      lastContact: 'Yesterday',
-      location: 'Pasadena, CA'
-    },
-  ]
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'Hot Lead':
-        return 'bg-red-500/10 text-red-400 border-red-500/20'
-      case 'Active':
-        return 'bg-green-500/10 text-green-400 border-green-500/20'
-      case 'Nurture':
-        return 'bg-blue-500/10 text-blue-400 border-blue-500/20'
-      default:
-        return 'bg-slate-500/10 text-slate-400 border-slate-500/20'
-    }
-  }
-
-  const getTypeColor = (type: string) => {
-    switch (type) {
-      case 'Buyer':
-        return 'bg-blue-500/10 text-blue-400'
-      case 'Seller':
-        return 'bg-purple-500/10 text-purple-400'
-      case 'Investor':
-        return 'bg-yellow-500/10 text-yellow-400'
-      default:
-        return 'bg-slate-500/10 text-slate-400'
-    }
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+      </div>
+    )
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-950">
-      <Sidebar role={user.role} onLogout={handleLogout} />
-      
-      <main className="ml-64 flex-1 p-8">
-        {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h1 className="text-3xl font-bold text-white mb-2">CRM & Contacts</h1>
-              <p className="text-slate-400">Manage your contacts and relationships</p>
-            </div>
-            <button className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
-              <Plus size={18} />
+    <div className="p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">My Contacts</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            {loading ? 'Loading...' : `${filtered.length} contact${filtered.length !== 1 ? 's' : ''}`}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={loadContacts}
+            disabled={loading}
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+          <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" asChild>
+            <Link href="/contacts/new">
+              <Plus className="h-4 w-4 mr-2" />
               Add Contact
-            </button>
-          </div>
-
-          {/* Stats */}
-          <div className="grid grid-cols-4 gap-4 mb-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm mb-1">Total Contacts</p>
-                  <p className="text-2xl font-bold text-white">248</p>
-                </div>
-                <div className="w-10 h-10 bg-blue-500/10 rounded-lg flex items-center justify-center">
-                  <Users className="text-blue-400" size={20} />
-                </div>
-              </div>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm mb-1">Active Leads</p>
-                  <p className="text-2xl font-bold text-white">67</p>
-                </div>
-                <div className="w-10 h-10 bg-green-500/10 rounded-lg flex items-center justify-center">
-                  <Users className="text-green-400" size={20} />
-                </div>
-              </div>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm mb-1">Hot Leads</p>
-                  <p className="text-2xl font-bold text-white">23</p>
-                </div>
-                <div className="w-10 h-10 bg-red-500/10 rounded-lg flex items-center justify-center">
-                  <Users className="text-red-400" size={20} />
-                </div>
-              </div>
-            </div>
-            <div className="bg-slate-900 border border-slate-800 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-slate-400 text-sm mb-1">This Week</p>
-                  <p className="text-2xl font-bold text-white">12</p>
-                </div>
-                <div className="w-10 h-10 bg-purple-500/10 rounded-lg flex items-center justify-center">
-                  <Calendar className="text-purple-400" size={20} />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Search and Filters */}
-          <div className="flex items-center gap-4">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-              <input
-                type="text"
-                placeholder="Search contacts by name, email, or phone..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-10 pr-4 py-2.5 bg-slate-900 border border-slate-800 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
-              />
-            </div>
-            <button className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 rounded-lg transition-colors">
-              <Filter size={18} />
-              Filters
-            </button>
-          </div>
+            </Link>
+          </Button>
         </div>
+      </div>
 
-        {/* Contacts Table */}
-        <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-slate-800">
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Contact</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Type</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Status</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Location</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Last Contact</th>
-                <th className="text-left py-4 px-6 text-sm font-semibold text-slate-300">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {contacts.map((contact) => (
-                <tr key={contact.id} className="border-b border-slate-800 hover:bg-slate-800/50 transition-colors">
-                  <td className="py-4 px-6">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-semibold">
-                        {contact.name.split(' ').map(n => n[0]).join('')}
-                      </div>
-                      <div>
-                        <p className="font-semibold text-white">{contact.name}</p>
-                        <p className="text-sm text-slate-400">{contact.email}</p>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="py-4 px-6">
-                    <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${getTypeColor(contact.type)}`}>
-                      {contact.type}
-                    </span>
-                  </td>
-                  <td className="py-4 px-6">
-                    <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold border ${getStatusColor(contact.status)}`}>
-                      {contact.status}
-                    </span>
-                  </td>
-                  <td className="py-4 px-6">
-                    <div className="flex items-center gap-2 text-slate-400">
-                      <MapPin size={14} />
-                      <span className="text-sm">{contact.location}</span>
-                    </div>
-                  </td>
-                  <td className="py-4 px-6">
-                    <span className="text-sm text-slate-400">{contact.lastContact}</span>
-                  </td>
-                  <td className="py-4 px-6">
-                    <div className="flex items-center gap-2">
-                      <button className="p-2 hover:bg-slate-700 rounded-lg transition-colors text-slate-400 hover:text-white">
-                        <Mail size={16} />
-                      </button>
-                      <button className="p-2 hover:bg-slate-700 rounded-lg transition-colors text-slate-400 hover:text-white">
-                        <Phone size={16} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+        <Input
+          placeholder="Search by name, email, phone, or city..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-10"
+        />
+      </div>
+
+      {/* Error state */}
+      {error && (
+        <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {error}
+          <button
+            onClick={loadContacts}
+            className="ml-2 underline font-medium"
+          >
+            Retry
+          </button>
         </div>
+      )}
 
-        {/* Empty state when search returns no results */}
-        {searchQuery && contacts.length === 0 && (
-          <div className="text-center py-12">
-            <Users className="mx-auto text-slate-600 mb-4" size={48} />
-            <p className="text-slate-400">No contacts found matching "{searchQuery}"</p>
-          </div>
-        )}
-      </main>
+      {/* Loading skeleton */}
+      {loading && (
+        <div className="space-y-3">
+          {[...Array(5)].map((_, i) => (
+            <div key={i} className="h-20 bg-gray-100 rounded-lg animate-pulse" />
+          ))}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!loading && !error && filtered.length === 0 && (
+        <div className="text-center py-16">
+          <Users className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-1">
+            {search ? 'No contacts match your search' : 'No contacts yet'}
+          </h3>
+          <p className="text-sm text-gray-500 mb-4">
+            {search
+              ? 'Try adjusting your search terms'
+              : 'Add your first contact to get started'}
+          </p>
+          {!search && (
+            <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white" asChild>
+              <Link href="/contacts/new">
+                <Plus className="h-4 w-4 mr-2" />
+                Add Contact
+              </Link>
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Contact list */}
+      {!loading && filtered.length > 0 && (
+        <div className="grid gap-3">
+          {filtered.map((contact) => (
+            <Card
+              key={contact.id}
+              className="hover:shadow-md transition-shadow cursor-pointer"
+            >
+              <CardContent className="p-4">
+                <Link href={`/contacts/${contact.id}`} className="block">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <h3 className="font-semibold text-gray-900 truncate">
+                          {contact.first_name} {contact.last_name}
+                        </h3>
+                        {contact.contact_type && (
+                          <Badge
+                            className={`text-xs ${
+                              TYPE_COLORS[contact.contact_type] ?? TYPE_COLORS.other
+                            }`}
+                          >
+                            {contact.contact_type}
+                          </Badge>
+                        )}
+                        {contact.status && (
+                          <Badge
+                            className={`text-xs ${
+                              STATUS_COLORS[contact.status] ?? 'bg-gray-100 text-gray-600'
+                            }`}
+                          >
+                            {contact.status.replace(/_/g, ' ')}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
+                        {contact.email && (
+                          <span className="flex items-center gap-1">
+                            <Mail className="h-3.5 w-3.5" />
+                            {contact.email}
+                          </span>
+                        )}
+                        {contact.phone && (
+                          <span className="flex items-center gap-1">
+                            <Phone className="h-3.5 w-3.5" />
+                            {contact.phone}
+                          </span>
+                        )}
+                        {(contact.city || contact.state) && (
+                          <span className="flex items-center gap-1">
+                            <MapPin className="h-3.5 w-3.5" />
+                            {[contact.city, contact.state].filter(Boolean).join(', ')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </Link>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -1,7 +1,5 @@
-"use server"
-
 import { createClient } from "@/lib/supabase/server"
-import { revalidatePath } from "next/cache"
+import { KernelEvent } from "@/lib/kernel/events"
 
 // ============================================
 // VENDOR DIRECTORY & SEARCH
@@ -21,7 +19,7 @@ export async function searchVendors(filters: {
   if (!user) throw new Error("Not authenticated")
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -94,7 +92,7 @@ export async function getSuggestedVendorsByStage(stage: string) {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -159,7 +157,7 @@ export async function createVendorBooking(data: {
   if (!user) throw new Error("Not authenticated")
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -221,7 +219,7 @@ export async function getCompletedBookingsForRating() {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -260,10 +258,10 @@ export async function markBookingComplete(bookingId: string) {
 
   if (error) throw error
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath("/dashboard/vendors")
-  if (booking?.transactions?.id) {
-    revalidatePath(`/dashboard/transactions/${booking.transactions.id}`)
-  }
+  revalidatePath(`/dashboard/transactions/${booking.transactions.id}`)
   return booking
 }
 
@@ -282,7 +280,7 @@ export async function rateVendorBooking(data: {
   if (!user) throw new Error("Not authenticated")
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -322,6 +320,8 @@ export async function rateVendorBooking(data: {
   // Recalculate vendor_ratings aggregate
   await recalculateVendorRatings(booking.vendor_id, booking.brokerage_id)
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath("/dashboard/vendors")
   return { success: true }
 }
@@ -397,7 +397,7 @@ export async function getVendorReviews(vendorId: string) {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id, role")
     .eq("id", user.id)
     .maybeSingle()
@@ -433,7 +433,7 @@ export async function getVendorCostComparison(serviceType: string) {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -496,7 +496,7 @@ export async function getAllVendorBookings(limit: number = 50) {
   if (!user) return []
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
@@ -515,4 +515,206 @@ export async function getAllVendorBookings(limit: number = 50) {
     .limit(limit)
 
   return bookings || []
+}
+
+// ============================================
+// VENDOR ASSIGNMENTS (Task 1: Kernel Wiring)
+// ============================================
+
+export async function assignVendorToTransaction(data: {
+  vendorId: string
+  transactionId: string
+  assignmentType: string
+  scheduledDate?: string
+  notes?: string
+}) {
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+
+  const { data: profile } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  // Get agent ID from user
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .single()
+
+  if (!agent) throw new Error("Agent profile not found")
+
+  // Create vendor assignment
+  const { data: assignment, error: assignError } = await supabase
+    .from("vendor_assignments")
+    .insert({
+      transaction_id: data.transactionId,
+      vendor_id: data.vendorId,
+      assignment_type: data.assignmentType,
+      scheduled_date: data.scheduledDate,
+      notes: data.notes,
+      assigned_by_agent_id: agent.id,
+      status: "assigned",
+      created_at: new Date().toISOString(),
+    })
+    .select()
+    .single()
+
+  if (assignError) throw assignError
+
+  // Create vendor job
+  const { error: jobError } = await supabase
+    .from("vendor_jobs")
+    .insert({
+      assignment_id: assignment.id,
+      vendor_id: data.vendorId,
+      job_title: data.assignmentType,
+      status: "pending",
+      created_at: new Date().toISOString(),
+    })
+
+  if (jobError) throw jobError
+
+  // Emit kernel event
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: profile?.brokerage_id,
+    event_type: KernelEvent.VENDOR_ASSIGNED_TO_TRANSACTION,
+    entity_type: "vendor_assignment",
+    entity_id: assignment.id,
+    actor_user_id: user.id,
+    metadata: {
+      vendor_id: data.vendorId,
+      transaction_id: data.transactionId,
+      assignment_type: data.assignmentType,
+      assigned_by_agent_id: agent.id,
+    },
+    created_at: new Date().toISOString(),
+  })
+
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath(`/dashboard/transactions/${data.transactionId}`)
+  revalidatePath("/dashboard/vendors")
+  return assignment
+}
+
+export async function createVendorBookingWithKernelEvent(data: {
+  vendorId: string
+  transactionId: string
+  serviceType: string
+  scheduledDate: string
+  cost?: number
+  notes?: string
+}) {
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Not authenticated")
+
+  const { data: profile } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  // Create booking
+  const { data: booking, error } = await supabase
+    .from("vendor_bookings")
+    .insert({
+      vendor_id: data.vendorId,
+      transaction_id: data.transactionId,
+      brokerage_id: profile?.brokerage_id,
+      service_type: data.serviceType,
+      scheduled_date: data.scheduledDate,
+      cost: data.cost,
+      notes: data.notes,
+      status: "scheduled",
+      booked_by: user.id,
+      booked_at: new Date().toISOString(),
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+
+  // Emit kernel event
+  await supabase.from("lifecycle_events").insert({
+    brokerage_id: profile?.brokerage_id,
+    event_type: KernelEvent.VENDOR_BOOKING_CREATED,
+    entity_type: "vendor_booking",
+    entity_id: booking.id,
+    actor_user_id: user.id,
+    metadata: {
+      vendor_id: data.vendorId,
+      transaction_id: data.transactionId,
+      service_type: data.serviceType,
+      scheduled_date: data.scheduledDate,
+    },
+    created_at: new Date().toISOString(),
+  })
+
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
+  revalidatePath(`/dashboard/transactions/${data.transactionId}`)
+  revalidatePath("/dashboard/vendors")
+  return booking
+}
+
+export async function getAssignedVendorsForTransaction(transactionId: string) {
+  const supabase = await createClient()
+
+  const { data: assignments, error } = await supabase
+    .from("vendor_assignments")
+    .select(`
+      id,
+      vendor_id,
+      assignment_type,
+      scheduled_date,
+      status,
+      vendors:vendor_id(id, business_name, vendor_type, phone, email),
+      vendor_jobs:vendor_jobs(id, job_title, status, cost_estimate, cost_actual)
+    `)
+    .eq("transaction_id", transactionId)
+    .order("scheduled_date", { ascending: false, nullsFirst: false })
+
+  if (error) throw error
+  return assignments || []
+}
+
+export async function getAgentAssignedVendors(limit: number = 50) {
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .single()
+
+  if (!agent) return []
+
+  const { data: assignments } = await supabase
+    .from("vendor_assignments")
+    .select(`
+      id,
+      transaction_id,
+      vendor_id,
+      assignment_type,
+      scheduled_date,
+      status,
+      transactions:transaction_id(id, property_address),
+      vendors:vendor_id(id, business_name, vendor_type),
+      vendor_jobs:vendor_jobs(id, status, cost_estimate, cost_actual)
+    `)
+    .eq("assigned_by_agent_id", agent.id)
+    .order("scheduled_date", { ascending: false, nullsFirst: false })
+    .limit(limit)
+
+  return assignments || []
 }

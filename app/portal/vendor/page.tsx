@@ -1,12 +1,14 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { getVendorBookings } from "@/app/actions/multi-persona"
+import { getVendorJobs } from "@/app/actions/vendor-portal"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { Wrench, Calendar, CheckCircle2, Clock, DollarSign } from "lucide-react"
-import { VendorBookingsList } from "@/components/vendor/bookings-list"
+import { Wrench, Calendar, CheckCircle2, Clock, DollarSign, FileText, MessageSquare } from "lucide-react"
+import { VendorJobsList } from "@/components/vendor/jobs-list"
+import { VendorJobDetail } from "@/components/vendor/job-detail"
 
-export default async function VendorPortalDashboard({ searchParams }: { searchParams: Promise<{ vendorId?: string }> }) {
+export default async function VendorPortalDashboard({ searchParams }: { searchParams: Promise<{ vendorId?: string; jobId?: string }> }) {
   const params = await searchParams
   const supabase = await createClient()
   const {
@@ -34,23 +36,26 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
     )
   }
 
-  const bookings = await getVendorBookings(vendorId)
+  // Parallel fetch jobs and bookings
+  const [jobs, bookings] = await Promise.all([
+    getVendorJobs(vendorId),
+    getVendorBookings(vendorId),
+  ])
 
-  const upcomingCount = bookings?.filter((b: any) => b.status === "scheduled" && new Date(b.scheduled_date) >= new Date())?.length || 0
-  const completedCount = bookings?.filter((b: any) => b.status === "completed")?.length || 0
-  const pendingPayment = bookings?.filter((b: any) => b.status === "completed" && b.payment_status !== "paid")?.length || 0
-  const totalEarnings = bookings?.filter((b: any) => b.payment_status === "paid")?.reduce((sum: number, b: any) => sum + (b.cost || 0), 0) || 0
+  const selectedJobId = params.jobId
+  const selectedJob = selectedJobId ? jobs.find(j => j.id === selectedJobId) : null
+
+  const upcomingCount = jobs?.filter((j: any) => j.status === "scheduled" && new Date(j.vendor_assignments?.scheduled_date) >= new Date())?.length || 0
+  const completedCount = jobs?.filter((j: any) => j.status === "completed")?.length || 0
+  const activeCount = jobs?.filter((j: any) => j.status === "in_progress")?.length || 0
 
   return (
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Vendor Portal</h1>
-          <p className="text-muted-foreground">Manage your service bookings and invoices</p>
+          <h1 className="text-3xl font-bold tracking-tight">My Jobs</h1>
+          <p className="text-muted-foreground">Manage your service assignments and deliverables</p>
         </div>
-        <Badge variant="outline" className="text-sm">
-          {upcomingCount} Upcoming
-        </Badge>
       </div>
 
       {/* Key Metrics */}
@@ -59,12 +64,25 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
               <Calendar className="h-4 w-4" />
-              Upcoming Jobs
+              Upcoming
             </CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{upcomingCount}</div>
             <p className="text-xs text-muted-foreground">Scheduled</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+              <Clock className="h-4 w-4" />
+              In Progress
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-blue-600">{activeCount}</div>
+            <p className="text-xs text-muted-foreground">Active now</p>
           </CardContent>
         </Card>
 
@@ -77,39 +95,41 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-600">{completedCount}</div>
-            <p className="text-xs text-muted-foreground">This month</p>
+            <p className="text-xs text-muted-foreground">This period</p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Clock className="h-4 w-4" />
-              Pending Payment
+              <FileText className="h-4 w-4" />
+              Total Jobs
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-orange-600">{pendingPayment}</div>
-            <p className="text-xs text-muted-foreground">Awaiting</p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <DollarSign className="h-4 w-4" />
-              Total Earnings
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">${totalEarnings.toLocaleString()}</div>
+            <div className="text-2xl font-bold">{jobs?.length || 0}</div>
             <p className="text-xs text-muted-foreground">All time</p>
           </CardContent>
         </Card>
       </div>
 
-      {/* Bookings List */}
-      <VendorBookingsList bookings={bookings || []} />
+      {/* Jobs List and Detail View */}
+      {!selectedJobId ? (
+        <VendorJobsList jobs={jobs || []} vendorId={vendorId} />
+      ) : selectedJob ? (
+        <div className="grid gap-6 md:grid-cols-3">
+          <div className="md:col-span-2">
+            <VendorJobDetail job={selectedJob} vendorId={vendorId} />
+          </div>
+          <VendorJobsList jobs={jobs || []} vendorId={vendorId} selectedJobId={selectedJobId} />
+        </div>
+      ) : (
+        <Card>
+          <CardContent className="p-8 text-center">
+            <p className="text-muted-foreground">Job not found</p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

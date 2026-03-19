@@ -1159,7 +1159,7 @@ export async function calculateComplianceRiskScore(agentId: string) {
       .eq("status", "needs_revision")
       .gte("created_at", thirtyDaysAgo.toISOString())
       .contains("metadata", { agent_id: agentId }),
-    supabase.from("chat_sessions").select("them_first_score").eq("agent_id", agentId).gte("created_at", thirtyDaysAgo.toISOString()),
+    supabase.from("conversations").select("them_first_score").eq("agent_id", agentId).gte("created_at", thirtyDaysAgo.toISOString()),
   ])
 
   const violationScore = Math.max(0, 100 - (violations?.length || 0) * 10)

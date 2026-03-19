@@ -55,7 +55,7 @@ export async function aiCategorizeExpense(params: {
   try {
     // Get agent's expense history for pattern matching
     const { data: recentExpenses } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("category, vendor, description")
       .eq("agent_id", params.agentId)
       .order("created_at", { ascending: false })
@@ -141,7 +141,7 @@ export async function createExpense(params: ExpenseEntry) {
 
     // Create expense record
     const { data: expense, error } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .insert({
         agent_id: params.agentId,
         amount: params.amount,
@@ -194,7 +194,7 @@ export async function getExpenses(params?: {
 
   try {
     let query = supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("*")
       .order("expense_date", { ascending: false })
 
@@ -255,7 +255,7 @@ export async function aiCalculateCommission(params: CommissionEntry) {
 
     // Get agent's commission structure
     const { data: agentProfile } = await supabase
-      .from("agent_profiles")
+      .from("agents")
       .select("commission_split, brokerage_id, cap_amount, cap_current")
       .eq("user_id", params.agentId)
       .single()
@@ -372,7 +372,7 @@ Provide JSON with tax estimates:
     // Update agent's cap tracking
     if (agentProfile && !cappedAmount) {
       await supabase
-        .from("agent_profiles")
+        .from("agents")
         .update({
           cap_current: (agentProfile.cap_current || 0) + brokerageShare,
         })
@@ -431,7 +431,7 @@ export async function aiGenerateProfitLossReport(params: {
 
     // Get all expenses for period
     const { data: expenses } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("*")
       .eq("agent_id", params.agentId)
       .gte("expense_date", params.startDate)
@@ -568,13 +568,25 @@ Provide comprehensive analysis:
 async function syncExpenseToQuickBooks(expense: any) {
   const supabase = await createClient()
 
+  // Resolve agent_id to brokerage_id
+  const { data: agent } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", expense.agent_id)
+    .single()
+
+  if (!agent?.brokerage_id) {
+    console.log("[v0] Agent brokerage not found, skipping sync")
+    return { synced: false }
+  }
+
   // Check if QuickBooks is connected
   const { data: integration } = await supabase
-    .from("integrations")
+    .from("integration_credentials")
     .select("*")
-    .eq("agent_id", expense.agent_id)
-    .eq("provider", "quickbooks")
-    .eq("status", "active")
+    .eq("brokerage_id", agent.brokerage_id)
+    .eq("provider_name", "quickbooks")
+    .eq("is_active", true)
     .single()
 
   if (!integration) {
@@ -621,13 +633,25 @@ async function syncExpenseToQuickBooks(expense: any) {
 async function syncCommissionToQuickBooks(commission: any) {
   const supabase = await createClient()
 
+  // Resolve agent_id to brokerage_id
+  const { data: agent } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", commission.agent_id)
+    .single()
+
+  if (!agent?.brokerage_id) {
+    console.log("[v0] Agent brokerage not found, skipping sync")
+    return { synced: false }
+  }
+
   // Check if QuickBooks is connected
   const { data: integration } = await supabase
-    .from("integrations")
+    .from("integration_credentials")
     .select("*")
-    .eq("agent_id", commission.agent_id)
-    .eq("provider", "quickbooks")
-    .eq("status", "active")
+    .eq("brokerage_id", agent.brokerage_id)
+    .eq("provider_name", "quickbooks")
+    .eq("is_active", true)
     .single()
 
   if (!integration) {
@@ -704,7 +728,7 @@ export async function aiCreateBudget(params: {
     // Get historical data
     const lastYear = params.year - 1
     const { data: lastYearExpenses } = await supabase
-      .from("expenses")
+      .from("business_expenses")
       .select("category, amount")
       .eq("agent_id", params.agentId)
       .gte("expense_date", `${lastYear}-01-01`)

@@ -181,7 +181,7 @@ export async function getTransactionDetails(transactionId: string, agentId: stri
         listings(*),
         transaction_milestones(*),
         transaction_documents(*),
-        commission_splits(*)
+        commission_distributions(*)
       `)
       .eq("id", transactionId)
       .single()
@@ -312,14 +312,18 @@ export async function calculateTransactionCommission(params: {
     const agentSplit = 0
     const brokerageSplit = 0
 
-    // Store commission calculation
-    await supabase.from("commission_splits").insert({
+    // NOTE: Commission Engine 8.0 owns real calculation. This stores the stub.
+    await supabase.from("commission_distributions").insert({
       transaction_id: params.transactionId,
-      gross_commission: grossCommission,
-      agent_commission: agentSplit,
-      brokerage_commission: brokerageSplit,
-      commission_rate: commissionRate,
-      calculated_at: new Date().toISOString(),
+      brokerage_id: params.brokerageId,
+      distribution_type: "brokerage",
+      calculation_type: "percent",
+      calculation_value: params.commissionRate || 0,
+      calculated_amount: 0, // placeholder until Engine 8.0 wires real calculation
+      source_of_funds: "brokerage",
+      cap_applied: false,
+      calculation_version: 1,
+      status: "pending",
     })
 
     return {

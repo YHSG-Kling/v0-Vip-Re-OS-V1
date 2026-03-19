@@ -70,6 +70,26 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'BUYER_DISENGAGED':            KernelEvent.BUYER_DISENGAGED,
   'BUYER_CLOSED':                KernelEvent.DEAL_CLOSED,
   'BUYER_LIFETIME':              KernelEvent.LIFETIME_CUSTOMER,
+
+  // ── Marketing Campaign ────────────────────────────────────────────────────
+  'marketing_campaign_draft':          KernelEvent.MARKETING_CAMPAIGN_CREATED,
+  'marketing_campaign_approved':       KernelEvent.MARKETING_CAMPAIGN_APPROVED,
+  'marketing_campaign_live':           KernelEvent.MARKETING_CAMPAIGN_LAUNCHED,
+  'marketing_campaign_paused':         KernelEvent.MARKETING_CAMPAIGN_PAUSED,
+  'marketing_campaign_ended':          KernelEvent.MARKETING_CAMPAIGN_ENDED,
+
+  // ── Layer 11: Agent Onboarding & Education ────────────────────────────────
+  'license_submitted':         KernelEvent.AGENT_LICENSE_SUBMITTED,
+  'license_verified':          KernelEvent.AGENT_LICENSE_VERIFIED,
+  'brand_configured':          KernelEvent.BRAND_SETUP_COMPLETED,
+  'integrations_configured':   KernelEvent.INTEGRATION_CONNECTED,
+  'training_in_progress':      KernelEvent.TRAINING_COURSE_ENROLLED,
+  'certification_pending':     KernelEvent.TRAINING_COURSE_COMPLETED,
+  'onboarding_completed':      KernelEvent.ONBOARDING_COMPLETED,
+  'onboarding_stalled':        KernelEvent.ONBOARDING_STALLED,
+  // Direct status mappings for agent_onboarding table
+  'in_progress':               KernelEvent.ONBOARDING_STALLED,   // used only when stall detected
+  'completed':                 KernelEvent.ONBOARDING_COMPLETED,
 }
 
 // ─── ENTITY → TABLE + STATE COLUMN MAP ───────────────────────────────────────
@@ -96,6 +116,12 @@ const ENTITY_MAP: Record<
   lead:        { table: "leads",          stateColumn: "lifecycle_state" },
   journey:     { table: "journey_states", stateColumn: "current_stage" },
   showing:     { table: "showings",       stateColumn: "status"        },
+  // ── Layer 9 — Marketing Campaign State Machine ───────────────────────────
+  marketing_campaign_machine: { table: 'marketing_campaigns', stateColumn: 'status' },
+
+  // ── Layer 11 — Agent Onboarding State Machine ────────────────────────────
+  agent_onboarding_machine: { table: 'agent_onboarding', stateColumn: 'status' },
+  agent_onboarding: { table: 'agent_onboarding', stateColumn: 'status' },
 }
 
 // ─── MAIN FUNCTION ────────────────────────────────────────────────────────────

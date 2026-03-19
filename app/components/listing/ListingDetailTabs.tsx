@@ -1,3 +1,11 @@
+/**
+ * ListingDetailTabs - Receives real data from page.tsx server component
+ * - photos: from listing_media table
+ * - offers: from offers table via getOffersForListing
+ * - showings: from showings table via getListingShowings
+ * - documents: from transaction_documents table
+ * - analytics: computed from real listing metrics
+ */
 "use client"
 
 import { useState } from "react"

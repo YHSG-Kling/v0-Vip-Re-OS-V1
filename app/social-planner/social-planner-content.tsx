@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
+import Link from "next/link"
 
 interface ComplianceEvent {
   id: string
@@ -43,8 +44,21 @@ export default function SocialPlannerContent({ userId, userRole }: SocialPlanner
   const [complianceLogs, setComplianceLogs] = useState<ComplianceEvent[]>([])
 
   useEffect(() => {
-    loadPosts()
+    loadData()
   }, [userId, userRole])
+
+  const loadData = async () => {
+    try {
+      setLoading(true)
+      const postsData = await getSocialPosts({ userId, userRole })
+      setPosts(postsData)
+    } catch (error) {
+      console.error("[v0] Failed to load social data:", error)
+      setPosts([])
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const loadPosts = async () => {
     try {

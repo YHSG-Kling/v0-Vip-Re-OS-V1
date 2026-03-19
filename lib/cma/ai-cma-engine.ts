@@ -1,4 +1,4 @@
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -111,10 +111,14 @@ Respond ONLY with valid JSON (no markdown):
 }`
 
     try {
-      const { text } = await generateText({
-        model: "anthropic/claude-opus-4.6",
+      const response = await generateAIResponse({
         prompt,
         maxTokens: 400,
+        metadata: {
+          userId: actorUserId,
+          brokerageId: brokerageId,
+          feature: "cma_narrative",
+        },
       })
 
       let parsed: CompScoreResult & {
@@ -124,7 +128,7 @@ Respond ONLY with valid JSON (no markdown):
       }
 
       try {
-        parsed = JSON.parse(text.trim())
+        parsed = JSON.parse(response.text.trim())
       } catch {
         // Skip malformed responses
         continue
@@ -147,6 +151,7 @@ Respond ONLY with valid JSON (no markdown):
         score_rationale: parsed.rationale ?? null,
         risk_flags: riskFlags,
         coaching_insight: parsed.coaching_insight ?? null,
+        compliance_approved: false,
       })
 
       // UPDATE cma_comparables with score summary

@@ -5,4 +5,6 @@ export type {
   HealthCategory,
   ComponentScore,
   DealHealthResult,
+  DealHealthOutput,
+  RiskLevel,
 } from "./health-scorer"

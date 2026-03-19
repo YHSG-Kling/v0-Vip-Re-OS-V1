@@ -121,7 +121,7 @@ async function checkDocumentsVerified(
   listingId: string
 ): Promise<ReadinessCheckResult> {
   const { data, error } = await supabase
-    .from("documents")
+    .from("transaction_documents")
     .select("id, document_type, status")
     .eq("listing_id", listingId)
     .eq("is_required", true)

@@ -7,197 +7,272 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { Checkbox } from "@/components/ui/checkbox"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import {
-  Video,
+  FileText,
   Plus,
   Search,
-  Filter,
   Grid,
   List,
-  Play,
-  Download,
-  Share2,
-  Trash2,
-  Copy,
   MoreVertical,
   Eye,
   Clock,
-  TrendingUp,
-  CheckCircle,
-  AlertCircle,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
   Loader2,
-  Calendar,
-  BarChart3,
-  RefreshCw,
+  Copy,
+  Trash2,
+  GitBranch,
+  Shield,
+  Home,
+  User,
+  TrendingUp,
+  Users,
+  PresentationIcon,
+  Sparkles,
+  Filter,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
 
-interface VideoItem {
+// ─── TYPES ───────────────────────────────────────────────────────────────────
+
+interface VideoScript {
   id: string
+  brokerage_id: string
+  agent_id: string | null
+  listing_id: string | null
+  contact_id: string | null
+  template_id: string | null
+  script_type: string
   title: string
-  video_type: string
-  status: "generating" | "ready" | "failed"
-  thumbnail_url?: string
-  video_url?: string
-  duration_seconds?: number
+  script_content: string
+  duration_target_seconds: number | null
+  brand_voice_tone: string | null
+  approval_status: "draft" | "pending_review" | "approved" | "rejected"
+  compliance_review_notes: string | null
+  required_brand_assets: Record<string, any> | null
+  ai_generated: boolean
+  is_active: boolean
   created_at: string
-  views?: number
-  completion_rate?: number
-  client_name?: string
-  property_address?: string
+  updated_at: string
+  variation_count?: number
+  template?: { id: string; template_name: string; category: string } | null
+  script_variations?: ScriptVariation[]
 }
+
+interface ScriptVariation {
+  id: string
+  script_library_id: string
+  variation_label: string
+  variation_goal: string | null
+  script_content: string
+  call_to_action: string | null
+  audience_segment: string | null
+  is_ab_test: boolean
+  created_at: string
+}
+
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+
+const SCRIPT_TYPE_CONFIG: Record<string, { label: string; icon: any; color: string }> = {
+  property_tour: { label: "Property Tour", icon: Home, color: "bg-blue-100 text-blue-700" },
+  buyer_education: { label: "Buyer Education", icon: Users, color: "bg-green-100 text-green-700" },
+  market_update: { label: "Market Update", icon: TrendingUp, color: "bg-purple-100 text-purple-700" },
+  agent_intro: { label: "Agent Intro", icon: User, color: "bg-amber-100 text-amber-700" },
+  listing_presentation: { label: "Listing Presentation", icon: PresentationIcon, color: "bg-rose-100 text-rose-700" },
+}
+
+const APPROVAL_STATUS_CONFIG: Record<string, { label: string; icon: any; color: string }> = {
+  draft: { label: "Draft", icon: FileText, color: "bg-slate-100 text-slate-700" },
+  pending_review: { label: "Pending Review", icon: Clock, color: "bg-amber-100 text-amber-700" },
+  approved: { label: "Approved", icon: CheckCircle2, color: "bg-green-100 text-green-700" },
+  rejected: { label: "Rejected", icon: XCircle, color: "bg-red-100 text-red-700" },
+}
+
+// ─── LOADING COMPONENT ───────────────────────────────────────────────────────
 
 const Loading = () => (
   <div className="flex items-center justify-center py-16">
-    <Loader2 className="h-8 w-8 animate-spin text-slate-400" />
+    <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
   </div>
 )
 
-// ✅ INNER COMPONENT: Uses useSearchParams (wrapped in Suspense boundary)
+// ─── MAIN CONTENT COMPONENT ──────────────────────────────────────────────────
+
 function VideoLibraryContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { user } = useAuth()
-  const [videos, setVideos] = useState<VideoItem[]>([])
+  const { user, brokerage } = useAuth()
+  const supabase = createClient()
+
+  // State
+  const [scripts, setScripts] = useState<VideoScript[]>([])
   const [loading, setLoading] = useState(true)
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
   const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<string>("all")
   const [typeFilter, setTypeFilter] = useState<string>("all")
-  const [sortBy, setSortBy] = useState<string>("date")
-  const [selectedVideos, setSelectedVideos] = useState<string[]>([])
+  const [statusFilter, setStatusFilter] = useState<string>("all")
+  const [templateFilter, setTemplateFilter] = useState<string>("all")
+
+  // Detail drawer state
+  const [selectedScript, setSelectedScript] = useState<VideoScript | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+
+  // Variation dialog state
+  const [variationDialogOpen, setVariationDialogOpen] = useState(false)
+  const [variationScript, setVariationScript] = useState<VideoScript | null>(null)
+  const [variationLabel, setVariationLabel] = useState("")
+  const [variationGoal, setVariationGoal] = useState("")
+  const [variationContent, setVariationContent] = useState("")
+  const [variationCta, setVariationCta] = useState("")
+  const [variationAudience, setVariationAudience] = useState("")
+  const [variationIsAbTest, setVariationIsAbTest] = useState(false)
+  const [creatingVariation, setCreatingVariation] = useState(false)
+
+  // ─── Load Scripts ──────────────────────────────────────────────────────────
 
   useEffect(() => {
-    loadVideos()
-  }, [user?.id])
+    loadScripts()
+  }, [brokerage?.id])
 
-  async function loadVideos() {
+  async function loadScripts() {
+    if (!brokerage?.id) return
+
     setLoading(true)
     try {
-      const supabase = createClient()
-      const { data, error } = await supabase
-        .from("ai_video_projects")
-        .select("*")
-        .order("created_at", { ascending: false })
+      const response = await fetch("/api/video-scripts")
+      const data = await response.json()
 
-      if (data && !error) {
-        setVideos(data.map((v: any) => ({
-          id: v.id,
-          title: v.project_name || `${v.video_type} Video`,
-          video_type: v.video_type,
-          status: v.status === "video_ready" ? "ready" : v.status === "failed" ? "failed" : "generating",
-          thumbnail_url: v.thumbnail_url,
-          video_url: v.video_url,
-          duration_seconds: v.video_metadata?.duration_seconds,
-          created_at: v.created_at,
-          views: Math.floor(Math.random() * 200),
-          completion_rate: Math.floor(Math.random() * 40) + 60,
-          client_name: v.client_name,
-          property_address: v.property_address,
-        })))
-      } else {
-        // Demo data
-        setVideos([
-          { id: "1", title: "Listing Tour - 123 Main St", video_type: "listing_tour", status: "ready", created_at: new Date().toISOString(), views: 145, completion_rate: 78, property_address: "123 Main St, Miami" },
-          { id: "2", title: "Market Update - Miami Beach", video_type: "market_update", status: "ready", created_at: new Date(Date.now() - 86400000).toISOString(), views: 89, completion_rate: 65 },
-          { id: "3", title: "Welcome Video - John Smith", video_type: "personalized_buyer", status: "generating", created_at: new Date(Date.now() - 3600000).toISOString(), client_name: "John Smith" },
-          { id: "4", title: "Agent Introduction", video_type: "agent_intro", status: "ready", created_at: new Date(Date.now() - 172800000).toISOString(), views: 234, completion_rate: 82 },
-          { id: "5", title: "Open House Promo", video_type: "open_house", status: "failed", created_at: new Date(Date.now() - 259200000).toISOString() },
-        ])
+      if (data.scripts) {
+        setScripts(data.scripts)
       }
     } catch (error) {
-      console.error("Error loading videos:", error)
+      console.error("Error loading scripts:", error)
     } finally {
       setLoading(false)
     }
   }
 
-  const filteredVideos = videos.filter((video) => {
-    const matchesSearch = video.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      video.client_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      video.property_address?.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesStatus = statusFilter === "all" || video.status === statusFilter
-    const matchesType = typeFilter === "all" || video.video_type === typeFilter
-    return matchesSearch && matchesStatus && matchesType
-  }).sort((a, b) => {
-    if (sortBy === "date") return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    if (sortBy === "views") return (b.views || 0) - (a.views || 0)
-    if (sortBy === "performance") return (b.completion_rate || 0) - (a.completion_rate || 0)
-    return 0
+  // ─── Filter Scripts ────────────────────────────────────────────────────────
+
+  const filteredScripts = scripts.filter((script) => {
+    const matchesSearch =
+      script.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      script.script_content.toLowerCase().includes(searchQuery.toLowerCase())
+    const matchesType = typeFilter === "all" || script.script_type === typeFilter
+    const matchesStatus = statusFilter === "all" || script.approval_status === statusFilter
+    const matchesTemplate =
+      templateFilter === "all" ||
+      (templateFilter === "template" && script.template_id) ||
+      (templateFilter === "custom" && !script.template_id)
+    return matchesSearch && matchesType && matchesStatus && matchesTemplate
   })
 
+  // ─── Stats ─────────────────────────────────────────────────────────────────
+
   const stats = {
-    total: videos.length,
-    ready: videos.filter((v) => v.status === "ready").length,
-    generating: videos.filter((v) => v.status === "generating").length,
-    totalViews: videos.reduce((sum, v) => sum + (v.views || 0), 0),
+    total: scripts.length,
+    approved: scripts.filter((s) => s.approval_status === "approved").length,
+    pending: scripts.filter((s) => s.approval_status === "pending_review").length,
+    draft: scripts.filter((s) => s.approval_status === "draft").length,
   }
 
-  function toggleVideoSelection(videoId: string) {
-    setSelectedVideos((prev) =>
-      prev.includes(videoId) ? prev.filter((id) => id !== videoId) : [...prev, videoId]
-    )
-  }
+  // ─── Open Script Detail ────────────────────────────────────────────────────
 
-  function selectAllVideos() {
-    if (selectedVideos.length === filteredVideos.length) {
-      setSelectedVideos([])
-    } else {
-      setSelectedVideos(filteredVideos.map((v) => v.id))
+  async function openScriptDetail(script: VideoScript) {
+    // Fetch full details including variations
+    const response = await fetch(`/api/video-scripts?id=${script.id}`)
+    const data = await response.json()
+
+    if (data.script) {
+      setSelectedScript(data.script)
+      setDrawerOpen(true)
     }
   }
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case "ready":
-        return <Badge className="bg-green-100 text-green-700">Ready</Badge>
-      case "generating":
-        return <Badge className="bg-blue-100 text-blue-700"><Loader2 className="h-3 w-3 mr-1 animate-spin" />Generating</Badge>
-      case "failed":
-        return <Badge className="bg-red-100 text-red-700">Failed</Badge>
-      default:
-        return <Badge variant="secondary">{status}</Badge>
+  // ─── Create Variation ──────────────────────────────────────────────────────
+
+  function openVariationDialog(script: VideoScript) {
+    setVariationScript(script)
+    setVariationLabel("")
+    setVariationGoal("")
+    setVariationContent(script.script_content)
+    setVariationCta("")
+    setVariationAudience("")
+    setVariationIsAbTest(false)
+    setVariationDialogOpen(true)
+  }
+
+  async function handleCreateVariation() {
+    if (!variationScript || !variationLabel || !variationContent || !brokerage?.id) return
+
+    setCreatingVariation(true)
+    try {
+      const { data, error } = await supabase.from("script_variations").insert({
+        script_library_id: variationScript.id,
+        brokerage_id: brokerage.id,
+        variation_label: variationLabel,
+        variation_goal: variationGoal || null,
+        script_content: variationContent,
+        call_to_action: variationCta || null,
+        audience_segment: variationAudience || null,
+        is_ab_test: variationIsAbTest,
+        created_by: user?.id,
+      })
+
+      if (error) throw error
+
+      setVariationDialogOpen(false)
+      loadScripts()
+    } catch (error) {
+      console.error("Error creating variation:", error)
+    } finally {
+      setCreatingVariation(false)
     }
   }
 
-  const getTypeBadge = (type: string) => {
-    const types: Record<string, string> = {
-      listing_tour: "Listing Tour",
-      agent_intro: "Agent Intro",
-      market_update: "Market Update",
-      personalized_buyer: "Personalized",
-      open_house: "Open House",
-      memory_video: "Memory Video",
-      testimonial: "Testimonial",
+  // ─── Delete Script ─────────────────────────────────────────────────────────
+
+  async function handleDeleteScript(scriptId: string) {
+    if (!confirm("Are you sure you want to delete this script?")) return
+
+    try {
+      await fetch(`/api/video-scripts?id=${scriptId}`, { method: "DELETE" })
+      setScripts((prev) => prev.filter((s) => s.id !== scriptId))
+      if (selectedScript?.id === scriptId) {
+        setDrawerOpen(false)
+        setSelectedScript(null)
+      }
+    } catch (error) {
+      console.error("Error deleting script:", error)
     }
-    return types[type] || type
   }
 
-  const formatDuration = (seconds?: number) => {
-    if (!seconds) return "--:--"
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins}:${secs.toString().padStart(2, "0")}`
-  }
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-background">
       <div className="container mx-auto py-8 px-4">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-3xl font-bold text-slate-900">Video Library</h1>
-            <p className="text-slate-600 mt-1">Manage and share your AI-generated videos</p>
+            <h1 className="text-3xl font-bold text-foreground">Script Library</h1>
+            <p className="text-muted-foreground mt-1">
+              Manage your AI-generated video scripts
+            </p>
           </div>
           <Button onClick={() => router.push("/dashboard/videos/create")}>
             <Plus className="h-4 w-4 mr-2" />
-            Create Video
+            Create Script
           </Button>
         </div>
 
@@ -207,10 +282,10 @@ function VideoLibraryContent() {
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-blue-100">
-                  <Video className="h-5 w-5 text-blue-600" />
+                  <FileText className="h-5 w-5 text-blue-600" />
                 </div>
                 <div>
-                  <p className="text-sm text-slate-500">Total Videos</p>
+                  <p className="text-sm text-muted-foreground">Total Scripts</p>
                   <p className="text-2xl font-bold">{stats.total}</p>
                 </div>
               </div>
@@ -220,11 +295,11 @@ function VideoLibraryContent() {
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-green-100">
-                  <CheckCircle className="h-5 w-5 text-green-600" />
+                  <CheckCircle2 className="h-5 w-5 text-green-600" />
                 </div>
                 <div>
-                  <p className="text-sm text-slate-500">Ready</p>
-                  <p className="text-2xl font-bold">{stats.ready}</p>
+                  <p className="text-sm text-muted-foreground">Approved</p>
+                  <p className="text-2xl font-bold">{stats.approved}</p>
                 </div>
               </div>
             </CardContent>
@@ -233,11 +308,11 @@ function VideoLibraryContent() {
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-lg bg-amber-100">
-                  <Loader2 className="h-5 w-5 text-amber-600" />
+                  <Clock className="h-5 w-5 text-amber-600" />
                 </div>
                 <div>
-                  <p className="text-sm text-slate-500">Generating</p>
-                  <p className="text-2xl font-bold">{stats.generating}</p>
+                  <p className="text-sm text-muted-foreground">Pending Review</p>
+                  <p className="text-2xl font-bold">{stats.pending}</p>
                 </div>
               </div>
             </CardContent>
@@ -245,12 +320,12 @@ function VideoLibraryContent() {
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-purple-100">
-                  <Eye className="h-5 w-5 text-purple-600" />
+                <div className="p-2 rounded-lg bg-slate-100">
+                  <FileText className="h-5 w-5 text-slate-600" />
                 </div>
                 <div>
-                  <p className="text-sm text-slate-500">Total Views</p>
-                  <p className="text-2xl font-bold">{stats.totalViews.toLocaleString()}</p>
+                  <p className="text-sm text-muted-foreground">Drafts</p>
+                  <p className="text-2xl font-bold">{stats.draft}</p>
                 </div>
               </div>
             </CardContent>
@@ -262,46 +337,47 @@ function VideoLibraryContent() {
           <CardContent className="p-4">
             <div className="flex flex-col md:flex-row gap-4">
               <div className="flex-1 relative">
-                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-slate-400" />
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by title, client, or property..."
+                  placeholder="Search scripts..."
                   className="pl-10"
                 />
               </div>
+              <Select value={typeFilter} onValueChange={setTypeFilter}>
+                <SelectTrigger className="w-[180px]">
+                  <SelectValue placeholder="Script Type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Types</SelectItem>
+                  {Object.entries(SCRIPT_TYPE_CONFIG).map(([key, config]) => (
+                    <SelectItem key={key} value={key}>
+                      {config.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[150px]">
+                <SelectTrigger className="w-[180px]">
                   <SelectValue placeholder="Status" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="ready">Ready</SelectItem>
-                  <SelectItem value="generating">Generating</SelectItem>
-                  <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="approved">Approved</SelectItem>
+                  <SelectItem value="pending_review">Pending Review</SelectItem>
+                  <SelectItem value="draft">Draft</SelectItem>
+                  <SelectItem value="rejected">Rejected</SelectItem>
                 </SelectContent>
               </Select>
-              <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <Select value={templateFilter} onValueChange={setTemplateFilter}>
                 <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Type" />
+                  <SelectValue placeholder="Source" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All Types</SelectItem>
-                  <SelectItem value="listing_tour">Listing Tour</SelectItem>
-                  <SelectItem value="agent_intro">Agent Intro</SelectItem>
-                  <SelectItem value="market_update">Market Update</SelectItem>
-                  <SelectItem value="personalized_buyer">Personalized</SelectItem>
-                  <SelectItem value="open_house">Open House</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={sortBy} onValueChange={setSortBy}>
-                <SelectTrigger className="w-[150px]">
-                  <SelectValue placeholder="Sort" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="date">Date Created</SelectItem>
-                  <SelectItem value="views">Most Views</SelectItem>
-                  <SelectItem value="performance">Performance</SelectItem>
+                  <SelectItem value="all">All Sources</SelectItem>
+                  <SelectItem value="template">Template-based</SelectItem>
+                  <SelectItem value="custom">Custom</SelectItem>
                 </SelectContent>
               </Select>
               <div className="flex items-center gap-2">
@@ -321,227 +397,442 @@ function VideoLibraryContent() {
                 </Button>
               </div>
             </div>
-
-            {/* Batch Actions */}
-            {selectedVideos.length > 0 && (
-              <div className="flex items-center gap-4 mt-4 pt-4 border-t">
-                <span className="text-sm text-slate-600">{selectedVideos.length} selected</span>
-                <Button variant="outline" size="sm">
-                  <Share2 className="h-4 w-4 mr-2" />
-                  Share
-                </Button>
-                <Button variant="outline" size="sm">
-                  <Download className="h-4 w-4 mr-2" />
-                  Download
-                </Button>
-                <Button variant="outline" size="sm" className="text-red-600 hover:text-red-700 bg-transparent">
-                  <Trash2 className="h-4 w-4 mr-2" />
-                  Delete
-                </Button>
-              </div>
-            )}
           </CardContent>
         </Card>
 
-        {/* Video Grid/List */}
+        {/* Script Grid/List */}
         {loading ? (
           <Loading />
-        ) : filteredVideos.length === 0 ? (
+        ) : filteredScripts.length === 0 ? (
           <Card>
             <CardContent className="p-16 text-center">
-              <Video className="h-12 w-12 text-slate-300 mx-auto mb-4" />
-              <h3 className="text-lg font-medium text-slate-900 mb-2">No videos found</h3>
-              <p className="text-slate-500 mb-4">Create your first AI video to get started</p>
+              <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-foreground mb-2">No scripts found</h3>
+              <p className="text-muted-foreground mb-4">
+                Create your first AI-generated script
+              </p>
               <Button onClick={() => router.push("/dashboard/videos/create")}>
                 <Plus className="h-4 w-4 mr-2" />
-                Create Video
+                Create Script
               </Button>
             </CardContent>
           </Card>
         ) : viewMode === "grid" ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredVideos.map((video) => (
-              <Card key={video.id} className="overflow-hidden hover:shadow-lg transition-shadow">
-                <div className="relative">
-                  <div className="aspect-video bg-slate-200 flex items-center justify-center">
-                    {video.thumbnail_url ? (
-                      <img src={video.thumbnail_url || "/placeholder.svg"} alt={video.title} className="w-full h-full object-cover" />
-                    ) : (
-                      <Video className="h-12 w-12 text-slate-400" />
-                    )}
-                    {video.status === "ready" && (
-                      <div className="absolute inset-0 bg-black/30 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center">
-                        <Button size="lg" variant="secondary">
-                          <Play className="h-6 w-6 mr-2" />
-                          Play
-                        </Button>
+            {filteredScripts.map((script) => {
+              const typeConfig = SCRIPT_TYPE_CONFIG[script.script_type]
+              const statusConfig = APPROVAL_STATUS_CONFIG[script.approval_status]
+              const TypeIcon = typeConfig?.icon || FileText
+              const StatusIcon = statusConfig?.icon || FileText
+
+              return (
+                <Card
+                  key={script.id}
+                  className="overflow-hidden hover:shadow-lg transition-shadow cursor-pointer"
+                  onClick={() => openScriptDetail(script)}
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Badge className={cn("text-xs", typeConfig?.color)}>
+                          <TypeIcon className="h-3 w-3 mr-1" />
+                          {typeConfig?.label || script.script_type}
+                        </Badge>
+                        {script.ai_generated && (
+                          <Badge variant="outline" className="text-xs">
+                            <Sparkles className="h-3 w-3 mr-1" />
+                            AI
+                          </Badge>
+                        )}
                       </div>
-                    )}
-                  </div>
-                  <div className="absolute top-2 left-2">
-                    <Checkbox
-                      checked={selectedVideos.includes(video.id)}
-                      onCheckedChange={() => toggleVideoSelection(video.id)}
-                      className="bg-white"
-                    />
-                  </div>
-                  <div className="absolute top-2 right-2">
-                    {getStatusBadge(video.status)}
-                  </div>
-                  {video.duration_seconds && (
-                    <div className="absolute bottom-2 right-2 bg-black/70 text-white text-xs px-2 py-1 rounded">
-                      {formatDuration(video.duration_seconds)}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openScriptDetail(script) }}>
+                            <Eye className="h-4 w-4 mr-2" />
+                            View Details
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openVariationDialog(script) }}>
+                            <GitBranch className="h-4 w-4 mr-2" />
+                            Create Variation
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(script.script_content) }}>
+                            <Copy className="h-4 w-4 mr-2" />
+                            Copy Script
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="text-red-600"
+                            onClick={(e) => { e.stopPropagation(); handleDeleteScript(script.id) }}
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
-                  )}
-                </div>
-                <CardContent className="p-4">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-medium text-slate-900 truncate">{video.title}</h3>
-                      <p className="text-sm text-slate-500 mt-1">{getTypeBadge(video.video_type)}</p>
-                    </div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem>
-                          <Play className="h-4 w-4 mr-2" />
-                          Play
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Download className="h-4 w-4 mr-2" />
-                          Download
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Share2 className="h-4 w-4 mr-2" />
-                          Share
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Copy className="h-4 w-4 mr-2" />
-                          Duplicate
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <BarChart3 className="h-4 w-4 mr-2" />
-                          Analytics
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="text-red-600">
-                          <Trash2 className="h-4 w-4 mr-2" />
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                  {video.status === "ready" && (
-                    <div className="flex items-center gap-4 mt-3 pt-3 border-t text-sm text-slate-500">
-                      <div className="flex items-center gap-1">
-                        <Eye className="h-4 w-4" />
-                        {video.views}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <TrendingUp className="h-4 w-4" />
-                        {video.completion_rate}%
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Calendar className="h-4 w-4" />
-                        {new Date(video.created_at).toLocaleDateString()}
+
+                    <h3 className="font-medium text-foreground mb-2 line-clamp-1">
+                      {script.title}
+                    </h3>
+
+                    <p className="text-sm text-muted-foreground line-clamp-3 mb-4">
+                      {script.script_content.slice(0, 150)}...
+                    </p>
+
+                    <div className="flex items-center justify-between pt-3 border-t">
+                      <Badge className={cn("text-xs", statusConfig?.color)}>
+                        <StatusIcon className="h-3 w-3 mr-1" />
+                        {statusConfig?.label || script.approval_status}
+                      </Badge>
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        {script.variation_count ? (
+                          <span className="flex items-center gap-1">
+                            <GitBranch className="h-3 w-3" />
+                            {script.variation_count}
+                          </span>
+                        ) : null}
+                        <span>
+                          {new Date(script.created_at).toLocaleDateString()}
+                        </span>
                       </div>
                     </div>
-                  )}
-                </CardContent>
-              </Card>
-            ))}
+                  </CardContent>
+                </Card>
+              )
+            })}
           </div>
         ) : (
           <Card>
             <div className="divide-y">
-              <div className="p-4 bg-slate-50 flex items-center gap-4 text-sm font-medium text-slate-600">
-                <div className="w-8">
-                  <Checkbox
-                    checked={selectedVideos.length === filteredVideos.length && filteredVideos.length > 0}
-                    onCheckedChange={selectAllVideos}
-                  />
-                </div>
-                <div className="flex-1">Video</div>
-                <div className="w-32">Type</div>
-                <div className="w-24">Status</div>
-                <div className="w-20">Views</div>
-                <div className="w-24">Created</div>
-                <div className="w-20">Actions</div>
-              </div>
-              {filteredVideos.map((video) => (
-                <div key={video.id} className="p-4 flex items-center gap-4 hover:bg-slate-50">
-                  <div className="w-8">
-                    <Checkbox
-                      checked={selectedVideos.includes(video.id)}
-                      onCheckedChange={() => toggleVideoSelection(video.id)}
-                    />
-                  </div>
-                  <div className="flex-1 flex items-center gap-3">
-                    <div className="w-16 h-10 bg-slate-200 rounded flex items-center justify-center flex-shrink-0">
-                      <Video className="h-5 w-5 text-slate-400" />
+              {filteredScripts.map((script) => {
+                const typeConfig = SCRIPT_TYPE_CONFIG[script.script_type]
+                const statusConfig = APPROVAL_STATUS_CONFIG[script.approval_status]
+                const TypeIcon = typeConfig?.icon || FileText
+                const StatusIcon = statusConfig?.icon || FileText
+
+                return (
+                  <div
+                    key={script.id}
+                    className="p-4 hover:bg-muted/50 cursor-pointer flex items-center gap-4"
+                    onClick={() => openScriptDetail(script)}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <h3 className="font-medium text-foreground truncate">
+                          {script.title}
+                        </h3>
+                        {script.ai_generated && (
+                          <Badge variant="outline" className="text-xs shrink-0">
+                            <Sparkles className="h-3 w-3 mr-1" />
+                            AI
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-sm text-muted-foreground truncate">
+                        {script.script_content.slice(0, 100)}...
+                      </p>
                     </div>
-                    <div className="min-w-0">
-                      <p className="font-medium text-slate-900 truncate">{video.title}</p>
-                      {video.client_name && <p className="text-sm text-slate-500">{video.client_name}</p>}
-                    </div>
-                  </div>
-                  <div className="w-32">
-                    <Badge variant="secondary">{getTypeBadge(video.video_type)}</Badge>
-                  </div>
-                  <div className="w-24">{getStatusBadge(video.status)}</div>
-                  <div className="w-20 text-slate-600">{video.views || "-"}</div>
-                  <div className="w-24 text-sm text-slate-500">
-                    {new Date(video.created_at).toLocaleDateString()}
-                  </div>
-                  <div className="w-20">
+                    <Badge className={cn("text-xs shrink-0", typeConfig?.color)}>
+                      <TypeIcon className="h-3 w-3 mr-1" />
+                      {typeConfig?.label}
+                    </Badge>
+                    <Badge className={cn("text-xs shrink-0", statusConfig?.color)}>
+                      <StatusIcon className="h-3 w-3 mr-1" />
+                      {statusConfig?.label}
+                    </Badge>
+                    {script.variation_count ? (
+                      <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                        <GitBranch className="h-3 w-3" />
+                        {script.variation_count}
+                      </span>
+                    ) : null}
+                    <span className="text-sm text-muted-foreground shrink-0">
+                      {new Date(script.created_at).toLocaleDateString()}
+                    </span>
                     <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon">
+                      <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+                        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
                           <MoreVertical className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem>
-                          <Play className="h-4 w-4 mr-2" />
-                          Play
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); openVariationDialog(script) }}>
+                          <GitBranch className="h-4 w-4 mr-2" />
+                          Create Variation
                         </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Download className="h-4 w-4 mr-2" />
-                          Download
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(script.script_content) }}>
+                          <Copy className="h-4 w-4 mr-2" />
+                          Copy Script
                         </DropdownMenuItem>
-                        <DropdownMenuItem>
-                          <Share2 className="h-4 w-4 mr-2" />
-                          Share
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="text-red-600">
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          className="text-red-600"
+                          onClick={(e) => { e.stopPropagation(); handleDeleteScript(script.id) }}
+                        >
                           <Trash2 className="h-4 w-4 mr-2" />
                           Delete
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </Card>
         )}
       </div>
+
+      {/* Script Detail Drawer */}
+      <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+        <SheetContent className="w-full sm:max-w-xl overflow-y-auto">
+          {selectedScript && (
+            <>
+              <SheetHeader>
+                <SheetTitle>{selectedScript.title}</SheetTitle>
+                <SheetDescription>
+                  Created {new Date(selectedScript.created_at).toLocaleDateString()}
+                </SheetDescription>
+              </SheetHeader>
+
+              <div className="mt-6 space-y-6">
+                {/* Status and Type */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge className={cn("text-xs", SCRIPT_TYPE_CONFIG[selectedScript.script_type]?.color)}>
+                    {SCRIPT_TYPE_CONFIG[selectedScript.script_type]?.label}
+                  </Badge>
+                  <Badge className={cn("text-xs", APPROVAL_STATUS_CONFIG[selectedScript.approval_status]?.color)}>
+                    {APPROVAL_STATUS_CONFIG[selectedScript.approval_status]?.label}
+                  </Badge>
+                  {selectedScript.ai_generated && (
+                    <Badge variant="outline" className="text-xs">
+                      <Sparkles className="h-3 w-3 mr-1" />
+                      AI Generated
+                    </Badge>
+                  )}
+                  {selectedScript.template && (
+                    <Badge variant="secondary" className="text-xs">
+                      Template: {selectedScript.template.template_name}
+                    </Badge>
+                  )}
+                </div>
+
+                {/* Compliance Notes */}
+                {selectedScript.compliance_review_notes && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-800">Compliance Notes</p>
+                        <p className="text-sm text-amber-700 mt-1">
+                          {selectedScript.compliance_review_notes}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Script Content */}
+                <div className="space-y-2">
+                  <Label>Script Content</Label>
+                  <div className="p-4 bg-muted rounded-lg">
+                    <p className="text-sm whitespace-pre-wrap font-mono">
+                      {selectedScript.script_content}
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between text-sm text-muted-foreground">
+                    <span>
+                      {selectedScript.script_content.split(/\s+/).length} words
+                    </span>
+                    {selectedScript.duration_target_seconds && (
+                      <span>Target: {selectedScript.duration_target_seconds}s</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Variations */}
+                {selectedScript.script_variations && selectedScript.script_variations.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label>Variations ({selectedScript.script_variations.length})</Label>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => openVariationDialog(selectedScript)}
+                      >
+                        <GitBranch className="h-3 w-3 mr-1" />
+                        Add Variation
+                      </Button>
+                    </div>
+                    <div className="space-y-2">
+                      {selectedScript.script_variations.map((variation) => (
+                        <div
+                          key={variation.id}
+                          className="p-3 border rounded-lg hover:bg-muted/50 transition-colors"
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="font-medium text-sm">
+                              {variation.variation_label}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              {variation.is_ab_test && (
+                                <Badge variant="secondary" className="text-xs">
+                                  A/B Test
+                                </Badge>
+                              )}
+                              {variation.audience_segment && (
+                                <Badge variant="outline" className="text-xs">
+                                  {variation.audience_segment}
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                          {variation.variation_goal && (
+                            <p className="text-xs text-muted-foreground mb-2">
+                              Goal: {variation.variation_goal}
+                            </p>
+                          )}
+                          <p className="text-sm text-muted-foreground line-clamp-2">
+                            {variation.script_content.slice(0, 100)}...
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex items-center gap-2 pt-4 border-t">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => openVariationDialog(selectedScript)}
+                  >
+                    <GitBranch className="h-4 w-4 mr-2" />
+                    Create Variation
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => navigator.clipboard.writeText(selectedScript.script_content)}
+                  >
+                    <Copy className="h-4 w-4 mr-2" />
+                    Copy
+                  </Button>
+                </div>
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Create Variation Dialog */}
+      <Dialog open={variationDialogOpen} onOpenChange={setVariationDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Create Script Variation</DialogTitle>
+            <DialogDescription>
+              Create a new variation of "{variationScript?.title}"
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Variation Label *</Label>
+              <Input
+                value={variationLabel}
+                onChange={(e) => setVariationLabel(e.target.value)}
+                placeholder="e.g., Version B - Shorter CTA"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Variation Goal</Label>
+              <Input
+                value={variationGoal}
+                onChange={(e) => setVariationGoal(e.target.value)}
+                placeholder="e.g., Test shorter call to action"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Audience Segment</Label>
+              <Input
+                value={variationAudience}
+                onChange={(e) => setVariationAudience(e.target.value)}
+                placeholder="e.g., First-time buyers"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Call to Action</Label>
+              <Input
+                value={variationCta}
+                onChange={(e) => setVariationCta(e.target.value)}
+                placeholder="e.g., Schedule a viewing today"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Script Content *</Label>
+              <Textarea
+                value={variationContent}
+                onChange={(e) => setVariationContent(e.target.value)}
+                rows={8}
+                className="font-mono text-sm"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="ab-test"
+                checked={variationIsAbTest}
+                onChange={(e) => setVariationIsAbTest(e.target.checked)}
+                className="rounded"
+              />
+              <Label htmlFor="ab-test" className="text-sm font-normal">
+                Mark as A/B test variant
+              </Label>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setVariationDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateVariation}
+              disabled={!variationLabel || !variationContent || creatingVariation}
+            >
+              {creatingVariation ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <GitBranch className="h-4 w-4 mr-2" />
+                  Create Variation
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
 
-// ✅ OUTER COMPONENT: Wraps content in Suspense boundary
+// ─── PAGE COMPONENT ──────────────────────────────────────────────────────────
+
 export default function VideoLibraryPage() {
   return (
     <Suspense fallback={<Loading />}>
       <VideoLibraryContent />
     </Suspense>
   )
-}
-
-export const unstable_settings = {
-  suspense: true,
 }

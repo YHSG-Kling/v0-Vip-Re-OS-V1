@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { logContentGeneration } from "@/app/actions/ai-content-generation"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function POST(request: Request) {
   try {
@@ -49,13 +50,24 @@ Target Contact Profile:
 
     const startTime = Date.now()
 
+    // Get actor context for governance
+    const agentCtx = await getAgentContext()
+    const actorContext = agentCtx
+      ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
+      : undefined
+
     // Generate content using AI SDK
-    const { text, usage } = await generateText({
-      model: "openai/gpt-4o",
+    const response = await generateAIResponse({
       prompt,
       temperature: 0.7,
       maxTokens: contentType === "blog_post" ? 2000 : 500,
+      metadata: {
+        userId: agentId,
+        brokerageId: actorContext?.brokerageId,
+        feature: "email_generation",
+      },
     })
+    const text = response.text
 
     const generationTime = Date.now() - startTime
 
@@ -64,8 +76,8 @@ Target Contact Profile:
       agentId,
       contentType,
       prompt,
-      model: "gpt-4o",
-      tokensUsed: usage?.totalTokens || 0,
+      model: response.modelUsed || "email_generation",
+      tokensUsed: (response.inputTokens || 0) + (response.outputTokens || 0),
       generationTime,
       success: true,
     })

@@ -1,190 +1,962 @@
-import { createClient } from "@/lib/supabase/server"
-import { Card } from "@/components/ui/card"
+"use client"
+
+import { useEffect, useState, useTransition } from "react"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Calendar, Heart, TrendingUp, Gift } from "lucide-react"
-import { getAgentContext } from "@/lib/identity"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { toast } from "sonner"
+import {
+  Heart,
+  Sparkles,
+  TrendingUp,
+  ExternalLink,
+  Star,
+  Search,
+  Phone,
+  Mail,
+  MessageSquare,
+  Calendar,
+  Home,
+  User,
+  Clock,
+  Loader2,
+  Send,
+  Copy,
+  AlertCircle,
+  Gift,
+  PartyPopper,
+  Users,
+  RefreshCw,
+  Zap,
+} from "lucide-react"
+import {
+  getPastClients,
+  logTouchpoint,
+  sendMarketUpdate,
+  getTouchpointTimeline,
+  getUpcomingAnniversaries,
+  getAISuggestedTouchpoint,
+  scoreSphereEngagement,
+  segmentSphere,
+  getUpcomingMilestones,
+  generateTouchpoint,
+  optimizeReferralAsk,
+  getLifeChangeSignals,
+  findReferralOpportunities,
+} from "@/app/actions/past-clients"
+import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
+import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 
-export const dynamic = "force-dynamic"
+// Types
+interface PastClient {
+  id: string
+  first_name: string
+  last_name: string
+  email?: string
+  phone?: string
+  transactions: {
+    id: string
+    actual_close_date: string
+    status: string
+    property_address?: string
+    sale_price?: number
+  }[]
+  client_engagement_scores?: {
+    engagement_score: number
+    referral_potential_score: number
+    last_touchpoint_date?: string
+    computed_at?: string
+  }[]
+}
 
-export default async function PastClientsPage() {
-  const { agentId, brokerageId } = await getAgentContext()
-  const supabase = await createClient()
+interface Touchpoint {
+  id: string
+  contact_id: string
+  touchpoint_type: string
+  channel: string
+  notes?: string
+  status: string
+  sent_at: string
+}
 
-  // Get past clients (contacts with closed transactions)
-  const { data: pastClients } = await supabase
-    .from("contacts")
-    .select(
-      `
-      *,
-      transactions!inner(id, actual_close_date, status),
-      client_engagement_scores(engagement_score, referral_potential_score, last_touchpoint_date)
-    `,
+interface Anniversary {
+  id: string
+  actual_close_date: string
+  property_address: string
+  sale_price?: number
+  contacts: {
+    id: string
+    first_name: string
+    last_name: string
+    email?: string
+    phone?: string
+  }
+}
+
+// Helper functions
+function getEngagementBadge(score: number) {
+  if (score >= 70) return { label: "Hot", className: "bg-green-100 text-green-700 border-green-300" }
+  if (score >= 40) return { label: "Warm", className: "bg-amber-100 text-amber-700 border-amber-300" }
+  return { label: "Cold", className: "bg-slate-100 text-slate-500 border-slate-300" }
+}
+
+function getDaysSinceContact(lastTouchpointDate?: string): number | null {
+  if (!lastTouchpointDate) return null
+  const now = new Date()
+  const last = new Date(lastTouchpointDate)
+  return Math.floor((now.getTime() - last.getTime()) / (1000 * 60 * 60 * 24))
+}
+
+function getTouchpointIcon(type: string) {
+  switch (type) {
+    case "call": return <Phone className="w-4 h-4" />
+    case "email": return <Mail className="w-4 h-4" />
+    case "market_update": return <TrendingUp className="w-4 h-4" />
+    case "anniversary": return <PartyPopper className="w-4 h-4" />
+    case "check_in": return <MessageSquare className="w-4 h-4" />
+    default: return <Clock className="w-4 h-4" />
+  }
+}
+
+export default function LifetimeCustomersPage() {
+  const [isPending, startTransition] = useTransition()
+
+  // Tab state
+  const [activeTab, setActiveTab] = useState("feed")
+
+  // Data state
+  const [clients, setClients] = useState<PastClient[]>([])
+  const [anniversaries, setAnniversaries] = useState<Anniversary[]>([])
+  const [loading, setLoading] = useState(true)
+
+  // Filter state
+  const [search, setSearch] = useState("")
+  const [engagementFilter, setEngagementFilter] = useState("all")
+
+  // Selected client state
+  const [selectedClient, setSelectedClient] = useState<PastClient | null>(null)
+  const [touchpointTimeline, setTouchpointTimeline] = useState<Touchpoint[]>([])
+  const [loadingTimeline, setLoadingTimeline] = useState(false)
+
+  // Touchpoint draft dialog
+  const [touchpointDraft, setTouchpointDraft] = useState<string | null>(null)
+  const [touchpointDialogOpen, setTouchpointDialogOpen] = useState(false)
+  const [touchpointDialogTitle, setTouchpointDialogTitle] = useState("AI Generated Message")
+
+  // Log touchpoint modal
+  const [showLogTouchpoint, setShowLogTouchpoint] = useState(false)
+  const [touchpointType, setTouchpointType] = useState("call")
+  const [touchpointNotes, setTouchpointNotes] = useState("")
+
+  // Sphere intelligence state
+  const [sphereScores, setSphereScores] = useState<any>(null)
+  const [sphereSegments, setSphereSegments] = useState<any>(null)
+  const [milestones, setMilestones] = useState<any[]>([])
+  const [lifeSignals, setLifeSignals] = useState<any[]>([])
+  const [referralOpportunities, setReferralOpportunities] = useState<any[]>([])
+
+  // Load initial data
+  useEffect(() => {
+    async function loadData() {
+      setLoading(true)
+      try {
+        const [clientsResult, anniversariesResult] = await Promise.all([
+          getPastClients({ search, engagementFilter }),
+          getUpcomingAnniversaries(),
+        ])
+
+        if (clientsResult.success && clientsResult.clients) {
+          setClients(clientsResult.clients)
+        }
+        if (anniversariesResult.success && anniversariesResult.anniversaries) {
+          setAnniversaries(anniversariesResult.anniversaries)
+        }
+      } catch (e) {
+        console.error("Error loading data:", e)
+      } finally {
+        setLoading(false)
+      }
+    }
+    loadData()
+  }, [search, engagementFilter])
+
+  // Load timeline when client selected
+  useEffect(() => {
+    async function loadTimeline() {
+      if (!selectedClient) {
+        setTouchpointTimeline([])
+        return
+      }
+      setLoadingTimeline(true)
+      try {
+        const result = await getTouchpointTimeline(selectedClient.id)
+        if (result.success && result.touchpoints) {
+          setTouchpointTimeline(result.touchpoints)
+        }
+      } catch (e) {
+        console.error("Error loading timeline:", e)
+      } finally {
+        setLoadingTimeline(false)
+      }
+    }
+    loadTimeline()
+  }, [selectedClient])
+
+  // Stats
+  const totalClients = clients.length
+  const champions = sphereScores?.tiers?.champions?.length || clients.filter(c => (c.client_engagement_scores?.[0]?.engagement_score || 0) >= 70).length
+  const highReferral = clients.filter(c => (c.client_engagement_scores?.[0]?.referral_potential_score || 0) >= 75).length
+  const cooling = sphereScores?.tiers?.cooling?.length || clients.filter(c => {
+    const score = c.client_engagement_scores?.[0]?.engagement_score || 0
+    return score >= 30 && score < 50
+  }).length
+  const atRisk = sphereScores?.tiers?.atRisk?.length || clients.filter(c => {
+    const days = getDaysSinceContact(c.client_engagement_scores?.[0]?.last_touchpoint_date)
+    return days === null || days > 90
+  }).length
+
+  // Handlers
+  function handleLogTouchpoint() {
+    if (!selectedClient) return
+    startTransition(async () => {
+      const result = await logTouchpoint({
+        contactId: selectedClient.id,
+        touchpointType,
+        notes: touchpointNotes,
+      })
+      if (result.success) {
+        setShowLogTouchpoint(false)
+        setTouchpointNotes("")
+        const timelineResult = await getTouchpointTimeline(selectedClient.id)
+        if (timelineResult.success && timelineResult.touchpoints) {
+          setTouchpointTimeline(timelineResult.touchpoints)
+        }
+        toast.success("Touchpoint logged")
+      }
+    })
+  }
+
+  async function handleGenerateTouchpoint(contactId: string, type: 'anniversary' | 'birthday' | 'check_in' | 'market_update' | 'holiday' | 'referral_ask', title?: string) {
+    startTransition(async () => {
+      const result = await generateTouchpoint({ contactId, touchpointType: type })
+      if (result.success && result.message) {
+        setTouchpointDraft(result.message)
+        setTouchpointDialogTitle(title || `AI ${type.replace('_', ' ')} Message`)
+        setTouchpointDialogOpen(true)
+      }
+    })
+  }
+
+  async function handleOptimizeReferral(contactId: string) {
+    startTransition(async () => {
+      const result = await optimizeReferralAsk(contactId)
+      if (result.success && result.message) {
+        setTouchpointDraft(result.message)
+        setTouchpointDialogTitle("Optimized Referral Ask")
+        setTouchpointDialogOpen(true)
+      }
+    })
+  }
+
+  async function handleScoreSphere() {
+    startTransition(async () => {
+      const result = await scoreSphereEngagement()
+      if (result.success) {
+        setSphereScores(result)
+        toast.success("Sphere analyzed")
+      }
+    })
+  }
+
+  async function handleSegmentSphere() {
+    startTransition(async () => {
+      const result = await segmentSphere()
+      if (result.success) {
+        setSphereSegments(result)
+        toast.success("Sphere segmented")
+      }
+    })
+  }
+
+  async function handleLoadMilestones() {
+    startTransition(async () => {
+      const result = await getUpcomingMilestones(30)
+      if (result.success && result.milestones) {
+        setMilestones(result.milestones)
+        toast.success(`Found ${result.milestones.length} milestones`)
+      }
+    })
+  }
+
+  async function handleLoadLifeSignals() {
+    startTransition(async () => {
+      const result = await getLifeChangeSignals(7)
+      if (Array.isArray(result)) {
+        setLifeSignals(result)
+        toast.success(`Found ${result.length} life signals`)
+      }
+    })
+  }
+
+  async function handleFindReferrals() {
+    startTransition(async () => {
+      const result = await findReferralOpportunities()
+      if (result.success && result.opportunities) {
+        setReferralOpportunities(result.opportunities)
+        toast.success(`Found ${result.opportunities.length} referral opportunities`)
+      }
+    })
+  }
+
+  function copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text)
+    toast.success("Copied to clipboard")
+  }
+
+  // Filter clients
+  const filteredClients = clients.filter(client => {
+    if (engagementFilter === "all") return true
+    const score = client.client_engagement_scores?.[0]?.engagement_score || 0
+    if (engagementFilter === "hot") return score >= 70
+    if (engagementFilter === "warm") return score >= 40 && score < 70
+    if (engagementFilter === "cold") return score < 40
+    return true
+  })
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+      </div>
     )
-    .eq("agent_id", agentId)
-    .eq("brokerage_id", brokerageId)
-    .eq("transactions.status", "closed")
-
-  // Get upcoming touchpoints
-  const today = new Date()
-  const nextWeek = new Date(today)
-  nextWeek.setDate(nextWeek.getDate() + 7)
-
-  const { data: upcomingTouchpoints } = await supabase
-    .from("past_client_touchpoints")
-    .select("*, contacts(first_name, last_name)")
-    .eq("agent_id", agentId)
-    .eq("brokerage_id", brokerageId)
-    .eq("status", "scheduled")
-    .gte("scheduled_date", today.toISOString().split("T")[0])
-    .lte("scheduled_date", nextWeek.toISOString().split("T")[0])
-    .order("scheduled_date")
-    .limit(10)
+  }
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Past Clients</h1>
-          <p className="text-muted-foreground">Client for Life touchpoint management</p>
+    <div className="min-h-screen bg-background">
+      <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+        {/* Header */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">Lifetime Customers</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Your relationship intelligence engine
+            </p>
+          </div>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search by name..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9 w-64"
+            />
+          </div>
         </div>
-        <Button>
-          <Calendar className="w-4 h-4 mr-2" />
-          View Calendar
-        </Button>
-      </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card className="p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Total Past Clients</p>
-              <p className="text-2xl font-bold">{pastClients?.length || 0}</p>
+        {/* Main Tabs */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+          <TabsList className="w-full grid grid-cols-5">
+            <TabsTrigger value="feed" className="flex items-center gap-2">
+              <Heart className="w-4 h-4" />
+              <span className="hidden sm:inline">Relationship Feed</span>
+            </TabsTrigger>
+            <TabsTrigger value="intelligence" className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4" />
+              <span className="hidden sm:inline">Sphere Intelligence</span>
+            </TabsTrigger>
+            <TabsTrigger value="radar" className="flex items-center gap-2">
+              <TrendingUp className="w-4 h-4" />
+              <span className="hidden sm:inline">Opportunity Radar</span>
+            </TabsTrigger>
+            <TabsTrigger value="portal" className="flex items-center gap-2">
+              <ExternalLink className="w-4 h-4" />
+              <span className="hidden sm:inline">Portal Actions</span>
+            </TabsTrigger>
+            <TabsTrigger value="reputation" className="flex items-center gap-2">
+              <Star className="w-4 h-4" />
+              <span className="hidden sm:inline">Reputation</span>
+            </TabsTrigger>
+          </TabsList>
+
+          {/* TAB 1: Relationship Feed */}
+          <TabsContent value="feed" className="space-y-6">
+            {/* Anniversaries Strip */}
+            {anniversaries.length > 0 && (
+              <Card className="border-purple-200 bg-purple-50/30">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Home className="w-5 h-5 text-purple-600" />
+                    Upcoming Home Anniversaries
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex gap-4 overflow-x-auto pb-2">
+                    {anniversaries.map((ann) => {
+                      const anniversary = new Date(ann.actual_close_date)
+                      const thisYear = new Date()
+                      anniversary.setFullYear(thisYear.getFullYear())
+                      const yearsAgo = thisYear.getFullYear() - new Date(ann.actual_close_date).getFullYear()
+
+                      return (
+                        <div
+                          key={ann.id}
+                          className="flex-shrink-0 p-4 bg-background rounded-lg border min-w-[280px]"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center shrink-0">
+                              <Home className="w-5 h-5 text-purple-600" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-medium text-sm">
+                                {ann.contacts?.first_name}'s {yearsAgo}-Year Home Anniversary
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {anniversary.toLocaleDateString()}
+                              </p>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="mt-2"
+                                onClick={() => handleGenerateTouchpoint(ann.contacts.id, 'anniversary', 'Anniversary Celebration')}
+                                disabled={isPending}
+                              >
+                                {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4 mr-1" />}
+                                Send Celebration Message
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Filter Bar */}
+            <div className="flex items-center gap-3">
+              <Select value={engagementFilter} onValueChange={setEngagementFilter}>
+                <SelectTrigger className="w-36">
+                  <SelectValue placeholder="Engagement" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="hot">Hot</SelectItem>
+                  <SelectItem value="warm">Warm</SelectItem>
+                  <SelectItem value="cold">Cold</SelectItem>
+                </SelectContent>
+              </Select>
+              <span className="text-sm text-muted-foreground">{filteredClients.length} clients</span>
             </div>
-            <Heart className="w-8 h-8 text-red-500" />
-          </div>
-        </Card>
 
-        <Card className="p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">High Engagement</p>
-              <p className="text-2xl font-bold">
-                {pastClients?.filter((c) => (c.client_engagement_scores?.[0]?.engagement_score || 0) >= 70).length || 0}
-              </p>
+            {/* Client List */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-2 space-y-3">
+                {filteredClients.map((client) => {
+                  const engagementScore = client.client_engagement_scores?.[0]?.engagement_score || 0
+                  const badge = getEngagementBadge(engagementScore)
+                  const lastTouchpoint = client.client_engagement_scores?.[0]?.last_touchpoint_date
+                  const daysSince = getDaysSinceContact(lastTouchpoint)
+                  const transaction = client.transactions?.[0]
+                  const isSelected = selectedClient?.id === client.id
+
+                  return (
+                    <Card
+                      key={client.id}
+                      onClick={() => setSelectedClient(client)}
+                      className={`cursor-pointer transition-all hover:shadow-md ${isSelected ? "ring-2 ring-primary" : ""}`}
+                    >
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-start gap-3 flex-1 min-w-0">
+                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+                              <User className="w-5 h-5 text-slate-500" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <h3 className="font-semibold truncate">
+                                  {client.first_name} {client.last_name}
+                                </h3>
+                                <Badge variant="outline" className={badge.className}>
+                                  {badge.label}
+                                </Badge>
+                              </div>
+                              {transaction && (
+                                <p className="text-xs text-muted-foreground truncate">
+                                  {transaction.property_address || "Address N/A"}
+                                </p>
+                              )}
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {daysSince !== null ? `${daysSince} days since contact` : "Never contacted"}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); if (client.phone) window.location.href = `tel:${client.phone}` }}>
+                              <Phone className="w-4 h-4" />
+                            </Button>
+                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); if (client.email) window.location.href = `mailto:${client.email}` }}>
+                              <Mail className="w-4 h-4" />
+                            </Button>
+                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); handleGenerateTouchpoint(client.id, 'check_in', 'AI Suggested Touch') }}>
+                              <Sparkles className="w-4 h-4" />
+                            </Button>
+                            <Button size="icon" variant="ghost" className="h-8 w-8" onClick={(e) => { e.stopPropagation(); setSelectedClient(client); setShowLogTouchpoint(true) }}>
+                              <Calendar className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )
+                })}
+              </div>
+
+              {/* Detail Panel */}
+              <div className="space-y-4">
+                {selectedClient ? (
+                  <>
+                    <Card>
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-base">
+                          {selectedClient.first_name} {selectedClient.last_name}
+                        </CardTitle>
+                        <CardDescription>Touchpoint Timeline</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {loadingTimeline ? (
+                          <div className="flex justify-center py-4">
+                            <Loader2 className="w-6 h-6 animate-spin" />
+                          </div>
+                        ) : touchpointTimeline.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-4">
+                            No touchpoints yet
+                          </p>
+                        ) : (
+                          <div className="space-y-3">
+                            {touchpointTimeline.slice(0, 5).map((tp) => (
+                              <div key={tp.id} className="flex items-start gap-3">
+                                <div className="p-2 bg-slate-100 rounded-full">
+                                  {getTouchpointIcon(tp.touchpoint_type)}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium capitalize">
+                                    {tp.touchpoint_type.replace('_', ' ')}
+                                  </p>
+                                  {tp.notes && (
+                                    <p className="text-xs text-muted-foreground line-clamp-2">
+                                      {tp.notes}
+                                    </p>
+                                  )}
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {new Date(tp.sent_at).toLocaleDateString()}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardContent className="p-4">
+                        <Button
+                          className="w-full"
+                          onClick={() => handleGenerateTouchpoint(selectedClient.id, 'check_in')}
+                          disabled={isPending}
+                        >
+                          {isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                          AI Suggested Touch
+                        </Button>
+                      </CardContent>
+                    </Card>
+                  </>
+                ) : (
+                  <Card>
+                    <CardContent className="p-8 text-center text-muted-foreground">
+                      <User className="w-12 h-12 mx-auto mb-4 opacity-30" />
+                      <p>Select a client to view details</p>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
             </div>
-            <TrendingUp className="w-8 h-8 text-green-500" />
-          </div>
-        </Card>
+          </TabsContent>
 
-        <Card className="p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Upcoming Touchpoints</p>
-              <p className="text-2xl font-bold">{upcomingTouchpoints?.length || 0}</p>
+          {/* TAB 2: Sphere Intelligence */}
+          <TabsContent value="intelligence" className="space-y-6">
+            <div className="flex flex-wrap gap-3">
+              <Button onClick={handleScoreSphere} disabled={isPending}>
+                {isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                Analyze My Sphere
+              </Button>
+              <Button variant="outline" onClick={handleSegmentSphere} disabled={isPending}>
+                <Users className="w-4 h-4 mr-2" />
+                Segment My Sphere
+              </Button>
+              <Button variant="outline" onClick={handleLoadMilestones} disabled={isPending}>
+                <Calendar className="w-4 h-4 mr-2" />
+                Load Milestones
+              </Button>
             </div>
-            <Calendar className="w-8 h-8 text-blue-500" />
-          </div>
-        </Card>
 
-        <Card className="p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-muted-foreground">Referral Ready</p>
-              <p className="text-2xl font-bold">
-                {pastClients?.filter((c) => (c.client_engagement_scores?.[0]?.referral_potential_score || 0) >= 75)
-                  .length || 0}
-              </p>
-            </div>
-            <Gift className="w-8 h-8 text-purple-500" />
-          </div>
-        </Card>
-      </div>
+            {/* Tier Cards */}
+            {sphereScores && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <Card className="bg-green-50 border-green-200">
+                  <CardContent className="p-4">
+                    <p className="text-sm font-medium text-green-700">Champions</p>
+                    <p className="text-2xl font-bold text-green-800">{sphereScores.tiers?.champions?.length || 0}</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-blue-50 border-blue-200">
+                  <CardContent className="p-4">
+                    <p className="text-sm font-medium text-blue-700">Engaged</p>
+                    <p className="text-2xl font-bold text-blue-800">{sphereScores.tiers?.engaged?.length || 0}</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-amber-50 border-amber-200">
+                  <CardContent className="p-4">
+                    <p className="text-sm font-medium text-amber-700">Cooling</p>
+                    <p className="text-2xl font-bold text-amber-800">{sphereScores.tiers?.cooling?.length || 0}</p>
+                  </CardContent>
+                </Card>
+                <Card className="bg-red-50 border-red-200">
+                  <CardContent className="p-4">
+                    <p className="text-sm font-medium text-red-700">At Risk</p>
+                    <p className="text-2xl font-bold text-red-800">{sphereScores.tiers?.atRisk?.length || 0}</p>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
 
-      {/* Upcoming Touchpoints */}
-      <Card className="p-6">
-        <h2 className="text-xl font-semibold mb-4">Upcoming Touchpoints (Next 7 Days)</h2>
-        <div className="space-y-3">
-          {upcomingTouchpoints?.map((touchpoint) => (
-            <div key={touchpoint.id} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
-                  <Calendar className="w-6 h-6 text-blue-600" />
-                </div>
-                <div>
-                  <p className="font-medium">
-                    {touchpoint.contacts?.first_name} {touchpoint.contacts?.last_name}
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    {touchpoint.touchpoint_type.replace(/_/g, " ")} • {touchpoint.channel}
-                  </p>
+            {/* Segments */}
+            {sphereSegments && sphereSegments.segments && (
+              <div className="space-y-4">
+                <h3 className="font-semibold">Segments</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {sphereSegments.segments.map((seg: any, i: number) => (
+                    <Card key={i}>
+                      <CardContent className="p-4">
+                        <p className="font-medium">{seg.name}</p>
+                        <p className="text-sm text-muted-foreground">{seg.count} contacts</p>
+                        <p className="text-xs text-muted-foreground mt-1">{seg.description}</p>
+                      </CardContent>
+                    </Card>
+                  ))}
                 </div>
               </div>
-              <div className="text-right">
-                <p className="font-medium">{new Date(touchpoint.scheduled_date).toLocaleDateString()}</p>
-                <Button size="sm" variant="outline" className="mt-1 bg-transparent">
-                  Send Now
-                </Button>
-              </div>
-            </div>
-          ))}
-          {(!upcomingTouchpoints || upcomingTouchpoints.length === 0) && (
-            <p className="text-center text-muted-foreground py-4">No touchpoints scheduled for the next 7 days</p>
-          )}
-        </div>
-      </Card>
+            )}
 
-      {/* Past Clients List */}
-      <Card className="p-6">
-        <h2 className="text-xl font-semibold mb-4">All Past Clients</h2>
-        <div className="space-y-3">
-          {pastClients?.map((client) => {
-            const engagementScore = client.client_engagement_scores?.[0]?.engagement_score || 0
-            const referralScore = client.client_engagement_scores?.[0]?.referral_potential_score || 0
-            const lastTouchpoint = client.client_engagement_scores?.[0]?.last_touchpoint_date
-
-            return (
-              <div key={client.id} className="flex items-center justify-between p-4 border rounded-lg">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <h3 className="font-semibold">
-                      {client.first_name} {client.last_name}
-                    </h3>
-                    {engagementScore >= 70 && <Badge className="bg-green-100 text-green-700">High Engagement</Badge>}
-                    {referralScore >= 75 && <Badge className="bg-purple-100 text-purple-700">Referral Ready</Badge>}
-                  </div>
-                  <div className="grid grid-cols-3 gap-4 text-sm">
-                    <div>
-                      <p className="text-muted-foreground">Engagement Score</p>
-                      <p className="font-medium">{engagementScore}/100</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Referral Potential</p>
-                      <p className="font-medium">{referralScore}/100</p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground">Last Touchpoint</p>
-                      <p className="font-medium">
-                        {lastTouchpoint ? new Date(lastTouchpoint).toLocaleDateString() : "Never"}
-                      </p>
-                    </div>
-                  </div>
+            {/* Milestones */}
+            {milestones.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="font-semibold">Upcoming Milestones</h3>
+                <div className="space-y-3">
+                  {milestones.map((m: any, i: number) => (
+                    <Card key={i}>
+                      <CardContent className="p-4 flex items-center justify-between">
+                        <div>
+                          <p className="font-medium">{m.contactName}</p>
+                          <p className="text-sm text-muted-foreground">{m.type}: {m.date}</p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleGenerateTouchpoint(m.contactId, m.type === 'anniversary' ? 'anniversary' : 'birthday')}
+                            disabled={isPending}
+                          >
+                            <Sparkles className="w-4 h-4 mr-1" />
+                            AI Message
+                          </Button>
+                          {m.referralPotential === 'high' && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleOptimizeReferral(m.contactId)}
+                              disabled={isPending}
+                            >
+                              <Gift className="w-4 h-4 mr-1" />
+                              Ask Referral
+                            </Button>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
                 </div>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline">
-                    View
+              </div>
+            )}
+          </TabsContent>
+
+          {/* TAB 3: Opportunity Radar */}
+          <TabsContent value="radar" className="space-y-6">
+            {/* Top Stats */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <Card>
+                <CardContent className="p-4 text-center">
+                  <p className="text-2xl font-bold text-green-600">{champions}</p>
+                  <p className="text-sm text-muted-foreground">Champions</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-4 text-center">
+                  <p className="text-2xl font-bold text-purple-600">{highReferral}</p>
+                  <p className="text-sm text-muted-foreground">High Referral</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-4 text-center">
+                  <p className="text-2xl font-bold text-amber-600">{cooling}</p>
+                  <p className="text-sm text-muted-foreground">Cooling</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-4 text-center">
+                  <p className="text-2xl font-bold text-red-600">{atRisk}</p>
+                  <p className="text-sm text-muted-foreground">At Risk</p>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex gap-3">
+              <Button onClick={handleLoadLifeSignals} disabled={isPending}>
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Load Life Signals
+              </Button>
+              <Button variant="outline" onClick={handleFindReferrals} disabled={isPending}>
+                <Zap className="w-4 h-4 mr-2" />
+                Find Referral Opportunities
+              </Button>
+            </div>
+
+            {/* Life Events Intelligence */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Life Events Intelligence</CardTitle>
+                <CardDescription>Recent life changes detected in your sphere</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {lifeSignals.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-4">
+                    Life signals appear as they're discovered.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {lifeSignals.map((signal: any, i: number) => (
+                      <div key={i} className="flex items-center justify-between p-3 rounded-lg border">
+                        <div className="flex items-center gap-3">
+                          <LifeSignalBadge signal={signal} />
+                          <div>
+                            <p className="font-medium text-sm">{signal.contactName}</p>
+                            <p className="text-xs text-muted-foreground">{signal.type}</p>
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleGenerateTouchpoint(signal.contactId, 'check_in')}
+                          disabled={isPending}
+                        >
+                          <Sparkles className="w-4 h-4 mr-1" />
+                          Generate Check-In
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Referral Opportunities */}
+            {referralOpportunities.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Referral Opportunities</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {referralOpportunities.map((opp: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between p-3 rounded-lg border">
+                      <div>
+                        <p className="font-medium text-sm">{opp.contactName}</p>
+                        <p className="text-xs text-muted-foreground">{opp.reason}</p>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => handleOptimizeReferral(opp.contactId)}
+                        disabled={isPending}
+                      >
+                        <Gift className="w-4 h-4 mr-1" />
+                        Ask Referral
+                      </Button>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* TAB 4: Portal Actions */}
+          <TabsContent value="portal" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base">Portal Access</CardTitle>
+                    <CardDescription>{clients.length} clients with portal access</CardDescription>
+                  </div>
+                  <Button variant="outline" onClick={() => toast.info("Bulk reach feature coming soon")}>
+                    Reach All
                   </Button>
-                  <Button size="sm">Schedule Touchpoint</Button>
                 </div>
-              </div>
-            )
-          })}
-          {(!pastClients || pastClients.length === 0) && (
-            <p className="text-center text-muted-foreground py-8">No past clients yet</p>
-          )}
-        </div>
-      </Card>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {clients.slice(0, 10).map((client) => (
+                  <div key={client.id} className="flex items-center justify-between p-3 rounded-lg border">
+                    <div>
+                      <p className="font-medium text-sm">{client.first_name} {client.last_name}</p>
+                      <p className="text-xs text-muted-foreground">{client.email}</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" asChild>
+                        <a href={`/portal/${client.id}`} target="_blank" rel="noopener noreferrer">
+                          <ExternalLink className="w-4 h-4 mr-1" />
+                          Open Portal
+                        </a>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleGenerateTouchpoint(client.id, 'check_in', 'Send Message')}
+                        disabled={isPending}
+                      >
+                        <Send className="w-4 h-4 mr-1" />
+                        Message
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleOptimizeReferral(client.id)}
+                        disabled={isPending}
+                      >
+                        <Gift className="w-4 h-4 mr-1" />
+                        Referral
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleGenerateTouchpoint(client.id, 'market_update', 'Market Update')}
+                        disabled={isPending}
+                      >
+                        <TrendingUp className="w-4 h-4 mr-1" />
+                        Update
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* TAB 5: Reputation */}
+          <TabsContent value="reputation">
+            <ReputationPanel
+              agentId=""
+              clients={clients}
+              reviews={[]}
+              recentClosings={clients.filter(c => c.transactions?.[0]?.actual_close_date).map(c => ({
+                id: c.id,
+                actual_close_date: c.transactions[0].actual_close_date,
+                property_address: c.transactions[0].property_address,
+                contacts: { first_name: c.first_name, last_name: c.last_name },
+              }))}
+            />
+          </TabsContent>
+        </Tabs>
+
+        {/* Shared Touchpoint Draft Dialog */}
+        <Dialog open={touchpointDialogOpen} onOpenChange={setTouchpointDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{touchpointDialogTitle}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <Textarea
+                value={touchpointDraft || ""}
+                onChange={(e) => setTouchpointDraft(e.target.value)}
+                rows={6}
+                className="resize-none"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => copyToClipboard(touchpointDraft || "")}>
+                <Copy className="w-4 h-4 mr-2" />
+                Copy
+              </Button>
+              <Button onClick={() => setTouchpointDialogOpen(false)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Log Touchpoint Dialog */}
+        <Dialog open={showLogTouchpoint} onOpenChange={setShowLogTouchpoint}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Log Touchpoint</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <Select value={touchpointType} onValueChange={setTouchpointType}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Touchpoint Type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="call">Phone Call</SelectItem>
+                  <SelectItem value="email">Email</SelectItem>
+                  <SelectItem value="text">Text Message</SelectItem>
+                  <SelectItem value="meeting">In-Person Meeting</SelectItem>
+                  <SelectItem value="market_update">Market Update</SelectItem>
+                  <SelectItem value="check_in">Check In</SelectItem>
+                </SelectContent>
+              </Select>
+              <Textarea
+                placeholder="Notes (optional)"
+                value={touchpointNotes}
+                onChange={(e) => setTouchpointNotes(e.target.value)}
+                rows={3}
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowLogTouchpoint(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleLogTouchpoint} disabled={isPending}>
+                {isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                Log Touchpoint
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
     </div>
   )
 }

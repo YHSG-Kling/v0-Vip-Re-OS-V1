@@ -27,7 +27,7 @@ import { processKernelEvent } from "@/lib/kernel/notification-engine"
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface CheckBrandComplianceParams {
-  contentType: "video" | "social_post" | "document" | "listing_media"
+  contentType: "video" | "social_post" | "document" | "listing_media" | "blog_post" | "podcast" | "newsletter" | "ad_creative"
   contentId: string
   brokerageId: string
 }
@@ -95,6 +95,82 @@ export async function checkBrandCompliance(
       contentId,
       violations,
     })
+  // ── blog_post ──────────────────────────────────────────────────────────────
+  } else if (contentType === "blog_post") {
+    const { data: blog } = await supabase
+      .from("blog_posts")
+      .select("id, brokerage_id, title, content, publish_status, seo_score")
+      .eq("id", contentId)
+      .maybeSingle()
+
+    if (!blog) {
+      violations.push("blog_post record not found")
+    } else {
+      if (prohibitedLanguage?.some((w: string) => blog.content?.toLowerCase().includes(w.toLowerCase()))) {
+        violations.push("prohibited language in blog content")
+      }
+    }
+
+    const blogPassed = violations.length === 0
+    await supabase
+      .from("blog_posts")
+      .update({ seo_score: blogPassed ? (blog?.seo_score ?? 0) : (blog?.seo_score ?? 0) })
+      .eq("id", contentId)
+
+  // ── podcast ───────────────────────────────────────────────────────────────
+  } else if (contentType === "podcast") {
+    const { data: episode } = await supabase
+      .from("podcast_episodes")
+      .select("id, brokerage_id, title, script, status")
+      .eq("id", contentId)
+      .maybeSingle()
+
+    if (!episode) {
+      violations.push("podcast_episode record not found")
+    } else {
+      if (prohibitedLanguage?.some((w: string) => episode.script?.toLowerCase().includes(w.toLowerCase()))) {
+        violations.push("prohibited language in podcast script")
+      }
+    }
+
+  // ── newsletter ────────────────────────────────────────────────────────────
+  } else if (contentType === "newsletter") {
+    const { data: campaign } = await supabase
+      .from("newsletter_campaigns")
+      .select("id, brokerage_id, campaign_name, content, brand_compliance_passed")
+      .eq("id", contentId)
+      .maybeSingle()
+
+    if (!campaign) {
+      violations.push("newsletter_campaign record not found")
+    } else {
+      if (prohibitedLanguage?.some((w: string) => campaign.content?.toLowerCase().includes(w.toLowerCase()))) {
+        violations.push("prohibited language in newsletter content")
+      }
+    }
+
+    const newsletterPassed = violations.length === 0
+    await supabase
+      .from("newsletter_campaigns")
+      .update({ brand_compliance_passed: newsletterPassed })
+      .eq("id", contentId)
+
+  // ── ad_creative ───────────────────────────────────────────────────────────
+  } else if (contentType === "ad_creative") {
+    const { data: creative } = await supabase
+      .from("ad_creative_variations")
+      .select("id, brokerage_id, headline, primary_text, description, approval_status")
+      .eq("id", contentId)
+      .maybeSingle()
+
+    if (!creative) {
+      violations.push("ad_creative_variation record not found")
+    } else {
+      const adText = [creative.headline, creative.primary_text, creative.description].join(" ")
+      if (prohibitedLanguage?.some((w: string) => adText.toLowerCase().includes(w.toLowerCase()))) {
+        violations.push("prohibited language in ad creative")
+      }
+    }
   }
 
   const passed = violations.length === 0
@@ -216,10 +292,10 @@ async function checkDocument(ctx: {
 }): Promise<void> {
   const { supabase, contentId, cmaDisclaimerText, violations } = ctx
 
-  // documents table does not exist in the public schema — attempt a read but
+  // client_documents table exists — attempt a read but
   // treat a missing table gracefully; only the lifecycle_event and result matter
   const { data: doc } = await supabase
-    .from("documents" as string)
+    .from("client_documents")
     .select("content, document_type")
     .eq("id", contentId)
     .maybeSingle()

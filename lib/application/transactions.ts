@@ -5,6 +5,24 @@ import { runPipelineSimple } from "@/lib/ai"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 
 // ============================================
+// HELPERS
+// ============================================
+
+/**
+ * Normalize ZIP codes to standard formats:
+ * - "12345" → "12345" (5-digit unchanged)
+ * - "12345 6789" → "12345-6789" (9-digit with space)
+ * - "123456789" → "12345-6789" (9-digit without separator)
+ */
+function normalizeZip(zip?: string): string | undefined {
+  if (!zip) return undefined
+  const cleaned = zip.replace(/\s+/g, '').replace(/[^0-9]/g, '')
+  if (cleaned.length === 5) return cleaned
+  if (cleaned.length === 9) return `${cleaned.slice(0, 5)}-${cleaned.slice(5)}`
+  return zip.trim()
+}
+
+// ============================================
 // TRANSACTION CRUD
 // ============================================
 
@@ -69,6 +87,9 @@ export async function getTransactionById(transactionId: string) {
 
 export async function createTransaction(transactionData: {
   property_address: string
+  property_city?: string
+  property_state?: string // 2-letter US state code, e.g. "FL", "CA", "TX"
+  property_zip?: string
   transaction_type: "purchase" | "sale" | "lease" | "dual"
   status?: string
   contract_price?: number
@@ -87,6 +108,7 @@ export async function createTransaction(transactionData: {
     .from("transactions")
     .insert({
       ...transactionData,
+      property_zip: normalizeZip(transactionData.property_zip),
       status: transactionData.status || "new",
       commission_percentage: transactionData.commissionPercentage ?? null,
     })
@@ -104,7 +126,7 @@ export async function createTransaction(transactionData: {
     if (transactionData.commissionPercentage != null) {
       const { data: userData } = await supabase.auth.getUser()
       const { data: profile } = await supabase
-        .from("profiles")
+        .from("users")
         .select("brokerage_id")
         .eq("id", userData.user?.id)
         .single()
@@ -133,6 +155,9 @@ export async function updateTransaction(
   transactionId: string,
   updates: Partial<{
     property_address: string
+    property_city: string
+    property_state: string
+    property_zip: string
     transaction_type: string
     status: string
     contract_price: number
@@ -153,6 +178,9 @@ export async function updateTransaction(
   if (updates.commissionPercentage !== undefined) {
     updatePayload.commission_percentage = updates.commissionPercentage
     delete updatePayload.commissionPercentage
+  }
+  if (updates.property_zip !== undefined) {
+    updatePayload.property_zip = normalizeZip(updates.property_zip)
   }
 
   const { data, error } = await supabase
@@ -1695,10 +1723,10 @@ export async function celebrateMilestone(transactionId: string, milestone: strin
 export async function loadClientDashboard(transactionId: string, contactId?: string) {
   const supabase = await createClient()
   
-  // Fetch transaction with full relationships
+  // Fetch transaction with full relationships - specify which foreign key to use
   const { data: transaction } = await supabase
     .from("transactions")
-    .select(`*, contacts(*), agents(*)`)
+    .select(`*, contacts!transactions_contact_id_fkey(*), agents(*)`)
     .eq("id", transactionId)
     .single()
   
@@ -1950,7 +1978,7 @@ export async function loadAgentDashboard() {
 
   const { data: transactions } = await supabase
     .from("transactions")
-    .select(`*, contacts(*), listings(*)`)
+    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
     .eq("agent_id", agentId)
     .order("created_at", { ascending: false })
 
@@ -1971,7 +1999,7 @@ export async function getAgentTransactionKanban() {
 
   const { data: transactions } = await supabase
     .from("transactions")
-    .select(`*, contacts(*), listings(*)`)
+    .select(`*, contacts!transactions_contact_id_fkey(*), listings(*)`)
     .eq("agent_id", agentId)
     .neq("status", "closed")
     .order("created_at", { ascending: false })
@@ -1994,7 +2022,7 @@ export async function updateTransactionStage(transactionId: string, targetStage:
   if (!user) return { success: false, error: "Not authenticated" }
 
   const { data: profile } = await supabase
-    .from("profiles")
+    .from("users")
     .select("brokerage_id, role")
     .eq("id", user.id)
     .single()
@@ -2182,15 +2210,55 @@ function calculateRiskPriority(transaction: any): number {
 
 async function getUpcomingMilestones(agentId: string) {
   const supabase = await createClient()
-  const { data } = await supabase
+  
+  // Get milestones first
+  const { data: milestones } = await supabase
     .from("transaction_milestones")
-    .select(`*, transactions!inner(agent_id, property_address, contacts(name))`)
-    .eq("transactions.agent_id", agentId)
+    .select("id, transaction_id, status, target_date")
     .eq("status", "pending")
     .gte("target_date", new Date().toISOString())
     .order("target_date", { ascending: true })
     .limit(10)
-  return data || []
+
+  if (!milestones || milestones.length === 0) return []
+
+  // Get transactions for these milestones
+  const transactionIds = milestones.map(m => m.transaction_id).filter(Boolean)
+  const { data: transactions } = await supabase
+    .from("transactions")
+    .select("id, agent_id, property_address, contact_id")
+    .in("id", transactionIds)
+    .eq("agent_id", agentId)
+
+  if (!transactions || transactions.length === 0) return []
+
+  // Get contacts
+  const contactIds = transactions.map(t => t.contact_id).filter(Boolean)
+  let contactMap = new Map()
+  if (contactIds.length > 0) {
+    const { data: contacts } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name")
+      .in("id", contactIds)
+    contactMap = new Map(contacts?.map(c => [c.id, { name: `${c.first_name} ${c.last_name}` }]) || [])
+  }
+
+  const transactionMap = new Map(transactions.map(t => [t.id, t]))
+
+  // Merge data
+  return milestones
+    .filter(m => transactionMap.has(m.transaction_id))
+    .map(m => {
+      const transaction = transactionMap.get(m.transaction_id)
+      return {
+        ...m,
+        transactions: {
+          agent_id: transaction.agent_id,
+          property_address: transaction.property_address,
+          contacts: contactMap.get(transaction.contact_id) || { name: "Unknown" }
+        }
+      }
+    })
 }
 
 function getNextStage(currentMilestone: string, persona: string): string | null {

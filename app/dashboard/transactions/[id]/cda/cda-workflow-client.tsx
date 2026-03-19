@@ -132,11 +132,12 @@ export function CDAWorkflowClient({
   const isCompliance = ["broker", "admin", "compliance_officer"].includes(userRole)
 
   // Check if there are blocking compliance failures
+  // Normalized status values: pending, pass, fail, waived, needs_review
   const blockingFailures = complianceChecks.filter(
-    c => c.is_blocking && c.status === "failed"
+    c => c.is_blocking && c.status === "fail"
   )
   const pendingBlockingChecks = complianceChecks.filter(
-    c => c.is_blocking && c.status === "pending"
+    c => c.is_blocking && (c.status === "pending" || c.status === "needs_review")
   )
   const hasComplianceBlockers = blockingFailures.length > 0 || pendingBlockingChecks.length > 0
 
@@ -386,12 +387,12 @@ export function CDAWorkflowClient({
                             )}
                           </TableCell>
                           <TableCell>
-                            {check.status === "passed" && (
+                            {check.status === "pass" && (
                               <span className="text-green-600 flex items-center gap-1">
                                 <CheckCircle2 className="h-4 w-4" /> Passed
                               </span>
                             )}
-                            {check.status === "failed" && (
+                            {check.status === "fail" && (
                               <span className="text-red-600 flex items-center gap-1">
                                 <XCircle className="h-4 w-4" /> Failed
                               </span>
@@ -399,6 +400,11 @@ export function CDAWorkflowClient({
                             {check.status === "pending" && (
                               <span className="text-amber-600 flex items-center gap-1">
                                 <Clock className="h-4 w-4" /> Pending
+                              </span>
+                            )}
+                            {check.status === "needs_review" && (
+                              <span className="text-orange-600 flex items-center gap-1">
+                                <AlertTriangle className="h-4 w-4" /> Needs Review
                               </span>
                             )}
                             {check.status === "waived" && (

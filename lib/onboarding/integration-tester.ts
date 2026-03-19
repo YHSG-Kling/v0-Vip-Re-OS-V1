@@ -1,0 +1,615 @@
+// ============================================================
+// SYSTEM: L11-S03 — Integration Tester Library
+// VIP Real Estate AI OS — Layer 11
+// ============================================================
+// Tests provider connections without logging raw credentials
+// Each provider has a specific test function
+
+export interface TestResult {
+  pass: boolean
+  detail: string
+}
+
+export type ProviderName = 
+  | "twilio"
+  | "sendgrid"
+  | "docusign"
+  | "dotloop"
+  | "heygen"
+  | "gohighlevel"
+  | "google_calendar"
+  | "outlook_calendar"
+  | "quickbooks"
+  | "xero"
+  | "idx_broker"
+  | "lob"
+  | "zillow"
+  | "realtor_com"
+  | "opcity"
+
+// ─── MAIN TEST FUNCTION ───────────────────────────────────────────────────────
+
+export async function testIntegration(
+  provider: ProviderName,
+  credentials: Record<string, string>
+): Promise<TestResult> {
+  console.log(`[IntegrationTester] Testing provider: ${provider}`)
+  
+  try {
+    switch (provider) {
+      case "twilio":
+        return await testTwilio(credentials)
+      case "sendgrid":
+        return await testSendGrid(credentials)
+      case "docusign":
+        return await testDocuSign(credentials)
+      case "dotloop":
+        return await testDotLoop(credentials)
+      case "heygen":
+        return await testHeyGen(credentials)
+      case "gohighlevel":
+        return await testGoHighLevel(credentials)
+      case "google_calendar":
+        return await testGoogleCalendar(credentials)
+      case "outlook_calendar":
+        return await testOutlookCalendar(credentials)
+      case "quickbooks":
+        return await testQuickBooks(credentials)
+      case "xero":
+        return await testXero(credentials)
+      case "idx_broker":
+        return await testIdxBroker(credentials)
+      case "lob":
+        return await testLob(credentials)
+      case "zillow":
+        return await testZillow(credentials)
+      case "realtor_com":
+        return await testRealtorCom(credentials)
+      case "opcity":
+        return await testOpcity(credentials)
+      default:
+        return { pass: false, detail: `Unknown provider: ${provider}` }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error"
+    console.error(`[IntegrationTester] ${provider} test failed:`, message)
+    return { pass: false, detail: message }
+  }
+}
+
+// ─── PROVIDER-SPECIFIC TEST FUNCTIONS ─────────────────────────────────────────
+
+async function testTwilio(credentials: Record<string, string>): Promise<TestResult> {
+  const { account_sid, auth_token, phone_number } = credentials
+  
+  if (!account_sid || !auth_token) {
+    return { pass: false, detail: "Account SID and Auth Token are required" }
+  }
+  
+  const auth = Buffer.from(`${account_sid}:${auth_token}`).toString("base64")
+  
+  const response = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${account_sid}/IncomingPhoneNumbers.json?PageSize=1`,
+    {
+      headers: { Authorization: `Basic ${auth}` },
+    }
+  )
+  
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}))
+    return { 
+      pass: false, 
+      detail: error.message || `Twilio API returned ${response.status}` 
+    }
+  }
+  
+  return { pass: true, detail: "Twilio credentials verified - phone numbers accessible" }
+}
+
+async function testSendGrid(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key, from_email } = credentials
+  
+  if (!api_key) {
+    return { pass: false, detail: "API Key is required" }
+  }
+  
+  const response = await fetch("https://api.sendgrid.com/v3/user/profile", {
+    headers: { Authorization: `Bearer ${api_key}` },
+  })
+  
+  if (!response.ok) {
+    return { 
+      pass: false, 
+      detail: `SendGrid API returned ${response.status} - verify API key` 
+    }
+  }
+  
+  return { pass: true, detail: "SendGrid credentials verified - account accessible" }
+}
+
+async function testDocuSign(credentials: Record<string, string>): Promise<TestResult> {
+  const { integration_key, account_id, access_token, environment } = credentials
+  
+  if (!integration_key || !account_id) {
+    return { pass: false, detail: "Integration Key and Account ID are required" }
+  }
+  
+  // If we have an access token, verify it
+  if (access_token) {
+    const baseUrl = environment === "sandbox" 
+      ? "https://demo.docusign.net/restapi" 
+      : "https://na3.docusign.net/restapi"
+    
+    const response = await fetch(`${baseUrl}/v2.1/accounts/${account_id}`, {
+      headers: { Authorization: `Bearer ${access_token}` },
+    })
+    
+    if (!response.ok) {
+      return { 
+        pass: false, 
+        detail: "DocuSign access token invalid or expired" 
+      }
+    }
+    
+    return { pass: true, detail: "DocuSign credentials verified - account accessible" }
+  }
+  
+  // Without access token, we can only validate the configuration exists
+  return { 
+    pass: true, 
+    detail: "DocuSign configuration saved - OAuth flow required for full verification" 
+  }
+}
+
+async function testDotLoop(credentials: Record<string, string>): Promise<TestResult> {
+  const { access_token, partner_key } = credentials
+  
+  if (!access_token) {
+    return { pass: false, detail: "Access Token is required" }
+  }
+  
+  const response = await fetch("https://api-gateway.dotloop.com/public/v2/profile", {
+    headers: { 
+      Authorization: `Bearer ${access_token}`,
+      ...(partner_key && { "X-Partner-Key": partner_key }),
+    },
+  })
+  
+  if (!response.ok) {
+    return { 
+      pass: false, 
+      detail: `DotLoop API returned ${response.status} - verify access token` 
+    }
+  }
+  
+  return { pass: true, detail: "DotLoop credentials verified - profile accessible" }
+}
+
+async function testHeyGen(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key } = credentials
+  
+  if (!api_key) {
+    return { pass: false, detail: "API Key is required" }
+  }
+  
+  const response = await fetch("https://api.heygen.com/v1/avatars", {
+    headers: { "X-Api-Key": api_key },
+  })
+  
+  if (!response.ok) {
+    return { 
+      pass: false, 
+      detail: `HeyGen API returned ${response.status} - verify API key` 
+    }
+  }
+  
+  return { pass: true, detail: "HeyGen credentials verified - avatars accessible" }
+}
+
+async function testGoHighLevel(credentials: Record<string, string>): Promise<TestResult> {
+  const { agency_api_key, location_id } = credentials
+  
+  if (!agency_api_key) {
+    return { pass: false, detail: "Agency API Key is required" }
+  }
+  
+  const url = location_id 
+    ? `https://rest.gohighlevel.com/v1/locations/${location_id}`
+    : "https://rest.gohighlevel.com/v1/locations"
+  
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${agency_api_key}` },
+  })
+  
+  if (!response.ok) {
+    return { 
+      pass: false, 
+      detail: `GoHighLevel API returned ${response.status} - verify API key` 
+    }
+  }
+  
+  return { pass: true, detail: "GoHighLevel credentials verified - locations accessible" }
+}
+
+async function testGoogleCalendar(credentials: Record<string, string>): Promise<TestResult> {
+  const { access_token, refresh_token } = credentials
+  
+  if (!access_token && !refresh_token) {
+    return { pass: false, detail: "OAuth connection required - click Connect Google Account" }
+  }
+  
+  if (access_token) {
+    const response = await fetch(
+      "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=1",
+      { headers: { Authorization: `Bearer ${access_token}` } }
+    )
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        return { pass: false, detail: "Google token expired - reconnection required" }
+      }
+      return { pass: false, detail: `Google Calendar API returned ${response.status}` }
+    }
+    
+    return { pass: true, detail: "Google Calendar connected - calendars accessible" }
+  }
+  
+  return { pass: true, detail: "Google Calendar OAuth configured - token refresh pending" }
+}
+
+async function testOutlookCalendar(credentials: Record<string, string>): Promise<TestResult> {
+  const { access_token, refresh_token } = credentials
+  
+  if (!access_token && !refresh_token) {
+    return { pass: false, detail: "OAuth connection required - click Connect Microsoft Account" }
+  }
+  
+  if (access_token) {
+    const response = await fetch(
+      "https://graph.microsoft.com/v1.0/me/calendars?$top=1",
+      { headers: { Authorization: `Bearer ${access_token}` } }
+    )
+    
+    if (!response.ok) {
+      if (response.status === 401) {
+        return { pass: false, detail: "Microsoft token expired - reconnection required" }
+      }
+      return { pass: false, detail: `Microsoft Graph API returned ${response.status}` }
+    }
+    
+    return { pass: true, detail: "Outlook Calendar connected - calendars accessible" }
+  }
+  
+  return { pass: true, detail: "Outlook Calendar OAuth configured - token refresh pending" }
+}
+
+async function testQuickBooks(credentials: Record<string, string>): Promise<TestResult> {
+  const { client_id, client_secret, realm_id, access_token } = credentials
+  
+  if (!client_id || !client_secret) {
+    return { pass: false, detail: "Client ID and Client Secret are required" }
+  }
+  
+  if (!access_token) {
+    return { pass: true, detail: "QuickBooks OAuth configured - connection required" }
+  }
+  
+  const response = await fetch(
+    `https://quickbooks.api.intuit.com/v3/company/${realm_id}/companyinfo/${realm_id}`,
+    {
+      headers: { 
+        Authorization: `Bearer ${access_token}`,
+        Accept: "application/json",
+      },
+    }
+  )
+  
+  if (!response.ok) {
+    return { pass: false, detail: `QuickBooks API returned ${response.status}` }
+  }
+  
+  return { pass: true, detail: "QuickBooks connected - company info accessible" }
+}
+
+async function testXero(credentials: Record<string, string>): Promise<TestResult> {
+  const { client_id, client_secret, access_token } = credentials
+  
+  if (!client_id || !client_secret) {
+    return { pass: false, detail: "Client ID and Client Secret are required" }
+  }
+  
+  if (!access_token) {
+    return { pass: true, detail: "Xero OAuth configured - connection required" }
+  }
+  
+  const response = await fetch("https://api.xero.com/connections", {
+    headers: { Authorization: `Bearer ${access_token}` },
+  })
+  
+  if (!response.ok) {
+    return { pass: false, detail: `Xero API returned ${response.status}` }
+  }
+  
+  return { pass: true, detail: "Xero connected - organization accessible" }
+}
+
+async function testIdxBroker(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key, partner_key } = credentials
+  
+  if (!api_key) {
+    return { pass: false, detail: "API Key is required" }
+  }
+  
+  const response = await fetch("https://api.idxbroker.com/partners/accounttype", {
+    headers: { 
+      accesskey: api_key,
+      ...(partner_key && { partnerkey: partner_key }),
+    },
+  })
+  
+  if (!response.ok) {
+    return { pass: false, detail: `IDX Broker API returned ${response.status}` }
+  }
+  
+  return { pass: true, detail: "IDX Broker credentials verified - account accessible" }
+}
+
+async function testLob(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key_live, api_key_test, environment } = credentials
+  
+  const apiKey = environment === "live" ? api_key_live : api_key_test
+  
+  if (!apiKey) {
+    return { pass: false, detail: `${environment || "test"} API Key is required` }
+  }
+  
+  const auth = Buffer.from(`${apiKey}:`).toString("base64")
+  
+  const response = await fetch("https://api.lob.com/v1/accounts", {
+    headers: { Authorization: `Basic ${auth}` },
+  })
+  
+  if (!response.ok) {
+    return { pass: false, detail: `Lob API returned ${response.status}` }
+  }
+  
+  return { pass: true, detail: `Lob ${environment || "test"} credentials verified` }
+}
+
+async function testZillow(credentials: Record<string, string>): Promise<TestResult> {
+  const { tech_connect_token } = credentials
+  
+  if (!tech_connect_token) {
+    return { pass: false, detail: "Tech Connect API Token is required" }
+  }
+  
+  // Zillow Tech Connect doesn't have a simple health endpoint
+  // Validate token format and assume valid if properly formatted
+  if (tech_connect_token.length < 20) {
+    return { pass: false, detail: "Token appears invalid - check format" }
+  }
+  
+  return { pass: true, detail: "Zillow Tech Connect token saved - will verify on first sync" }
+}
+
+async function testRealtorCom(credentials: Record<string, string>): Promise<TestResult> {
+  const { api_key } = credentials
+  
+  if (!api_key) {
+    return { pass: false, detail: "API Key is required" }
+  }
+  
+  // Realtor.com API validation
+  if (api_key.length < 10) {
+    return { pass: false, detail: "API Key appears invalid - check format" }
+  }
+  
+  return { pass: true, detail: "Realtor.com API Key saved - will verify on first sync" }
+}
+
+async function testOpcity(credentials: Record<string, string>): Promise<TestResult> {
+  const { username, password } = credentials
+  
+  if (!username || !password) {
+    return { pass: false, detail: "Username and Password are required" }
+  }
+  
+  // Opcity doesn't have a public API health check
+  // Validate credentials exist and assume valid
+  return { pass: true, detail: "Opcity credentials saved - will verify on first sync" }
+}
+
+// ─── PROVIDER METADATA ────────────────────────────────────────────────────────
+
+export const PROVIDER_METADATA: Record<ProviderName, {
+  displayName: string
+  providerType: string
+  credentialFields: Array<{
+    key: string
+    label: string
+    type: "text" | "password" | "email" | "select"
+    required: boolean
+    placeholder?: string
+    options?: Array<{ value: string; label: string }>
+  }>
+  isOAuth?: boolean
+  oauthProvider?: "google" | "microsoft" | "docusign" | "quickbooks" | "xero"
+}> = {
+  twilio: {
+    displayName: "Twilio",
+    providerType: "sms",
+    credentialFields: [
+      { key: "account_sid", label: "Account SID", type: "text", required: true, placeholder: "AC..." },
+      { key: "auth_token", label: "Auth Token", type: "password", required: true },
+      { key: "phone_number", label: "Phone Number", type: "text", required: true, placeholder: "+1..." },
+    ],
+  },
+  sendgrid: {
+    displayName: "SendGrid",
+    providerType: "email",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true, placeholder: "SG..." },
+      { key: "from_email", label: "From Email", type: "email", required: true },
+      { key: "from_name", label: "From Name", type: "text", required: false },
+    ],
+  },
+  docusign: {
+    displayName: "DocuSign",
+    providerType: "esign",
+    credentialFields: [
+      { key: "integration_key", label: "Integration Key", type: "text", required: true },
+      { key: "account_id", label: "Account ID", type: "text", required: true },
+      { key: "redirect_uri", label: "Redirect URI", type: "text", required: false },
+      { 
+        key: "environment", 
+        label: "Environment", 
+        type: "select", 
+        required: true,
+        options: [
+          { value: "sandbox", label: "Sandbox" },
+          { value: "production", label: "Production" },
+        ],
+      },
+    ],
+    isOAuth: true,
+    oauthProvider: "docusign",
+  },
+  dotloop: {
+    displayName: "DotLoop",
+    providerType: "esign",
+    credentialFields: [
+      { key: "access_token", label: "Access Token", type: "password", required: true },
+      { key: "partner_key", label: "Partner Key", type: "text", required: false },
+    ],
+  },
+  heygen: {
+    displayName: "HeyGen",
+    providerType: "video",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true },
+    ],
+  },
+  gohighlevel: {
+    displayName: "GoHighLevel",
+    providerType: "crm",
+    credentialFields: [
+      { key: "agency_api_key", label: "Agency API Key", type: "password", required: true },
+      { key: "location_id", label: "Location ID", type: "text", required: false },
+    ],
+  },
+  google_calendar: {
+    displayName: "Google Calendar",
+    providerType: "calendar",
+    credentialFields: [],
+    isOAuth: true,
+    oauthProvider: "google",
+  },
+  outlook_calendar: {
+    displayName: "Outlook Calendar",
+    providerType: "calendar",
+    credentialFields: [],
+    isOAuth: true,
+    oauthProvider: "microsoft",
+  },
+  quickbooks: {
+    displayName: "QuickBooks",
+    providerType: "accounting",
+    credentialFields: [
+      { key: "client_id", label: "Client ID", type: "text", required: true },
+      { key: "client_secret", label: "Client Secret", type: "password", required: true },
+      { key: "realm_id", label: "Realm ID", type: "text", required: false },
+    ],
+    isOAuth: true,
+    oauthProvider: "quickbooks",
+  },
+  xero: {
+    displayName: "Xero",
+    providerType: "accounting",
+    credentialFields: [
+      { key: "client_id", label: "Client ID", type: "text", required: true },
+      { key: "client_secret", label: "Client Secret", type: "password", required: true },
+    ],
+    isOAuth: true,
+    oauthProvider: "xero",
+  },
+  idx_broker: {
+    displayName: "IDX Broker",
+    providerType: "mls",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true },
+      { key: "partner_key", label: "Partner Key", type: "text", required: false },
+      { key: "account_label", label: "Account Label", type: "text", required: false },
+    ],
+  },
+  lob: {
+    displayName: "Lob",
+    providerType: "direct_mail",
+    credentialFields: [
+      { key: "api_key_live", label: "Live API Key", type: "password", required: false },
+      { key: "api_key_test", label: "Test API Key", type: "password", required: true },
+      { 
+        key: "environment", 
+        label: "Environment", 
+        type: "select", 
+        required: true,
+        options: [
+          { value: "test", label: "Test" },
+          { value: "live", label: "Live" },
+        ],
+      },
+    ],
+  },
+  zillow: {
+    displayName: "Zillow",
+    providerType: "leads",
+    credentialFields: [
+      { key: "tech_connect_token", label: "Tech Connect API Token", type: "password", required: true },
+    ],
+  },
+  realtor_com: {
+    displayName: "Realtor.com",
+    providerType: "leads",
+    credentialFields: [
+      { key: "api_key", label: "API Key", type: "password", required: true },
+    ],
+  },
+  opcity: {
+    displayName: "Opcity",
+    providerType: "leads",
+    credentialFields: [
+      { key: "username", label: "Username", type: "text", required: true },
+      { key: "password", label: "Password", type: "password", required: true },
+    ],
+  },
+}
+
+// ─── PROVIDER GROUPS ──────────────────────────────────────────────────────────
+
+export const PROVIDER_GROUPS = {
+  required: {
+    label: "Required",
+    description: "Must connect to advance in onboarding",
+    providers: ["twilio", "sendgrid", "docusign", "dotloop"] as ProviderName[],
+    requirements: {
+      sms: 1,      // At least 1 SMS provider
+      email: 1,    // At least 1 email provider
+      esign: 1,    // At least 1 e-sign provider (DocuSign OR DotLoop)
+    },
+  },
+  recommended: {
+    label: "Recommended",
+    description: "Enhance your AI capabilities",
+    providers: ["heygen", "gohighlevel", "google_calendar", "outlook_calendar"] as ProviderName[],
+    requirements: {
+      video: 0,    // Optional
+      crm: 0,      // Optional
+      calendar: 0, // Optional (Google OR Outlook)
+    },
+  },
+  optional: {
+    label: "Optional",
+    description: "Additional integrations",
+    providers: ["quickbooks", "xero", "idx_broker", "lob", "zillow", "realtor_com", "opcity"] as ProviderName[],
+    requirements: {},
+  },
+}

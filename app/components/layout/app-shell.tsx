@@ -1,27 +1,59 @@
 'use client'
 
-import React from 'react'
-import { usePathname } from 'next/navigation'
+import React, { useEffect } from 'react'
+import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth/client'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
 import { getNavigationForRole } from '@/app/config/navigation-config'
+import { Loader2 } from 'lucide-react'
 
 interface AppShellProps {
   children: React.ReactNode
 }
 
 export function AppShell({ children }: AppShellProps) {
-  const { user, userContext } = useAuth()
+  const { user, userContext, isLoading } = useAuth()
   const pathname = usePathname()
+  const router = useRouter()
 
-  if (pathname.startsWith('/auth') || pathname.startsWith('/login')) {
+  // Routes that have their own layout - bypass AppShell completely
+  const bypassRoutes = ['/auth', '/login', '/signup', '/portal', '/settings', '/open-house', '/qr']
+  const shouldBypass = bypassRoutes.some(route => pathname.startsWith(route))
+
+  // Handle redirect in useEffect to avoid setState during render
+  const needsAuth = !isLoading && !user && !userContext && !shouldBypass && !pathname.startsWith('/login')
+  
+  useEffect(() => {
+    if (needsAuth) {
+      router.push('/login')
+    }
+  }, [needsAuth, router])
+  
+  if (shouldBypass) {
     return <>{children}</>
   }
 
+  // Hide mobile bottom nav on wizard/create flows to prevent interference
+  const hideBottomNav = pathname.includes('/videos/create') || pathname.includes('/wizard')
+
+  // Show loading state while auth is being determined
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  // Show loading while redirecting to login
   if (!user || !userContext) {
-    return <>{children}</>
+    return (
+      <div className="flex items-center justify-center h-screen bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    )
   }
 
   const primaryRole = userContext.roles[0]
@@ -40,9 +72,11 @@ export function AppShell({ children }: AppShellProps) {
           <div className="h-full">{children}</div>
         </main>
 
-        <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white">
-          <MobileBottomNav items={navigation.mobileBottomNav} />
-        </div>
+        {!hideBottomNav && (
+          <div className="lg:hidden fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white">
+            <MobileBottomNav items={navigation.mobileBottomNav} />
+          </div>
+        )}
       </div>
     </div>
   )

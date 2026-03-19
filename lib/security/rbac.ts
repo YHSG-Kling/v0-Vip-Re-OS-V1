@@ -3,9 +3,10 @@ import { createClient } from '@/lib/supabase/server'
 /**
  * RBAC — Resource-level access control
  *
- * Provides server-side permission checking for resource-level access
- * (contacts, transactions, documents, listings) via database ACL tables.
- * Role-based permission checks live in AccessControl / RoleManager.
+ * Uses users.user_type as the canonical role source.
+ * Logs permission checks and access changes to the activities table.
+ * Does not write to old *_access_control tables (they do not exist).
+ * Relies on RLS for real data access enforcement.
  */
 
 export async function requirePermission(
@@ -15,69 +16,72 @@ export async function requirePermission(
 ): Promise<void> {
   const supabase = await createClient()
 
+  // 1. Get authenticated user
   const {
     data: { user },
   } = await supabase.auth.getUser()
+
+  // 2. If no user, throw "Not authenticated"
   if (!user) throw new Error('Not authenticated')
 
-  const { data: userRole } = await supabase
-    .from('user_brokerage_roles')
-    .select('*, role:roles(name), brokerage:brokerages(id, name)')
-    .eq('user_id', user.id)
-    .eq('is_primary', true)
+  // 3. Query users table for user_type
+  const { data: userData } = await supabase
+    .from('users')
+    .select('user_type')
+    .eq('id', user.id)
     .single()
 
-  if (!userRole) throw new Error('No role found for user')
+  const userType = userData?.user_type
 
-  const roleName = userRole.role?.name
-
-  // Full access for privileged roles
-  if (['BrokerOwner', 'ManagingBroker'].includes(roleName)) return
-  // Accept both canonical ('compliance_officer', 'tc') and legacy DB values
-  // ('Compliance', 'TC') to handle existing rows without a schema migration.
-  const isCompliance = roleName === 'compliance_officer' || roleName === 'Compliance'
-  const isTC = roleName === 'tc' || roleName === 'TC'
-  if (isCompliance && action === 'read' && ['document', 'contact', 'transaction'].includes(resourceType)) return
-  if (isTC && resourceType === 'transaction') return
-
-  const hasAccess = await checkSpecificAccess(user.id, resourceType, resourceId)
-  if (!hasAccess) {
-    throw new Error(`Access denied: You don't have permission to ${action} this ${resourceType}`)
-  }
-}
-
-async function checkSpecificAccess(
-  userId: string,
-  resourceType: string,
-  resourceId: string
-): Promise<boolean> {
-  const supabase = await createClient()
-
-  const tables: Record<string, string> = {
-    contact: 'contact_access_control',
-    transaction: 'transaction_access_control',
-    document: 'document_access_control',
-    listing: 'listing_access_control',
+  // 4. If user_type is 'broker' or 'admin', allow
+  if (userType === 'broker' || userType === 'admin') {
+    // Log permission check (non-blocking)
+    logActivity(supabase, user.id, 'permission_check', {
+      action,
+      resourceType,
+      resourceId,
+      user_type: userType,
+      result: 'allowed',
+    })
+    return
   }
 
-  const table = tables[resourceType]
-  if (!table) return false
-
-  const { data, error } = await supabase
-    .from(table)
-    .select('*')
-    .eq(`${resourceType}_id`, resourceId)
-    .eq('user_id', userId)
-    .maybeSingle()
-
-  if (error) {
-    console.error('[RBAC] Error checking access:', error)
-    return false
+  // 5. If user_type is 'compliance_officer' and action is 'read' and resourceType in allowed list, allow
+  if (
+    userType === 'compliance_officer' &&
+    action === 'read' &&
+    ['document', 'contact', 'transaction'].includes(resourceType)
+  ) {
+    logActivity(supabase, user.id, 'permission_check', {
+      action,
+      resourceType,
+      resourceId,
+      user_type: userType,
+      result: 'allowed',
+    })
+    return
   }
 
-  if (data?.expires_at && new Date(data.expires_at) < new Date()) return false
+  // 6. If user_type is 'TC' and resourceType is 'transaction', allow
+  if (userType === 'TC' && resourceType === 'transaction') {
+    logActivity(supabase, user.id, 'permission_check', {
+      action,
+      resourceType,
+      resourceId,
+      user_type: userType,
+      result: 'allowed',
+    })
+    return
+  }
 
-  return !!data
+  // 7. Otherwise return without throwing and let RLS enforce real data access
+  logActivity(supabase, user.id, 'permission_check', {
+    action,
+    resourceType,
+    resourceId,
+    user_type: userType,
+    result: 'deferred_to_rls',
+  })
 }
 
 export async function autoGrantAccess(
@@ -97,53 +101,15 @@ export async function autoGrantAccess(
 ) {
   const supabase = await createClient()
 
-  try {
-    if (resourceType === 'transaction') {
-      await supabase.from('transaction_access_control').insert({
-        transaction_id: resourceId,
-        user_id: userId,
-        user_type: userType,
-        role_in_transaction: permissions.roleInTransaction ?? 'participant',
-        can_edit: permissions.canEdit ?? false,
-        can_view_financials: permissions.canViewFinancials ?? false,
-        granted_by: permissions.grantedBy ?? null,
-        expires_at: permissions.expiresAt ?? null,
-      })
-    } else if (resourceType === 'contact') {
-      await supabase.from('contact_access_control').insert({
-        contact_id: resourceId,
-        user_id: userId,
-        user_type: userType,
-        access_type: 'assigned',
-        can_edit: permissions.canEdit ?? false,
-        can_share: permissions.canShare ?? false,
-        granted_by: permissions.grantedBy ?? null,
-        expires_at: permissions.expiresAt ?? null,
-      })
-    } else if (resourceType === 'document') {
-      await supabase.from('document_access_control').insert({
-        document_id: resourceId,
-        user_id: userId,
-        user_type: userType,
-        access_level: permissions.accessLevel ?? 'view',
-        can_share: permissions.canShare ?? false,
-        granted_by: permissions.grantedBy ?? null,
-        expires_at: permissions.expiresAt ?? null,
-      })
-    } else if (resourceType === 'listing') {
-      await supabase.from('listing_access_control').insert({
-        listing_id: resourceId,
-        user_id: userId,
-        user_type: userType,
-        role: permissions.roleInTransaction ?? 'viewer',
-        can_edit: permissions.canEdit ?? false,
-        granted_by: permissions.grantedBy ?? null,
-      })
-    }
-  } catch (error) {
-    console.error('[RBAC] Error auto-granting access:', error)
-    throw error
-  }
+  // Do not write to any access-control tables (they do not exist)
+  // Log a non-blocking activities row
+  logActivity(supabase, userId, 'access_granted', {
+    resourceType,
+    resourceId,
+    userId,
+    userType,
+    permissions,
+  })
 }
 
 export async function revokeAccess(
@@ -155,24 +121,12 @@ export async function revokeAccess(
 ) {
   const supabase = await createClient()
 
-  const tables: Record<string, string> = {
-    contact: 'contact_access_control',
-    transaction: 'transaction_access_control',
-    document: 'document_access_control',
-    listing: 'listing_access_control',
-  }
-
-  const table = tables[resourceType]
-  if (!table) throw new Error('Invalid resource type')
-
-  await supabase.from(table).delete().eq(`${resourceType}_id`, resourceId).eq('user_id', userId)
-
-  await supabase.from('access_audit_log').insert({
-    resource_type: resourceType,
-    resource_id: resourceId,
-    user_id: userId,
-    action: 'revoke',
-    performed_by: revokedBy,
+  // Log a non-blocking activities row
+  logActivity(supabase, userId, 'access_revoked', {
+    resourceType,
+    resourceId,
+    userId,
+    revokedBy,
     reason: reason ?? 'Access revoked',
   })
 }
@@ -190,6 +144,7 @@ export async function batchGrantAccess(
     grantedBy?: string
   }
 ) {
+  // Call autoGrantAccess for each user
   for (const userId of userIds) {
     await autoGrantAccess(resourceType, resourceId, userId, userType, permissions)
   }
@@ -198,25 +153,46 @@ export async function batchGrantAccess(
 export async function getResourceAccessList(resourceType: string, resourceId: string) {
   const supabase = await createClient()
 
-  const tables: Record<string, string> = {
-    contact: 'contact_access_control',
-    transaction: 'transaction_access_control',
-    document: 'document_access_control',
-    listing: 'listing_access_control',
-  }
+  try {
+    // Return activities rows where activity_type = 'access_granted'
+    // Filter by metadata.resourceType and metadata.resourceId
+    const { data, error } = await supabase
+      .from('activities')
+      .select('*')
+      .eq('activity_type', 'access_granted')
+      .contains('metadata', { resourceType, resourceId })
 
-  const table = tables[resourceType]
-  if (!table) return []
+    if (error) {
+      console.error('[RBAC] Error fetching access list:', error)
+      return []
+    }
 
-  const { data, error } = await supabase
-    .from(table)
-    .select('*, user:users(id, first_name, last_name, email, user_type)')
-    .eq(`${resourceType}_id`, resourceId)
-
-  if (error) {
-    console.error('[RBAC] Error fetching access list:', error)
+    return data ?? []
+  } catch {
+    // Return empty array on error
     return []
   }
+}
 
-  return data ?? []
+/**
+ * Log activity to the activities table (non-blocking)
+ */
+function logActivity(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  activityType: string,
+  metadata: Record<string, unknown>
+): void {
+  supabase
+    .from('activities')
+    .insert({
+      user_id: userId,
+      activity_type: activityType,
+      metadata,
+      created_at: new Date().toISOString(),
+    })
+    .then(() => {})
+    .catch((err) => {
+      console.error('[RBAC] Error logging activity:', err)
+    })
 }

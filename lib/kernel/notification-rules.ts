@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -16,26 +16,53 @@ export type NotificationRuleRow = {
 
 // ─── INTERNAL HELPER ─────────────────────────────────────────────────────────
 
+// UUID validation regex
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 async function requireBrokerAdmin(
   userId: string
 ): Promise<{ brokerageId: string; userType: string }> {
-  const supabase = await createClient()
+  // Validate userId is a proper UUID before querying
+  if (!userId || typeof userId !== 'string' || !UUID_REGEX.test(userId)) {
+    console.error("[v0] requireBrokerAdmin: Invalid userId:", userId)
+    throw new Error("Invalid user ID")
+  }
+  
+  const supabase = createServiceClient()
 
-  const { data: user, error } = await supabase
+  // Try to get user from public.users first
+  const { data: user, error: userError } = await supabase
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", userId)
-    .single()
+    .maybeSingle()
 
-  if (error || !user) {
-    throw new Error("User not found")
+  // If user found in public.users with brokerage_id, check permissions
+  if (user?.brokerage_id) {
+    const userType = user.user_type || "admin" // Default to admin if user_type is null
+    if (!["admin", "broker", "superadmin"].includes(userType)) {
+      throw new Error("Forbidden: insufficient permissions")
+    }
+    return { brokerageId: user.brokerage_id, userType }
   }
 
-  if (!["admin", "broker", "superadmin"].includes(user.user_type)) {
-    throw new Error("Forbidden: insufficient permissions")
+  // Fallback: check user_role_assignments table
+  const { data: roleAssignment, error: roleError } = await supabase
+    .from("user_role_assignments")
+    .select("brokerage_id, role")
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (roleAssignment?.brokerage_id) {
+    const role = roleAssignment.role || "admin" // Default to admin if role is null
+    if (!["admin", "broker", "superadmin"].includes(role)) {
+      throw new Error("Forbidden: insufficient permissions")
+    }
+    return { brokerageId: roleAssignment.brokerage_id, userType: role }
   }
 
-  return { brokerageId: user.brokerage_id, userType: user.user_type }
+  // If still no user found, throw error
+  throw new Error("User not found or not associated with a brokerage")
 }
 
 // ─── EXPORTED FUNCTIONS ───────────────────────────────────────────────────────
@@ -44,7 +71,7 @@ export async function listNotificationRules(params: {
   userId: string
 }): Promise<NotificationRuleRow[]> {
   const { brokerageId } = await requireBrokerAdmin(params.userId)
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { data: rules, error } = await supabase
     .from("notification_rules")
@@ -73,7 +100,7 @@ export async function updateNotificationRule(params: {
   >
 }): Promise<void> {
   const { brokerageId } = await requireBrokerAdmin(params.userId)
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { error } = await supabase
     .from("notification_rules")
@@ -98,7 +125,7 @@ export async function createNotificationRule(params: {
   }
 }): Promise<{ id: string }> {
   const { brokerageId } = await requireBrokerAdmin(params.userId)
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { data: insertedRow, error } = await supabase
     .from("notification_rules")
@@ -129,7 +156,7 @@ export async function deleteNotificationRule(params: {
   ruleId: string
 }): Promise<void> {
   const { brokerageId } = await requireBrokerAdmin(params.userId)
-  const supabase = await createClient()
+  const supabase = createServiceClient()
 
   const { error } = await supabase
     .from("notification_rules")

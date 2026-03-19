@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { supabase } from "@/services/supabase"
 import { analyzeContentQuality } from "@/lib/quality-checker"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function POST(request: NextRequest) {
   try {
@@ -30,10 +31,21 @@ Generate a full newsletter with:
 5. Closing (soft CTA focused on their benefit)
 `
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    // Get actor context for governance
+    const agentCtx = await getAgentContext()
+    const actorContext = agentCtx
+      ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
+      : undefined
+
+    const response = await generateAIResponse({
       prompt,
+      metadata: {
+        userId: actorContext?.userId,
+        brokerageId: actorContext?.brokerageId,
+        feature: "newsletter_generation",
+      },
     })
+    const text = response.text
 
     // Analyze quality
     const quality = analyzeContentQuality(text)

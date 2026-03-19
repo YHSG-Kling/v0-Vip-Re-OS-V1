@@ -1,11 +1,17 @@
 import { NextResponse } from "next/server"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function POST(req: Request) {
   const { purpose, persona, contactName, keyPoints } = await req.json()
 
-  const { text: script } = await generateText({
-    model: "openai/gpt-4o-mini",
+  // Get actor context for governance
+  const agentCtx = await getAgentContext()
+  const actorContext = agentCtx
+    ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
+    : undefined
+
+  const response = await generateAIResponse({
     prompt: `Generate a ${purpose} video script for ${contactName || "a client"} (${persona} persona).
 
 THEM FIRST STRUCTURE (critical):
@@ -24,7 +30,12 @@ Rules:
 - Be authentic and empathetic
 
 Generate the script now:`,
+    metadata: {
+      userId: actorContext?.userId,
+      brokerageId: actorContext?.brokerageId,
+      feature: "video_script_generation",
+    },
   })
 
-  return NextResponse.json({ script })
+  return NextResponse.json({ script: response.text })
 }

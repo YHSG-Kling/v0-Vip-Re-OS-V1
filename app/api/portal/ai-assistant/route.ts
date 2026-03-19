@@ -1,10 +1,17 @@
 import { createClient } from "@/lib/supabase/server"
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai"
 import { NextResponse } from "next/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 export async function POST(request: Request) {
   try {
     const { contactId, message, persona, isBuyer, isSeller, conversationHistory } = await request.json()
+    
+    // Get actor context for governance
+    const agentCtx = await getAgentContext()
+    const actorContext = agentCtx
+      ? { userId: agentCtx.userId, brokerageId: agentCtx.brokerageId }
+      : undefined
 
     const supabase = await createClient()
 
@@ -116,17 +123,25 @@ Your answer here...
 
 {"suggestions": ["Question 1?", "Question 2?"], "actions": [{"label": "View Dashboard", "action": "dashboard"}]}`
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      system: systemPrompt,
-      messages: [
-        ...conversationHistory.map((m: any) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        })),
-        { role: "user" as const, content: message },
-      ],
+    // Build the full prompt with system context and conversation history
+    const fullPrompt = `${systemPrompt}
+
+Previous conversation:
+${conversationHistory.map((m: any) => `${m.role}: ${m.content}`).join("\n")}
+
+User: ${message}
+
+Please respond as the AI assistant.`
+
+    const response = await generateAIResponse({
+      prompt: fullPrompt,
+      metadata: {
+        userId: actorContext?.userId,
+        brokerageId: actorContext?.brokerageId,
+        feature: "portal_message",
+      },
     })
+    const text = response.text
 
     // Parse response for suggestions and actions
     let responseText = text

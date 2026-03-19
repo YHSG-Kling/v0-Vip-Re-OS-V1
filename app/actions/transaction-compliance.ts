@@ -84,9 +84,18 @@ export async function seedTransactionComplianceChecks(
   return { success: true, inserted: checksToInsert.length }
 }
 
-// ─── UPDATE COMPLIANCE CHECK ────────────────────────────────────────────────────
+// ─── COMPLIANCE STATUS TYPE ──────────────────────────────────────────────────────
+// Status values are normalized to: pending, pass, fail, waived, needs_review
+// These match the actual values stored in the Supabase transaction_compliance_log table
 
-export type ComplianceCheckStatus = "pending" | "passed" | "failed" | "waived"
+export type ComplianceCheckStatus = "pending" | "pass" | "fail" | "waived" | "needs_review"
+
+// Status constants for writes (normalized)
+const STATUS_PASS = "pass"
+const STATUS_FAIL = "fail"
+const STATUS_PENDING = "pending"
+const STATUS_WAIVED = "waived"
+const STATUS_NEEDS_REVIEW = "needs_review"
 
 export async function updateComplianceCheck(params: {
   checkId: string
@@ -131,13 +140,14 @@ export async function updateComplianceCheck(params: {
     updated_at: new Date().toISOString(),
   }
 
-  if (params.status === "passed" || params.status === "waived") {
+  // Normalize writes: pass/fail
+  if (params.status === STATUS_PASS || params.status === STATUS_WAIVED) {
     updateData.resolved_by = user.id
     updateData.resolved_at = new Date().toISOString()
     updateData.resolution_notes = params.resolutionNotes ?? null
   }
 
-  if (params.status === "failed") {
+  if (params.status === STATUS_FAIL) {
     updateData.failure_reason = params.failureReason ?? null
   }
 
@@ -152,7 +162,7 @@ export async function updateComplianceCheck(params: {
     return { success: false, error: updateError.message }
   }
 
-  // Create timeline entry for compliance change
+  // Create timeline entry for compliance change (normalized status)
   await supabase.from("transaction_timeline").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
@@ -163,7 +173,7 @@ export async function updateComplianceCheck(params: {
       check_id: params.checkId,
       check_type: check.check_type,
       previous_status: previousStatus,
-      new_status: params.status,
+      new_status: params.status, // normalized: pass/fail
       is_blocking: check.is_blocking,
       resolution_notes: params.resolutionNotes,
       failure_reason: params.failureReason,
@@ -181,7 +191,10 @@ export async function updateComplianceCheck(params: {
 
 /**
  * Checks if a transaction can proceed to CLOSING_PREP stage.
- * Returns false if any blocking compliance checks have failed status.
+ * Filters by valid statuses from Supabase: pending, pass, fail, waived, needs_review
+ * 
+ * ALLOWED to proceed: status = "pass" or "waived"
+ * BLOCKED from proceeding: status = "fail", "pending", or "needs_review" (for blocking checks)
  */
 export async function canProceedToClosingPrep(
   transactionId: string,
@@ -192,13 +205,15 @@ export async function canProceedToClosingPrep(
 
   const supabase = createServiceClient()
 
-  // Get all blocking compliance checks
+  // Get all blocking compliance checks - filter by valid statuses from database
   const { data: blockingChecks, error } = await supabase
     .from("transaction_compliance_log")
     .select("id, check_type, check_label, status, is_blocking, failure_reason")
     .eq("transaction_id", transactionId)
     .eq("brokerage_id", brokerageId)
     .eq("is_blocking", true)
+    // Only consider valid statuses stored in Supabase
+    .in("status", [STATUS_PASS, STATUS_FAIL, STATUS_PENDING, STATUS_WAIVED, STATUS_NEEDS_REVIEW])
 
   if (error) {
     console.error("[transaction-compliance] Failed to fetch compliance checks:", error)
@@ -208,16 +223,21 @@ export async function canProceedToClosingPrep(
   const blockers: string[] = []
 
   for (const check of blockingChecks ?? []) {
-    // Failed blocking checks prevent CLOSING_PREP
-    if (check.status === "failed") {
+    // "fail" status blocking checks prevent CLOSING_PREP
+    if (check.status === STATUS_FAIL) {
       blockers.push(
         `Compliance failed: ${check.check_label}${check.failure_reason ? ` - ${check.failure_reason}` : ""}`
       )
     }
-    // Pending blocking checks also prevent CLOSING_PREP
-    if (check.status === "pending") {
+    // "pending" status blocking checks also prevent CLOSING_PREP
+    if (check.status === STATUS_PENDING) {
       blockers.push(`Compliance pending: ${check.check_label}`)
     }
+    // "needs_review" status blocking checks also prevent CLOSING_PREP
+    if (check.status === STATUS_NEEDS_REVIEW) {
+      blockers.push(`Compliance needs review: ${check.check_label}`)
+    }
+    // "pass" and "waived" statuses are allowed - no action needed
   }
 
   return {
@@ -307,7 +327,7 @@ export async function getAllTransactionComplianceLogs(filters?: {
 
   // Get user's brokerage
   const { data: profile } = await serverClient
-    .from("profiles")
+    .from("users")
     .select("brokerage_id, role")
     .eq("id", user.id)
     .maybeSingle()
@@ -371,10 +391,11 @@ export async function batchPassComplianceChecks(params: {
 
   const supabase = createServiceClient()
 
+  // Normalize writes: use "pass"
   const { error, count } = await supabase
     .from("transaction_compliance_log")
     .update({
-      status: "passed",
+      status: STATUS_PASS,
       checked_by: user.id,
       checked_at: new Date().toISOString(),
       resolved_by: user.id,
@@ -394,10 +415,10 @@ export async function batchPassComplianceChecks(params: {
   await supabase.from("transaction_timeline").insert({
     transaction_id: params.transactionId,
     brokerage_id: params.brokerageId,
-    activity_type: "compliance_batch_passed",
-    description: `${params.checkIds.length} compliance checks marked as passed`,
+    activity_type: "compliance_batch_pass",
+    description: `${params.checkIds.length} compliance checks marked as pass`,
     performed_by: user.id,
-    metadata: { check_ids: params.checkIds },
+    metadata: { check_ids: params.checkIds, status: STATUS_PASS },
     created_at: new Date().toISOString(),
   })
 

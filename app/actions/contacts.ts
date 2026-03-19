@@ -12,6 +12,11 @@ export async function getContacts(params?: {
     const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
 
+    // If no valid agent/brokerage context, return empty array
+    if (!agentId || !brokerageId) {
+      return { success: true, contacts: [] }
+    }
+
     let query = supabase
       .from("contacts")
       .select("*")
@@ -51,6 +56,11 @@ export async function getContactById(contactId: string) {
     const { agentId, brokerageId } = await getAgentContext()
     const supabase = await createClient()
 
+    // If no valid agent/brokerage context, return null
+    if (!agentId || !brokerageId) {
+      return { success: false, error: "No agent context", contact: null }
+    }
+
     const { data, error } = await supabase
       .from("contacts")
       .select("*")
@@ -81,11 +91,8 @@ export async function createContact(contactData: {
 }) {
   try {
     const supabase = await createClient()
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-
-    if (!user) {
+    const { agentId, brokerageId } = await getAgentContext()
+    if (!agentId) {
       return { success: false, error: "Not authenticated" }
     }
 
@@ -93,7 +100,8 @@ export async function createContact(contactData: {
       .from("contacts")
       .insert({
         ...contactData,
-        agent_id: user.id,
+        agent_id: agentId,
+        brokerage_id: brokerageId,
       })
       .select()
       .single()

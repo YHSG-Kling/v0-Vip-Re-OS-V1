@@ -18,7 +18,6 @@ import {
   Play,
   ChevronDown,
   FileText,
-  ImageIcon,
 } from "lucide-react"
 import Link from "next/link"
 import { getDocumentWithAnalysis, getEducationalOverlay, checkStateCompliance } from "@/app/actions/documents"
@@ -43,21 +42,30 @@ export default function DocumentViewerPage() {
   useEffect(() => {
     async function loadDocument() {
       try {
-        const { document: doc, educationalOverlay: overlay } = await getDocumentWithAnalysis(documentId)
+        // Fetch document with metadata (using canonical schema columns)
+        const { document: doc, analysis: analysisData } = await getDocumentWithAnalysis(documentId)
+        
+        if (!doc) {
+          setDocument(null)
+          setLoading(false)
+          return
+        }
+
         setDocument(doc)
-        setAnalysis(doc?.document_analysis?.[0])
+        setAnalysis(analysisData)
 
-        // Get educational overlay
-        if (doc?.ai_detected_type) {
-          const staticOverlay = getEducationalOverlay(doc.ai_detected_type)
-          setEducationalOverlay(staticOverlay || overlay)
+        // Get educational overlay based on document_type
+        if (doc.document_type) {
+          const staticOverlay = getEducationalOverlay(doc.document_type)
+          setEducationalOverlay(staticOverlay)
 
-          // Check state compliance if we have key fields
-          if (analysis?.key_fields_extracted) {
-            const state = analysis.key_fields_extracted.state || "FL"
+          // Check state compliance if we have extracted_data with state info
+          if (analysisData?.extracted_data && typeof analysisData.extracted_data === 'object') {
+            const extractedData = analysisData.extracted_data
+            const state = extractedData.state || extractedData.property_state || "FL"
             const complianceResult = await checkStateCompliance(
-              doc.ai_detected_type,
-              analysis.key_fields_extracted,
+              doc.document_type,
+              extractedData,
               state
             )
             setCompliance(complianceResult)
@@ -128,11 +136,11 @@ export default function DocumentViewerPage() {
 
         <div className="bg-white rounded-lg shadow-lg overflow-hidden">
           {isPdf ? (
-            <iframe src={document.document_url} className="w-full h-[calc(100vh-12rem)]" title={document.document_name} />
+            <iframe src={document.file_url} className="w-full h-[calc(100vh-12rem)]" title={document.file_name} />
           ) : (
-            <ImageIcon
-              src={document.document_url || "/placeholder.svg"}
-              alt={document.document_name}
+            <img
+              src={document.file_url || "/placeholder.svg"}
+              alt={document.file_name}
               className="max-w-full h-auto mx-auto"
             />
           )}
@@ -144,41 +152,41 @@ export default function DocumentViewerPage() {
         <div className="p-6 space-y-6">
           {/* Document Info */}
           <div>
-            <h2 className="text-xl font-bold mb-2">{document.document_name}</h2>
+            <h2 className="text-xl font-bold mb-2">{document.file_name}</h2>
             <div className="flex items-center gap-2 flex-wrap">
-              {document.ai_detected_type && (
-                <Badge variant="secondary">{document.ai_detected_type.replace(/_/g, " ")}</Badge>
+              {document.document_type && (
+                <Badge variant="secondary">{document.document_type.replace(/_/g, " ")}</Badge>
               )}
-              {document.processing_status === "verified" && (
+              {document.ocr_status === "verified" && (
                 <Badge className="bg-green-100 text-green-800">
                   <CheckCircle2 className="h-3 w-3 mr-1" />
-                  AI Verified
+                  Verified
                 </Badge>
               )}
             </div>
           </div>
 
-          {/* AI-Generated Summary */}
-          {analysis?.plain_english_explanation && (
+          {/* AI-Generated Summary (using analysis.extraction_summary) */}
+          {analysis?.extraction_summary && (
             <Card className="border-blue-200 bg-blue-50">
               <CardContent className="pt-4">
                 <div className="flex items-start gap-2 mb-2">
                   <Sparkles className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
                   <h3 className="font-semibold text-blue-900">What This Document Is</h3>
                 </div>
-                <p className="text-sm text-blue-800 leading-relaxed">{analysis.plain_english_explanation}</p>
+                <p className="text-sm text-blue-800 leading-relaxed">{analysis.extraction_summary}</p>
               </CardContent>
             </Card>
           )}
 
-          {/* Key Information */}
-          {analysis?.key_fields_extracted && Object.keys(analysis.key_fields_extracted).length > 0 && (
+          {/* Key Information (using analysis.extracted_data) */}
+          {analysis?.extracted_data && typeof analysis.extracted_data === 'object' && Object.keys(analysis.extracted_data).length > 0 && (
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Key Information</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {Object.entries(analysis.key_fields_extracted)
+                {Object.entries(analysis.extracted_data)
                   .filter(([_, value]) => value !== null && value !== undefined)
                   .slice(0, 8)
                   .map(([key, value]) => (
@@ -191,63 +199,27 @@ export default function DocumentViewerPage() {
             </Card>
           )}
 
-          {/* Validation Results */}
-          {analysis?.validation_status && analysis.validation_status !== "pending" && (
+          {/* Validation Results (using analysis.validation_notes and analysis.confidence_score) */}
+          {analysis?.validation_notes && (
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Document Check</CardTitle>
               </CardHeader>
               <CardContent>
-                {analysis.validation_status === "pass" && (
-                  <div className="bg-green-50 border-l-4 border-green-500 p-3 rounded-r">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="h-5 w-5 text-green-600 flex-shrink-0" />
-                      <div>
-                        <p className="text-sm font-semibold text-green-900">All Good!</p>
-                        <p className="text-sm text-green-700 mt-1">This document passed all validation checks.</p>
-                      </div>
+                <div className="space-y-2">
+                  <div className="flex items-start gap-2">
+                    <CheckCircle2 className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-semibold">Confidence Score</p>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        {(analysis.confidence_score ? Math.round(analysis.confidence_score * 100) : 0)}% confidence in extraction
+                      </p>
                     </div>
                   </div>
-                )}
-
-                {analysis.validation_issues?.length > 0 && (
-                  <div className="space-y-2">
-                    {analysis.validation_issues.map((issue: any, idx: number) => (
-                      <div
-                        key={idx}
-                        className={`border-l-4 p-3 rounded-r ${
-                          issue.severity === "critical"
-                            ? "bg-red-50 border-red-500"
-                            : "bg-yellow-50 border-yellow-500"
-                        }`}
-                      >
-                        <div className="flex items-start gap-2">
-                          {issue.severity === "critical" ? (
-                            <XCircle className="h-5 w-5 text-red-600 flex-shrink-0" />
-                          ) : (
-                            <AlertTriangle className="h-5 w-5 text-yellow-600 flex-shrink-0" />
-                          )}
-                          <div>
-                            <p
-                              className={`text-sm font-semibold ${
-                                issue.severity === "critical" ? "text-red-900" : "text-yellow-900"
-                              }`}
-                            >
-                              {issue.field || issue.type}
-                            </p>
-                            <p
-                              className={`text-sm mt-1 ${
-                                issue.severity === "critical" ? "text-red-700" : "text-yellow-700"
-                              }`}
-                            >
-                              {issue.message}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
+                  <div className="bg-slate-50 p-3 rounded text-sm text-muted-foreground">
+                    {analysis.validation_notes}
                   </div>
-                )}
+                </div>
               </CardContent>
             </Card>
           )}
@@ -262,12 +234,12 @@ export default function DocumentViewerPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {compliance.issues.map((issue: string, idx: number) => (
+                {compliance.issues?.map((issue: string, idx: number) => (
                   <p key={idx} className="text-sm text-orange-800">
                     {issue}
                   </p>
                 ))}
-                {compliance.warnings.map((warning: string, idx: number) => (
+                {compliance.warnings?.map((warning: string, idx: number) => (
                   <p key={idx} className="text-sm text-yellow-700">
                     {warning}
                   </p>
@@ -381,20 +353,20 @@ export default function DocumentViewerPage() {
           {/* Actions */}
           <div className="space-y-2">
             <Button variant="outline" className="w-full bg-transparent" asChild>
-              <a href={document.document_url} target="_blank" rel="noopener noreferrer" download>
+              <a href={document.file_url} target="_blank" rel="noopener noreferrer" download>
                 <Download className="h-4 w-4 mr-2" />
                 Download
               </a>
             </Button>
 
-            {document.signature_status === "pending_signature" && (
+            {document.signature_required && (
               <Button className="w-full">
                 <PenTool className="h-4 w-4 mr-2" />
                 Sign Document
               </Button>
             )}
 
-            {document.processing_status !== "verified" && (
+            {document.ocr_status !== "verified" && (
               <Button variant="outline" className="w-full bg-transparent">
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Replace Document

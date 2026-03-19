@@ -86,27 +86,53 @@ export async function getTransactionRisks(brokerageId: string): Promise<Transact
 
   // Get active transactions with overdue milestones
   const { data: transactions } = await supabase
-    .from("listings")
+    .from("transactions")
     .select(`
       id,
-      address,
-      status,
+      property_address,
+      stage,
       created_at,
-      contacts!inner(first_name, last_name),
-      transaction_milestones(id, status, due_date, completed_at)
+      contact_id
     `)
     .eq("brokerage_id", brokerageId)
-    .in("status", ["under_contract", "contingent", "pending"])
+    .in("stage", ["under_contract", "contingent", "pending"])
 
-  if (!transactions) return []
+  if (!transactions || transactions.length === 0) return []
+
+  // Fetch contacts separately
+  const contactIds = transactions.map(t => t.contact_id).filter(Boolean)
+  let contactMap = new Map()
+  if (contactIds.length > 0) {
+    const { data: contacts } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name")
+      .in("id", contactIds)
+    contactMap = new Map(contacts?.map(c => [c.id, c]) || [])
+  }
+
+  // Fetch milestones for all transactions
+  const transactionIds = transactions.map(t => t.id)
+  const { data: milestones } = await supabase
+    .from("transaction_milestones")
+    .select("id, transaction_id, status, due_date, completed_at")
+    .in("transaction_id", transactionIds)
+
+  const milestonesMap = new Map()
+  ;(milestones || []).forEach(m => {
+    if (!milestonesMap.has(m.transaction_id)) {
+      milestonesMap.set(m.transaction_id, [])
+    }
+    milestonesMap.get(m.transaction_id).push(m)
+  })
 
   const now = new Date()
   const risks: TransactionRisk[] = []
 
   for (const transaction of transactions) {
-    const overdueMilestones =
-      (transaction as any).transaction_milestones?.filter((m: any) => !m.completed_at && new Date(m.due_date) < now)
-        .length || 0
+    const transactionMilestones = milestonesMap.get(transaction.id) || []
+    const overdueMilestones = transactionMilestones.filter(
+      (m: any) => !m.completed_at && new Date(m.due_date) < now
+    ).length || 0
 
     const daysInContract = Math.floor(
       (now.getTime() - new Date(transaction.created_at).getTime()) / (1000 * 60 * 60 * 24),
@@ -120,14 +146,14 @@ export async function getTransactionRisks(brokerageId: string): Promise<Transact
     else if (healthScore < 50) riskLevel = "high"
     else if (healthScore < 70) riskLevel = "medium"
 
-    const contact = (transaction as any).contacts
+    const contact = contactMap.get(transaction.contact_id)
     const clientName = contact ? `${contact.first_name} ${contact.last_name}` : "Unknown"
 
     risks.push({
       transactionId: transaction.id,
-      address: transaction.address || "N/A",
+      address: transaction.property_address || "N/A",
       clientName,
-      pipeline: transaction.status,
+      pipeline: transaction.stage,
       overdueMilestones,
       healthScore,
       daysInContract,

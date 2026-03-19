@@ -11,6 +11,12 @@ import { OfferComparisonMatrix } from "./components/offer-comparison-matrix"
 import { OfferCard } from "./components/offer-card"
 import { CounterOfferSlideOver } from "./components/counter-offer-slide-over"
 import { AIRecommendationBanner } from "./components/ai-recommendation-banner"
+import {
+  SellerMeaningCard,
+  NegotiationRecommendationCard,
+  TimelineRiskCard,
+  SellerNetSheetCard,
+} from "./components/intelligence"
 import { triggerOfferComparison, generateSellerPortalLink, acceptOffer, rejectOffer } from "@/app/actions/seller-offers"
 import { toast } from "@/hooks/use-toast"
 
@@ -78,6 +84,9 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   const [counterTarget, setCounterTarget] = useState<Offer | null>(null)
   const [aiResult, setAiResult] = useState<Record<string, unknown> | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null)
+
+  const selectedOffer = selectedOfferId ? offers.find(o => o.id === selectedOfferId) ?? null : null
 
   const activeOffers = offers.filter((o) => o.status !== "rejected")
   const canApprove = ["admin", "broker", "owner"].includes(userRole)
@@ -189,6 +198,9 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="intelligence" disabled={activeOffers.length === 0}>
+            Decision Intelligence
+          </TabsTrigger>
           <TabsTrigger value="matrix" disabled={activeOffers.length < 2}>
             Comparison Matrix
           </TabsTrigger>
@@ -224,6 +236,80 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                   onCounter={() => setCounterTarget(offer)}
                 />
               ))}
+            </div>
+          )}
+        </TabsContent>
+
+        {/* DECISION INTELLIGENCE */}
+        <TabsContent value="intelligence" className="mt-4">
+          {activeOffers.length === 0 ? (
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-16 gap-3">
+                <p className="text-muted-foreground text-sm">Upload an offer to see decision intelligence.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-4">
+              {/* Offer Selector */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Select Offer to Analyze</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap gap-2">
+                    {activeOffers.map((offer) => (
+                      <Button
+                        key={offer.id}
+                        size="sm"
+                        variant={selectedOfferId === offer.id ? "default" : "outline"}
+                        onClick={() => setSelectedOfferId(offer.id)}
+                      >
+                        {offer.offer_number ?? `Offer`} - ${offer.offer_price.toLocaleString()}
+                      </Button>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+
+              {selectedOffer && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Seller Meaning */}
+                  <SellerMeaningCard
+                    offer={selectedOffer}
+                    listPrice={listing.list_price ?? 0}
+                  />
+
+                  {/* Negotiation Recommendation */}
+                  <NegotiationRecommendationCard
+                    offer={selectedOffer}
+                    listPrice={listing.list_price ?? 0}
+                    totalOffers={activeOffers.length}
+                  />
+
+                  {/* Timeline Risk */}
+                  <TimelineRiskCard
+                    offer={selectedOffer}
+                    listPrice={listing.list_price ?? 0}
+                  />
+
+                  {/* Seller Net Sheet */}
+                  <SellerNetSheetCard
+                    offer={selectedOffer}
+                    listing={listing}
+                    agentId={listing.agent_id ?? currentUserId}
+                  />
+                </div>
+              )}
+
+              {!selectedOffer && activeOffers.length > 0 && (
+                <Card>
+                  <CardContent className="py-12 text-center">
+                    <p className="text-muted-foreground text-sm">
+                      Select an offer above to see detailed decision intelligence.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
             </div>
           )}
         </TabsContent>

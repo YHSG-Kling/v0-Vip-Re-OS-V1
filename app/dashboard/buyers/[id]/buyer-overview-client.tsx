@@ -11,6 +11,11 @@ import BuyerInsightsPanel                     from "./components/buyer-insights-
 import { FatiguePanel }                       from "./components/fatigue-panel"
 import { FatigueWidget }                      from "./components/fatigue-widget"
 import { isTourAllowed, isOfferAllowed }      from "@/lib/buyer-lifecycle/gating-helpers"
+import { TourPipelineStepper }                from "@/app/components/shared/TourPipelineStepper"
+import { createTourPlan }                     from "@/app/actions/tour-planner"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button }                             from "@/components/ui/button"
+import { Users, Calendar }                    from "lucide-react"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
 
@@ -101,11 +106,17 @@ interface BuyerOverviewClientProps {
   brokerageId:   string
   agentUserId:   string
   agentName:     string
+  collaborativeSearches: any[]
+  activeSearch:  any | null
+  consensus:     any | null
+  tours:         any[]
+  nextTour:      any | null
 }
 
 export function BuyerOverviewClient({
   buyerId, contact, journey, profile, partners, drafts,
   propertyInterests, brokerageId, agentUserId, agentName,
+  collaborativeSearches, activeSearch, consensus, tours, nextTour,
 }: BuyerOverviewClientProps) {
   const [activeTab, setActiveTab]   = useState<Tab>("Overview")
   const [gateModal, setGateModal]   = useState<GateModalProps | null>(null)
@@ -250,6 +261,92 @@ export function BuyerOverviewClient({
 
           {/* CENTER — main content */}
           <main className="flex-1 min-w-0 overflow-y-auto px-6 py-5 space-y-5">
+            {/* 0. Buyer Operations Panel */}
+            <div className="space-y-4 mb-6">
+
+              {/* Tour Pipeline Stepper */}
+              <TourPipelineStepper
+                contactId={buyerId}
+                savedCount={propertyInterests ? 1 : 0}
+                tourCount={tours.length}
+                buyerStage={contact.buyer_stage}
+              />
+
+              {/* Collaborative Search Intelligence */}
+              {activeSearch && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Users className="h-4 w-4 text-purple-600" />
+                      Family Search Consensus
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      {activeSearch.collaborative_search_members?.length || 0} decision-makers in this search
+                    </p>
+                    {consensus?.topProperty && (
+                      <div className="p-2 bg-green-50 border border-green-200 rounded text-xs">
+                        <span className="font-medium">Top pick: </span>
+                        {consensus.topProperty.address || 'Property consensus available'}
+                      </div>
+                    )}
+                    {consensus?.disagreements?.length > 0 && (
+                      <div className="p-2 bg-amber-50 border border-amber-200 rounded text-xs">
+                        <span className="font-medium">Friction point: </span>
+                        {consensus.disagreements[0]}
+                      </div>
+                    )}
+                    <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                      <Button size="sm" variant="outline" className="text-xs w-full">View Full Family Search</Button>
+                    </Link>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Tour Operations */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Calendar className="h-4 w-4 text-blue-600" />
+                    Tour Operations
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <div className="flex gap-4 text-sm">
+                    <span><span className="font-medium">{propertyInterests ? 1 : 0}</span> saved homes</span>
+                    <span><span className="font-medium">{tours.length}</span> tours on file</span>
+                  </div>
+                  {nextTour && (
+                    <p className="text-xs text-muted-foreground">
+                      Next tour: {new Date(nextTour.tour_date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})}
+                    </p>
+                  )}
+                  <div className="flex gap-2 flex-wrap">
+                    <Link href={`/dashboard/buyers/${buyerId}/tours`}>
+                      <Button size="sm" className="text-xs">Open Tour Planner</Button>
+                    </Link>
+                    <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                      <Button size="sm" variant="outline" className="text-xs">Property Search</Button>
+                    </Link>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-xs"
+                      onClick={async () => {
+                        await createTourPlan({ contactId: buyerId })
+                      }}
+                    >
+                      Quick Create Tour Plan
+                    </Button>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Use the Quick Create action only if the page already supports inline success/error handling. Otherwise keep Open Tour Planner as the primary CTA.
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+
             {/* 1. Financial Verification Panel */}
             <div id="financial-verification-panel">
               <FinancialVerificationPanel
