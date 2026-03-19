@@ -15,6 +15,10 @@ import {
   Check,
   ChevronRight,
   Brain,
+  CheckSquare,
+  XCircle,
+  RefreshCw,
+  Settings,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -95,6 +99,50 @@ export function PatternsDashboardClient({
     useState<PatternDetectionWithDetails | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
+  const [selectedPatternIds, setSelectedPatternIds] = useState<Set<string>>(new Set())
+
+  // Batch actions
+  const handleBatchAcknowledge = async () => {
+    if (selectedPatternIds.size === 0) return
+    startTransition(async () => {
+      for (const id of selectedPatternIds) {
+        await updatePatternStatus(id, "acknowledged")
+      }
+      setPatterns((prev) => prev.filter((p) => !selectedPatternIds.has(p.id)))
+      setSelectedPatternIds(new Set())
+    })
+  }
+
+  const handleBatchDismiss = async () => {
+    if (selectedPatternIds.size === 0) return
+    startTransition(async () => {
+      for (const id of selectedPatternIds) {
+        await updatePatternStatus(id, "dismissed")
+      }
+      setPatterns((prev) => prev.filter((p) => !selectedPatternIds.has(p.id)))
+      setSelectedPatternIds(new Set())
+    })
+  }
+
+  const togglePatternSelection = (id: string) => {
+    setSelectedPatternIds((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(id)) {
+        newSet.delete(id)
+      } else {
+        newSet.add(id)
+      }
+      return newSet
+    })
+  }
+
+  const selectAllPatterns = () => {
+    setSelectedPatternIds(new Set(patterns.map((p) => p.id)))
+  }
+
+  const deselectAllPatterns = () => {
+    setSelectedPatternIds(new Set())
+  }
 
   const refreshPatterns = async (filter: string) => {
     startTransition(async () => {
@@ -179,17 +227,74 @@ export function PatternsDashboardClient({
       {/* Header */}
       <div className="border-b bg-card">
         <div className="container mx-auto px-4 py-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-              <Brain className="h-5 w-5 text-primary" />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                <Brain className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-foreground">
+                  Behavioral Intelligence
+                </h1>
+                <p className="text-sm text-muted-foreground">
+                  AI-detected patterns across your pipeline
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">
-                Behavioral Intelligence
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                AI-detected patterns across your pipeline
-              </p>
+            {/* Command Strip */}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => refreshPatterns(activeTab)}
+                disabled={isPending}
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${isPending ? "animate-spin" : ""}`} />
+                Refresh
+              </Button>
+              {selectedPatternIds.size > 0 && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleBatchAcknowledge}
+                    disabled={isPending}
+                  >
+                    <CheckSquare className="h-4 w-4 mr-2" />
+                    Acknowledge ({selectedPatternIds.size})
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleBatchDismiss}
+                    disabled={isPending}
+                  >
+                    <XCircle className="h-4 w-4 mr-2" />
+                    Dismiss ({selectedPatternIds.size})
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={deselectAllPatterns}
+                  >
+                    Clear
+                  </Button>
+                </>
+              )}
+              {selectedPatternIds.size === 0 && patterns.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={selectAllPatterns}
+                >
+                  Select All
+                </Button>
+              )}
+              <Link href="/dashboard/patterns/settings">
+                <Button variant="ghost" size="sm">
+                  <Settings className="h-4 w-4" />
+                </Button>
+              </Link>
             </div>
           </div>
         </div>
