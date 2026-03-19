@@ -95,6 +95,7 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
   const [showCreate, setShowCreate] = useState(openCreate)
   const [deleting, setDeleting]     = useState<string | null>(null)
   const [busy, setBusy]             = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
 
   // New sequence form state
   const [form, setForm] = useState({
@@ -114,6 +115,26 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
     const avgCompletion = enrolled > 0 ? Math.round((completed / enrolled) * 100) : 0
     return { active, enrolled, avgCompletion, converted }
   }, [sequences])
+
+  const handleBatchToggle = useCallback(async (active: boolean) => {
+    for (const id of selectedIds) {
+      const seq = sequences.find(s => s.id === id)
+      if (seq) {
+        await updateCampaignSequence(id, { is_active: active })
+      }
+    }
+    setSequences(prev => prev.map(s => selectedIds.has(s.id) ? { ...s, is_active: active } : s))
+    setSelectedIds(new Set())
+  }, [selectedIds, sequences])
+
+  const toggleSequenceSelection = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(id)) newSet.delete(id)
+      else newSet.add(id)
+      return newSet
+    })
+  }, [])
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -196,6 +217,43 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
         ].map(({ label, value, Icon }) => (
           <div key={label} className="rounded-lg border border-border bg-card p-4 flex items-center gap-3">
             <div className="h-9 w-9 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
+              <Icon className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">{label}</p>
+              <p className="text-xl font-semibold text-foreground">{value}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Command Strip with Batch Actions */}
+      <div className="flex items-center justify-between rounded-lg border bg-card p-4 mb-6">
+        <div className="flex items-center gap-3">
+          <Layers className="h-5 w-5 text-muted-foreground" />
+          <span className="text-sm font-medium">{sequences.length} sequences</span>
+          {selectedIds.size > 0 && (
+            <span className="text-xs text-muted-foreground">• {selectedIds.size} selected</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {selectedIds.size > 0 && (
+            <>
+              <Button size="sm" variant="outline" onClick={() => handleBatchToggle(true)} disabled={busy}>
+                <CheckCircle2 className="h-4 w-4 mr-1" />
+                Activate
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => handleBatchToggle(false)} disabled={busy}>
+                <Lock className="h-4 w-4 mr-1" />
+                Pause
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+                Clear
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
               <Icon className="h-4 w-4 text-primary" />
             </div>
             <div>
@@ -214,15 +272,22 @@ export default function SequencesListClient({ sequences: initial, brokerageId, u
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {sequences.map(seq => (
-            <SequenceCard
-              key={seq.id}
-              sequence={seq}
-              onEdit={() => router.push(`/dashboard/campaigns/sequences/${seq.id}`)}
-              onToggle={() => handleToggleActive(seq)}
-              onDuplicate={() => handleDuplicate(seq)}
-              onDelete={() => setDeleting(seq.id)}
-              onAnalytics={() => router.push(`/dashboard/campaigns/sequences/${seq.id}?tab=analytics`)}
-            />
+            <div key={seq.id} className="relative">
+              <input
+                type="checkbox"
+                checked={selectedIds.has(seq.id)}
+                onChange={() => toggleSequenceSelection(seq.id)}
+                className="absolute top-3 left-3 h-4 w-4 z-10 cursor-pointer"
+              />
+              <SequenceCard
+                sequence={seq}
+                onEdit={() => router.push(`/dashboard/campaigns/sequences/${seq.id}`)}
+                onToggle={() => handleToggleActive(seq)}
+                onDuplicate={() => handleDuplicate(seq)}
+                onDelete={() => setDeleting(seq.id)}
+                onAnalytics={() => router.push(`/dashboard/campaigns/sequences/${seq.id}?tab=analytics`)}
+              />
+            </div>
           ))}
         </div>
       )}
