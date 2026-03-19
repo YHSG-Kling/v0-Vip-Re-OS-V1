@@ -3,10 +3,18 @@ import { Button } from "@/components/ui/button"
 import { getReferralROI, getReferralLeaderboard } from "@/app/actions/referral-management"
 import { PlusCircle, Users, DollarSign, TrendingUp, Award } from "lucide-react"
 import Link from "next/link"
+import { CreateReferralSheet } from "@/app/components/referrals/CreateReferralSheet"
+
 export const dynamic = "force-dynamic"
-export default async function ReferralsPage() {
+
+export default async function ReferralsPage({
+  searchParams,
+}: {
+  searchParams: { action?: string }
+}) {
   const stats = await getReferralROI()
   const leaderboard = await getReferralLeaderboard()
+  const isCreateOpen = searchParams.action === "create"
 
   return (
     <div className="container mx-auto p-6 space-y-6">
@@ -16,7 +24,14 @@ export default async function ReferralsPage() {
           <h1 className="text-3xl font-bold">Referral Management</h1>
           <p className="text-muted-foreground">Track and manage your referral pipeline</p>
         </div>
-        <Link href="/referrals/new">
+        <Link href="?action=create">
+          <Button>
+            <PlusCircle className="w-4 h-4 mr-2" />
+            New Referral
+          </Button>
+        </Link>
+      </div>
+        <Link href="/referrals?action=create">
           <Button>
             <PlusCircle className="w-4 h-4 mr-2" />
             New Referral
@@ -160,5 +175,7 @@ export default async function ReferralsPage() {
         </Link>
       </div>
     </div>
+
+    {isCreateOpen && <CreateReferralSheet />}
   )
 }

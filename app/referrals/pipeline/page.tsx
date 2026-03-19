@@ -46,7 +46,7 @@ export default async function ReferralPipelinePage() {
           <h1 className="text-3xl font-bold">Referral Pipeline</h1>
           <p className="text-muted-foreground">Track all referrals from lead to close</p>
         </div>
-        <Link href="/referrals/new">
+        <Link href="/referrals?action=create">
           <Button>Add Referral</Button>
         </Link>
       </div>
