@@ -105,7 +105,7 @@ export function AdminCommandStrip({ brokerageId }: AdminCommandStripProps) {
           label: "Approvals Pending",
           sublabel: `${approvals} item${approvals > 1 ? "s" : ""} awaiting admin review`,
           action: "Review Now",
-          href: "/dashboard/admin/approvals",
+          href: "/approvals",
           blocked: 0,
           actionable: approvals,
         }
@@ -125,7 +125,7 @@ export function AdminCommandStrip({ brokerageId }: AdminCommandStripProps) {
           label: "Tasks Overdue",
           sublabel: `${tasks} admin task${tasks > 1 ? "s" : ""} past due date`,
           action: "Review Tasks",
-          href: "/dashboard/tasks",
+          href: "/dashboard/admin/tasks",
           blocked: 0,
           actionable: tasks,
         }

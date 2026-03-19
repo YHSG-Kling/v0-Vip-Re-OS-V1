@@ -188,7 +188,7 @@ const OnboardingDashboard: React.FC = () => {
               You've completed your onboarding. You're now ready to take full advantage of Smart Engine.
             </p>
             <Button size="lg" className="bg-indigo-600 hover:bg-indigo-700" asChild>
-              <Link href="/agent/dashboard">
+              <Link href="/dashboard/agent">
                 Go to Dashboard
                 <ArrowRight className="w-4 h-4 ml-2" />
               </Link>

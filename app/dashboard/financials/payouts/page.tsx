@@ -85,7 +85,7 @@ export default async function PayoutsPage() {
     description: "Manage commission caps and splits",
     priority: "low",
     type: "budget",
-    href: "/dashboard/agents/caps",
+    href: "/dashboard/financials/commissions",
   })
 
   return (

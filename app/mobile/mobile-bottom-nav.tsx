@@ -17,12 +17,12 @@ const navItems = [
   },
   {
     label: "Pipeline",
-    href: "/dashboard/pipeline",
+    href: "/leads",
     icon: BarChart3,
   },
   {
     label: "Help",
-    href: "/dashboard/help",
+    href: "/support",
     icon: HelpCircle,
   },
 ]

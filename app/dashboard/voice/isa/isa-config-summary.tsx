@@ -40,7 +40,7 @@ export function ISAConfigSummary({ config, agentId }: ISAConfigSummaryProps) {
             ISA Configuration
           </CardTitle>
           <Button variant="outline" size="sm" asChild>
-            <Link href="/settings/voice">
+            <Link href="/settings?tab=voice">
               Edit Configuration
               <ExternalLink className="h-3 w-3 ml-1" />
             </Link>
@@ -51,7 +51,7 @@ export function ISAConfigSummary({ config, agentId }: ISAConfigSummaryProps) {
         {!config ? (
           <div className="text-sm text-muted-foreground">
             No voice configuration set up yet.{" "}
-            <Link href="/settings/voice" className="text-primary hover:underline">
+            <Link href="/settings?tab=voice" className="text-primary hover:underline">
               Configure now
             </Link>
           </div>
