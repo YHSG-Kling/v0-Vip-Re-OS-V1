@@ -7,7 +7,7 @@ import {
   PlatformHealthRadar,
   BrokerageTenantPanel,
   BillingUsagePanel,
-  AIAuditPanel,
+  AiAuditPanel,
   PlatformConfigPanel,
   IntegrationGovernancePanel,
   ErrorHandlerPanel,
@@ -99,7 +99,7 @@ export function PlatformOwnerOSClient({
 
         {/* AI Audit Tab */}
         <TabsContent value="ai-audit" className="space-y-6">
-          <AIAuditPanel aiAuditLog={aiAuditLog} />
+          <AiAuditPanel aiAuditLog={aiAuditLog} />
         </TabsContent>
 
         {/* Operations Tab */}
