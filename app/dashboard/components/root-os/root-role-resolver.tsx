@@ -23,6 +23,7 @@ const ROLE_DASHBOARD_ROUTES: Record<string, { route: string; label: string; icon
   vendor: { route: '/vendor/dashboard', label: 'Vendor Portal', icon: Building2 },
   lender: { route: '/lender/dashboard', label: 'Lender Portal', icon: Building2 },
   title: { route: '/title/dashboard', label: 'Title Portal', icon: Building2 },
+  title_agent: { route: '/title/dashboard', label: 'Title Portal', icon: Building2 },
 }
 
 interface RootRoleResolverProps {

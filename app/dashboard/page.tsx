@@ -29,6 +29,7 @@ const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
   vendor: "/vendor/dashboard",
   lender: "/lender/dashboard",
   title: "/title/dashboard",
+  title_agent: "/title/dashboard",
 }
 
 const Loading = () => (
