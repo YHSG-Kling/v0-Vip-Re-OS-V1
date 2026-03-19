@@ -31,13 +31,6 @@ export default async function ReferralsPage({
           </Button>
         </Link>
       </div>
-        <Link href="/referrals?action=create">
-          <Button>
-            <PlusCircle className="w-4 h-4 mr-2" />
-            New Referral
-          </Button>
-        </Link>
-      </div>
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
