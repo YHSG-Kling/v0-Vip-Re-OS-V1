@@ -4,6 +4,7 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { MarketIntelligencePanel } from "./components/market-intelligence-panel"
 import { 
   Plus, 
   Home, 
@@ -214,6 +215,19 @@ export default async function ListingsPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Market Intelligence — city/state from first active listing, falls back to first any listing */}
+        {(() => {
+          const refListing = activeListings[0] ?? listings?.[0]
+          if (!refListing?.city || !refListing?.state) return null
+          return (
+            <MarketIntelligencePanel
+              city={refListing.city}
+              state={refListing.state}
+              agentId={user.id}
+            />
+          )
+        })()}
       </div>
     </div>
   )

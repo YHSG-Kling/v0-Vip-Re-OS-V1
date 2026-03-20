@@ -4,14 +4,15 @@ import { useEffect, useState, useCallback, useTransition } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById } from "@/app/actions/contacts"
-import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn } from "@/app/actions/ai-predictions"
+import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence, getPredictiveLeadScore } from "@/app/actions/ai-predictions"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft } from "@/app/actions/portal-messages"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Progress } from "@/components/ui/progress"
 import {
   Users,
   Search,
@@ -22,6 +23,10 @@ import {
   Loader2,
   RefreshCw,
   ArrowLeft,
+  Brain,
+  MessageSquare,
+  TrendingUp,
+  AlertTriangle,
 } from "lucide-react"
 import Link from "next/link"
 
@@ -105,6 +110,9 @@ export default function CRMPage() {
   const [autopilotPlans, setAutopilotPlans] = useState<any[]>([])
   const [suggestedActions, setSuggestedActions] = useState<any[]>([])
   const [conversations, setConversations] = useState<any[]>([])
+  const [conversationIntelligence, setConversationIntelligence] = useState<any>(null)
+  // Lead conversion probability — keyed by contact.id, High/Medium only per acceptance criteria
+  const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
   const [referralGenerating, setReferralGenerating] = useState(false)
   const [noteSaving, setNoteSaving] = useState(false)
 
@@ -125,6 +133,22 @@ export default function CRMPage() {
       if (result.success) {
         setContacts(result.contacts)
         setFiltered(result.contacts)
+
+        // Batch-fetch lead scores for first 20 contacts — silently, no blocking UI
+        const slice = result.contacts.slice(0, 20)
+        Promise.allSettled(slice.map((c: Contact) => getPredictiveLeadScore(c.id))).then((results) => {
+          const scores: Record<string, { label: "High" | "Medium"; score: number }> = {}
+          results.forEach((r, i) => {
+            if (r.status === "fulfilled" && r.value && !r.value.error) {
+              const val = r.value
+              const pct: number = val.conversion_probability ?? val.score ?? 0
+              if (pct >= 70) scores[slice[i].id] = { label: "High", score: pct }
+              else if (pct >= 40) scores[slice[i].id] = { label: "Medium", score: pct }
+              // Low is intentionally omitted per acceptance criteria
+            }
+          })
+          setLeadScores(scores)
+        })
       } else {
         setError(result.error ?? "Failed to load contacts")
       }
@@ -143,12 +167,13 @@ export default function CRMPage() {
       setDetailLoading(true)
       try {
         // Parallel data loads
-        const [contactResult, churnResult, autopilotResult, followUpResult] =
+        const [contactResult, churnResult, autopilotResult, followUpResult, convIntelResult] =
           await Promise.all([
             getContactById(contactId),
             detectClientChurn(contactId).catch(() => null),
             getActiveAutoPilotPlans(agentId).catch(() => []),
             aiSuggestFollowUp({ contactId, agentId }).catch(() => ({ suggestions: [] })),
+            getConversationIntelligence(contactId).catch(() => null),
           ])
 
         if (contactResult?.success && contactResult.contact) {
@@ -158,6 +183,7 @@ export default function CRMPage() {
         setChurnRisk(churnResult)
         setAutopilotPlans(autopilotResult || [])
         setSuggestedActions(followUpResult?.suggestions || [])
+        setConversationIntelligence(convIntelResult && !convIntelResult.error ? convIntelResult : null)
       } catch (err) {
         console.error("Failed to load contact detail:", err)
       } finally {
@@ -357,6 +383,70 @@ export default function CRMPage() {
 
               {/* Right column - AI Chat & Context */}
               <div className="space-y-6">
+                {/* Conversation Intelligence — above AI Chat panel */}
+                {conversationIntelligence && (
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        <Brain className="h-4 w-4 text-violet-500" />
+                        Conversation Intelligence
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {conversationIntelligence.sentiment_score != null && (
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-muted-foreground">Sentiment</span>
+                            <span className={`font-medium ${
+                              conversationIntelligence.sentiment_score >= 0.6
+                                ? "text-green-600"
+                                : conversationIntelligence.sentiment_score >= 0.4
+                                ? "text-amber-600"
+                                : "text-red-600"
+                            }`}>
+                              {conversationIntelligence.sentiment_label ?? (
+                                conversationIntelligence.sentiment_score >= 0.6 ? "Positive"
+                                : conversationIntelligence.sentiment_score >= 0.4 ? "Neutral"
+                                : "Negative"
+                              )}
+                            </span>
+                          </div>
+                          <Progress value={Math.round(conversationIntelligence.sentiment_score * 100)} className="h-1.5" />
+                        </div>
+                      )}
+                      {conversationIntelligence.key_topics?.length > 0 && (
+                        <div>
+                          <p className="text-xs text-muted-foreground mb-1.5">Key Topics</p>
+                          <div className="flex flex-wrap gap-1">
+                            {conversationIntelligence.key_topics.slice(0, 4).map((t: string, i: number) => (
+                              <Badge key={i} variant="secondary" className="text-xs">
+                                {t}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {conversationIntelligence.next_step_suggestion && (
+                        <p className="text-xs bg-violet-50 border border-violet-100 text-violet-700 rounded px-2 py-1.5">
+                          {conversationIntelligence.next_step_suggestion}
+                        </p>
+                      )}
+                      {conversationIntelligence.buying_signals?.length > 0 && (
+                        <div className="flex items-start gap-1.5 text-xs text-green-700">
+                          <TrendingUp className="h-3 w-3 mt-0.5 shrink-0" />
+                          <span>{conversationIntelligence.buying_signals[0]}</span>
+                        </div>
+                      )}
+                      {conversationIntelligence.objections?.length > 0 && (
+                        <div className="flex items-start gap-1.5 text-xs text-amber-700">
+                          <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                          <span>{conversationIntelligence.objections[0]}</span>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
+
                 <RelationshipAiChatPanel
                   contactId={selectedContactId}
                   agentId={agentId || ""}
@@ -514,7 +604,7 @@ export default function CRMPage() {
               <CardContent className="p-4">
                 <div className="flex items-start justify-between">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <h3 className="font-semibold text-gray-900 truncate">
                         {contact.first_name} {contact.last_name}
                       </h3>
@@ -535,6 +625,19 @@ export default function CRMPage() {
                           }`}
                         >
                           {contact.status.replace(/_/g, " ")}
+                        </Badge>
+                      )}
+                      {leadScores[contact.id] && (
+                        <Badge
+                          className={`text-xs ${
+                            leadScores[contact.id].label === "High"
+                              ? "bg-green-100 text-green-700"
+                              : "bg-amber-100 text-amber-700"
+                          }`}
+                          title={`Conversion probability: ${leadScores[contact.id].score}%`}
+                        >
+                          <TrendingUp className="h-3 w-3 mr-1" />
+                          {leadScores[contact.id].label} Conversion
                         </Badge>
                       )}
                     </div>

@@ -48,8 +48,11 @@ import {
   Scale,
   ClipboardList,
   PenLine,
+  Brain,
+  TrendingDown,
 } from "lucide-react"
 import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
+import { predictDealCloseProbability } from "@/app/actions/ai-predictions"
 import { Progress } from "@/components/ui/progress"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
@@ -373,6 +376,18 @@ export function TransactionDetailClient({
   const [emAmount, setEmAmount] = useState(titleEscrow?.earnest_money_amount?.toString() ?? "")
   const [emHeldBy, setEmHeldBy] = useState(titleEscrow?.earnest_money_held_by ?? "")
   const [emReceivedDate, setEmReceivedDate] = useState(titleEscrow?.earnest_money_received_date ?? "")
+
+  // Deal Health Prediction — loaded once on mount, no blocking
+  const [dealPrediction, setDealPrediction] = useState<any>(null)
+  const [dealPredLoading, setDealPredLoading] = useState(false)
+
+  useEffect(() => {
+    setDealPredLoading(true)
+    predictDealCloseProbability(transaction.id)
+      .then(setDealPrediction)
+      .catch(() => null)
+      .finally(() => setDealPredLoading(false))
+  }, [transaction.id])
 
   // E-sign local state (optimistic updates for linked offer)
   const [esignSent, setEsignSent] = useState(false)
@@ -832,6 +847,62 @@ export function TransactionDetailClient({
                   <p className="text-xs text-amber-600 mt-2">
                     {unresolvedInterventionsCount} unresolved intervention(s)
                   </p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Deal Health Prediction */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-indigo-500" />
+                  Deal Health Prediction
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {dealPredLoading && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Analyzing deal signals...
+                  </div>
+                )}
+                {!dealPredLoading && dealPrediction && !dealPrediction.error && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">Close Probability</span>
+                      <span className={`text-sm font-bold ${
+                        (dealPrediction.close_probability ?? 0) >= 70
+                          ? "text-green-600"
+                          : (dealPrediction.close_probability ?? 0) >= 40
+                          ? "text-amber-600"
+                          : "text-red-600"
+                      }`}>
+                        {dealPrediction.close_probability ?? 0}%
+                      </span>
+                    </div>
+                    <Progress
+                      value={dealPrediction.close_probability ?? 0}
+                      className="h-1.5"
+                    />
+                    {dealPrediction.risk_factors?.length > 0 && (
+                      <div className="pt-1 space-y-1">
+                        {dealPrediction.risk_factors.slice(0, 2).map((r: string, i: number) => (
+                          <div key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                            <TrendingDown className="h-3 w-3 text-red-400 mt-0.5 shrink-0" />
+                            {r}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {dealPrediction.recommended_action && (
+                      <p className="text-xs text-indigo-700 bg-indigo-50 rounded px-2 py-1 border border-indigo-100">
+                        {dealPrediction.recommended_action}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {!dealPredLoading && (!dealPrediction || dealPrediction.error) && (
+                  <p className="text-xs text-muted-foreground">Prediction unavailable — insufficient data.</p>
                 )}
               </CardContent>
             </Card>
