@@ -8,6 +8,7 @@ import Link from "next/link"
 import { CreateReferralSheet } from "@/app/components/referrals/CreateReferralSheet"
 import { getAgentContext } from "@/lib/identity"
 import { ReferralsOsClient } from "./referrals-os-client"
+import { createClient } from "@/lib/supabase/server"
 
 export const dynamic = "force-dynamic"
 
@@ -18,14 +19,72 @@ export default async function ReferralsPage({
 }) {
   const params = await searchParams
   const { agentId, brokerageId } = await getAgentContext()
+  const supabase = await createClient()
 
-  const [stats, leaderboard, referrals, sphereScore, leaderboardWidget] = await Promise.all([
+  // Calculate date windows
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+  const oneYearAgo = new Date()
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1)
+  const anniversaryWindowEnd = new Date(oneYearAgo)
+  anniversaryWindowEnd.setDate(anniversaryWindowEnd.getDate() + 30)
+
+  const [stats, leaderboard, referrals, sphereScore, leaderboardWidget, recentClosingsRes, existingReviewsRes, anniversaryTransactionsRes] = await Promise.all([
     getReferralROI(),
     getReferralLeaderboard(),
     getReferrals({ agentId, brokerageId }),
     aiScoreSphereEngagement({ agentId }).catch(() => null),
     getLeaderboardWidget({ agentId, brokerageId }).catch(() => null),
+    // Recent closings for review requests (last 90 days)
+    supabase
+      .from("transactions")
+      .select("id, property_address, close_date, contact_id, contacts(id, first_name, last_name)")
+      .eq("agent_id", agentId)
+      .eq("status", "closed")
+      .gte("close_date", ninetyDaysAgo)
+      .order("close_date", { ascending: false })
+      .limit(5),
+    // Existing reviews
+    supabase
+      .from("agent_reviews")
+      .select("id, platform, rating, review_text")
+      .eq("agent_id", agentId)
+      .order("created_at", { ascending: false })
+      .limit(10),
+    // Upcoming anniversaries (contacts with transactions that closed ~1 year ago)
+    supabase
+      .from("transactions")
+      .select("id, property_address, close_date, contacts(id, first_name, last_name)")
+      .eq("agent_id", agentId)
+      .eq("status", "closed")
+      .gte("close_date", oneYearAgo.toISOString().split("T")[0])
+      .lte("close_date", anniversaryWindowEnd.toISOString().split("T")[0])
+      .limit(5),
   ])
+
+  // Format data for components
+  const recentClosings = (recentClosingsRes.data || []).map((t: any) => ({
+    id: t.id,
+    contact_id: t.contacts?.id || t.contact_id || "",
+    contactName: t.contacts ? `${t.contacts.first_name || ""} ${t.contacts.last_name || ""}`.trim() : "Unknown",
+    address: t.property_address || "",
+    closeDate: t.close_date || "",
+    transactionId: t.id,
+  }))
+
+  const existingReviews = (existingReviewsRes.data || []).map((r: any) => ({
+    id: r.id,
+    platform: r.platform || "google",
+    rating: r.rating || 0,
+    review_text: r.review_text || "",
+  }))
+
+  const upcomingAnniversaries = (anniversaryTransactionsRes.data || []).map((t: any) => ({
+    contactId: t.contacts?.id || "",
+    contactName: t.contacts ? `${t.contacts.first_name || ""} ${t.contacts.last_name || ""}`.trim() : "Unknown",
+    address: t.property_address || "",
+    yearsCount: 1,
+    closeDate: t.close_date || "",
+  }))
 
   const isCreateOpen = params.action === "create"
   const pendingReferrals = referrals?.filter((r: any) => r.status === "new" || r.status === "contacted").length || 0
@@ -57,6 +116,9 @@ export default async function ReferralsPage({
         }))}
         sphereScore={sphereScore}
         leaderboardWidget={leaderboardWidget}
+        recentClosings={recentClosings}
+        existingReviews={existingReviews}
+        upcomingAnniversaries={upcomingAnniversaries}
       />
 
       {/* Header */}
