@@ -28,7 +28,7 @@ export function OnboardingCommandStrip({ brokerageId, userId }: OnboardingComman
           Manage Assignments
         </Button>
       </Link>
-      <Link href="/dashboard/admin/settings/training">
+      <Link href="/dashboard/onboarding">
         <Button variant="outline" className="gap-2">
           <Zap className="h-4 w-4" />
           Training Settings

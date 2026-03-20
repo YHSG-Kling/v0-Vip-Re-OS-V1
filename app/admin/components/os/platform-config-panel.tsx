@@ -38,7 +38,7 @@ export function PlatformConfigPanel({ config, featureFlags }: PlatformConfigPane
             <Settings className="h-5 w-5" />
             Platform Config
           </CardTitle>
-          <Link href="/admin/config">
+          <Link href="/admin/settings">
             <Button variant="ghost" size="sm" className="gap-1">
               <ExternalLink className="h-3 w-3" />
               Manage

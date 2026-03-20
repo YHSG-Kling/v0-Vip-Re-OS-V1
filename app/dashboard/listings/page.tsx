@@ -57,7 +57,7 @@ export default async function ListingsPage() {
     <div className="space-y-6">
       {/* Command Strip */}
       <div className="flex items-center gap-2 px-6 py-3 border-b border-border bg-muted/30">
-        <Link href="/listings/new">
+        <Link href="/dashboard/listings?action=new">
           <Button size="sm" className="gap-2">
             <Plus className="h-4 w-4" />
             New Listing
@@ -204,7 +204,7 @@ export default async function ListingsPage() {
               <div className="p-8 text-center">
                 <Home className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
                 <p className="text-muted-foreground mb-4">No listings found. Create your first listing to get started.</p>
-<Link href="/dashboard/listings/new">
+<Link href="/dashboard/listings?action=new">
                   <Button>
                     <Plus className="h-4 w-4 mr-2" />
                     Create Listing

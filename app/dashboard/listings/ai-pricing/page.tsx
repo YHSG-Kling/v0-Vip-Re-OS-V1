@@ -128,7 +128,7 @@ export default async function ListingsAIPricingPage() {
               <Sparkles className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
               <h3 className="font-semibold text-lg mb-2">No Listings to Analyze</h3>
               <p className="text-muted-foreground mb-4">Add active listings to get AI pricing recommendations</p>
-              <Link href="/dashboard/listings/new">
+              <Link href="/dashboard/listings?action=new">
                 <Button>Create Listing</Button>
               </Link>
             </CardContent>

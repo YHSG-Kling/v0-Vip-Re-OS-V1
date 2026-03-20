@@ -290,7 +290,7 @@ export function PatternsDashboardClient({
                   Select All
                 </Button>
               )}
-              <Link href="/dashboard/patterns/settings">
+              <Link href="/dashboard/settings">
                 <Button variant="ghost" size="sm">
                   <Settings className="h-4 w-4" />
                 </Button>

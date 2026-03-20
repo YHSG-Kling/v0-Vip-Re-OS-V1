@@ -108,7 +108,7 @@ export function ReputationClient({
                   </Button>
                 </>
               )}
-              <Link href="/dashboard/reputation/settings">
+              <Link href="/dashboard/settings">
                 <Button variant="ghost" size="sm">
                   <Settings className="h-4 w-4" />
                 </Button>
