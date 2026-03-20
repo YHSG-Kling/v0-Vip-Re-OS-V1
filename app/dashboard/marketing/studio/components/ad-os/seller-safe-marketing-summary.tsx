@@ -212,7 +212,7 @@ Tone: confident, client-facing, no technical marketing terms.`
                   </Button>
                 </Link>
               ) : (
-                <Link href="/dashboard/messages">
+                <Link href="/dashboard/communications/inbox">
                   <Button size="sm" variant="default" className="gap-1.5">
                     <Send className="h-3.5 w-3.5" />
                     Open Messages
