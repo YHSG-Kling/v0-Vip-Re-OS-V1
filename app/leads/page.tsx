@@ -676,9 +676,10 @@ export default function LeadsPage() {
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                   {unifiedProfiles.map((profile: any) => {
-                    const name = profile.full_name
-                      ?? `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim()
-                      || "Unknown"
+                    const name =
+                      profile.full_name ||
+                      `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim() ||
+                      "Unknown"
                     const confidence = Math.round((profile.confidence_score ?? profile.min_confidence ?? 0) * 100)
                     const leadId = profile.lead_id ?? profile.id
                     const isSelected = selectedLeadId === leadId
