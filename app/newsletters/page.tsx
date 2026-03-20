@@ -3,8 +3,10 @@ import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Plus, MailOpen, Settings, AlertCircle } from 'lucide-react'
+import { Plus, MailOpen, Settings, AlertCircle, Sparkles } from 'lucide-react'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { createClient } from '@/lib/supabase/server'
+import { NewsletterAIPanel } from './components/newsletter-ai-panel'
 
 export const metadata: Metadata = {
   title: 'Newsletters | Marketing Studio',
@@ -12,6 +14,18 @@ export const metadata: Metadata = {
 }
 
 export default async function NewslettersPage() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  const { data: agent } = user
+    ? await supabase
+        .from('agents')
+        .select('id, brokerage_id')
+        .eq('user_id', user.id)
+        .maybeSingle()
+    : { data: null }
+  const agentId: string = agent?.id ?? ''
+  const brokerageId: string = agent?.brokerage_id ?? ''
+
   return (
     <div className="container mx-auto py-6 px-4">
       <div className="mb-8">
@@ -43,6 +57,10 @@ export default async function NewslettersPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="templates">Templates</TabsTrigger>
+          <TabsTrigger value="ai-writer" className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5" />
+            AI Writer
+          </TabsTrigger>
           <TabsTrigger value="setup">Setup</TabsTrigger>
         </TabsList>
 
@@ -169,6 +187,19 @@ export default async function NewslettersPage() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="ai-writer" className="space-y-4">
+          {agentId ? (
+            <NewsletterAIPanel agentId={agentId} brokerageId={brokerageId} />
+          ) : (
+            <Alert>
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                Sign in as an agent to use AI newsletter tools.
+              </AlertDescription>
+            </Alert>
+          )}
         </TabsContent>
 
         <TabsContent value="setup" className="space-y-4">

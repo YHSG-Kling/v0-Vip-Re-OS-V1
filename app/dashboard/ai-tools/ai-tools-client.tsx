@@ -53,6 +53,11 @@ import {
 } from "@/app/actions/ai-tools-hub"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
+import {
+  compareNeighborhoods,
+  analyzeInvestmentProperty,
+  calculateRentVsBuy,
+} from "@/app/actions/calculators"
 
 // Tool definitions with categories
 const TOOLS = [
@@ -248,6 +253,56 @@ const TOOLS = [
       { name: "contingencyDays", type: "text", label: "Contingency days", placeholder: "10" },
     ],
   },
+  // CALCULATOR TOOLS — direct real-action runners (directAction = true)
+  {
+    id: "compare_neighborhoods",
+    name: "Neighborhood Comparison",
+    description: "Compare multiple neighborhoods by market stats, price trends, and days on market",
+    category: "intelligence",
+    categoryColor: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+    icon: MapPin,
+    directAction: true,
+    inputs: [
+      { name: "neighborhood1", type: "text", label: "Neighborhood 1", placeholder: "Capitol Hill" },
+      { name: "neighborhood2", type: "text", label: "Neighborhood 2", placeholder: "Cherry Creek" },
+      { name: "neighborhood3", type: "text", label: "Neighborhood 3 (optional)", placeholder: "LoHi", required: false },
+      { name: "city", type: "text", label: "City", placeholder: "Denver" },
+      { name: "state", type: "text", label: "State", placeholder: "CO" },
+    ],
+  },
+  {
+    id: "investment_analyzer",
+    name: "Investment Property Analyzer",
+    description: "Analyze cap rate, cash-on-cash return, and NOI for any rental property",
+    category: "intelligence",
+    categoryColor: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+    icon: TrendingUp,
+    directAction: true,
+    inputs: [
+      { name: "purchasePrice", type: "text", label: "Purchase price ($)", placeholder: "450000" },
+      { name: "downPaymentPercent", type: "text", label: "Down payment (%)", placeholder: "25" },
+      { name: "interestRate", type: "text", label: "Interest rate (%)", placeholder: "7.0" },
+      { name: "estimatedRent", type: "text", label: "Monthly rent ($)", placeholder: "2800" },
+      { name: "propertyTaxes", type: "text", label: "Annual property taxes ($)", placeholder: "6000" },
+      { name: "insurance", type: "text", label: "Annual insurance ($)", placeholder: "1800" },
+    ],
+  },
+  {
+    id: "rent_vs_buy",
+    name: "Rent vs. Buy Calculator",
+    description: "Show clients exactly when buying beats renting given their specific numbers",
+    category: "education",
+    categoryColor: "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
+    icon: Calculator,
+    directAction: true,
+    inputs: [
+      { name: "rentAmount", type: "text", label: "Monthly rent ($)", placeholder: "2500" },
+      { name: "homePrice", type: "text", label: "Home price ($)", placeholder: "500000" },
+      { name: "downPayment", type: "text", label: "Down payment ($)", placeholder: "100000" },
+      { name: "interestRate", type: "text", label: "Interest rate (%)", placeholder: "7.0" },
+      { name: "yearsToStay", type: "text", label: "Years planning to stay", placeholder: "5" },
+    ],
+  },
 ]
 
 interface AIToolsClientProps {
@@ -308,8 +363,8 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
   async function runTool(tool: (typeof TOOLS)[0]) {
     const inputs = toolInputs[tool.id] || {}
 
-    // Validate inputs
-    const missingInputs = tool.inputs.filter((input) => !inputs[input.name])
+    // Validate required inputs (skip inputs explicitly marked required: false)
+    const missingInputs = tool.inputs.filter((input) => input.required !== false && !inputs[input.name])
     if (missingInputs.length > 0) {
       return
     }
@@ -317,9 +372,45 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
     setLoadingTools((prev) => ({ ...prev, [tool.id]: true }))
 
     try {
+      // Direct calculator actions — call real functions, not the AI hub
+      if ((tool as any).directAction) {
+        let result: any = null
+        if (tool.id === "compare_neighborhoods") {
+          const neighborhoods = [inputs.neighborhood1, inputs.neighborhood2, inputs.neighborhood3].filter(Boolean) as string[]
+          result = await compareNeighborhoods(neighborhoods, inputs.city, inputs.state)
+        } else if (tool.id === "investment_analyzer") {
+          result = await analyzeInvestmentProperty({
+            purchasePrice: parseFloat(inputs.purchasePrice),
+            downPaymentPercent: parseFloat(inputs.downPaymentPercent),
+            interestRate: parseFloat(inputs.interestRate),
+            estimatedRent: parseFloat(inputs.estimatedRent),
+            propertyTaxes: parseFloat(inputs.propertyTaxes),
+            insurance: parseFloat(inputs.insurance),
+            hoaFees: 0,
+            maintenanceReserve: 5,
+            vacancyRate: 5,
+          })
+        } else if (tool.id === "rent_vs_buy") {
+          result = await calculateRentVsBuy({
+            rentAmount: parseFloat(inputs.rentAmount),
+            homePrice: parseFloat(inputs.homePrice),
+            downPayment: parseFloat(inputs.downPayment),
+            interestRate: parseFloat(inputs.interestRate),
+            yearsToStay: parseFloat(inputs.yearsToStay),
+            brokerageId: "",
+          })
+        }
+        if (result) {
+          const formatted = typeof result === "string" ? result : JSON.stringify(result, null, 2)
+          setToolResults((prev) => ({ ...prev, [tool.id]: formatted }))
+          setExpandedResults((prev) => ({ ...prev, [tool.id]: true }))
+        }
+        return
+      }
+
       // Add brand voice for content creation tools
       const params: Record<string, any> = { ...inputs }
-      if (tool.usesBrandVoice && brandVoice) {
+      if ((tool as any).usesBrandVoice && brandVoice) {
         params.brandVoice = brandVoice
       }
 

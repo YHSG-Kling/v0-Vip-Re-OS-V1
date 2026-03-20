@@ -62,6 +62,7 @@ import {
 } from "@/app/actions/lead-intelligence"
 import LeadIntelligencePanel from "@/app/components/intelligence/LeadIntelligencePanel"
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
+import { aiBatchReengagement } from "@/app/actions/ai-lead-nurturing"
 import { HotLeadCard } from "@/app/components/shared/HotLeadCard"
 import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/types/lead-management"
 import { cn } from "@/lib/utils"
@@ -111,6 +112,24 @@ export default function LeadsPage() {
   // Selected lead for inline LeadIntelligencePanel
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
   const [selectedLeadData, setSelectedLeadData] = useState<any>(null)
+
+  // Batch reengagement
+  const [batchReengagementLoading, setBatchReengagementLoading] = useState(false)
+  const [batchReengagementResult, setBatchReengagementResult] = useState<any>(null)
+
+  const handleBatchReengagement = async () => {
+    if (!agentId) return
+    setBatchReengagementLoading(true)
+    setBatchReengagementResult(null)
+    try {
+      const res = await aiBatchReengagement({ agentId, daysInactive: 30, maxLeads: 50 })
+      setBatchReengagementResult(res)
+    } catch (err) {
+      setBatchReengagementResult({ success: false, error: "Failed to run batch reengagement" })
+    } finally {
+      setBatchReengagementLoading(false)
+    }
+  }
 
   // Fetch leads
   const fetchLeads = async () => {
@@ -654,7 +673,54 @@ export default function LeadsPage() {
               </div>
             )}
 
-            {/* Part C — Top Profiles Ready for Outreach */}
+            {/* Batch Reengagement */}
+            <div className="flex items-center justify-between rounded-lg border bg-card p-4">
+              <div>
+                <p className="text-sm font-semibold">AI Batch Reengagement</p>
+                <p className="text-xs text-muted-foreground">
+                  Identify and plan outreach for leads inactive for 30+ days
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleBatchReengagement}
+                  disabled={batchReengagementLoading || !agentId}
+                  className="gap-1.5 shrink-0"
+                >
+                  {batchReengagementLoading
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Zap className="h-3.5 w-3.5 text-amber-500" />}
+                  Run Reengagement
+                </Button>
+                {batchReengagementResult?.success && batchReengagementResult.reengagementPlan && (
+                  <Badge variant="secondary" className="text-xs">
+                    {batchReengagementResult.reengagementPlan.totalLeads ?? "—"} leads queued
+                  </Badge>
+                )}
+              </div>
+            </div>
+            {batchReengagementResult?.success && batchReengagementResult.reengagementPlan?.leads?.length > 0 && (
+              <div className="rounded-lg border bg-muted/30 p-3 space-y-2 text-xs">
+                <p className="font-semibold text-sm">Reengagement Plan</p>
+                {batchReengagementResult.reengagementPlan.leads.slice(0, 5).map((lead: any, i: number) => (
+                  <div key={i} className="flex items-start justify-between gap-2 border-b pb-2 last:border-0 last:pb-0">
+                    <div>
+                      <p className="font-medium">{lead.name ?? lead.email ?? `Lead ${i + 1}`}</p>
+                      <p className="text-muted-foreground">{lead.recommendedAction ?? lead.action ?? "Follow up"}</p>
+                    </div>
+                    {lead.priority && (
+                      <Badge variant="outline" className="text-xs shrink-0">
+                        {lead.priority}
+                      </Badge>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+          {/* Part C — Top Profiles Ready for Outreach */}
             <div>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
