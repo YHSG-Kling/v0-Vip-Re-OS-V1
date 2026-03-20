@@ -101,6 +101,9 @@ export default function IntegrationsContent() {
         <MetaCard credential={getCredential("meta")} onSave={loadCredentials} />
         <LinkedInCard credential={getCredential("linkedin")} onSave={loadCredentials} />
         <TwitterCard credential={getCredential("twitter")} onSave={loadCredentials} />
+        <TikTokCard credential={getCredential("tiktok")} onSave={loadCredentials} />
+        <YouTubeCard credential={getCredential("youtube")} onSave={loadCredentials} />
+        <PinterestCard credential={getCredential("pinterest")} onSave={loadCredentials} />
       </TabsContent>
     </Tabs>
   )
@@ -309,18 +312,21 @@ function MetaCard({ credential, onSave }: any) {
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between">
-          <div>
+          <div className="space-y-0.5">
             <CardTitle>Meta Business Suite</CardTitle>
             <CardDescription>Facebook & Instagram publishing</CardDescription>
           </div>
-          {credential?.is_active ? (
-            <Badge variant="default" className="bg-green-500">
-              <Check className="h-3 w-3 mr-1" />
-              Connected
-            </Badge>
-          ) : (
-            <Badge variant="outline">Not Connected</Badge>
-          )}
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-xs font-normal">Agent scope</Badge>
+            {credential?.is_active ? (
+              <Badge variant="default" className="bg-green-500">
+                <Check className="h-3 w-3 mr-1" />
+                Connected
+              </Badge>
+            ) : (
+              <Badge variant="outline">Not Connected</Badge>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -347,18 +353,21 @@ function LinkedInCard({ credential, onSave }: any) {
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between">
-          <div>
+          <div className="space-y-0.5">
             <CardTitle>LinkedIn</CardTitle>
             <CardDescription>Professional network publishing</CardDescription>
           </div>
-          {credential?.is_active ? (
-            <Badge variant="default" className="bg-green-500">
-              <Check className="h-3 w-3 mr-1" />
-              Connected
-            </Badge>
-          ) : (
-            <Badge variant="outline">Not Connected</Badge>
-          )}
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-xs font-normal">Agent scope</Badge>
+            {credential?.is_active ? (
+              <Badge variant="default" className="bg-green-500">
+                <Check className="h-3 w-3 mr-1" />
+                Connected
+              </Badge>
+            ) : (
+              <Badge variant="outline">Not Connected</Badge>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
@@ -385,24 +394,150 @@ function TwitterCard({ credential, onSave }: any) {
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between">
-          <div>
+          <div className="space-y-0.5">
             <CardTitle>Twitter / X</CardTitle>
             <CardDescription>Tweet scheduling and publishing</CardDescription>
           </div>
-          {credential?.is_active ? (
-            <Badge variant="default" className="bg-green-500">
-              <Check className="h-3 w-3 mr-1" />
-              Connected
-            </Badge>
-          ) : (
-            <Badge variant="outline">Not Connected</Badge>
-          )}
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-xs font-normal">Agent scope</Badge>
+            {credential?.is_active ? (
+              <Badge variant="default" className="bg-green-500">
+                <Check className="h-3 w-3 mr-1" />
+                Connected
+              </Badge>
+            ) : (
+              <Badge variant="outline">Not Connected</Badge>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
         <Button onClick={handleConnect}>
           <ExternalLink className="h-4 w-4 mr-2" />
           Connect Twitter
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function TikTokCard({ credential, onSave }: any) {
+  const { toast } = useToast()
+
+  const handleConnect = () => {
+    toast({
+      title: "OAuth Coming Soon",
+      description: "TikTok OAuth will be available during onboarding.",
+    })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <CardTitle>TikTok</CardTitle>
+            <CardDescription>Short-form video publishing and scheduling</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-xs font-normal">Agent scope</Badge>
+            {credential?.is_active ? (
+              <Badge variant="default" className="bg-green-500">
+                <Check className="h-3 w-3 mr-1" />
+                Connected
+              </Badge>
+            ) : (
+              <Badge variant="outline">Not Connected</Badge>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <Button onClick={handleConnect}>
+          <ExternalLink className="h-4 w-4 mr-2" />
+          Connect TikTok
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function YouTubeCard({ credential, onSave }: any) {
+  const { toast } = useToast()
+
+  const handleConnect = () => {
+    toast({
+      title: "OAuth Coming Soon",
+      description: "YouTube OAuth will be available during onboarding.",
+    })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <CardTitle>YouTube</CardTitle>
+            <CardDescription>Long-form video publishing and channel management</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-xs font-normal">Agent scope</Badge>
+            {credential?.is_active ? (
+              <Badge variant="default" className="bg-green-500">
+                <Check className="h-3 w-3 mr-1" />
+                Connected
+              </Badge>
+            ) : (
+              <Badge variant="outline">Not Connected</Badge>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <Button onClick={handleConnect}>
+          <ExternalLink className="h-4 w-4 mr-2" />
+          Connect YouTube
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function PinterestCard({ credential, onSave }: any) {
+  const { toast } = useToast()
+
+  const handleConnect = () => {
+    toast({
+      title: "OAuth Coming Soon",
+      description: "Pinterest OAuth will be available during onboarding.",
+    })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <CardTitle>Pinterest</CardTitle>
+            <CardDescription>Pin boards, listing visuals, and idea publishing</CardDescription>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="text-xs font-normal">Agent scope</Badge>
+            {credential?.is_active ? (
+              <Badge variant="default" className="bg-green-500">
+                <Check className="h-3 w-3 mr-1" />
+                Connected
+              </Badge>
+            ) : (
+              <Badge variant="outline">Not Connected</Badge>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <Button onClick={handleConnect}>
+          <ExternalLink className="h-4 w-4 mr-2" />
+          Connect Pinterest
         </Button>
       </CardContent>
     </Card>

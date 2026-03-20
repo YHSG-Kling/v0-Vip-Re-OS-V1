@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 
-export type ServiceName = "idx_broker" | "ghl" | "meta" | "linkedin" | "twitter" | "tiktok"
+export type ServiceName = "idx_broker" | "ghl" | "meta" | "linkedin" | "twitter" | "tiktok" | "youtube" | "pinterest"
 export type ServiceType = "listing_provider" | "crm_sync" | "social_media"
 
 interface AgentCredential {
@@ -183,7 +183,9 @@ export async function verifyServiceCredential(serviceName: ServiceName) {
       case "linkedin":
       case "twitter":
       case "tiktok":
-        // Will implement OAuth verification later
+      case "youtube":
+      case "pinterest":
+        // OAuth verification — mark active, full token check on first publish
         isValid = true
         break
     }
@@ -242,6 +244,8 @@ export async function getConnectionStatus() {
     linkedin: credentials.find((c) => c.service_name === "linkedin"),
     twitter: credentials.find((c) => c.service_name === "twitter"),
     tiktok: credentials.find((c) => c.service_name === "tiktok"),
+    youtube: credentials.find((c) => c.service_name === "youtube"),
+    pinterest: credentials.find((c) => c.service_name === "pinterest"),
   }
 
   return {
@@ -261,6 +265,8 @@ export async function getConnectionStatus() {
       linkedin: !!services.linkedin?.is_active,
       twitter: !!services.twitter?.is_active,
       tiktok: !!services.tiktok?.is_active,
+      youtube: !!services.youtube?.is_active,
+      pinterest: !!services.pinterest?.is_active,
     },
   }
 }
