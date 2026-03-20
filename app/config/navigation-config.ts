@@ -97,6 +97,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         ],
       },
       { id: 'coaching', label: 'Training & Coaching', href: '/dashboard/coaching', icon: 'Award' },
+      { id: 'motivation', label: 'Motivation', href: '/dashboard/motivation', icon: 'Trophy' },
       {
         id: 'agent-tools',
         label: 'Agent Tools',
