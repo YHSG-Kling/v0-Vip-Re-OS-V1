@@ -54,7 +54,7 @@ import {
   rejectLead,
 } from "@/app/actions/lead-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
-import { getTopConversionCandidates } from "@/app/actions/ai-predictions"
+import { getTopConversionCandidates, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
 import {
   getIntelligenceDashboardStats,
   getMotivatedSellers,
@@ -116,6 +116,24 @@ export default function LeadsPage() {
   // Batch reengagement
   const [batchReengagementLoading, setBatchReengagementLoading] = useState(false)
   const [batchReengagementResult, setBatchReengagementResult] = useState<any>(null)
+
+  // AI Property Match Genius per lead
+  const [matchGeniusLoading, setMatchGeniusLoading] = useState<string | null>(null)
+  const [matchGeniusResults, setMatchGeniusResults] = useState<Record<string, any>>({})
+
+  const handleMatchGenius = async (leadId: string) => {
+    setMatchGeniusLoading(leadId)
+    try {
+      const result = await aiPropertyMatchGenius(leadId)
+      if (result && !result.error) {
+        setMatchGeniusResults((prev) => ({ ...prev, [leadId]: result }))
+      }
+    } catch (err) {
+      console.error("[v0] aiPropertyMatchGenius failed:", err)
+    } finally {
+      setMatchGeniusLoading(null)
+    }
+  }
 
   const handleBatchReengagement = async () => {
     if (!agentId) return
@@ -992,8 +1010,20 @@ export default function LeadsPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
-                            <Button variant="ghost" size="sm" disabled={actionLoading === lead.id}>
-                              <Eye className="h-4 w-4" />
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="AI Property Match Genius"
+                              onClick={() => handleMatchGenius(lead.id)}
+                              disabled={matchGeniusLoading === lead.id}
+                            >
+                              {matchGeniusLoading === lead.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : matchGeniusResults[lead.id] ? (
+                                <Brain className="h-4 w-4 text-indigo-500" />
+                              ) : (
+                                <Eye className="h-4 w-4" />
+                              )}
                             </Button>
                             <Button
                               variant="ghost"
@@ -1026,6 +1056,47 @@ export default function LeadsPage() {
                           </div>
                         </TableCell>
                       </TableRow>
+                      {/* AI Property Match Genius inline result */}
+                      {matchGeniusResults[lead.id] && (
+                        <TableRow key={`${lead.id}-genius`} className="bg-indigo-50/60">
+                          <TableCell colSpan={7} className="py-3 px-4">
+                            <div className="flex items-start gap-3">
+                              <Brain className="h-4 w-4 text-indigo-500 mt-0.5 shrink-0" />
+                              <div className="space-y-1.5 flex-1 min-w-0">
+                                <p className="text-xs font-semibold text-indigo-900">
+                                  Property Match Genius
+                                </p>
+                                {matchGeniusResults[lead.id].matchSummary && (
+                                  <p className="text-xs text-indigo-800 leading-relaxed">
+                                    {matchGeniusResults[lead.id].matchSummary}
+                                  </p>
+                                )}
+                                {matchGeniusResults[lead.id].topMatches?.length > 0 && (
+                                  <div className="flex flex-wrap gap-2 mt-1">
+                                    {matchGeniusResults[lead.id].topMatches.slice(0, 4).map((m: any, i: number) => (
+                                      <span
+                                        key={i}
+                                        className="inline-flex items-center gap-1 text-xs bg-white border border-indigo-200 text-indigo-700 rounded-full px-2.5 py-0.5"
+                                      >
+                                        <Home className="h-3 w-3" />
+                                        {m.address ?? m.listing_id ?? `Match ${i + 1}`}
+                                        {m.matchScore != null && (
+                                          <span className="font-semibold ml-1">{m.matchScore}%</span>
+                                        )}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                                {matchGeniusResults[lead.id].recommendedAction && (
+                                  <p className="text-xs text-indigo-700 font-medium">
+                                    Next: {matchGeniusResults[lead.id].recommendedAction}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      )}
                     ))
                   )}
                 </TableBody>
