@@ -1,156 +1,188 @@
 "use client"
 
+// ============================================================
+// PANEL A – Pre-Launch Intelligence
+// Predicts performance + evaluates readiness before publishing.
+// ============================================================
+
 import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Progress } from "@/components/ui/progress"
+import { Textarea } from "@/components/ui/textarea"
 import {
-  Zap,
-  TrendingUp,
-  TrendingDown,
-  AlertCircle,
-  CheckCircle,
-  Lightbulb,
-  Loader2,
-  BarChart3,
-} from "lucide-react"
-import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
-import type { PredictionData } from "@/components/prediction-widget"
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Loader2, Zap, TrendingUp, AlertTriangle, CheckCircle, XCircle, Clock } from "lucide-react"
+import { runPrelaunchCheck } from "./ad-os-actions"
+import type { ContentType } from "@/lib/content/performance-predictor"
 
-type ContentType = "social_post" | "newsletter" | "blog_post" | "ad_creative" | "video_script"
-type Platform = "facebook" | "instagram" | "linkedin" | "email" | "web"
-
-interface PrelaunchPredictionPanelProps {
+interface Props {
   agentId: string
-  listingId?: string
 }
 
-const CONTENT_TYPES: Array<{ id: ContentType; label: string }> = [
-  { id: "social_post", label: "Social Post" },
-  { id: "ad_creative", label: "Ad Creative" },
-  { id: "video_script", label: "Video Script" },
-  { id: "newsletter", label: "Email/Newsletter" },
-  { id: "blog_post", label: "Blog Post" },
+const CONTENT_TYPES: { value: ContentType; label: string }[] = [
+  { value: "social_post", label: "Social Post" },
+  { value: "newsletter", label: "Email / Newsletter" },
+  { value: "ad_creative", label: "Ad Creative" },
+  { value: "blog_post", label: "Blog Post" },
+  { value: "listing_description", label: "Listing Description" },
+  { value: "video_script", label: "Video Script" },
 ]
 
-const PLATFORMS: Array<{ id: Platform; label: string }> = [
-  { id: "facebook", label: "Facebook" },
-  { id: "instagram", label: "Instagram" },
-  { id: "linkedin", label: "LinkedIn" },
-  { id: "email", label: "Email" },
-  { id: "web", label: "Website" },
+const PLATFORMS = [
+  { value: "facebook", label: "Facebook" },
+  { value: "instagram", label: "Instagram" },
+  { value: "linkedin", label: "LinkedIn" },
+  { value: "google_ads", label: "Google Ads" },
+  { value: "email", label: "Email" },
+  { value: "sms", label: "SMS" },
 ]
 
-export function PrelaunchPredictionPanel({ agentId, listingId }: PrelaunchPredictionPanelProps) {
+type ReadinessStatus = "ready" | "blocked" | "needs_review"
+
+function ReadinessBadge({ status }: { status: ReadinessStatus }) {
+  if (status === "ready") {
+    return (
+      <Badge className="bg-green-100 text-green-800 border-green-200 flex items-center gap-1">
+        <CheckCircle className="h-3 w-3" />
+        Ready to Launch
+      </Badge>
+    )
+  }
+  if (status === "blocked") {
+    return (
+      <Badge className="bg-red-100 text-red-800 border-red-200 flex items-center gap-1">
+        <XCircle className="h-3 w-3" />
+        Blocked
+      </Badge>
+    )
+  }
+  return (
+    <Badge className="bg-yellow-100 text-yellow-800 border-yellow-200 flex items-center gap-1">
+      <AlertTriangle className="h-3 w-3" />
+      Needs Review
+    </Badge>
+  )
+}
+
+function ScoreRing({ score }: { score: number }) {
+  const color =
+    score >= 70 ? "text-green-600" : score >= 45 ? "text-yellow-600" : "text-red-600"
+  const bg =
+    score >= 70 ? "bg-green-50" : score >= 45 ? "bg-yellow-50" : "bg-red-50"
+  return (
+    <div className={`flex flex-col items-center justify-center rounded-full w-24 h-24 ${bg} border-2 ${score >= 70 ? "border-green-200" : score >= 45 ? "border-yellow-200" : "border-red-200"}`}>
+      <span className={`text-3xl font-bold ${color}`}>{score}</span>
+      <span className="text-xs text-muted-foreground">/100</span>
+    </div>
+  )
+}
+
+export function PrelaunchPredictionPanel({ agentId }: Props) {
   const [contentText, setContentText] = useState("")
   const [contentType, setContentType] = useState<ContentType>("social_post")
-  const [platform, setPlatform] = useState<Platform>("facebook")
-  const [isPredicting, setIsPredicting] = useState(false)
-  const [prediction, setPrediction] = useState<PredictionData | null>(null)
+  const [platform, setPlatform] = useState("facebook")
+  const [isRunning, setIsRunning] = useState(false)
+  const [result, setResult] = useState<{
+    prediction: {
+      predicted_score: number
+      predicted_ctr: number
+      predicted_engagement_rate: number
+      recommended_publish_window: { day: string; hour: number; timezone: string }
+      rationale: string
+      confidence: "low" | "medium" | "high"
+    } | null
+    readiness: {
+      readiness_status: "ready" | "blocked"
+      blocking_reasons?: string[]
+      ready_for_channels?: string[]
+    } | null
+    predictionError: string | null
+    readinessError: string | null
+  } | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  async function handlePredict() {
+  async function handleRun() {
     if (!contentText.trim()) return
-
-    setIsPredicting(true)
+    setIsRunning(true)
+    setResult(null)
     setError(null)
-    setPrediction(null)
 
     try {
-      const userContext = await getUserContextForPrediction()
-      if (!userContext.success || !userContext.userId || !userContext.brokerageId) {
-        setError("Unable to get user context for prediction")
-        return
-      }
-
-      const result = await predictPerformanceAction({
-        brokerageId: userContext.brokerageId,
-        userId: userContext.userId,
+      const res = await runPrelaunchCheck({
+        contentText: contentText.trim(),
         contentType,
-        sourceTable: "marketing_assets",
-        sourceId: `preview-${Date.now()}`,
-        contentText,
         platform,
       })
-
-      if (result.success && result.prediction) {
-        setPrediction(result.prediction)
+      if (!res.success) {
+        setError(res.error ?? "Check failed")
       } else {
-        setError(result.error || "Prediction failed")
+        setResult(res as any)
       }
     } catch (err) {
-      console.error("Prediction error:", err)
-      setError("Failed to generate prediction")
+      setError("Unexpected error — please try again")
     } finally {
-      setIsPredicting(false)
+      setIsRunning(false)
     }
   }
 
-  function getScoreColor(score: number): string {
-    if (score >= 80) return "text-green-600"
-    if (score >= 60) return "text-amber-600"
-    return "text-red-600"
-  }
-
-  function getScoreBg(score: number): string {
-    if (score >= 80) return "bg-green-100 dark:bg-green-950/30"
-    if (score >= 60) return "bg-amber-100 dark:bg-amber-950/30"
-    return "bg-red-100 dark:bg-red-950/30"
-  }
+  const readinessStatus: ReadinessStatus =
+    result?.readiness?.readiness_status === "ready"
+      ? "ready"
+      : result?.readiness?.blocking_reasons?.length
+      ? "blocked"
+      : "needs_review"
 
   return (
-    <Card>
+    <Card className="border-2">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Zap className="h-5 w-5 text-violet-600" />
-          Prelaunch Prediction
+          Pre-Launch Intelligence
         </CardTitle>
         <CardDescription>
-          Predict content performance before publishing
+          Predict performance and check readiness before publishing any campaign content.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Content Input */}
-        <div className="space-y-2">
-          <Label>Content to Analyze</Label>
-          <Textarea
-            value={contentText}
-            onChange={(e) => setContentText(e.target.value)}
-            placeholder="Paste your ad copy, social post, or content to predict performance..."
-            className="min-h-[100px]"
-          />
-        </div>
-
-        {/* Content Type & Platform */}
+        {/* Inputs */}
         <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-2">
-            <Label>Content Type</Label>
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium">Content Type</Label>
             <Select value={contentType} onValueChange={(v) => setContentType(v as ContentType)}>
-              <SelectTrigger>
+              <SelectTrigger className="h-8 text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {CONTENT_TYPES.map((type) => (
-                  <SelectItem key={type.id} value={type.id}>
-                    {type.label}
+                {CONTENT_TYPES.map((t) => (
+                  <SelectItem key={t.value} value={t.value}>
+                    {t.label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-2">
-            <Label>Platform</Label>
-            <Select value={platform} onValueChange={(v) => setPlatform(v as Platform)}>
-              <SelectTrigger>
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium">Platform</Label>
+            <Select value={platform} onValueChange={setPlatform}>
+              <SelectTrigger className="h-8 text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 {PLATFORMS.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
+                  <SelectItem key={p.value} value={p.value}>
                     {p.label}
                   </SelectItem>
                 ))}
@@ -159,129 +191,100 @@ export function PrelaunchPredictionPanel({ agentId, listingId }: PrelaunchPredic
           </div>
         </div>
 
-        {/* Predict Button */}
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Content to Analyze</Label>
+          <Textarea
+            placeholder="Paste your campaign content here..."
+            value={contentText}
+            onChange={(e) => setContentText(e.target.value)}
+            className="min-h-[90px] text-sm resize-none"
+          />
+        </div>
+
         <Button
-          onClick={handlePredict}
-          disabled={isPredicting || !contentText.trim()}
+          onClick={handleRun}
+          disabled={isRunning || !contentText.trim()}
           className="w-full bg-violet-600 hover:bg-violet-700"
         >
-          {isPredicting ? (
+          {isRunning ? (
             <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Analyzing Content...
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Analyzing...
             </>
           ) : (
             <>
-              <Zap className="h-4 w-4 mr-2" />
-              Predict Performance
+              <TrendingUp className="mr-2 h-4 w-4" />
+              Predict Performance Before Launch
             </>
           )}
         </Button>
 
-        {/* Error */}
         {error && (
-          <div className="p-3 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800">
-            <div className="flex items-center gap-2 text-red-700 dark:text-red-300">
-              <AlertCircle className="h-4 w-4" />
-              <p className="text-sm">{error}</p>
-            </div>
-          </div>
+          <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{error}</p>
         )}
 
-        {/* Prediction Results */}
-        {prediction && (
-          <div className="space-y-4 pt-4 border-t">
-            {/* Overall Score */}
-            <div className={`p-4 rounded-lg ${getScoreBg(prediction.predicted_score)}`}>
-              <div className="flex items-center justify-between mb-2">
-                <p className="font-medium">Predicted Engagement Score</p>
-                <span className={`text-2xl font-bold ${getScoreColor(prediction.predicted_score)}`}>
-                  {prediction.predicted_score}/100
-                </span>
-              </div>
-              <Progress value={prediction.predicted_score} className="h-2" />
+        {/* Results */}
+        {result && (
+          <div className="space-y-4 border-t pt-4">
+            {/* Readiness badge */}
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Content Readiness</span>
+              <ReadinessBadge status={readinessStatus} />
             </div>
 
-            {/* Channel Prediction */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="p-3 rounded-lg bg-muted/50">
-                <p className="text-xs text-muted-foreground">Strongest Channel</p>
-                <div className="flex items-center gap-1 mt-1">
-                  <TrendingUp className="h-4 w-4 text-green-600" />
-                  <p className="font-medium capitalize">
-                    {prediction.channel_prediction?.best_channel || platform}
+            {result.readiness?.blocking_reasons && result.readiness.blocking_reasons.length > 0 && (
+              <div className="rounded-md bg-red-50 p-2 space-y-1">
+                {result.readiness.blocking_reasons.map((r, i) => (
+                  <p key={i} className="text-xs text-red-700">
+                    {r}
                   </p>
-                </div>
-              </div>
-              <div className="p-3 rounded-lg bg-muted/50">
-                <p className="text-xs text-muted-foreground">Confidence Level</p>
-                <p className="font-medium capitalize mt-1">{prediction.confidence_level}</p>
-              </div>
-            </div>
-
-            {/* Weak Spots */}
-            {prediction.suggested_improvements && prediction.suggested_improvements.length > 0 && (
-              <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
-                <div className="flex items-center gap-2 mb-2">
-                  <AlertCircle className="h-4 w-4 text-amber-600" />
-                  <p className="font-medium text-sm text-amber-700 dark:text-amber-300">Areas to Improve</p>
-                </div>
-                <ul className="space-y-1">
-                  {prediction.suggested_improvements.slice(0, 3).map((improvement, i) => (
-                    <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
-                      <span className="text-amber-600">•</span>
-                      {improvement}
-                    </li>
-                  ))}
-                </ul>
+                ))}
               </div>
             )}
 
-            {/* Recommendations */}
-            {prediction.recommended_timing && (
-              <div className="p-3 rounded-lg bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800">
-                <div className="flex items-center gap-2 mb-2">
-                  <Lightbulb className="h-4 w-4 text-violet-600" />
-                  <p className="font-medium text-sm text-violet-700 dark:text-violet-300">
-                    Recommendation
-                  </p>
+            {/* Performance score */}
+            {result.prediction && (
+              <div className="flex items-start gap-4">
+                <ScoreRing score={result.prediction.predicted_score} />
+                <div className="flex-1 space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline" className="text-xs">
+                      Confidence: {result.prediction.confidence}
+                    </Badge>
+                    <Badge variant="outline" className="flex items-center gap-1 text-xs">
+                      <Clock className="h-3 w-3" />
+                      Best: {result.prediction.recommended_publish_window.day}{" "}
+                      {result.prediction.recommended_publish_window.hour}:00
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded bg-muted/50 p-1.5">
+                      <p className="text-muted-foreground">Est. CTR</p>
+                      <p className="font-semibold">
+                        {(result.prediction.predicted_ctr * 100).toFixed(2)}%
+                      </p>
+                    </div>
+                    <div className="rounded bg-muted/50 p-1.5">
+                      <p className="text-muted-foreground">Engagement</p>
+                      <p className="font-semibold">
+                        {(result.prediction.predicted_engagement_rate * 100).toFixed(3)}%
+                      </p>
+                    </div>
+                  </div>
+                  {result.prediction.rationale && (
+                    <p className="text-xs text-muted-foreground italic leading-relaxed">
+                      AI says: {result.prediction.rationale}
+                    </p>
+                  )}
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  Best time to post: <span className="font-medium">{prediction.recommended_timing}</span>
-                </p>
               </div>
             )}
 
-            {/* Verdict Badge */}
-            <div className="flex justify-center">
-              <Badge
-                variant={prediction.predicted_score >= 70 ? "default" : "secondary"}
-                className={`px-4 py-1 ${
-                  prediction.predicted_score >= 70
-                    ? "bg-green-600"
-                    : prediction.predicted_score >= 50
-                      ? "bg-amber-600"
-                      : "bg-red-600"
-                }`}
-              >
-                {prediction.predicted_score >= 70 ? (
-                  <>
-                    <CheckCircle className="h-4 w-4 mr-1" />
-                    Ready to Launch
-                  </>
-                ) : prediction.predicted_score >= 50 ? (
-                  <>
-                    <AlertCircle className="h-4 w-4 mr-1" />
-                    Consider Improvements
-                  </>
-                ) : (
-                  <>
-                    <TrendingDown className="h-4 w-4 mr-1" />
-                    Needs Work
-                  </>
-                )}
-              </Badge>
-            </div>
+            {result.predictionError && (
+              <p className="text-xs text-yellow-700 bg-yellow-50 rounded p-2">
+                Prediction unavailable: {result.predictionError}
+              </p>
+            )}
           </div>
         )}
       </CardContent>

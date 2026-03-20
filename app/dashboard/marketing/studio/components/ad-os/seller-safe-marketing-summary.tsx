@@ -1,287 +1,225 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import Link from "next/link"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { ScrollArea } from "@/components/ui/scroll-area"
+// ============================================================
+// SELLER-SAFE MARKETING SUMMARY
+// Produces a plain-language summary of campaign performance
+// that can be copied into a seller update message.
+// Data source: campaigns table (live query via server action).
+// AI generation via generateMarketingInsight in ad-os-actions.
+// ============================================================
+
+import { useState, useTransition } from "react"
 import {
-  Shield,
-  ExternalLink,
-  Check,
-  Clock,
-  Globe,
-  Mail,
-  Video,
-  FileText,
-  Home,
-  Loader2,
-  ChevronRight,
-} from "lucide-react"
-import { getCampaigns, getAssets } from "@/app/actions/marketing-studio"
-import { createClient } from "@/lib/supabase/client"
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { Badge } from "@/components/ui/badge"
+import { Loader2, FileText, Copy, CheckCheck, Users, Send } from "lucide-react"
+import { generateMarketingInsight } from "./ad-os-actions"
+import { useToast } from "@/hooks/use-toast"
+import Link from "next/link"
 
-interface MarketingItem {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Campaign {
   id: string
-  type: "campaign" | "asset" | "video" | "email"
-  name: string
+  campaign_name: string
+  campaign_type: string
   status: string
-  channel: string
-  launchedAt?: string
-  description: string
+  budget_total: number
+  budget_spent: number
+  listing?: { address?: string; city?: string }
 }
 
-interface SellerSafeMarketingSummaryProps {
-  listings: Array<{ id: string; address: string; city: string; list_price?: number }>
+interface Props {
+  campaigns: Campaign[]
+  agentName?: string
 }
 
-const CHANNEL_ICONS: Record<string, React.ElementType> = {
-  social: Globe,
-  email: Mail,
-  video: Video,
-  direct_mail: FileText,
-  web: Globe,
-}
+// ─── Component ───────────────────────────────────────────────────────────────
 
-export function SellerSafeMarketingSummary({ listings }: SellerSafeMarketingSummaryProps) {
-  const [selectedListingId, setSelectedListingId] = useState<string>("")
-  const [marketingItems, setMarketingItems] = useState<MarketingItem[]>([])
-  const [isLoading, setIsLoading] = useState(false)
+export function SellerSafeMarketingSummary({ campaigns, agentName = "Your Agent" }: Props) {
+  const [selectedId, setSelectedId] = useState<string>("")
+  const [summary, setSummary] = useState<string>("")
+  const [copied, setCopied] = useState(false)
+  const [isPending, startTransition] = useTransition()
+  const { toast } = useToast()
 
-  const selectedListing = listings.find((l) => l.id === selectedListingId)
+  const activeCampaigns = campaigns.filter((c) => ["active", "launched"].includes(c.status))
+  const selectedCampaign = activeCampaigns.find((c) => c.id === selectedId)
 
-  useEffect(() => {
-    if (selectedListingId) {
-      loadMarketingData()
-    }
-  }, [selectedListingId])
+  function handleGenerate() {
+    if (!selectedCampaign) return
+    startTransition(async () => {
+      const spent = selectedCampaign.budget_spent ?? 0
+      const total = selectedCampaign.budget_total ?? 0
+      const pctUsed = total > 0 ? Math.round((spent / total) * 100) : 0
+      const address = selectedCampaign.listing?.address ?? "the property"
+      const city = selectedCampaign.listing?.city ?? ""
 
-  async function loadMarketingData() {
-    setIsLoading(true)
-    try {
-      const items: MarketingItem[] = []
+      const prompt = `Write a seller-friendly marketing update for a home seller. Keep it professional but warm. No jargon.
 
-      // Get campaigns for this listing
-      const campaignsResult = await getCampaigns({ listingId: selectedListingId })
-      if (campaignsResult.success && campaignsResult.campaigns) {
-        for (const campaign of campaignsResult.campaigns) {
-          items.push({
-            id: campaign.id,
-            type: "campaign",
-            name: campaign.campaign_name,
-            status: campaign.status,
-            channel: campaign.campaign_type,
-            launchedAt: campaign.launched_at,
-            description: getPlainLanguageDescription("campaign", campaign.status, campaign.campaign_type),
-          })
-        }
+CAMPAIGN DETAILS:
+- Property: ${address}${city ? `, ${city}` : ""}
+- Campaign type: ${selectedCampaign.campaign_type}
+- Campaign name: "${selectedCampaign.campaign_name}"
+- Budget used: $${spent.toLocaleString()} of $${total.toLocaleString()} (${pctUsed}% utilized)
+- Agent: ${agentName}
+
+Write 3-4 sentences that:
+1. Confirm the marketing is actively running
+2. Mention the ${selectedCampaign.campaign_type} campaign without using the word "budget" negatively
+3. Tell the seller what to expect next (showings, inquiries)
+4. End with a reassuring, action-oriented close
+
+Tone: confident, client-facing, no technical marketing terms.`
+
+      const res = await generateMarketingInsight(prompt)
+      if (res.success && res.text) {
+        setSummary(res.text.trim())
+      } else {
+        toast({
+          title: "Could not generate summary",
+          description: res.error,
+          variant: "destructive",
+        })
       }
-
-      // Get assets for campaigns
-      const assetsResult = await getAssets({ listingId: selectedListingId })
-      if (assetsResult.success && assetsResult.assets) {
-        for (const asset of assetsResult.assets) {
-          items.push({
-            id: asset.id,
-            type: "asset",
-            name: asset.asset_name,
-            status: asset.approval_status,
-            channel: asset.asset_type,
-            description: getPlainLanguageDescription("asset", asset.approval_status, asset.asset_type),
-          })
-        }
-      }
-
-      // Check for videos linked to this listing
-      const supabase = createClient()
-      const { data: videos } = await supabase
-        .from("generated_videos")
-        .select("id, title, status, created_at")
-        .eq("listing_id", selectedListingId)
-        .limit(5)
-
-      if (videos) {
-        for (const video of videos) {
-          items.push({
-            id: video.id,
-            type: "video",
-            name: video.title,
-            status: video.status,
-            channel: "video",
-            launchedAt: video.created_at,
-            description: getPlainLanguageDescription("video", video.status, "video"),
-          })
-        }
-      }
-
-      setMarketingItems(items)
-    } catch (error) {
-      console.error("Failed to load marketing data:", error)
-    } finally {
-      setIsLoading(false)
-    }
+    })
   }
 
-  function getPlainLanguageDescription(type: string, status: string, channel: string): string {
-    const statusDescriptions: Record<string, string> = {
-      live: "Currently running and reaching potential buyers",
-      active: "Currently running and reaching potential buyers",
-      approved: "Ready to go live when you give the green light",
-      pending: "Waiting for final review before publishing",
-      pending_approval: "Under review to ensure it meets quality standards",
-      draft: "Being prepared - not visible to the public yet",
-      completed: "Campaign has finished running",
-      ended: "Campaign has finished running",
-    }
-
-    const channelDescriptions: Record<string, string> = {
-      social: "on social media platforms",
-      email: "via email marketing",
-      video: "as a property video",
-      direct_mail: "as printed materials",
-      web: "on websites and landing pages",
-      listing: "as part of listing marketing",
-      brand: "as brand awareness content",
-    }
-
-    const statusText = statusDescriptions[status] || "Status being updated"
-    const channelText = channelDescriptions[channel] || ""
-
-    return `${statusText}${channelText ? ` ${channelText}` : ""}.`
+  async function handleCopy() {
+    if (!summary) return
+    await navigator.clipboard.writeText(summary)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+    toast({ title: "Copied to clipboard" })
   }
 
-  function getStatusBadge(status: string) {
-    const variants: Record<string, { variant: "default" | "secondary" | "outline"; className: string }> = {
-      live: { variant: "default", className: "bg-green-600" },
-      active: { variant: "default", className: "bg-green-600" },
-      approved: { variant: "secondary", className: "bg-blue-100 text-blue-700" },
-      pending: { variant: "outline", className: "border-yellow-500 text-yellow-700" },
-      pending_approval: { variant: "outline", className: "border-yellow-500 text-yellow-700" },
-      draft: { variant: "secondary", className: "" },
-      completed: { variant: "secondary", className: "bg-gray-100 text-gray-600" },
-      ended: { variant: "secondary", className: "bg-gray-100 text-gray-600" },
-    }
-
-    const config = variants[status] || { variant: "secondary" as const, className: "" }
-
-    return (
-      <Badge variant={config.variant} className={config.className}>
-        {status === "live" || status === "active" ? (
-          <Check className="h-3 w-3 mr-1" />
-        ) : status.includes("pending") ? (
-          <Clock className="h-3 w-3 mr-1" />
-        ) : null}
-        {status.replace("_", " ")}
-      </Badge>
-    )
-  }
-
-  const liveItems = marketingItems.filter((item) => item.status === "live" || item.status === "active")
+  const sellerContactId = selectedCampaign
+    ? (selectedCampaign as any).contact_id ?? null
+    : null
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Shield className="h-5 w-5 text-violet-600" />
+        <CardTitle className="text-base flex items-center gap-2">
+          <FileText className="h-4 w-4 text-violet-600" />
           Seller-Safe Marketing Summary
         </CardTitle>
         <CardDescription>
-          Plain-language overview of what is live for your listing
+          Generate a plain-language campaign update to send directly to your seller.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Listing Selector */}
-        <Select value={selectedListingId} onValueChange={setSelectedListingId}>
-          <SelectTrigger>
-            <SelectValue placeholder="Select a listing to view marketing" />
-          </SelectTrigger>
-          <SelectContent>
-            {listings.map((listing) => (
-              <SelectItem key={listing.id} value={listing.id}>
-                <div className="flex items-center gap-2">
-                  <Home className="h-4 w-4" />
-                  {listing.address}, {listing.city}
-                </div>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
 
-        {isLoading && (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="h-6 w-6 animate-spin text-violet-600" />
-          </div>
-        )}
+      <CardContent className="space-y-5">
+        {/* Campaign selector */}
+        <div className="space-y-1.5">
+          <Label htmlFor="campaign-select">Active Campaign</Label>
+          {activeCampaigns.length === 0 ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground border border-dashed border-border rounded-md p-3">
+              <Users className="h-4 w-4 shrink-0" />
+              No active campaigns found. Launch a campaign first.
+            </div>
+          ) : (
+            <Select value={selectedId} onValueChange={setSelectedId}>
+              <SelectTrigger id="campaign-select">
+                <SelectValue placeholder="Choose a campaign..." />
+              </SelectTrigger>
+              <SelectContent>
+                {activeCampaigns.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    <div className="flex items-center gap-2">
+                      <span>{c.campaign_name}</span>
+                      <Badge variant="outline" className="text-xs capitalize">
+                        {c.campaign_type}
+                      </Badge>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
 
-        {!isLoading && selectedListingId && (
-          <>
-            {/* Summary Stats */}
-            <div className="p-4 rounded-lg bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800">
-              <p className="font-medium text-green-700 dark:text-green-300">
-                {liveItems.length > 0
-                  ? `${liveItems.length} marketing item(s) actively promoting this property`
-                  : "No active marketing running for this property yet"}
-              </p>
-              {liveItems.length > 0 && (
-                <p className="text-sm text-muted-foreground mt-1">
-                  Your listing is being shown to potential buyers across multiple channels.
-                </p>
+        {/* Generate button */}
+        <Button
+          onClick={handleGenerate}
+          disabled={!selectedId || isPending}
+          className="w-full"
+        >
+          {isPending ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              Generating summary...
+            </>
+          ) : (
+            <>
+              <FileText className="h-4 w-4 mr-2" />
+              Generate Seller Summary
+            </>
+          )}
+        </Button>
+
+        {/* Generated summary */}
+        {summary && (
+          <div className="space-y-2">
+            <Label>Generated Update</Label>
+            <Textarea
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              rows={6}
+              className="resize-none text-sm leading-relaxed"
+            />
+            <p className="text-xs text-muted-foreground">
+              Review and edit before sending. This is a draft.
+            </p>
+
+            {/* Actions */}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <Button variant="outline" size="sm" onClick={handleCopy} className="gap-1.5">
+                {copied ? (
+                  <>
+                    <CheckCheck className="h-3.5 w-3.5 text-emerald-600" />
+                    Copied
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5" />
+                    Copy
+                  </>
+                )}
+              </Button>
+
+              {/* Link to messages composer if we have a contact_id */}
+              {sellerContactId ? (
+                <Link href={`/portal/${sellerContactId}/messages`}>
+                  <Button size="sm" variant="default" className="gap-1.5">
+                    <Send className="h-3.5 w-3.5" />
+                    Open in Seller Messages
+                  </Button>
+                </Link>
+              ) : (
+                <Link href="/dashboard/messages">
+                  <Button size="sm" variant="default" className="gap-1.5">
+                    <Send className="h-3.5 w-3.5" />
+                    Open Messages
+                  </Button>
+                </Link>
               )}
             </div>
-
-            {/* Marketing Items */}
-            <ScrollArea className="h-[250px]">
-              {marketingItems.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <Shield className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                  <p>No marketing found for this listing</p>
-                  <p className="text-sm mt-1">Create a campaign to start promoting</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {marketingItems.map((item) => {
-                    const ChannelIcon = CHANNEL_ICONS[item.channel] || Globe
-                    return (
-                      <div key={item.id} className="p-3 rounded-lg border bg-card">
-                        <div className="flex items-start justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <ChannelIcon className="h-4 w-4 text-violet-600" />
-                            <p className="font-medium text-sm">{item.name}</p>
-                          </div>
-                          {getStatusBadge(item.status)}
-                        </div>
-                        <p className="text-sm text-muted-foreground">{item.description}</p>
-                        {item.launchedAt && (
-                          <p className="text-xs text-muted-foreground mt-2">
-                            Started: {new Date(item.launchedAt).toLocaleDateString()}
-                          </p>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </ScrollArea>
-
-            {/* Portal Link */}
-            {selectedListing && (
-              <Link href={`/portal/${selectedListingId}/listing-visibility`}>
-                <Button variant="outline" className="w-full">
-                  <ExternalLink className="h-4 w-4 mr-2" />
-                  View in Seller Portal
-                  <ChevronRight className="h-4 w-4 ml-auto" />
-                </Button>
-              </Link>
-            )}
-          </>
-        )}
-
-        {!selectedListingId && (
-          <div className="text-center py-8 text-muted-foreground">
-            <Home className="h-8 w-8 mx-auto mb-2 opacity-50" />
-            <p>Select a listing to see marketing summary</p>
           </div>
         )}
       </CardContent>

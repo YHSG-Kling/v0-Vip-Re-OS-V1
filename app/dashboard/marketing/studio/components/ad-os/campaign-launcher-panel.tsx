@@ -1,294 +1,352 @@
 "use client"
 
+// ============================================================
+// Campaign Launcher Panel
+// Creates listing campaigns with an inline Pre-Launch check
+// gate before the final Launch button.
+// ============================================================
+
 import { useState } from "react"
-import Link from "next/link"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
 import {
-  Rocket,
-  Home,
-  Users,
-  UserPlus,
-  Calendar,
-  TrendingUp,
-  Video,
-  MessageSquare,
-  Mail,
-  FileText,
-  Mic,
-  ChevronRight,
-  Loader2,
-} from "lucide-react"
-import { createCampaign, type CampaignStatus } from "@/app/actions/marketing-studio"
-import { generateText } from "@/app/actions/content-generation-engine"
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Loader2, Rocket, TrendingUp, CheckCircle, AlertTriangle, XCircle } from "lucide-react"
+import { launchListingCampaign } from "./ad-os-actions"
+import { runPrelaunchCheck } from "./ad-os-actions"
 
-export type CampaignMode =
-  | "listing"
-  | "sphere"
-  | "seller_lead"
-  | "buyer_lead"
-  | "open_house"
-  | "market_update"
-
-interface CampaignLauncherPanelProps {
-  listings: Array<{ id: string; address: string; city: string; list_price?: number }>
-  agentId: string
-  onCampaignCreated?: (campaignId: string) => void
+interface Listing {
+  id: string
+  address: string
+  city: string
+  zip?: string
+  list_price?: number
 }
 
-const CAMPAIGN_MODES: Array<{
-  id: CampaignMode
-  label: string
-  description: string
-  icon: React.ElementType
-  channels: string[]
-}> = [
-  {
-    id: "listing",
-    label: "Listing Campaign",
-    description: "Promote a specific property across all channels",
-    icon: Home,
-    channels: ["video", "social", "email", "direct_mail", "seller_update"],
-  },
-  {
-    id: "sphere",
-    label: "Sphere / Brand Campaign",
-    description: "Stay top-of-mind with your sphere of influence",
-    icon: Users,
-    channels: ["social", "email", "blog", "podcast"],
-  },
-  {
-    id: "seller_lead",
-    label: "Seller Lead Campaign",
-    description: "Generate seller leads in target areas",
-    icon: UserPlus,
-    channels: ["social", "email", "direct_mail", "landing_page"],
-  },
-  {
-    id: "buyer_lead",
-    label: "Buyer Lead Campaign",
-    description: "Attract qualified buyers to your listings",
-    icon: UserPlus,
-    channels: ["social", "email", "video", "landing_page"],
-  },
-  {
-    id: "open_house",
-    label: "Open House Campaign",
-    description: "Drive traffic to your open house events",
-    icon: Calendar,
-    channels: ["social", "email", "direct_mail", "video"],
-  },
-  {
-    id: "market_update",
-    label: "Market Update Campaign",
-    description: "Position yourself as the local market expert",
-    icon: TrendingUp,
-    channels: ["video", "social", "email", "blog", "podcast"],
-  },
+interface Props {
+  listings: Listing[]
+  agentId: string
+  onCampaignCreated: () => void
+}
+
+type Stage = "form" | "predicting" | "predicted" | "launching" | "done"
+
+/** Discriminates which tab/mode the campaign launcher is operating in. */
+export type CampaignMode = "listing" | "brand" | "recruitment" | "event" | "seasonal"
+
+const CAMPAIGN_TYPES = [
+  { value: "listing", label: "Listing Campaign" },
+  { value: "brand", label: "Brand Awareness" },
+  { value: "seasonal", label: "Seasonal" },
+  { value: "event", label: "Event" },
+  { value: "recruitment", label: "Recruitment" },
 ]
 
-const CHANNEL_ICONS: Record<string, React.ElementType> = {
-  video: Video,
-  social: MessageSquare,
-  email: Mail,
-  direct_mail: FileText,
-  blog: FileText,
-  podcast: Mic,
-  seller_update: Mail,
-  landing_page: FileText,
-}
-
-const CHANNEL_ROUTES: Record<string, string> = {
-  video: "/dashboard/videos/create",
-  social: "/dashboard/marketing/studio",
-  email: "/dashboard/marketing/studio",
-  direct_mail: "/dashboard/marketing/studio",
-  blog: "/dashboard/marketing/blog",
-  podcast: "/dashboard/marketing/podcast",
-  seller_update: "/dashboard/listings/[listingId]/seller-updates",
-  landing_page: "/dashboard/marketing/seo",
-}
-
-export function CampaignLauncherPanel({
-  listings,
-  agentId,
-  onCampaignCreated,
-}: CampaignLauncherPanelProps) {
-  const [selectedMode, setSelectedMode] = useState<CampaignMode | null>(null)
-  const [selectedListingId, setSelectedListingId] = useState<string>("")
+export function CampaignLauncherPanel({ listings, agentId, onCampaignCreated }: Props) {
   const [campaignName, setCampaignName] = useState("")
-  const [isCreating, setIsCreating] = useState(false)
-  const [createdCampaignId, setCreatedCampaignId] = useState<string | null>(null)
+  const [campaignType, setCampaignType] = useState<"listing" | "brand" | "recruitment" | "event" | "seasonal">("listing")
+  const [budgetTotal, setBudgetTotal] = useState<number>(500)
+  const [selectedListingId, setSelectedListingId] = useState<string>("")
+  const [previewContent, setPreviewContent] = useState("")
+  const [platform, setPlatform] = useState("facebook")
+  const [stage, setStage] = useState<Stage>("form")
+  const [prediction, setPrediction] = useState<{
+    predicted_score: number
+    rationale: string
+    confidence: string
+    recommended_publish_window: { day: string; hour: number }
+  } | null>(null)
+  const [readinessStatus, setReadinessStatus] = useState<"ready" | "blocked" | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  const selectedModeConfig = CAMPAIGN_MODES.find((m) => m.id === selectedMode)
   const selectedListing = listings.find((l) => l.id === selectedListingId)
 
-  const needsListing = selectedMode === "listing" || selectedMode === "open_house"
+  async function handlePredict() {
+    if (!campaignName.trim()) return
+    setStage("predicting")
+    setError(null)
 
-  async function handleCreateCampaign() {
-    if (!selectedMode || !campaignName) return
-    if (needsListing && !selectedListingId) return
+    const content =
+      previewContent.trim() ||
+      `New campaign: ${campaignName}${selectedListing ? ` for ${selectedListing.address}, ${selectedListing.city}` : ""}`
 
-    setIsCreating(true)
-    try {
-      const result = await createCampaign({
-        campaignName,
-        campaignType: selectedMode === "listing" || selectedMode === "open_house" ? "listing" : "brand",
-        listingId: needsListing ? selectedListingId : undefined,
-        budgetTotal: 0,
-        visibilityScope: "agent",
-      })
+    const res = await runPrelaunchCheck({
+      contentText: content,
+      contentType: "ad_creative",
+      platform,
+    })
 
-      if (result.success && result.campaign) {
-        setCreatedCampaignId(result.campaign.id)
-        onCampaignCreated?.(result.campaign.id)
-      }
-    } catch (error) {
-      console.error("Failed to create campaign:", error)
-    } finally {
-      setIsCreating(false)
+    if (!res.success) {
+      setError(res.error ?? "Prediction failed")
+      setStage("form")
+      return
     }
+
+    setPrediction(res.prediction ?? null)
+    setReadinessStatus(res.readiness?.readiness_status ?? null)
+    setStage("predicted")
   }
 
-  function getChannelRoute(channel: string): string {
-    let route = CHANNEL_ROUTES[channel] || "/dashboard/marketing/studio"
-    if (channel === "seller_update" && selectedListingId) {
-      route = route.replace("[listingId]", selectedListingId)
+  async function handleLaunch() {
+    setStage("launching")
+    setError(null)
+
+    const res = await launchListingCampaign({
+      campaignName: campaignName.trim(),
+      campaignType,
+      budgetTotal,
+      listingId: selectedListingId || undefined,
+    })
+
+    if (!res.success) {
+      setError(res.error ?? "Launch failed")
+      setStage("predicted")
+      return
     }
-    return route
+
+    setStage("done")
+    onCampaignCreated()
+  }
+
+  function handleReset() {
+    setCampaignName("")
+    setCampaignType("listing")
+    setBudgetTotal(500)
+    setSelectedListingId("")
+    setPreviewContent("")
+    setPlatform("facebook")
+    setPrediction(null)
+    setReadinessStatus(null)
+    setStage("form")
+    setError(null)
+  }
+
+  if (stage === "done") {
+    return (
+      <Card className="border-2">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Rocket className="h-5 w-5 text-violet-600" />
+            Campaign Launcher
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col items-center gap-4 py-8">
+          <CheckCircle className="h-12 w-12 text-green-600" />
+          <p className="text-lg font-semibold">Campaign Created!</p>
+          <p className="text-sm text-muted-foreground text-center">
+            {campaignName} has been created and is ready for asset assignment.
+          </p>
+          <Button variant="outline" onClick={handleReset}>
+            Launch Another
+          </Button>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (
-    <Card>
+    <Card className="border-2">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Rocket className="h-5 w-5 text-violet-600" />
           Campaign Launcher
         </CardTitle>
         <CardDescription>
-          Select a campaign mode to generate assets across all channels
+          Create a new campaign with a performance check before launch.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-6">
-        {/* Mode Selection */}
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {CAMPAIGN_MODES.map((mode) => {
-            const Icon = mode.icon
-            const isSelected = selectedMode === mode.id
-            return (
-              <button
-                key={mode.id}
-                onClick={() => {
-                  setSelectedMode(mode.id)
-                  setCreatedCampaignId(null)
-                }}
-                className={`p-4 rounded-lg border-2 text-left transition-all ${
-                  isSelected
-                    ? "border-violet-600 bg-violet-50 dark:bg-violet-950/30"
-                    : "border-border hover:border-violet-300"
-                }`}
-              >
-                <Icon className={`h-5 w-5 mb-2 ${isSelected ? "text-violet-600" : "text-muted-foreground"}`} />
-                <p className="font-medium text-sm">{mode.label}</p>
-                <p className="text-xs text-muted-foreground mt-1">{mode.description}</p>
-              </button>
-            )
-          })}
-        </div>
+      <CardContent className="space-y-4">
+        {/* Form fields */}
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium">Campaign Name</Label>
+            <Input
+              placeholder="Spring Listings Push"
+              value={campaignName}
+              onChange={(e) => setCampaignName(e.target.value)}
+              className="h-8 text-sm"
+              disabled={stage !== "form"}
+            />
+          </div>
 
-        {/* Configuration */}
-        {selectedMode && (
-          <div className="space-y-4 pt-4 border-t">
-            <div className="space-y-2">
-              <Label>Campaign Name</Label>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium">Type</Label>
+              <Select
+                value={campaignType}
+                onValueChange={(v) => setCampaignType(v as any)}
+                disabled={stage !== "form"}
+              >
+                <SelectTrigger className="h-8 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CAMPAIGN_TYPES.map((t) => (
+                    <SelectItem key={t.value} value={t.value}>
+                      {t.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium">Budget ($)</Label>
               <Input
-                value={campaignName}
-                onChange={(e) => setCampaignName(e.target.value)}
-                placeholder={`${selectedModeConfig?.label} - ${new Date().toLocaleDateString()}`}
+                type="number"
+                min={0}
+                value={budgetTotal}
+                onChange={(e) => setBudgetTotal(Number(e.target.value))}
+                className="h-8 text-sm"
+                disabled={stage !== "form"}
               />
             </div>
+          </div>
 
-            {needsListing && (
-              <div className="space-y-2">
-                <Label>Select Listing</Label>
-                <Select value={selectedListingId} onValueChange={setSelectedListingId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose a listing" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {listings.map((listing) => (
-                      <SelectItem key={listing.id} value={listing.id}>
-                        {listing.address}, {listing.city}
-                        {listing.list_price && ` - $${listing.list_price.toLocaleString()}`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+          {listings.length > 0 && (
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium">Linked Listing (optional)</Label>
+              <Select
+                value={selectedListingId}
+                onValueChange={setSelectedListingId}
+                disabled={stage !== "form"}
+              >
+                <SelectTrigger className="h-8 text-sm">
+                  <SelectValue placeholder="No specific listing" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">No specific listing</SelectItem>
+                  {listings.map((l) => (
+                    <SelectItem key={l.id} value={l.id}>
+                      {l.address}, {l.city}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label className="text-xs font-medium">Primary Platform</Label>
+            <Select value={platform} onValueChange={setPlatform} disabled={stage !== "form"}>
+              <SelectTrigger className="h-8 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {["facebook", "instagram", "linkedin", "google_ads", "email"].map((p) => (
+                  <SelectItem key={p} value={p} className="capitalize">
+                    {p.replace("_", " ")}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        {/* Predict button (gate before launch) */}
+        {stage === "form" && (
+          <Button
+            onClick={handlePredict}
+            disabled={!campaignName.trim()}
+            variant="outline"
+            className="w-full border-violet-300 text-violet-700 hover:bg-violet-50"
+          >
+            <TrendingUp className="mr-2 h-4 w-4" />
+            Predict Performance Before Launch
+          </Button>
+        )}
+
+        {stage === "predicting" && (
+          <div className="flex items-center justify-center gap-2 py-3 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Running pre-launch check...
+          </div>
+        )}
+
+        {/* Prediction results gate */}
+        {(stage === "predicted" || stage === "launching") && prediction && (
+          <div className="border rounded-lg p-3 bg-muted/30 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Pre-Launch Check
+              </span>
+              {readinessStatus === "ready" ? (
+                <Badge className="bg-green-100 text-green-800 border-green-200 flex items-center gap-1 text-xs">
+                  <CheckCircle className="h-3 w-3" />
+                  Ready
+                </Badge>
+              ) : readinessStatus === "blocked" ? (
+                <Badge className="bg-red-100 text-red-800 border-red-200 flex items-center gap-1 text-xs">
+                  <XCircle className="h-3 w-3" />
+                  Blocked
+                </Badge>
+              ) : (
+                <Badge className="bg-yellow-100 text-yellow-800 border-yellow-200 flex items-center gap-1 text-xs">
+                  <AlertTriangle className="h-3 w-3" />
+                  Review Needed
+                </Badge>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className={`text-3xl font-bold ${prediction.predicted_score >= 70 ? "text-green-600" : prediction.predicted_score >= 45 ? "text-yellow-600" : "text-red-600"}`}>
+                {prediction.predicted_score}
+                <span className="text-sm text-muted-foreground font-normal">/100</span>
               </div>
-            )}
-
-            {/* Channel Preview */}
-            <div className="space-y-2">
-              <Label>Assets to Generate</Label>
-              <div className="flex flex-wrap gap-2">
-                {selectedModeConfig?.channels.map((channel) => {
-                  const ChannelIcon = CHANNEL_ICONS[channel] || FileText
-                  return (
-                    <Badge key={channel} variant="secondary" className="flex items-center gap-1">
-                      <ChannelIcon className="h-3 w-3" />
-                      {channel.replace("_", " ")}
-                    </Badge>
-                  )
-                })}
+              <div className="flex-1 text-xs text-muted-foreground italic leading-relaxed">
+                {prediction.rationale}
               </div>
             </div>
 
-            {/* Create Button */}
-            {!createdCampaignId && (
-              <Button
-                onClick={handleCreateCampaign}
-                disabled={isCreating || !campaignName || (needsListing && !selectedListingId)}
-                className="w-full bg-violet-600 hover:bg-violet-700"
-              >
-                {isCreating ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Creating Campaign...
-                  </>
-                ) : (
-                  <>
-                    <Rocket className="h-4 w-4 mr-2" />
-                    Create Campaign & Generate Assets
-                  </>
-                )}
-              </Button>
-            )}
-
-            {/* Channel Actions (after campaign created) */}
-            {createdCampaignId && (
-              <div className="space-y-3">
-                <p className="text-sm text-green-600 font-medium">Campaign created! Generate assets:</p>
-                <div className="grid grid-cols-2 gap-2">
-                  {selectedModeConfig?.channels.map((channel) => {
-                    const ChannelIcon = CHANNEL_ICONS[channel] || FileText
-                    return (
-                      <Link key={channel} href={getChannelRoute(channel)}>
-                        <Button variant="outline" size="sm" className="w-full justify-start">
-                          <ChannelIcon className="h-4 w-4 mr-2" />
-                          {channel.replace("_", " ")}
-                          <ChevronRight className="h-4 w-4 ml-auto" />
-                        </Button>
-                      </Link>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
+            <p className="text-xs text-muted-foreground">
+              Best publish time: {prediction.recommended_publish_window.day} at{" "}
+              {prediction.recommended_publish_window.hour}:00 &middot; Confidence: {prediction.confidence}
+            </p>
           </div>
+        )}
+
+        {error && (
+          <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{error}</p>
+        )}
+
+        {/* Launch button — only visible after prediction */}
+        {stage === "predicted" && (
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              onClick={handleReset}
+              className="flex-1"
+            >
+              Back
+            </Button>
+            <Button
+              onClick={handleLaunch}
+              className="flex-1 bg-violet-600 hover:bg-violet-700"
+            >
+              <Rocket className="mr-2 h-4 w-4" />
+              Launch Campaign
+            </Button>
+          </div>
+        )}
+
+        {stage === "launching" && (
+          <Button disabled className="w-full bg-violet-600">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Launching...
+          </Button>
         )}
       </CardContent>
     </Card>
