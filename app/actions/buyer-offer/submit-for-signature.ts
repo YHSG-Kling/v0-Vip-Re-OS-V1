@@ -3,7 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
-import { getTransactionProvider } from "@/lib/integrations"
+import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
 
 interface SubmitForSignatureParams {
   offerId: string
@@ -86,7 +86,7 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   if (credential) {
     try {
-      const provider = await getTransactionProvider(credential.platform)
+      const provider = getTransactionProviderByName(credential.platform)
       // Only call requestSignatures if the offer has an external transaction reference
       if (offer.esign_provider) {
         await provider.requestSignatures(offer.esign_provider, signers)

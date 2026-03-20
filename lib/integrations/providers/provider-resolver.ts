@@ -34,11 +34,11 @@ export async function getTransactionProvider(
 }
 
 /**
- * Get transaction provider by name
- * 
- * Defaults to Dotloop if provider not found
+ * Get transaction provider by name string.
+ * Used by submitForSignature where the platform name comes from platform_credentials,
+ * not from a brokerage settings lookup. Defaults to Dotloop if provider not found.
  */
-export function getTransactionProvider(providerName?: string): ITransactionProvider {
+export function getTransactionProviderByName(providerName?: string): ITransactionProvider {
   const normalizedName = (providerName?.toLowerCase() || "dotloop") as ProviderName
 
   const factory = PROVIDER_REGISTRY[normalizedName]
