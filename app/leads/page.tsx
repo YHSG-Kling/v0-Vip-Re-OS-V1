@@ -619,6 +619,8 @@ export default function LeadsPage() {
           </div>
         )}
 
+          </TabsContent>
+
           {/* ── INTELLIGENCE TAB ──────────────────────────────────── */}
           <TabsContent value="intelligence" className="space-y-6 mt-0">
 
@@ -807,7 +809,10 @@ export default function LeadsPage() {
               </div>
             )}
 
-          <Card>
+          </TabsContent>
+        </Tabs>
+
+        <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table>
@@ -996,8 +1001,6 @@ export default function LeadsPage() {
             </div>
           </div>
         )}
-          </TabsContent>
-        </Tabs>
       </div>
     </div>
   )
