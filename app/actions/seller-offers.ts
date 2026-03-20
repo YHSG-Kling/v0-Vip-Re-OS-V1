@@ -362,3 +362,22 @@ export async function triggerOfferComparison(params: {
 
   return result
 }
+
+// ── FETCH LINKED TRANSACTION FOR A LISTING ────────────────────────────────────
+export async function getTransactionByListingId(listingId: string): Promise<{
+  id: string
+  property_address: string | null
+  contract_price: number | null
+  status: string | null
+} | null> {
+  if (!isValidUUID(listingId)) return null
+  const supabase = await createClient()
+  const { data } = await supabase
+    .from("transactions")
+    .select("id, property_address, contract_price, status")
+    .eq("listing_id", listingId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  return data ?? null
+}

@@ -6,6 +6,8 @@ import {
   createOffer, sendOfferForESign,
   type OfferFormData, type StrategyRecommendation,
 } from "@/app/actions/buyer-offers"
+import { runCompleteOfferWorkflow } from "@/app/actions/ai-offer-creation"
+import { Loader2, Sparkles, Check } from "lucide-react"
 
 interface OfferFormWizardProps {
   contactId:    string
@@ -23,7 +25,11 @@ interface OfferFormWizardProps {
   propertyZip?:    string
   listingId?:      string | null
   propertyAddressAiFilled?: boolean
-  onBack:          () => void   // back to strategy
+  // Offer OS additions
+  contingencies?:       string[]
+  buyerMaxBudget?:      number
+  buyerRiskTolerance?:  "conservative" | "moderate" | "aggressive"
+  onBack:          () => void
   onSuccess:       () => void
 }
 
