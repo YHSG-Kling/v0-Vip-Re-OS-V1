@@ -25,6 +25,8 @@ import {
   type FinancialPriority,
   type FinancialAction,
 } from "../components/os"
+import { getProviderConnectionStatus } from "@/app/actions/accounting-sync"
+import { AgentFinancialsClient } from "./agent-financials-client"
 
 export const dynamic = "force-dynamic"
 
@@ -54,6 +56,7 @@ export default async function AgentFinancialsPage() {
     bonusCredits,
     monthlyTrend,
     ytdTransactionCount,
+    syncStatus,
   ] = await Promise.all([
     // Agent profile for cap info
     supabase
@@ -167,6 +170,9 @@ export default async function AgentFinancialsPage() {
       .eq("agent_id", agentId)
       .gte("paid_date", `${currentYear}-01-01`)
       .then((r) => r.count || 0),
+
+    // Accounting sync status
+    getProviderConnectionStatus(brokerageId).catch(() => null),
   ])
 
   // Process earnings history to include property address
@@ -275,6 +281,16 @@ export default async function AgentFinancialsPage() {
     type: "report",
   })
 
+  // Format expenses for planning components
+  const formattedExpenses = businessExpenses.map((e: any) => ({
+    id: e.id,
+    category: e.category || "Uncategorized",
+    amount: e.amount || 0,
+    description: e.description || "",
+    receipt_url: e.receipt_url,
+    date: e.expense_date,
+  }))
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -285,8 +301,17 @@ export default async function AgentFinancialsPage() {
         </p>
       </div>
 
-      {/* Financial Command Strip */}
-      <FinancialCommandStrip
+      <AgentFinancialsClient
+        agentId={agentId}
+        brokerageId={brokerageId}
+        ytdGCI={ytdEarnings?.gross_commission || 0}
+        ytdExpenses={totalExpensesYTD}
+        ytdTransactionCount={ytdTransactionCount}
+        expenses={formattedExpenses}
+        syncStatus={syncStatus}
+      >
+        {/* Financial Command Strip */}
+        <FinancialCommandStrip
         priority={financialPriority}
         periodSummary={{
           mtdRevenue: mtdEarnings?.agent_net || 0,
@@ -498,8 +523,9 @@ export default async function AgentFinancialsPage() {
         <FinancialActionStack actions={financialActions} />
       </div>
 
-      {/* Section 9: P&L Report Generator */}
-      <ProfitLossReportPanel agentId={agentId} />
+        {/* Section 9: P&L Report Generator */}
+        <ProfitLossReportPanel agentId={agentId} />
+      </AgentFinancialsClient>
     </div>
   )
 }
