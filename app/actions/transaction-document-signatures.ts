@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
-import { resolveProvider } from "@/lib/integrations/providers/resolve-provider"
+import { isSignableDocType } from "@/lib/documents/signable-doc-types"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -20,26 +20,6 @@ export interface DocumentSignatureStatus {
   fully_signed_at: string | null
   document_url: string | null
   created_at: string
-}
-
-// doc_types that require a signature before a transaction can advance
-const SIGNABLE_DOC_TYPES = new Set([
-  "purchase_agreement",
-  "contract",
-  "addendum",
-  "amendment",
-  "listing_agreement",
-  "buyer_representation_agreement",
-  "disclosure",
-  "escrow_instructions",
-  "counter_offer",
-  "acceptance",
-])
-
-export function isSignableDocType(docType: string | null): boolean {
-  if (!docType) return false
-  const normalised = docType.toLowerCase().replace(/\s+/g, "_")
-  return SIGNABLE_DOC_TYPES.has(normalised)
 }
 
 // ─── SEND DOCUMENT FOR SIGNATURE ─────────────────────────────────────────────
@@ -80,20 +60,27 @@ export async function sendDocumentForSignature(params: {
     return { success: false, error: "Document not found" }
   }
 
-  // ── Resolve the brokerage's esign provider via provider_overrides cascade ──
+  // ── Resolve the brokerage's esign provider from platform_credentials ────
   // Providers are owned by the brokerage/team/agent — NOT by the contact.
-  const resolved = await resolveProvider({
-    providerType: "esign",
-    actorContext: { userId, brokerageId },
-  })
+  const { data: credential } = await supabase
+    .from("platform_credentials")
+    .select("platform")
+    .eq("brokerage_id", brokerageId)
+    .in("platform", ["dotloop", "docusign", "skyslope", "authentisign"])
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
 
-  if (!resolved.providerKey) {
+  if (!credential) {
     return {
       success: false,
       blockedReason: "no_provider",
       error: "No e-sign provider configured. Connect one in Settings > Integrations.",
     }
   }
+
+  const providerKey = credential.platform
 
   // ── Insert contract_signatures record ─────────────────────────────────────
   const { data: sig, error: sigErr } = await supabase
@@ -102,7 +89,7 @@ export async function sendDocumentForSignature(params: {
       brokerage_id:       brokerageId,
       agent_id:           userId,
       contract_type:      docType,
-      provider_name:      resolved.providerKey,
+      provider_name:      providerKey,
       esign_status:       "sent",
       sent_at:            new Date().toISOString(),
       document_url:       doc.storage_url ?? null,
@@ -130,7 +117,7 @@ export async function sendDocumentForSignature(params: {
     metadata: {
       transaction_id:  transactionId,
       signature_id:    sig.id,
-      provider:        resolved.providerKey,
+      provider:        providerKey,
       doc_type:        docType,
       signer_count:    signers.length,
     },

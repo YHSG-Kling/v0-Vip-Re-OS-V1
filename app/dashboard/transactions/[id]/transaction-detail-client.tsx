@@ -54,7 +54,7 @@ import { Progress } from "@/components/ui/progress"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 import { DocumentSignaturePanel } from "@/app/components/shared/DocumentSignaturePanel"
-import { isSignableDocType } from "@/app/actions/transaction-document-signatures"
+import { isSignableDocType } from "@/lib/documents/signable-doc-types"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
