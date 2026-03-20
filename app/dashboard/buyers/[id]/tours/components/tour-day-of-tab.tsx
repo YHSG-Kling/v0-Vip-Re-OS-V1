@@ -1,13 +1,14 @@
 'use client'
 
 import { useState, useTransition, useEffect, useRef } from 'react'
-import { ChevronLeft, ChevronRight, Phone, MapPin, Key } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Phone, MapPin, Key, Route, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
 import { rateTourStop, completeTour } from '@/app/actions/tour-planner'
+import { aiOptimizeShowingRoute } from '@/app/actions/ai-showing-management'
 
 interface TourStop {
   id: string
@@ -78,6 +79,9 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
   const [ratings, setRatings]               = useState<Record<string, InterestLevel>>({})
   const [pendingSignals, setPendingSignals] = useState<Array<{ stopId: string; level: InterestLevel }>>([])
   const [notes, setNotes]                   = useState<Record<string, string>>({})
+  // Mobile route optimization
+  const [isOptimizingRoute, setIsOptimizingRoute] = useState(false)
+  const [routeOptimized, setRouteOptimized]       = useState(false)
   const [showRating, setShowRating]         = useState(false)
   const [tourComplete, setTourComplete]     = useState(false)
   const [agentNote, setAgentNote]           = useState('')
@@ -216,6 +220,32 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
     })
   }
 
+  async function handleOptimizeRoute() {
+    if (!activeTour) return
+    setIsOptimizingRoute(true)
+    try {
+      const showingIds = sortedStops
+        .filter(s => s.showing_id)
+        .map(s => s.showing_id!)
+      const res = await aiOptimizeShowingRoute({
+        agentId:    agentUserId,
+        date:       activeTour.tour_date,
+        showingIds: showingIds.length > 0 ? showingIds : undefined,
+      })
+      if (res.success) {
+        setRouteOptimized(true)
+        toast({ title: 'Route optimized for today' })
+        onRefresh()
+      } else {
+        toast({ title: res.error ?? 'Route optimization failed', variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({ title: 'Route optimization failed', variant: 'destructive' })
+    } finally {
+      setIsOptimizingRoute(false)
+    }
+  }
+
   if (!activeTour || sortedStops.length === 0) {
     return (
       <div className="flex items-center justify-center h-48">
@@ -301,6 +331,29 @@ export function TourDayOfTab({ tours, contactId, brokerageId, agentUserId, buyer
           <p className="text-xs font-medium">
             Offline — feedback queued ({pendingSignals.length} pending). Will sync when connection restores.
           </p>
+        </div>
+      )}
+
+      {/* Mobile route optimization */}
+      {sortedStops.length > 1 && (
+        <div className="flex items-center justify-between p-2.5 rounded-lg border bg-muted/40">
+          <p className="text-xs text-muted-foreground">
+            {routeOptimized ? 'Route optimized for today' : `${sortedStops.length} stops — optimize for drive time?`}
+          </p>
+          <Button
+            size="sm"
+            variant={routeOptimized ? "secondary" : "outline"}
+            className="text-xs h-7 gap-1.5 shrink-0 ml-2"
+            onClick={handleOptimizeRoute}
+            disabled={isOptimizingRoute || routeOptimized}
+          >
+            {isOptimizingRoute ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Route className="h-3.5 w-3.5" />
+            )}
+            {routeOptimized ? 'Optimized' : 'Optimize Route'}
+          </Button>
         </div>
       )}
 

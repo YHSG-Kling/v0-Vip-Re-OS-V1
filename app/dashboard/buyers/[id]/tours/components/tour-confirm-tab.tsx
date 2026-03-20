@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { ChevronDown, ChevronRight, CheckCircle, Clock, MapPin, ArrowLeft } from 'lucide-react'
+import { ChevronDown, ChevronRight, CheckCircle, Clock, MapPin, ArrowLeft, Route, CalendarPlus, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { toast } from '@/hooks/use-toast'
 import { confirmTourStop, confirmTour } from '@/app/actions/tour-planner'
+import { optimizeTourRoute, aiScheduleShowing } from '@/app/actions/ai-showing-management'
 
 interface TourStop {
   id: string
@@ -204,6 +205,12 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
   const [agentNotes, setAgentNotes]         = useState('')
   const [confirmingTourId, setConfirmingTourId] = useState<string | null>(null)
   const [isPending, startTransition]        = useTransition()
+  // Route optimization per tour
+  const [optimizingTourId, setOptimizingTourId] = useState<string | null>(null)
+  const [routeResults, setRouteResults]         = useState<Record<string, any>>({})
+  // AI schedule showing per stop
+  const [schedulingStopId, setSchedulingStopId] = useState<string | null>(null)
+  const [scheduleResults, setScheduleResults]   = useState<Record<string, any>>({})
 
   const activeTours = tours.filter(t => ['planned', 'confirmed'].includes(t.status))
 
@@ -219,6 +226,52 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
         )}
       </div>
     )
+  }
+
+  async function handleOptimizeRoute(tourId: string) {
+    setOptimizingTourId(tourId)
+    try {
+      const res = await optimizeTourRoute(tourId)
+      if (res.success) {
+        setRouteResults(prev => ({ ...prev, [tourId]: res }))
+        toast({ title: 'Route optimized — stops reordered for efficiency' })
+        onRefresh()
+      } else {
+        toast({ title: res.error ?? 'Route optimization failed', variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({ title: 'Route optimization failed', variant: 'destructive' })
+    } finally {
+      setOptimizingTourId(null)
+    }
+  }
+
+  async function handleAIScheduleStop(stop: TourStop, tourDate: string) {
+    if (!stop.listing_id) {
+      toast({ title: 'No listing attached to this stop', variant: 'destructive' })
+      return
+    }
+    setSchedulingStopId(stop.id)
+    try {
+      const res = await aiScheduleShowing({
+        agentId: agentUserId,
+        propertyId: stop.listing_id,
+        contactId,
+        preferredDates: [tourDate],
+        notes: `Tour stop ${stop.order_index + 1}: ${stop.property_address}`,
+      })
+      if (res.success) {
+        setScheduleResults(prev => ({ ...prev, [stop.id]: res }))
+        toast({ title: 'Showing scheduled via AI' })
+        onRefresh()
+      } else {
+        toast({ title: res.error ?? 'AI scheduling failed', variant: 'destructive' })
+      }
+    } catch (err) {
+      toast({ title: 'AI scheduling failed', variant: 'destructive' })
+    } finally {
+      setSchedulingStopId(null)
+    }
   }
 
   function handleConfirmTour(tourId: string) {
@@ -245,17 +298,45 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
         return (
           <div key={tour.id} className="space-y-4">
             {/* Tour header */}
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
               <div>
                 <p className="text-sm font-semibold">{formatDate(tour.tour_date)}</p>
                 <p className="text-xs text-muted-foreground">
                   {confirmedCount}/{sortedStops.length} stops confirmed
                 </p>
               </div>
-              <Badge variant={tour.status === 'confirmed' ? 'default' : 'secondary'}>
-                {tour.status}
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs gap-1.5"
+                  onClick={() => handleOptimizeRoute(tour.id)}
+                  disabled={optimizingTourId === tour.id || sortedStops.length < 2}
+                >
+                  {optimizingTourId === tour.id ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Route className="h-3.5 w-3.5" />
+                  )}
+                  Optimize Route
+                </Button>
+                <Badge variant={tour.status === 'confirmed' ? 'default' : 'secondary'}>
+                  {tour.status}
+                </Badge>
+              </div>
             </div>
+
+            {/* Route optimization result */}
+            {routeResults[tour.id] && (
+              <div className="p-2 bg-blue-50 border border-blue-100 rounded-md text-xs text-blue-800">
+                {routeResults[tour.id].summary ?? 'Route optimized — stops reordered for minimum drive time.'}
+                {routeResults[tour.id].estimatedDriveMins != null && (
+                  <span className="ml-2 font-medium">
+                    ~{routeResults[tour.id].estimatedDriveMins} min total drive time
+                  </span>
+                )}
+              </div>
+            )}
 
             {/* Map placeholder */}
             {mapUrl ? (
@@ -317,7 +398,32 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
                       </button>
 
                       {isExpanded && (
-                        <div className="px-4 pb-4 border-t">
+                        <div className="px-4 pb-4 border-t space-y-3">
+                          {/* AI Schedule Showing for this stop */}
+                          {!stop.is_confirmed && stop.listing_id && (
+                            <div className="pt-3 flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs gap-1.5"
+                                onClick={() => handleAIScheduleStop(stop, tour.tour_date)}
+                                disabled={schedulingStopId === stop.id}
+                              >
+                                {schedulingStopId === stop.id ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <CalendarPlus className="h-3.5 w-3.5" />
+                                )}
+                                AI Schedule Showing
+                              </Button>
+                              {scheduleResults[stop.id] && (
+                                <span className="text-xs text-emerald-600 flex items-center gap-1">
+                                  <CheckCircle className="h-3 w-3" />
+                                  Scheduled
+                                </span>
+                              )}
+                            </div>
+                          )}
                           <StopConfirmForm
                             stop={stop}
                             tourId={tour.id}

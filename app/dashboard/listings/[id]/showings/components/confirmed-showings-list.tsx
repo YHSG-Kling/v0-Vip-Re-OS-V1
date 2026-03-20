@@ -13,13 +13,14 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { CheckCheck, RotateCcw, XCircle, Mail, Phone, Clock } from "lucide-react"
+import { CheckCheck, RotateCcw, XCircle, Mail, Phone, Clock, Send, MessageSquarePlus, Loader2, CheckCircle2 } from "lucide-react"
 import {
   markShowingCompleted,
   showingTimeConfirm,
   showingTimeReschedule,
   showingTimeDecline,
 } from "@/app/actions/seller-showings"
+import { aiSendShowingConfirmation, aiCollectShowingFeedback } from "@/app/actions/ai-showing-management"
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   scheduled:   { label: "Scheduled",  variant: "secondary" },
@@ -46,6 +47,11 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
   const [proposedTime, setProposedTime] = useState("")
   const [rescheduleReason, setRescheduleReason] = useState("")
   const [isPending, startTransition] = useTransition()
+  // AI confirmation + feedback per showing
+  const [sendingConfirmId, setSendingConfirmId] = useState<string | null>(null)
+  const [collectingFeedbackId, setCollectingFeedbackId] = useState<string | null>(null)
+  const [confirmSent, setConfirmSent] = useState<Set<string>>(new Set())
+  const [feedbackRequested, setFeedbackRequested] = useState<Set<string>>(new Set())
 
   function open(id: string, d: "complete" | "reschedule" | "decline") {
     setActiveId(id)
@@ -56,6 +62,34 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
   }
 
   function close() { setDialog(null); setActiveId(null) }
+
+  async function handleSendConfirmation(showingId: string) {
+    setSendingConfirmId(showingId)
+    try {
+      const res = await aiSendShowingConfirmation(showingId)
+      if (res.success) {
+        setConfirmSent(prev => new Set([...prev, showingId]))
+      }
+    } catch (err) {
+      console.error("Send confirmation failed:", err)
+    } finally {
+      setSendingConfirmId(null)
+    }
+  }
+
+  async function handleCollectFeedback(showingId: string) {
+    setCollectingFeedbackId(showingId)
+    try {
+      const res = await aiCollectShowingFeedback(showingId)
+      if (res.success) {
+        setFeedbackRequested(prev => new Set([...prev, showingId]))
+      }
+    } catch (err) {
+      console.error("Collect feedback failed:", err)
+    } finally {
+      setCollectingFeedbackId(null)
+    }
+  }
 
   function updateShowing(id: string, patch: any) {
     onUpdate(showings.map((s) => (s.id === id ? { ...s, ...patch } : s)))
@@ -166,6 +200,46 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
 
               {/* Actions */}
               <div className="flex flex-wrap gap-2">
+                {/* AI: Send Confirmation — for scheduled/confirmed showings */}
+                {s.status !== "cancelled" && s.status !== "completed" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={() => handleSendConfirmation(s.id)}
+                    disabled={sendingConfirmId === s.id || confirmSent.has(s.id)}
+                  >
+                    {sendingConfirmId === s.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : confirmSent.has(s.id) ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                    ) : (
+                      <Send className="h-3.5 w-3.5" />
+                    )}
+                    {confirmSent.has(s.id) ? "Confirmation Sent" : "Send Confirmation"}
+                  </Button>
+                )}
+
+                {/* AI: Collect Feedback — for completed showings */}
+                {(s.status === "completed" || s.status === "confirmed") && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={() => handleCollectFeedback(s.id)}
+                    disabled={collectingFeedbackId === s.id || feedbackRequested.has(s.id)}
+                  >
+                    {collectingFeedbackId === s.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : feedbackRequested.has(s.id) ? (
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                    ) : (
+                      <MessageSquarePlus className="h-3.5 w-3.5" />
+                    )}
+                    {feedbackRequested.has(s.id) ? "Feedback Requested" : "Collect Feedback"}
+                  </Button>
+                )}
+
                 {/* Manual mode */}
                 {mode.mode === "manual" && s.status !== "completed" && s.status !== "cancelled" && (
                   <Button size="sm" variant="outline" className="gap-1.5" onClick={() => open(s.id, "complete")}>

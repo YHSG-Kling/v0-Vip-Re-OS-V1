@@ -6,13 +6,18 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
-import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles } from "lucide-react"
+import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles, Bell, FlaskConical, CheckCircle2, AlertCircle } from "lucide-react"
 import {
   searchPropertiesWithNaturalLanguage,
   previewSearchIntent,
   explainPropertyMatchForBuyer,
 } from "@/app/actions/buyer-property-search"
-import { generatePropertyMatches, learnFromBuyerFeedback } from "@/app/actions/ai-property-matching"
+import {
+  generatePropertyMatches,
+  learnFromBuyerFeedback,
+  analyzePropertyForBuyer,
+  notifyNewMatches,
+} from "@/app/actions/ai-property-matching"
 import { requestShowing } from "@/app/actions/smart-insights"
 
 interface BuyerMatchPanelProps {
@@ -51,6 +56,12 @@ export function BuyerMatchPanel({
   const [previewLoading, setPreviewLoading] = useState(false)
   const [explainLoading, setExplainLoading] = useState<string | null>(null)
   const [showingLoading, setShowingLoading] = useState(false)
+  // Deep analysis per property
+  const [deepAnalysisLoading, setDeepAnalysisLoading] = useState<string | null>(null)
+  const [deepAnalysisResults, setDeepAnalysisResults] = useState<Record<string, any>>({})
+  // Notify new matches
+  const [notifyLoading, setNotifyLoading] = useState(false)
+  const [notifyResult, setNotifyResult] = useState<{ notified: number } | null>(null)
 
   // Only render for buyer contacts
   if (!isBuyerContact) {
@@ -157,6 +168,35 @@ export function BuyerMatchPanel({
     }
   }
 
+  const handleDeepAnalysis = async (listingId: string) => {
+    setDeepAnalysisLoading(listingId)
+    try {
+      const result = await analyzePropertyForBuyer({ contactId, propertyId: listingId, agentId })
+      if (result.success) {
+        setDeepAnalysisResults((prev) => ({ ...prev, [listingId]: result }))
+      }
+    } catch (err) {
+      console.error("Deep analysis failed:", err)
+    } finally {
+      setDeepAnalysisLoading(null)
+    }
+  }
+
+  const handleNotifyMatches = async () => {
+    setNotifyLoading(true)
+    setNotifyResult(null)
+    try {
+      const result = await notifyNewMatches({ contactId, agentId, threshold: 85 })
+      if (result.success) {
+        setNotifyResult({ notified: result.notifiedCount ?? result.count ?? 0 })
+      }
+    } catch (err) {
+      console.error("Notify matches failed:", err)
+    } finally {
+      setNotifyLoading(false)
+    }
+  }
+
   const getMatchScoreColor = (score?: number) => {
     if (!score) return "bg-gray-100 text-gray-600"
     if (score >= 70) return "bg-emerald-100 text-emerald-700"
@@ -185,6 +225,23 @@ export function BuyerMatchPanel({
           />
 
           <div className="flex gap-2 flex-wrap">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleNotifyMatches}
+              disabled={notifyLoading}
+            >
+              {notifyLoading ? (
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+              ) : notifyResult ? (
+                <CheckCircle2 className="h-4 w-4 mr-1 text-emerald-500" />
+              ) : (
+                <Bell className="h-4 w-4 mr-1" />
+              )}
+              {notifyResult
+                ? `Notified (${notifyResult.notified})`
+                : "Notify New Matches"}
+            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -296,12 +353,55 @@ export function BuyerMatchPanel({
                   <Button
                     variant="outline"
                     size="sm"
+                    onClick={() => handleDeepAnalysis(match.listing_id)}
+                    disabled={deepAnalysisLoading === match.listing_id}
+                  >
+                    {deepAnalysisLoading === match.listing_id ? (
+                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                    ) : (
+                      <FlaskConical className="h-3 w-3 mr-1" />
+                    )}
+                    Deep Analysis
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => setShowingForm(match.listing_id)}
                   >
                     <Calendar className="h-3 w-3 mr-1" />
                     Schedule Showing
                   </Button>
                 </div>
+
+                {/* Deep analysis result */}
+                {deepAnalysisResults[match.listing_id] && (
+                  <div className="mt-3 p-3 bg-indigo-50 border border-indigo-100 rounded-md space-y-1.5">
+                    <p className="text-xs font-semibold text-indigo-800 flex items-center gap-1">
+                      <FlaskConical className="h-3 w-3" /> Deep Analysis
+                    </p>
+                    {deepAnalysisResults[match.listing_id].fit_summary && (
+                      <p className="text-xs text-indigo-900">{deepAnalysisResults[match.listing_id].fit_summary}</p>
+                    )}
+                    {deepAnalysisResults[match.listing_id].strengths?.length > 0 && (
+                      <ul className="space-y-0.5">
+                        {deepAnalysisResults[match.listing_id].strengths.slice(0, 3).map((s: string, i: number) => (
+                          <li key={i} className="flex items-start gap-1 text-xs text-emerald-700">
+                            <CheckCircle2 className="h-3 w-3 mt-0.5 shrink-0" />{s}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {deepAnalysisResults[match.listing_id].concerns?.length > 0 && (
+                      <ul className="space-y-0.5">
+                        {deepAnalysisResults[match.listing_id].concerns.slice(0, 2).map((c: string, i: number) => (
+                          <li key={i} className="flex items-start gap-1 text-xs text-amber-700">
+                            <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />{c}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
 
                 {/* Explanation panel */}
                 {selectedMatch === match.listing_id && explanation && (
