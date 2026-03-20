@@ -31,6 +31,54 @@ import {
   BarChart3,
 } from "lucide-react"
 
+// ─── SELLER STAGE MEANING ─────────────────────────────────────────────────────
+
+const SELLER_STAGE_MEANING: Record<
+  string,
+  { headline: string; whatMeans: string; whatNext: string; responsible: string }
+> = {
+  pre_listing: {
+    headline: "Getting Your Home Ready",
+    whatMeans:
+      "Your agent is preparing everything needed to bring your home to market.",
+    whatNext:
+      "Media capture, pricing review, and launch preparations are underway.",
+    responsible: "Your Agent",
+  },
+  active: {
+    headline: "Your Home Is Live",
+    whatMeans:
+      "Your listing is active and buyers are seeing it. Showings may be requested soon.",
+    whatNext:
+      "Your agent will send updates after showings and when offers arrive.",
+    responsible: "Your Agent + Market",
+  },
+  pending: {
+    headline: "You Have an Accepted Offer!",
+    whatMeans:
+      "A buyer's offer has been accepted. Now comes inspections, appraisals, and closing prep.",
+    whatNext:
+      "Your agent and the transaction team are working through the contract milestones.",
+    responsible: "Your Agent + Transaction Team",
+  },
+  under_contract: {
+    headline: "You Have an Accepted Offer!",
+    whatMeans:
+      "A buyer's offer has been accepted. Now comes inspections, appraisals, and closing prep.",
+    whatNext:
+      "Your agent and the transaction team are working through the contract milestones.",
+    responsible: "Your Agent + Transaction Team",
+  },
+  closed: {
+    headline: "Congratulations — Sold!",
+    whatMeans:
+      "The sale is complete. Your proceeds have been distributed per the closing statement.",
+    whatNext:
+      "Your agent will follow up. You're now a valued lifetime customer.",
+    responsible: "Completed",
+  },
+}
+
 interface SellerHomeProps {
   contactId: string
 }
@@ -122,6 +170,15 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   // Computed values
   const unreadMessageCount = messages.filter((m: any) => m.direction === "inbound" && !m.read_at).length
 
+  // Derive seller stage meaning from listing status
+  const listingStatus = context.listing?.status ?? "pre_listing"
+  const sellerStageCtx = SELLER_STAGE_MEANING[listingStatus] ?? {
+    headline: "Your Listing",
+    whatMeans: "Your agent is managing your listing and working to get you the best result.",
+    whatNext: "Check in with your agent for the latest updates.",
+    responsible: "Your Agent",
+  }
+
   return (
     <div className="space-y-6">
       {/* 1. LISTING STATUS BANNER */}
@@ -130,6 +187,32 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
         metrics={context.metrics}
         contactId={contactId}
       />
+
+      {/* 1b. WHAT THIS MEANS — seller plain-language stage card */}
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          <div>
+            <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">
+              What This Means For You
+            </p>
+            <p className="text-base font-semibold text-foreground">{sellerStageCtx.headline}</p>
+            <p className="text-sm text-muted-foreground leading-relaxed mt-1">
+              {sellerStageCtx.whatMeans}
+            </p>
+          </div>
+          <div className="border-t pt-3 space-y-2">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              What Happens Next
+            </p>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              {sellerStageCtx.whatNext}
+            </p>
+            <Badge variant="outline" className="text-xs">
+              Responsible: {sellerStageCtx.responsible}
+            </Badge>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* 2. SHOWING ACTIVITY STRIP */}
       {context.listing && (
