@@ -381,3 +381,45 @@ export async function getTransactionByListingId(listingId: string): Promise<{
     .maybeSingle()
   return data ?? null
 }
+
+// ── FETCH REPAIR NEGOTIATION ITEMS FOR A TRANSACTION ─────────────────────────
+// Repair negotiations happen post-acceptance inside transactions, not at the offer stage.
+export async function getRepairNegotiationItems(transactionId: string): Promise<{
+  success: boolean
+  items: {
+    id: string
+    item_description: string
+    estimated_cost: number | null
+    actual_cost: number | null
+    status: string | null
+    priority: string | null
+    requested_by: string | null
+  }[]
+  error?: string
+}> {
+  if (!isValidUUID(transactionId)) return { success: false, items: [], error: "Invalid transaction ID" }
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from("transaction_repair_negotiations")
+    .select("id, item_description, estimated_cost, actual_cost, status, priority, requested_by")
+    .eq("transaction_id", transactionId)
+    .order("priority", { ascending: true })
+  if (error) return { success: false, items: [], error: error.message }
+  return { success: true, items: data ?? [] }
+}
+
+// ── LOOKUP MLS NUMBER BY BUYER CONTACT + PROPERTY ADDRESS ─────────────────────
+// Buyers don't have listings — their properties are matched via property_alert_results.
+export async function getMlsNumberByAddress(contactId: string, propertyAddress: string): Promise<string | null> {
+  if (!isValidUUID(contactId) || !propertyAddress) return null
+  const supabase = await createClient()
+  const { data } = await supabase
+    .from("property_alert_results")
+    .select("mls_number, list_price")
+    .eq("contact_id", contactId)
+    .ilike("property_address", `%${propertyAddress.trim()}%`)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  return data?.mls_number ?? null
+}

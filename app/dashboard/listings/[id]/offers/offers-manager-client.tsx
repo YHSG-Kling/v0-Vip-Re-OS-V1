@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Upload, Sparkles, Link, RefreshCw, Loader2, TrendingUp, Target, AlertCircle } from "lucide-react"
+import { Upload, Sparkles, Link, RefreshCw, Loader2, Target, AlertCircle, Wrench } from "lucide-react"
 import { OfferUploadZone } from "./components/offer-upload-zone"
 import { OfferComparisonMatrix } from "./components/offer-comparison-matrix"
 import { OfferCard } from "./components/offer-card"
@@ -24,8 +24,9 @@ import {
   acceptOffer,
   rejectOffer,
   getTransactionByListingId,
+  getRepairNegotiationItems,
 } from "@/app/actions/seller-offers"
-import { predictWinningOffer, aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
+import { aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
 import { toast } from "@/hooks/use-toast"
 
@@ -95,12 +96,16 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   const [isPending, startTransition] = useTransition()
   const [selectedOfferId, setSelectedOfferId] = useState<string | null>(null)
 
-  // Win probability + negotiation advisor state
-  const [winProbability, setWinProbability] = useState<any>(null)
-  const [winProbLoading, setWinProbLoading] = useState(false)
-  const [negotiationAdvisor, setNegotiationAdvisor] = useState<any>(null)
-  const [advisorLoading, setAdvisorLoading] = useState(false)
-  const [advisorError, setAdvisorError] = useState<string | null>(null)
+  // Negotiation advisor — counter-offer scenario (no transaction needed in UI, but action requires it)
+  const [counterAdvisor, setCounterAdvisor] = useState<any>(null)
+  const [counterAdvisorLoading, setCounterAdvisorLoading] = useState(false)
+  const [counterAdvisorError, setCounterAdvisorError] = useState<string | null>(null)
+
+  // Negotiation advisor — inspection/repairs scenario (requires transaction)
+  const [repairsAdvisor, setRepairsAdvisor] = useState<any>(null)
+  const [repairsAdvisorLoading, setRepairsAdvisorLoading] = useState(false)
+  const [repairsAdvisorError, setRepairsAdvisorError] = useState<string | null>(null)
+  const [repairItems, setRepairItems] = useState<any[]>([])
 
   const selectedOffer = selectedOfferId ? offers.find(o => o.id === selectedOfferId) ?? null : null
 
@@ -169,59 +174,70 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     })
   }
 
-  async function handleWinProbability(offer: typeof activeOffers[0]) {
-    setWinProbLoading(true)
-    setWinProbability(null)
-    const result = await predictWinningOffer({
-      listingId:      listing.id,
-      propertyMlsId:  listing.id, // used for IDX fallback — handled gracefully if no IDX
-      brokerageId,
-      offers: activeOffers.map(o => ({
-        offerId:        o.id,
-        offerPrice:     o.offer_price,
-        financingType:  o.financing_type ?? "unknown",
-        earnestMoney:   o.earnest_money_amount ?? o.earnest_money ?? 0,
-        closingDate:    o.closing_date ?? undefined,
-        contingencies:  o.contingencies ?? [],
-        escalationClause: !!o.escalation_clause,
-        escalationCap:  o.escalation_cap ?? undefined,
-        appraisalGap:   o.appraisal_gap ?? undefined,
-        closingCosts:   o.closing_cost_contribution ?? undefined,
-        isCompetitive:  (o.offer_price ?? 0) >= (listing.list_price ?? 0),
-      })),
-      targetOfferId: offer.id,
-    })
-    if (result.success) {
-      setWinProbability(result)
-    } else {
-      toast({ title: "Could not predict win probability", description: result.error, variant: "destructive" })
-    }
-    setWinProbLoading(false)
-  }
-
-  async function handleNegotiationAdvisor(offer: typeof activeOffers[0]) {
-    setAdvisorLoading(true)
-    setAdvisorError(null)
-    setNegotiationAdvisor(null)
-    // Negotiation advisor requires a linked transaction — look it up first
+  // Counter-offer negotiation advisor — called when agent is deciding whether to counter.
+  // A transaction may not exist yet; if none found, still try to advise using offer + list price.
+  async function handleCounterAdvisor(offer: typeof activeOffers[0]) {
+    setCounterAdvisorLoading(true)
+    setCounterAdvisorError(null)
+    setCounterAdvisor(null)
     const transaction = await getTransactionByListingId(listing.id)
     if (!transaction) {
-      setAdvisorError("No transaction linked to this listing. Create a transaction first to use the Negotiation Advisor.")
-      setAdvisorLoading(false)
+      setCounterAdvisorError(
+        "No accepted transaction exists yet. Accept or counter an offer first, then the full advisor unlocks. " +
+        "In the meantime, use the Negotiation Recommendation card above."
+      )
+      setCounterAdvisorLoading(false)
       return
     }
     const result = await aiNegotiationAdvisor({
       transactionId: transaction.id,
-      offerId:       offer.id,
-      listingId:     listing.id,
-      brokerageId,
+      scenario:      "counteroffer",
+      currentOffer:  offer.offer_price,
+      listPrice:     listing.list_price ?? undefined,
     })
     if (result.success) {
-      setNegotiationAdvisor(result)
+      setCounterAdvisor(result)
     } else {
-      setAdvisorError(result.error ?? "Negotiation advisor failed.")
+      setCounterAdvisorError(result.error ?? "Counter-offer advisor failed.")
     }
-    setAdvisorLoading(false)
+    setCounterAdvisorLoading(false)
+  }
+
+  // Repairs negotiation advisor — called during inspection/repair contingency period.
+  // Only meaningful after a transaction exists and inspection issues are logged.
+  async function handleRepairsAdvisor(offer: typeof activeOffers[0]) {
+    setRepairsAdvisorLoading(true)
+    setRepairsAdvisorError(null)
+    setRepairsAdvisor(null)
+    const transaction = await getTransactionByListingId(listing.id)
+    if (!transaction) {
+      setRepairsAdvisorError("No linked transaction found. A transaction must exist before running repairs negotiation advice.")
+      setRepairsAdvisorLoading(false)
+      return
+    }
+    // Load actual repair items from transaction_repair_negotiations
+    const repairsResult = await getRepairNegotiationItems(transaction.id)
+    const items = repairsResult.items ?? []
+    setRepairItems(items)
+    const inspectionIssues = items.map(i => ({
+      description:    i.item_description,
+      estimatedCost:  i.estimated_cost,
+      priority:       i.priority,
+      status:         i.status,
+    }))
+    const result = await aiNegotiationAdvisor({
+      transactionId:   transaction.id,
+      scenario:        "inspection_repairs",
+      currentOffer:    offer.offer_price,
+      listPrice:       listing.list_price ?? undefined,
+      inspectionIssues: inspectionIssues.length > 0 ? inspectionIssues : undefined,
+    })
+    if (result.success) {
+      setRepairsAdvisor(result)
+    } else {
+      setRepairsAdvisorError(result.error ?? "Repairs advisor failed.")
+    }
+    setRepairsAdvisorLoading(false)
   }
 
   return (
@@ -384,139 +400,100 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     agentId={listing.agent_id ?? currentUserId}
                   />
 
-                  {/* Win Probability — AI-powered */}
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <div className="flex items-center justify-between">
-                        <CardTitle className="text-sm flex items-center gap-1.5">
-                          <TrendingUp className="h-4 w-4 text-emerald-500" />
-                          Win Probability
-                        </CardTitle>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleWinProbability(selectedOffer)}
-                          disabled={winProbLoading}
-                          className="h-7 text-xs"
-                        >
-                          {winProbLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Run AI Analysis"}
-                        </Button>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      {!winProbability && !winProbLoading && (
-                        <p className="text-xs text-muted-foreground">
-                          Compare all {activeOffers.length} offer{activeOffers.length !== 1 ? "s" : ""} to predict which is most likely to close successfully.
-                        </p>
-                      )}
-                      {winProbLoading && (
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Analyzing all offers...
-                        </div>
-                      )}
-                      {winProbability && (
-                        <div className="space-y-3">
-                          <div className="flex items-end gap-3">
-                            <span className="text-4xl font-bold text-emerald-600">
-                              {Math.round((winProbability.targetOfferWinProbability ?? 0) * 100)}%
-                            </span>
-                            <span className="text-sm text-muted-foreground pb-1">win probability</span>
-                          </div>
-                          {winProbability.recommendation && (
-                            <p className="text-sm text-muted-foreground">{winProbability.recommendation}</p>
-                          )}
-                          {winProbability.riskFactors?.length > 0 && (
-                            <div className="rounded-md bg-muted/30 border border-border px-3 py-2 space-y-1">
-                              <p className="text-xs font-medium">Risk factors</p>
-                              {winProbability.riskFactors.map((r: string, i: number) => (
-                                <p key={i} className="text-xs text-muted-foreground">{r}</p>
-                              ))}
-                            </div>
-                          )}
-                          {winProbability.strengthFactors?.length > 0 && (
-                            <div className="rounded-md bg-emerald-50 border border-emerald-200 px-3 py-2 space-y-1">
-                              <p className="text-xs font-medium text-emerald-800">Strengths</p>
-                              {winProbability.strengthFactors.map((s: string, i: number) => (
-                                <p key={i} className="text-xs text-emerald-700">{s}</p>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  {/* Negotiation Advisor — requires linked transaction */}
+                  {/* Counter-Offer Negotiation Advisor */}
                   <Card>
                     <CardHeader className="pb-2">
                       <div className="flex items-center justify-between">
                         <CardTitle className="text-sm flex items-center gap-1.5">
                           <Target className="h-4 w-4 text-primary" />
-                          AI Negotiation Advisor
+                          Counter-Offer Advisor
                         </CardTitle>
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => handleNegotiationAdvisor(selectedOffer)}
-                          disabled={advisorLoading}
+                          onClick={() => handleCounterAdvisor(selectedOffer)}
+                          disabled={counterAdvisorLoading}
                           className="h-7 text-xs"
                         >
-                          {advisorLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Get Advice"}
+                          {counterAdvisorLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Advise"}
                         </Button>
                       </div>
                     </CardHeader>
                     <CardContent>
-                      {advisorError && (
+                      {counterAdvisorError && (
                         <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
                           <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
-                          {advisorError}
+                          {counterAdvisorError}
                         </div>
                       )}
-                      {!negotiationAdvisor && !advisorLoading && !advisorError && (
+                      {!counterAdvisor && !counterAdvisorLoading && !counterAdvisorError && (
                         <p className="text-xs text-muted-foreground">
-                          Get AI-powered counter-offer strategy and negotiation tactics for this offer. Requires a linked transaction.
+                          AI counter-offer strategy for this offer — recommended price, tactics, and walk-away thresholds. Requires an accepted offer/transaction to unlock.
                         </p>
                       )}
-                      {advisorLoading && (
+                      {counterAdvisorLoading && (
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
                           <Loader2 className="h-4 w-4 animate-spin" />
-                          Analyzing negotiation position...
+                          Building counter strategy...
                         </div>
                       )}
-                      {negotiationAdvisor && (
+                      {counterAdvisor && <NegotiationAdvisorResult data={counterAdvisor} />}
+                    </CardContent>
+                  </Card>
+
+                  {/* Repairs Negotiation Advisor — inspection/repair contingency period only */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm flex items-center gap-1.5">
+                          <Wrench className="h-4 w-4 text-amber-500" />
+                          Repairs Negotiation Advisor
+                        </CardTitle>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleRepairsAdvisor(selectedOffer)}
+                          disabled={repairsAdvisorLoading}
+                          className="h-7 text-xs"
+                        >
+                          {repairsAdvisorLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Advise"}
+                        </Button>
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      {repairsAdvisorError && (
+                        <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                          <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                          {repairsAdvisorError}
+                        </div>
+                      )}
+                      {!repairsAdvisor && !repairsAdvisorLoading && !repairsAdvisorError && (
+                        <p className="text-xs text-muted-foreground">
+                          AI guidance for negotiating inspection repair requests. Pulls live repair items from the transaction and advises which to accept, credit, or push back on.
+                        </p>
+                      )}
+                      {repairsAdvisorLoading && (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Analyzing repair items...
+                        </div>
+                      )}
+                      {repairsAdvisor && (
                         <div className="space-y-3">
-                          {negotiationAdvisor.strategy && (
-                            <div>
-                              <p className="text-xs font-medium mb-1">Recommended strategy</p>
-                              <p className="text-sm text-muted-foreground">{negotiationAdvisor.strategy}</p>
-                            </div>
-                          )}
-                          {negotiationAdvisor.counterOfferPrice && (
-                            <div className="rounded-md bg-primary/5 border border-primary/20 px-3 py-2">
-                              <p className="text-xs text-muted-foreground">Suggested counter price</p>
-                              <p className="text-lg font-semibold">${negotiationAdvisor.counterOfferPrice.toLocaleString()}</p>
-                            </div>
-                          )}
-                          {negotiationAdvisor.tactics?.length > 0 && (
-                            <div className="space-y-1.5">
-                              <p className="text-xs font-medium">Negotiation tactics</p>
-                              {negotiationAdvisor.tactics.map((t: string, i: number) => (
-                                <div key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                                  <span className="mt-0.5 h-1.5 w-1.5 rounded-full bg-primary flex-shrink-0" />
-                                  {t}
+                          {repairItems.length > 0 && (
+                            <div className="rounded-md border border-border bg-muted/20 px-3 py-2 space-y-1">
+                              <p className="text-xs font-medium">Repair items ({repairItems.length})</p>
+                              {repairItems.map((item, i) => (
+                                <div key={item.id ?? i} className="flex items-center justify-between text-xs text-muted-foreground">
+                                  <span className="truncate mr-2">{item.item_description}</span>
+                                  {item.estimated_cost != null && (
+                                    <span className="shrink-0">${Number(item.estimated_cost).toLocaleString()}</span>
+                                  )}
                                 </div>
                               ))}
                             </div>
                           )}
-                          {negotiationAdvisor.redFlags?.length > 0 && (
-                            <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 space-y-1">
-                              <p className="text-xs font-medium text-red-800">Red flags</p>
-                              {negotiationAdvisor.redFlags.map((f: string, i: number) => (
-                                <p key={i} className="text-xs text-red-700">{f}</p>
-                              ))}
-                            </div>
-                          )}
+                          <NegotiationAdvisorResult data={repairsAdvisor} />
                         </div>
                       )}
                     </CardContent>
@@ -560,6 +537,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       </Tabs>
 
       {/* Counter offer slide-over */}
+
       {counterTarget && (
         <CounterOfferSlideOver
           offer={counterTarget}
@@ -572,6 +550,59 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
             setCounterTarget(null)
           }}
         />
+      )}
+    </div>
+  )
+}
+
+// ── Shared result renderer for both negotiation advisor scenarios ─────────────
+function NegotiationAdvisorResult({ data }: { data: any }) {
+  const parsed = typeof data === "string" ? (() => { try { return JSON.parse(data) } catch { return null } })() : data
+  const rec = parsed?.recommendedOffer ?? parsed?.recommendedCounterOffer ?? null
+  const tactics: Array<{ tactic?: string; script?: string }> = parsed?.negotiationTactics ?? []
+  const counterStrategy = parsed?.counterofferStrategy?.if_they_counter_at
+  return (
+    <div className="space-y-3">
+      {rec && (
+        <div className="rounded-md bg-primary/5 border border-primary/20 px-3 py-2 space-y-1">
+          {rec.amount && (
+            <>
+              <p className="text-xs text-muted-foreground">Recommended amount</p>
+              <p className="text-lg font-semibold">${Number(rec.amount).toLocaleString()}</p>
+            </>
+          )}
+          {rec.reasoning && <p className="text-xs text-muted-foreground">{rec.reasoning}</p>}
+          {rec.walkAwayPrice && (
+            <p className="text-xs text-muted-foreground">
+              Walk away at: <span className="font-medium">${Number(rec.walkAwayPrice).toLocaleString()}</span>
+            </p>
+          )}
+        </div>
+      )}
+      {parsed?.recommendedApproach && (
+        <p className="text-sm text-muted-foreground">{parsed.recommendedApproach}</p>
+      )}
+      {tactics.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-xs font-medium">Tactics</p>
+          {tactics.map((t, i) => (
+            <div key={i} className="rounded border border-border bg-muted/10 px-2.5 py-2 text-xs space-y-0.5">
+              {t.tactic && <p className="font-medium">{t.tactic}</p>}
+              {t.script && <p className="text-muted-foreground italic">{t.script}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+      {counterStrategy && (
+        <div className="space-y-1">
+          <p className="text-xs font-medium">If they counter at...</p>
+          {Object.entries(counterStrategy).map(([price, advice]) => (
+            <div key={price} className="flex items-start gap-2 text-xs">
+              <span className="font-medium shrink-0">${Number(price).toLocaleString()}</span>
+              <span className="text-muted-foreground">{String(advice)}</span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
