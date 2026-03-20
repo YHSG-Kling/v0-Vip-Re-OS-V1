@@ -807,8 +807,8 @@ export default function LeadsPage() {
               </div>
             )}
 
-          </TabsContent>{/* end Intelligence tab */}
-        </Tabs>{/* end Tabs wrapper */}
+          </TabsContent>
+        </Tabs>
 
         {/* Leads Table — always visible (shared context for both tabs) */}
         <Card>
