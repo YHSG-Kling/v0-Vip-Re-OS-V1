@@ -996,7 +996,7 @@ export default function LeadsPage() {
             </div>
           </div>
         )}
-          </TabsContent>
+        </TabsContent>
         </Tabs>
       </div>
     </div>
