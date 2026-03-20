@@ -382,6 +382,19 @@ export default function CRMPage() {
                 )}
               </div>
             </div>
+
+            {/* Cross-link footer */}
+            <div className="flex gap-4 pt-4 border-t text-sm">
+              <Link href="/dashboard/reports" className="text-muted-foreground hover:text-foreground transition-colors">
+                View Reports →
+              </Link>
+              <Link href="/dashboard/reputation" className="text-muted-foreground hover:text-foreground transition-colors">
+                Full Reputation →
+              </Link>
+              <Link href="/dashboard/diagnosis" className="text-muted-foreground hover:text-foreground transition-colors">
+                Run Diagnosis →
+              </Link>
+            </div>
           </>
         )}
       </div>

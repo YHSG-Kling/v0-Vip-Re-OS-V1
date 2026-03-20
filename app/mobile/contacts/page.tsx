@@ -101,7 +101,17 @@ export default function MobileContactsPage() {
         {loading ? (
           <div className="text-center py-8 text-muted-foreground">Loading contacts...</div>
         ) : filteredContacts.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">No contacts found</div>
+          <div className="text-center py-8">
+            <Search className="h-10 w-10 mx-auto mb-3 text-muted-foreground" />
+            <p className="font-medium text-foreground mb-1">
+              {searchQuery ? "No contacts match your search" : "No contacts yet"}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              {searchQuery
+                ? `No contacts match "${searchQuery}". Try a different name or number.`
+                : "Add contacts in the full CRM to see them here."}
+            </p>
+          </div>
         ) : (
           filteredContacts.map((contact) => (
             <Link key={contact.id} href={`/crm?contact=${contact.id}`}>

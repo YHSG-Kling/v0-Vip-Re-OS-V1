@@ -572,6 +572,15 @@ Focus on scalable, brokerage-level insights.`
                           Regenerate
                         </Button>
                       </div>
+                      {/* Cross-links */}
+                      <div className="flex gap-2 pt-2 border-t">
+                        <Link href="/dashboard/diagnosis">
+                          <Button variant="link" size="sm" className="text-xs px-0">Open Diagnosis →</Button>
+                        </Link>
+                        <Link href="/crm">
+                          <Button variant="link" size="sm" className="text-xs px-0">Open CRM →</Button>
+                        </Link>
+                      </div>
                     </div>
                   )}
                 </CardContent>
@@ -705,6 +714,15 @@ Focus on scalable, brokerage-level insights.`
                           Regenerate
                         </Button>
                       </div>
+                      {/* Cross-links */}
+                      <div className="flex gap-2 pt-2 border-t">
+                        <Link href="/dashboard/social">
+                          <Button variant="link" size="sm" className="text-xs px-0">Open Social →</Button>
+                        </Link>
+                        <Link href="/dashboard/campaigns">
+                          <Button variant="link" size="sm" className="text-xs px-0">Open Campaigns →</Button>
+                        </Link>
+                      </div>
                     </div>
                   )}
                 </CardContent>
@@ -828,6 +846,15 @@ Focus on scalable, brokerage-level insights.`
                         <Button variant="ghost" size="sm" onClick={() => setPipelineSummary(null)}>
                           Regenerate
                         </Button>
+                      </div>
+                      {/* Cross-links */}
+                      <div className="flex gap-2 pt-2 border-t">
+                        <Link href="/crm">
+                          <Button variant="link" size="sm" className="text-xs px-0">Open CRM →</Button>
+                        </Link>
+                        <Link href="/leads">
+                          <Button variant="link" size="sm" className="text-xs px-0">Open Leads →</Button>
+                        </Link>
                       </div>
                     </div>
                   )}

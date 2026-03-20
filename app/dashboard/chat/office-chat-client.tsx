@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
-import { Send, Copy, ExternalLink, Search, MessageCircle } from "lucide-react"
+import { Send, Copy, ExternalLink, Search, MessageCircle, ArrowRight } from "lucide-react"
+import Link from "next/link"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
@@ -210,6 +211,33 @@ export function OfficeChatClient({
               ))}
             </CardContent>
           </Card>
+
+          {/* Quick Navigation */}
+          {mode === "office" && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm">Quick Actions</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1">
+                <Link href="/dashboard/diagnosis" className="flex items-center justify-between p-2 rounded hover:bg-accent transition-colors text-xs">
+                  <span>Open Diagnosis</span>
+                  <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                </Link>
+                <Link href="/dashboard/reports" className="flex items-center justify-between p-2 rounded hover:bg-accent transition-colors text-xs">
+                  <span>Open Reports</span>
+                  <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                </Link>
+                <Link href="/dashboard/ai-tools" className="flex items-center justify-between p-2 rounded hover:bg-accent transition-colors text-xs">
+                  <span>Open AI Tools</span>
+                  <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                </Link>
+                <Link href="/crm" className="flex items-center justify-between p-2 rounded hover:bg-accent transition-colors text-xs">
+                  <span>Open CRM</span>
+                  <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                </Link>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Main Chat Area */}
@@ -218,9 +246,23 @@ export function OfficeChatClient({
           <ScrollArea className="flex-1 rounded-lg border p-4" ref={scrollRef}>
             <div className="space-y-4">
               {messages.length === 0 ? (
-                <div className="text-center text-muted-foreground py-8">
-                  <MessageCircle className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                  <p>Start a conversation</p>
+                <div className="text-center py-12">
+                  <MessageCircle className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                  <h3 className="text-lg font-semibold mb-2">
+                    {mode === "office" ? "Your Business AI is Ready" : "Relationship Assistant"}
+                  </h3>
+                  <p className="text-muted-foreground text-sm mb-4 max-w-sm mx-auto">
+                    {mode === "office"
+                      ? "Ask about your pipeline, leads, reports, or any business question. The AI sees your entire OS."
+                      : "Select a contact and ask about their journey, draft messages, or get follow-up suggestions."}
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handlePromptClick(currentPrompts[0])}
+                  >
+                    Try: {currentPrompts[0]}
+                  </Button>
                 </div>
               ) : (
                 messages.map((msg) => (

@@ -726,6 +726,16 @@ Be direct, specific, and prioritized. Use the actual numbers from the data.`,
                     </Link>
                   </div>
 
+                  {/* Cross-links */}
+                  <div className="flex gap-4 pt-2 border-t text-sm">
+                    <Link href="/dashboard/reports" className="text-muted-foreground hover:text-foreground transition-colors">
+                      View Full Report →
+                    </Link>
+                    <Link href="/crm" className="text-muted-foreground hover:text-foreground transition-colors">
+                      Open CRM →
+                    </Link>
+                  </div>
+
                   <Button variant="ghost" onClick={generateCorrectionPlan} disabled={generatingSummary} className="w-full">
                     Regenerate Plan
                   </Button>
