@@ -89,19 +89,7 @@ export function ThisWeekPreview({ agentId }: ThisWeekPreviewProps) {
       }))
 
       setUpcomingEvents(events)
-
-      // Check for existing weekly plan
-      const { data: existingPlan } = await supabase
-        .from("weekly_plans")
-        .select("plan_content")
-        .eq("agent_id", agentId)
-        .eq("week_start", weekStart.toISOString().split("T")[0])
-        .single()
-
-      if (existingPlan?.plan_content) {
-        setWeeklyPlan(existingPlan.plan_content as WeeklyPlan)
-      }
-
+      // No persistent plan store — plan is generated on-demand and held in local state only
       setLoading(false)
     }
     loadWeekData()

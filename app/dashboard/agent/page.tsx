@@ -20,6 +20,7 @@ import { AgentLifetimeCustomersPanel } from "./components/agent-lifetime-custome
 import { AgentSuperpowersPanel } from "./components/agent-superpowers-panel"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
+import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
 import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
@@ -277,6 +278,7 @@ export default function AgentDashboard() {
               loading={loading}
             />
             <AgentSystemReadiness />
+            {agentId && <ThisWeekPreview agentId={agentId} />}
           </div>
         </div>
 

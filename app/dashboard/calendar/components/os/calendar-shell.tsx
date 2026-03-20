@@ -90,26 +90,25 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .lt("scheduled_at", endISO)
           .neq("status", "cancelled"),
 
-        // 2. Calendar events (ISA appointments, etc.)
+        // 2. Calendar events (ISA appointments, deadlines — filtered by brokerage)
         supabase
           .from("calendar_events")
-          .select("*")
-          .eq("agent_id", agentId)
-          .eq("is_cancelled", false)
+          .select("id, start_at, end_at, event_type, entity_type, entity_id, metadata, brokerage_id, timezone_name")
+          .eq("brokerage_id", brokerageId)
           .gte("start_at", startISO)
           .lt("start_at", endISO),
 
-        // 3. Open houses
+        // 3. Open house events (correct table name)
         supabase
-          .from("open_houses")
+          .from("open_house_events")
           .select(`
-            id, start_time, end_time, status, notes,
+            id, event_date, start_time, end_time, status, notes,
             listing_id,
             listings(address, city)
           `)
           .eq("agent_id", agentId)
-          .gte("start_time", startISO)
-          .lt("start_time", endISO),
+          .gte("event_date", startISO)
+          .lt("event_date", endISO),
 
         // 4. Transactions with key dates
         supabase
@@ -145,11 +144,11 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .gte("scheduled_date", startISO)
           .lt("scheduled_date", endISO),
 
-        // 7. Buyer tours
+        // 7. Tours (correct table name is tours, not buyer_tours)
         supabase
-          .from("buyer_tours")
+          .from("tours")
           .select(`
-            id, tour_date, start_time, end_time, status, notes,
+            id, tour_date, scheduled_at, status, notes,
             contact_id,
             contacts(first_name, last_name)
           `)
@@ -180,29 +179,30 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         })
       })
 
-      // Transform calendar events
+      // Transform calendar events (no title/location/agent_id columns — derive from metadata + event_type)
       calendarEventsRes.data?.forEach((e: any) => {
+        const meta = (e.metadata as Record<string, unknown>) || {}
+        const derivedTitle = (meta.title as string) || e.event_type?.replace(/_/g, " ") || "Calendar Event"
         unified.push({
           id: e.id,
-          title: e.title,
+          title: derivedTitle,
           startAt: e.start_at,
-          endAt: e.end_at,
+          endAt: e.end_at ?? new Date(new Date(e.start_at).getTime() + 30 * 60000).toISOString(),
           eventType: e.event_type === "isa_appointment" ? "isa_appointment" : "appointment",
           source: "calendar_events",
-          location: e.location,
           contactId: e.entity_type === "contact" ? e.entity_id : undefined,
-          agentId: e.agent_id,
-          metadata: e.metadata,
+          metadata: meta,
         })
       })
 
-      // Transform open houses
+      // Transform open house events
       openHousesRes.data?.forEach((oh: any) => {
+        const datePrefix = oh.event_date ? oh.event_date.split("T")[0] : new Date().toISOString().split("T")[0]
         unified.push({
           id: oh.id,
           title: `Open House: ${oh.listings?.address || "Property"}`,
-          startAt: oh.start_time,
-          endAt: oh.end_time,
+          startAt: `${datePrefix}T${oh.start_time || "10:00:00"}`,
+          endAt: `${datePrefix}T${oh.end_time || "13:00:00"}`,
           eventType: "open_house",
           source: "open_houses",
           listingId: oh.listing_id,
@@ -268,13 +268,15 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         })
       })
 
-      // Transform buyer tours
+      // Transform tours (real table: tours, uses tour_date + scheduled_at)
       toursRes.data?.forEach((tour: any) => {
+        const tourStart = tour.scheduled_at || `${tour.tour_date}T10:00:00`
+        const tourEnd = new Date(new Date(tourStart).getTime() + 2 * 60 * 60000).toISOString()
         unified.push({
           id: tour.id,
           title: `Tour: ${tour.contacts?.first_name || "Buyer"}`,
-          startAt: `${tour.tour_date}T${tour.start_time || "10:00:00"}`,
-          endAt: `${tour.tour_date}T${tour.end_time || "12:00:00"}`,
+          startAt: tourStart,
+          endAt: tourEnd,
           eventType: "tour",
           source: "buyer_tours",
           contactId: tour.contact_id,
