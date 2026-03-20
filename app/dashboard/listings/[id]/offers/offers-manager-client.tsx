@@ -28,6 +28,7 @@ import {
 } from "@/app/actions/seller-offers"
 import { aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
+import { DecisionHistoryPanel } from "./components/decision-history-panel"
 import { toast } from "@/hooks/use-toast"
 
 type Offer = {
@@ -279,8 +280,11 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
         </div>
       </div>
 
-      {/* Seller Decision Readiness — always shown so agent can verify before reviewing offers */}
-      <SellerDecisionReadinessCard listingId={listing.id} />
+          {/* Seller Decision Readiness — always shown so agent can verify before reviewing offers */}
+          <SellerDecisionReadinessCard listingId={listing.id} />
+
+          {/* Decision History — last 20 decisions for this listing */}
+          <DecisionHistoryPanel listingId={listing.id} />
 
       {/* AI recommendation banner */}
       {aiResult && (
