@@ -807,11 +807,7 @@ export default function LeadsPage() {
               </div>
             )}
 
-          </TabsContent>
-        </Tabs>
-
-        {/* Leads Table — always visible (shared context for both tabs) */}
-        <Card>
+          <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
               <Table>
@@ -1000,6 +996,8 @@ export default function LeadsPage() {
             </div>
           </div>
         )}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   )
