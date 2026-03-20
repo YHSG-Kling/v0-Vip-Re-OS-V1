@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Search, Star, Play, FileText, BookOpen, ThumbsUp, TrendingUp, Copy } from "lucide-react"
+import { Search, Star, Play, FileText, BookOpen, ThumbsUp, TrendingUp, Copy, Route, Brain } from "lucide-react"
 import {
   getAcademyContent,
   getMarketplaceTemplates,
@@ -15,7 +15,17 @@ import {
   incrementViewCount,
   getTopContributors,
 } from "@/app/actions/academy"
+import { generateLearningPath } from "@/app/actions/ai-training-coaching"
+import { getAgentPointsAndTier } from "@/app/actions/gamification"
 import { useToast } from "@/hooks/use-toast"
+import {
+  AcademyCommandStrip,
+  LearningPathPanel,
+  ReadinessRadar,
+  TrainingProgressPanel,
+  AiTutorPanel,
+  EmbeddedLeaderboardWidget,
+} from "./components/os"
 
 export default function AcademyPage() {
   const [searchQuery, setSearchQuery] = useState("")
@@ -25,9 +35,51 @@ export default function AcademyPage() {
   const [loading, setLoading] = useState(true)
   const { toast } = useToast()
 
+  // OS State
+  const [agentId] = useState("current-agent") // Will be resolved from auth context
+  const [brokerageId] = useState("current-brokerage")
+  const [agentName] = useState("Agent")
+  const [currentPoints, setCurrentPoints] = useState<number | undefined>(undefined)
+  const [currentTier, setCurrentTier] = useState<string | undefined>(undefined)
+  const [generatingPath, setGeneratingPath] = useState(false)
+  const [completedContent, setCompletedContent] = useState<any[]>([])
+  const [inProgressContent, setInProgressContent] = useState<any[]>([])
+
   useEffect(() => {
     loadData()
+    loadGamificationData()
   }, [searchQuery])
+
+  async function loadGamificationData() {
+    try {
+      const data = await getAgentPointsAndTier({ agentId })
+      if (data) {
+        setCurrentPoints(data.points)
+        setCurrentTier(data.tier)
+      }
+    } catch (error) {
+      console.error("Error loading gamification data:", error)
+    }
+  }
+
+  async function handleGenerateLearningPath() {
+    setGeneratingPath(true)
+    try {
+      await generateLearningPath({
+        agentId,
+        focusAreas: ["buyer_conversion", "communication"],
+        experienceLevel: "intermediate",
+      })
+      toast({
+        title: "Learning Path Generated",
+        description: "Check the My Path tab to see your personalized learning path.",
+      })
+    } catch (error) {
+      console.error("Error generating learning path:", error)
+    } finally {
+      setGeneratingPath(false)
+    }
+  }
 
   async function loadData() {
     setLoading(true)
@@ -61,10 +113,16 @@ export default function AcademyPage() {
 
   return (
     <div className="container mx-auto py-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold mb-2">Academy & Marketplace</h1>
-        <p className="text-muted-foreground">Learn, share, and grow your skills</p>
-      </div>
+      {/* OS Command Strip */}
+      <AcademyCommandStrip
+        agentName={agentName}
+        completedCount={completedContent.length}
+        totalContent={academyContent.length}
+        currentPoints={currentPoints}
+        currentTier={currentTier}
+        onGenerateLearningPath={handleGenerateLearningPath}
+        generating={generatingPath}
+      />
 
       <div className="mb-6 relative">
         <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
@@ -76,12 +134,23 @@ export default function AcademyPage() {
         />
       </div>
 
-      <Tabs defaultValue="learning" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="learning">Learning Center</TabsTrigger>
-          <TabsTrigger value="marketplace">Template Marketplace</TabsTrigger>
-          <TabsTrigger value="community">Community</TabsTrigger>
-        </TabsList>
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Main Content */}
+        <div className="lg:col-span-3">
+          <Tabs defaultValue="learning" className="space-y-4">
+            <TabsList>
+              <TabsTrigger value="learning">Learning Center</TabsTrigger>
+              <TabsTrigger value="marketplace">Template Marketplace</TabsTrigger>
+              <TabsTrigger value="community">Community</TabsTrigger>
+              <TabsTrigger value="mypath" className="gap-1">
+                <Route className="h-4 w-4" />
+                My Path
+              </TabsTrigger>
+              <TabsTrigger value="tutor" className="gap-1">
+                <Brain className="h-4 w-4" />
+                AI Tutor
+              </TabsTrigger>
+            </TabsList>
 
         {/* Learning Center Tab */}
         <TabsContent value="learning" className="space-y-6">
@@ -248,7 +317,34 @@ export default function AcademyPage() {
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* My Path Tab */}
+        <TabsContent value="mypath" className="space-y-6">
+          <div className="grid md:grid-cols-2 gap-6">
+            <LearningPathPanel agentId={agentId} experienceLevel="intermediate" />
+            <div className="space-y-6">
+              <ReadinessRadar agentId={agentId} />
+              <TrainingProgressPanel
+                completedContent={completedContent}
+                inProgressContent={inProgressContent}
+                totalAvailable={academyContent.length}
+              />
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* AI Tutor Tab */}
+        <TabsContent value="tutor">
+          <AiTutorPanel agentId={agentId} brokerageId={brokerageId} />
+        </TabsContent>
       </Tabs>
+        </div>
+
+        {/* Sidebar */}
+        <div className="space-y-6">
+          <EmbeddedLeaderboardWidget agentId={agentId} />
+        </div>
+      </div>
     </div>
   )
 }
