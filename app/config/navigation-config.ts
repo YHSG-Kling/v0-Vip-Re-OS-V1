@@ -92,13 +92,16 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'AI Tools',
         icon: 'Sparkles',
         children: [
-          { id: 'voice-command', label: 'Voice Command', href: '/dashboard/voice' },
+          { id: 'ai-tools-hub', label: 'AI Toolkit', href: '/dashboard/ai-tools' },
+          { id: 'ai-chat', label: 'AI Chat', href: '/dashboard/chat' },
+          { id: 'voice-command', label: 'Voice Assistant', href: '/dashboard/voice' },
           { id: 'ai-briefing', label: 'Daily Briefing', href: '/dashboard/briefing' },
         ],
       },
       { id: 'coaching', label: 'Training & Coaching', href: '/dashboard/coaching', icon: 'Award' },
       { id: 'motivation', label: 'Motivation', href: '/dashboard/motivation', icon: 'Trophy' },
       { id: 'diagnosis', label: 'Business Diagnosis', href: '/dashboard/diagnosis', icon: 'Stethoscope' },
+      { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
       {
         id: 'agent-tools',
         label: 'Agent Tools',
@@ -229,6 +232,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
       { id: 'usage-metrics', label: 'Usage Metrics', href: '/admin/usage', icon: 'Activity' },
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
+      { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
       { id: 'divider2', divider: true },
       {
         id: 'settings',
@@ -335,6 +339,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         ],
       },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
+      { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'FileText' },
       { id: 'team-financials', label: 'Team Financials', href: '/dashboard/financials/team', icon: 'DollarSign' },
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'Shield' },
       { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
@@ -627,6 +632,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         ],
       },
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'Shield' },
+      { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
       {
         id: 'referrals-group',
         label: 'Referrals',
