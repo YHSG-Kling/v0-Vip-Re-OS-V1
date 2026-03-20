@@ -14,6 +14,14 @@ import {
 } from "@/app/actions/workflow-monitoring"
 import { CheckCircle2, XCircle, Loader2, Clock, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
+import {
+  WorkflowCommandStrip,
+  WorkflowHealthRadar,
+  FailedRunsPanel,
+  WorkflowAiExplainerPanel,
+  ApprovalBottlenecksPanel,
+  AutomationSavingsPanel,
+} from "./components/os"
 
 export function WorkflowsContent() {
   const [executions, setExecutions] = useState<any[]>([])
@@ -22,6 +30,18 @@ export function WorkflowsContent() {
   const [loading, setLoading] = useState(true)
   const [detailsLoading, setDetailsLoading] = useState(false)
   const [filter, setFilter] = useState<string>("all")
+
+  // OS State
+  const [failedExecutions, setFailedExecutions] = useState<any[]>([])
+  const [retrying, setRetrying] = useState<string | null>(null)
+  const [osStats, setOsStats] = useState<{
+    total: number
+    running: number
+    failed: number
+    paused: number
+    succeeded_today: number
+    succeeded_month: number
+  } | null>(null)
 
   useEffect(() => {
     loadData()
@@ -32,14 +52,49 @@ export function WorkflowsContent() {
     const statsResult = await getWorkflowStats()
     setStats(statsResult)
 
+    // Set OS stats
+    setOsStats({
+      total: statsResult.total || 0,
+      running: statsResult.running || 0,
+      failed: statsResult.failed || 0,
+      paused: statsResult.paused || 0,
+      succeeded_today: statsResult.completed || 0,
+      succeeded_month: statsResult.total || 0,
+    })
+
     const result = await getWorkflowExecutions({
       status: filter === "all" ? undefined : filter,
     })
 
     if (result.success) {
       setExecutions(result.executions)
+      // Extract failed executions for the OS panel
+      setFailedExecutions(
+        result.executions.filter((e: any) => e.status === "failed")
+      )
     }
     setLoading(false)
+  }
+
+  const handleOsRetry = async (executionId: string) => {
+    setRetrying(executionId)
+    const result = await retryWorkflowExecution(executionId)
+    if (result.success) {
+      toast.success("Workflow retry scheduled")
+      loadData()
+    } else {
+      toast.error(result.error || "Failed to schedule retry")
+    }
+    setRetrying(null)
+  }
+
+  const handleApprove = async (executionId: string) => {
+    // For now, approving is the same as retry for paused workflows
+    await handleOsRetry(executionId)
+  }
+
+  const handleClearSelection = () => {
+    setSelectedExecution(null)
   }
 
   const loadExecutionDetails = async (executionId: string) => {
@@ -89,12 +144,13 @@ export function WorkflowsContent() {
 
   return (
     <div className="container mx-auto p-6 max-w-7xl">
-      <div className="mb-6">
-        <h1 className="text-3xl font-bold">Workflow Orchestration</h1>
-        <p className="text-muted-foreground">Monitor and manage automated workflow executions</p>
-      </div>
+      {/* OS Command Strip */}
+      <WorkflowCommandStrip stats={osStats} loading={loading} onRefresh={loadData} />
 
-      {/* Stats Cards */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Main Content */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Stats Cards */}
       <div className="grid gap-4 md:grid-cols-4 mb-6">
         <Card>
           <CardHeader className="pb-2">
@@ -271,6 +327,35 @@ export function WorkflowsContent() {
           )}
         </TabsContent>
       </Tabs>
+
+          {/* Automation Savings Panel */}
+          <AutomationSavingsPanel stats={osStats} />
+        </div>
+
+        {/* Sidebar with OS Panels */}
+        <div className="space-y-6">
+          <WorkflowHealthRadar executions={executions} loading={loading} />
+          
+          <FailedRunsPanel
+            failedExecutions={failedExecutions}
+            onRetry={handleOsRetry}
+            onViewDetail={loadExecutionDetails}
+            retrying={retrying}
+          />
+
+          <ApprovalBottlenecksPanel
+            executions={executions}
+            onApprove={handleApprove}
+            onViewDetail={loadExecutionDetails}
+          />
+
+          <WorkflowAiExplainerPanel
+            agentId="current-agent"
+            selectedExecution={selectedExecution}
+            onClearSelection={handleClearSelection}
+          />
+        </div>
+      </div>
     </div>
   )
 }
