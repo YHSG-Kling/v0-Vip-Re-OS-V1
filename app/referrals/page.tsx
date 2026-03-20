@@ -10,11 +10,12 @@ export const dynamic = "force-dynamic"
 export default async function ReferralsPage({
   searchParams,
 }: {
-  searchParams: { action?: string }
+  searchParams: Promise<{ action?: string }>
 }) {
+  const params = await searchParams
   const stats = await getReferralROI()
   const leaderboard = await getReferralLeaderboard()
-  const isCreateOpen = searchParams.action === "create"
+  const isCreateOpen = params.action === "create"
 
   return (
     <div className="container mx-auto p-6 space-y-6">
