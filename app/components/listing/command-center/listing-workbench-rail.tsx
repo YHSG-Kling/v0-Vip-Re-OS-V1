@@ -21,8 +21,12 @@ import {
   RefreshCw,
   AlertCircle,
   ChevronRight,
+  Calculator,
+  CheckCircle2,
 } from "lucide-react"
-import { generateListingPresentation, generateBrochureContent } from "@/app/actions/ai-listing-presentation"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { generateListingPresentation, generateBrochureContent, generateSellerNetSheet } from "@/app/actions/ai-listing-presentation"
 import { matchBuyersForListing } from "@/app/actions/property-buyer-matching"
 import { useToast } from "@/hooks/use-toast"
 
@@ -39,6 +43,8 @@ interface WorkbenchRailProps {
     bathrooms?: number
     square_footage?: number
     property_type?: string
+    list_price?: number
+    price?: number
   }
 }
 
@@ -60,6 +66,14 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
   const [buyerMatchTotal, setBuyerMatchTotal] = useState<number | null>(null)
   const [matchPending, startMatchTransition] = useTransition()
   const { toast } = useToast()
+  // Seller net sheet
+  const [netSheetOpen, setNetSheetOpen] = useState(false)
+  const [netSheetLoading, setNetSheetLoading] = useState(false)
+  const [netSheetResult, setNetSheetResult] = useState<any>(null)
+  const defaultPrice = listing.list_price ?? listing.price ?? 0
+  const [netSalePrice, setNetSalePrice] = useState(defaultPrice > 0 ? String(defaultPrice) : "")
+  const [netMortgagePayoff, setNetMortgagePayoff] = useState("")
+  const [netCommissionRate, setNetCommissionRate] = useState("3")
 
   function handleMatchBuyers() {
     startMatchTransition(async () => {
@@ -75,6 +89,34 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
         toast({ title: "Buyer match failed", description: (res as any).error, variant: "destructive" })
       }
     })
+  }
+
+  const handleGenerateNetSheet = async () => {
+    const salePrice = parseFloat(netSalePrice.replace(/,/g, ""))
+    if (!salePrice || isNaN(salePrice) || salePrice <= 0) {
+      toast({ title: "Enter a valid sale price", variant: "destructive" })
+      return
+    }
+    setNetSheetLoading(true)
+    try {
+      const res = await generateSellerNetSheet({
+        agentId,
+        salePrice,
+        state: listing.state,
+        mortgagePayoff: netMortgagePayoff ? parseFloat(netMortgagePayoff.replace(/,/g, "")) : undefined,
+        commissionRate: netCommissionRate ? parseFloat(netCommissionRate) : undefined,
+      })
+      if (res.success) {
+        setNetSheetResult(res)
+        toast({ title: "Net sheet calculated" })
+      } else {
+        toast({ title: (res as any).error ?? "Net sheet failed", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Net sheet calculation failed", variant: "destructive" })
+    } finally {
+      setNetSheetLoading(false)
+    }
   }
 
   const handleGeneratePresentation = async () => {
@@ -194,6 +236,20 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
             </Button>
           </Link>
 
+          <Button
+            size="sm"
+            variant={netSheetResult ? "secondary" : "outline"}
+            className="text-xs gap-1.5 justify-start"
+            onClick={() => setNetSheetOpen((o) => !o)}
+          >
+            {netSheetResult ? (
+              <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+            ) : (
+              <Calculator className="h-3 w-3" />
+            )}
+            Seller Net Sheet
+          </Button>
+
           {sellerId && (
             <Link href={`/portal/seller/${sellerId}?listing=${listingId}`} target="_blank">
               <Button size="sm" variant="outline" className="w-full text-xs gap-1.5 justify-start">
@@ -203,6 +259,84 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
             </Link>
           )}
         </div>
+
+        {/* Net Sheet inline form */}
+        {netSheetOpen && (
+          <div className="border-t pt-3 space-y-3">
+            <p className="text-xs font-medium text-muted-foreground">Seller Net Sheet</p>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-3 space-y-1">
+                <Label className="text-xs">Sale Price ($)</Label>
+                <Input
+                  className="h-7 text-xs"
+                  placeholder="e.g. 650000"
+                  value={netSalePrice}
+                  onChange={(e) => setNetSalePrice(e.target.value)}
+                />
+              </div>
+              <div className="col-span-2 space-y-1">
+                <Label className="text-xs">Mortgage Payoff ($)</Label>
+                <Input
+                  className="h-7 text-xs"
+                  placeholder="optional"
+                  value={netMortgagePayoff}
+                  onChange={(e) => setNetMortgagePayoff(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Commission (%)</Label>
+                <Input
+                  className="h-7 text-xs"
+                  placeholder="3"
+                  value={netCommissionRate}
+                  onChange={(e) => setNetCommissionRate(e.target.value)}
+                />
+              </div>
+            </div>
+            <Button
+              size="sm"
+              className="w-full text-xs gap-1.5"
+              onClick={handleGenerateNetSheet}
+              disabled={netSheetLoading}
+            >
+              {netSheetLoading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Calculator className="h-3 w-3" />
+              )}
+              Calculate Net Proceeds
+            </Button>
+
+            {/* Net sheet result */}
+            {netSheetResult && (
+              <div className="rounded-md border bg-emerald-50 border-emerald-100 p-3 space-y-1.5">
+                {netSheetResult.estimated_net_proceeds != null && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-emerald-900">Estimated Net Proceeds</span>
+                    <span className="text-sm font-bold text-emerald-700">
+                      ${Number(netSheetResult.estimated_net_proceeds).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                {netSheetResult.line_items?.length > 0 && (
+                  <div className="space-y-1 pt-1 border-t border-emerald-200">
+                    {netSheetResult.line_items.map((item: { label: string; amount: number }, i: number) => (
+                      <div key={i} className="flex items-center justify-between text-xs text-emerald-800">
+                        <span>{item.label}</span>
+                        <span className={item.amount < 0 ? "text-red-600" : ""}>
+                          {item.amount < 0 ? "-" : ""}${Math.abs(item.amount).toLocaleString()}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {netSheetResult.notes && (
+                  <p className="text-xs text-emerald-700 pt-1">{netSheetResult.notes}</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
 
