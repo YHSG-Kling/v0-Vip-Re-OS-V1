@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { emitLifecycleTransition } from "@/lib/buyer-lifecycle/lifecycle-logger"
 import { KernelEvent }         from "@/lib/kernel/events"
+import { isValidUUID }         from "@/lib/validations"
 
 // ─── startOfferDraft ─────────────────────────────────────────────────────────
 // Emits lifecycle_event for buyer.offer.draft_started on page mount.
@@ -31,12 +32,13 @@ export async function startOfferDraft(params: {
 }
 
 // ─── RESOLVE CONNECTED E-SIGN PROVIDER ────────────────────────────────────────
-// Reads the active e-sign platform credential for the brokerage from
-// platform_credentials. Returns null if none is connected — callers must block
-// the "Send for Signatures" action and prompt the user to connect in Settings.
+// Reads the brokerage's active e-sign platform from platform_credentials.
+// The contact (buyer/seller) has no provider relationship — providers are owned
+// by the brokerage/team/agent and configured in Settings > Integrations.
+// Returns null if no provider is connected — callers must gate the send action.
 export async function getConnectedEsignProvider(brokerageId: string): Promise<{
-  platform:     string
-  accountName:  string | null
+  platform:    string
+  accountName: string | null
 } | null> {
   if (!isValidUUID(brokerageId)) return null
   const supabase = createServiceClient()
@@ -53,15 +55,6 @@ export async function getConnectedEsignProvider(brokerageId: string): Promise<{
   return { platform: data.platform, accountName: data.account_name ?? null }
 }
 
-  strategy_type:      "standard" | "aggressive" | "conservative"
-  ai_narrative:       string
-  success_probability: number
-  risk_factors:       string[]
-  comparable_context: string
-  template_id:        string | null
-  created_at:         string
-  status:             string
-}
 
 export interface OfferFormData {
   property_address:            string
