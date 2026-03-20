@@ -58,6 +58,8 @@ import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/act
 import { Progress } from "@/components/ui/progress"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
+import { DocumentSignaturePanel } from "@/app/components/shared/DocumentSignaturePanel"
+import { isSignableDocType } from "@/app/actions/transaction-document-signatures"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -294,6 +296,15 @@ interface TransactionDetailClientProps {
     esign_completed_at?: string | null
     buyer_signed_at?: string | null
   } | null
+  // Existing contract_signatures rows for this brokerage — keyed by contract_type
+  contractSignatures?: Record<string, {
+    id: string
+    esign_status: string
+    provider_name: string | null
+    sent_at: string | null
+    agent_signed_at: string | null
+    fully_signed_at: string | null
+  }>
 }
 
 // ─── COMPONENT ─────────────────────────────────────────────────────────────────
@@ -328,6 +339,7 @@ export function TransactionDetailClient({
   contactName,
   connectedEsignProvider,
   linkedOffer,
+  contractSignatures = {},
 }: TransactionDetailClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -1588,25 +1600,55 @@ export function TransactionDetailClient({
                 <CardContent className="pt-4">
                   {documents.length > 0 ? (
                     <div className="space-y-2">
-                      {documents.map((d) => (
-                        <div key={d.id} className="flex items-center justify-between py-2 border-b last:border-0">
-                          <div>
-                            <p className="text-sm font-medium">{d.doc_label ?? d.doc_type}</p>
-                            <p className="text-xs text-muted-foreground">{d.doc_type.replace(/_/g, " ")}</p>
+                      {documents.map((d) => {
+                        const signable = isSignableDocType(d.doc_type)
+                        const sig = contractSignatures[d.doc_type] ?? null
+                        return (
+                          <div key={d.id} className="py-2 border-b last:border-0 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-sm font-medium">{d.doc_label ?? d.doc_type}</p>
+                                <p className="text-xs text-muted-foreground">{d.doc_type.replace(/_/g, " ")}</p>
+                              </div>
+                              <Badge
+                                variant={
+                                  d.status === "approved"
+                                    ? "default"
+                                    : d.status === "pending_signature"
+                                    ? "secondary"
+                                    : d.status === "rejected"
+                                    ? "destructive"
+                                    : "secondary"
+                                }
+                              >
+                                {d.status.replace(/_/g, " ")}
+                              </Badge>
+                            </div>
+                            {signable && (
+                              <DocumentSignaturePanel
+                                transactionId={transaction.id}
+                                documentId={d.id}
+                                docType={d.doc_type}
+                                docLabel={d.doc_label}
+                                userId={userId}
+                                brokerageId={brokerageId}
+                                connectedProvider={connectedEsignProvider ?? null}
+                                existingSignatureId={sig?.id ?? null}
+                                esignStatus={sig?.esign_status ?? null}
+                                providerName={sig?.provider_name ?? null}
+                                sentAt={sig?.sent_at ?? null}
+                                agentSignedAt={sig?.agent_signed_at ?? null}
+                                fullySignedAt={sig?.fully_signed_at ?? null}
+                                defaultSigners={
+                                  contactEmail
+                                    ? [{ name: contactName ?? "Contact", email: contactEmail, role: "signer" }]
+                                    : []
+                                }
+                              />
+                            )}
                           </div>
-                          <Badge
-                            variant={
-                              d.status === "approved"
-                                ? "default"
-                                : d.status === "rejected"
-                                ? "destructive"
-                                : "secondary"
-                            }
-                          >
-                            {d.status}
-                          </Badge>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   ) : (
                     <p className="text-sm text-muted-foreground">No documents uploaded.</p>

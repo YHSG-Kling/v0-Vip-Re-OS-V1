@@ -104,6 +104,28 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     ? { platform: providerCred.platform, accountName: providerCred.account_name ?? null }
     : null
 
+  // Fetch contract_signatures for this brokerage — used to show send/resend per transaction doc
+  const { data: contractSigsRows } = await supabase
+    .from("contract_signatures")
+    .select("id, contract_type, esign_status, provider_name, sent_at, agent_signed_at, fully_signed_at")
+    .eq("brokerage_id", brokerageId)
+    .order("created_at", { ascending: false })
+
+  // Key by contract_type (doc_type) — most recent wins
+  const contractSignatures = (contractSigsRows ?? []).reduce((acc, s) => {
+    if (!acc[s.contract_type]) {
+      acc[s.contract_type] = {
+        id: s.id,
+        esign_status: s.esign_status,
+        provider_name: s.provider_name,
+        sent_at: s.sent_at,
+        agent_signed_at: s.agent_signed_at,
+        fully_signed_at: s.fully_signed_at,
+      }
+    }
+    return acc
+  }, {} as Record<string, { id: string; esign_status: string; provider_name: string | null; sent_at: string | null; agent_signed_at: string | null; fully_signed_at: string | null }>)
+
   // Fetch all related data in parallel — using actual Supabase tables
   const [
     { data: milestones },
@@ -289,6 +311,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       contactName={contactName}
       connectedEsignProvider={connectedEsignProvider}
       linkedOffer={linkedOfferRow ?? null}
+      contractSignatures={contractSignatures}
     />
   )
 }

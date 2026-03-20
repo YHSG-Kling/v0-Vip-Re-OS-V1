@@ -18,6 +18,7 @@ import {
   NeighborhoodStoryCard,
   LaunchActionsPanel,
 } from "../components/launch"
+import { ListingAgreementStatusCard } from "./components/listing-agreement-status-card"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -67,6 +68,15 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     .eq("listing_id", listingId)
     .eq("auto_generated", true)
     .order("due_date", { ascending: true })
+
+  // Fetch listing agreement esign status (most recent agreement for this listing)
+  const { data: listingAgreement } = await supabase
+    .from("listing_agreements")
+    .select("id, agreement_type, esign_status, provider_name, provider_ref, seller_signed_at, agent_signed_at, fully_executed_at, document_url, document_name, effective_date")
+    .eq("listing_id", listingId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
 
   // Parallel fetch for launch readiness data
   const [mediaResult, videosResult, openHouseResult, tierResult, neighborhoodResult, packetResult] =
@@ -232,6 +242,10 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
             pricingNarrativeReady={pricingNarrativeReady}
             marketTrend={neighborhoodReport?.market_trend}
             medianPrice={neighborhoodReport?.median_home_price}
+          />
+          <ListingAgreementStatusCard
+            listingId={listingId}
+            agreement={listingAgreement ?? null}
           />
         </div>
 
