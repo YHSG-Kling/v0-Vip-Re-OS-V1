@@ -3,10 +3,11 @@
 import { useState } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
-import { CalendarDays, Megaphone, BarChart3 } from "lucide-react"
+import { CalendarDays, Megaphone, BarChart3, Sparkles } from "lucide-react"
 import { MarketingTab } from "./tabs/marketing-tab"
 import { EventDayTab } from "./tabs/event-day-tab"
 import { AnalyticsTab } from "./tabs/analytics-tab"
+import { IntelligenceTab } from "./tabs/intelligence-tab"
 
 interface Props {
   listingId: string
@@ -41,7 +42,7 @@ export function OpenHouseClient({ listingId, initialData }: Props) {
       </div>
 
       <Tabs defaultValue="marketing" className="w-full">
-        <TabsList className="grid w-full max-w-md grid-cols-3">
+        <TabsList className="grid w-full max-w-xl grid-cols-4">
           <TabsTrigger value="marketing" className="flex items-center gap-1.5">
             <Megaphone className="h-3.5 w-3.5" />
             Marketing
@@ -49,6 +50,10 @@ export function OpenHouseClient({ listingId, initialData }: Props) {
           <TabsTrigger value="event-day" className="flex items-center gap-1.5">
             <CalendarDays className="h-3.5 w-3.5" />
             Event Day
+          </TabsTrigger>
+          <TabsTrigger value="intelligence" className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5" />
+            Intelligence
           </TabsTrigger>
           <TabsTrigger value="analytics" className="flex items-center gap-1.5">
             <BarChart3 className="h-3.5 w-3.5" />
@@ -62,6 +67,10 @@ export function OpenHouseClient({ listingId, initialData }: Props) {
 
         <TabsContent value="event-day" className="mt-6">
           <EventDayTab listingId={listingId} data={data} onRefresh={setData} />
+        </TabsContent>
+
+        <TabsContent value="intelligence" className="mt-6">
+          <IntelligenceTab listingId={listingId} data={data} />
         </TabsContent>
 
         <TabsContent value="analytics" className="mt-6">

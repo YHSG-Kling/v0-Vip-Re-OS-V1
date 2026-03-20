@@ -17,7 +17,9 @@ import {
   TimelineRiskCard,
   SellerNetSheetCard,
 } from "./components/intelligence"
+// SellerNetSheetCard is also used in the overview tab per-offer — same import above
 import { triggerOfferComparison, generateSellerPortalLink, acceptOffer, rejectOffer } from "@/app/actions/seller-offers"
+import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
 import { toast } from "@/hooks/use-toast"
 
 type Offer = {
@@ -187,6 +189,9 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
         </div>
       </div>
 
+      {/* Seller Decision Readiness — always shown so agent can verify before reviewing offers */}
+      <SellerDecisionReadinessCard listingId={listing.id} />
+
       {/* AI recommendation banner */}
       {aiResult && (
         <AIRecommendationBanner
@@ -225,16 +230,27 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
           ) : (
             <div className="flex flex-col gap-4">
               {activeOffers.map((offer) => (
-                <OfferCard
-                  key={offer.id}
-                  offer={offer}
-                  listPrice={listing.list_price ?? 0}
-                  canApprove={canApprove}
-                  isPending={isPending}
-                  onAccept={() => handleAccept(offer.id)}
-                  onReject={() => handleReject(offer.id)}
-                  onCounter={() => setCounterTarget(offer)}
-                />
+                <div key={offer.id} className="flex flex-col gap-2">
+                  <OfferCard
+                    offer={offer}
+                    listPrice={listing.list_price ?? 0}
+                    canApprove={canApprove}
+                    isPending={isPending}
+                    onAccept={() => handleAccept(offer.id)}
+                    onReject={() => handleReject(offer.id)}
+                    onCounter={() => setCounterTarget(offer)}
+                  />
+                  <SellerNetSheetCard
+                    offer={offer}
+                    listing={{
+                      id: listing.id,
+                      state: listing.state,
+                      agent_id: listing.agent_id,
+                    }}
+                    agentId={listing.agent_id ?? currentUserId}
+                    county={listing.city ?? undefined}
+                  />
+                </div>
               ))}
             </div>
           )}
