@@ -5,6 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { getBrokerageDashboard, forecastBrokerageRevenue, trackLicenseExpirations } from "@/app/actions/multi-persona"
 import { getRecruitingROISummary, getRecruitingCostBreakdown, getBreakEvenAnalysis } from "@/app/actions/recruiting-roi"
 import { getHighFatigueBuyers, getBrokerageFatigueAlerts } from "@/app/actions/fatigue"
+import { getSystemProviderStatus } from "@/app/actions/settings/provider-settings-actions"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import {
@@ -34,6 +35,9 @@ import {
   type BrokerPriority,
   type BrokerAction,
 } from "./components/command-center"
+import { BrokerRecruitingActionBar } from "./components/broker-recruiting-action-bar"
+import { BrokerProviderHealthActions } from "./components/broker-provider-health-actions"
+import { BrokerTeamAssignmentBar } from "./components/broker-team-assignment-bar"
 
 export default async function BrokerageDashboard({
   searchParams,
@@ -79,6 +83,8 @@ export default async function BrokerageDashboard({
     fatigueAlertsResult,
     dealHealthResult,
     transactionsResult,
+    providerStatusResult,
+    unassignedLeadsResult,
   ] = await Promise.all([
     getBrokerageDashboard(brokerageId),
     forecastBrokerageRevenue(brokerageId, 3),
@@ -123,7 +129,16 @@ export default async function BrokerageDashboard({
       .from("transactions")
       .select("id, property_address, close_date, agent_id, contact_id")
       .eq("brokerage_id", brokerageId)
-      .in("stage", ["active", "pending", "contingent"])
+      .in("stage", ["active", "pending", "contingent"]),
+    // Provider health status
+    getSystemProviderStatus().catch(() => ({ directMailEnabled: true, videoEnabled: true })),
+    // Unassigned leads count
+    supabase
+      .from("leads")
+      .select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId)
+      .is("assigned_agent_id", null)
+      .eq("is_active", true),
   ])
 
   const { agents, activeTransactions, complianceRate, totalGCI, pendingCommissions } = dashboard
@@ -337,12 +352,12 @@ export default async function BrokerageDashboard({
     daysSearching: b.days_searching,
   }))
 
-  // Provider status (mock for now - can be wired to real integrations)
+  // Real provider status from settings
   const providerStatus = [
-    { name: "MLS Sync", status: "healthy" as const, lastSync: "2 min ago" },
-    { name: "Email Integration", status: "healthy" as const, lastSync: "5 min ago" },
-    { name: "Calendar Sync", status: "healthy" as const, lastSync: "10 min ago" },
+    { name: "Direct Mail", status: (providerStatusResult.directMailEnabled ? "healthy" : "degraded") as "healthy" | "degraded" | "failing" },
+    { name: "Video", status: (providerStatusResult.videoEnabled ? "healthy" : "degraded") as "healthy" | "degraded" | "failing" },
   ]
+  const unassignedLeadsCount = unassignedLeadsResult.count ?? 0
 
   // Agent performance (derived from dashboard agents)
   const agentPerformance = (agents || []).slice(0, 5).map((agent: any) => ({
@@ -527,8 +542,25 @@ export default async function BrokerageDashboard({
             summary={recruitingROI}
             costBreakdown={costBreakdown}
           />
+          <BrokerRecruitingActionBar
+            brokerageId={brokerageId}
+            breakEvenAnalysis={breakEvenAnalysis}
+            costBreakdown={costBreakdown}
+          />
           <BrokerActionStack actions={brokerActions} />
         </div>
+      </div>
+
+      {/* Provider Health + Team Assignment — full width correction row */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <BrokerProviderHealthActions
+          providerStatus={providerStatus}
+          brokerageId={brokerageId}
+        />
+        <BrokerTeamAssignmentBar
+          unassignedLeadsCount={unassignedLeadsCount}
+          brokerageId={brokerageId}
+        />
       </div>
 
       {/* Team Performance Panel */}
