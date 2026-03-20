@@ -30,17 +30,29 @@ export async function startOfferDraft(params: {
   return { success: true }
 }
 
-// ─── TYPES ────────────────────────────────────────────────────────────────────
+// ─── RESOLVE CONNECTED E-SIGN PROVIDER ────────────────────────────────────────
+// Reads the active e-sign platform credential for the brokerage from
+// platform_credentials. Returns null if none is connected — callers must block
+// the "Send for Signatures" action and prompt the user to connect in Settings.
+export async function getConnectedEsignProvider(brokerageId: string): Promise<{
+  platform:     string
+  accountName:  string | null
+} | null> {
+  if (!isValidUUID(brokerageId)) return null
+  const supabase = createServiceClient()
+  const { data } = await supabase
+    .from("platform_credentials")
+    .select("platform, account_name")
+    .eq("brokerage_id", brokerageId)
+    .in("platform", ["dotloop", "docusign", "skyslope", "authentisign"])
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!data) return null
+  return { platform: data.platform, accountName: data.account_name ?? null }
+}
 
-export interface StrategyRecommendation {
-  id: string
-  recommended_price:         number
-  recommended_earnest:       number
-  recommended_contingencies: {
-    financing:  boolean; financing_days:  number
-    inspection: boolean; inspection_days: number
-    appraisal:  boolean; appraisal_days:  number
-  }
   strategy_type:      "standard" | "aggressive" | "conservative"
   ai_narrative:       string
   success_probability: number
