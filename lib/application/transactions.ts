@@ -2294,7 +2294,7 @@ function getPersonaSpecificTools(persona: string) {
       { name: "First-Time Buyer Guide", url: "/resources/first-time", icon: "book" },
     ],
     motivated_seller: [
-      { name: "Home Value Estimator", url: "/tools/home-value", icon: "dollar-sign" },
+      { name: "Home Value Estimator", url: "/home-value", icon: "dollar-sign" },
       { name: "Seller Net Calculator", url: "/tools/seller-net", icon: "calculator" },
       { name: "Staging Checklist", url: "/resources/staging", icon: "check-square" },
       { name: "Market Timeline", url: "/tools/market-timeline", icon: "clock" },

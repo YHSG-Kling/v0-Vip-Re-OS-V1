@@ -40,6 +40,9 @@ import {
   ChevronRight,
   Loader2,
   TrendingUp,
+  ChevronDown,
+  ChevronUp,
+  Home,
 } from "lucide-react"
 import {
   getLeads,
@@ -49,6 +52,10 @@ import {
 } from "@/app/actions/lead-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
 import { getTopConversionCandidates } from "@/app/actions/ai-predictions"
+import {
+  getIntelligenceDashboardStats,
+  getMotivatedSellers,
+} from "@/app/actions/lead-intelligence"
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
 import { HotLeadCard } from "@/app/components/shared/HotLeadCard"
 import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/types/lead-management"
@@ -86,6 +93,11 @@ export default function LeadsPage() {
   // Top conversion candidates
   const [conversionCandidates, setConversionCandidates] = useState<any[]>([])
   const [candidatesLoading, setCandidatesLoading] = useState(true)
+
+  // Lead intelligence dashboard
+  const [intelligenceStats, setIntelligenceStats] = useState<any>(null)
+  const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
+  const [sellersExpanded, setSellersExpanded] = useState(false)
 
   // Fetch leads
   const fetchLeads = async () => {
@@ -149,6 +161,14 @@ export default function LeadsPage() {
       } finally {
         setCandidatesLoading(false)
       }
+
+      // Load intelligence stats + motivated sellers in parallel
+      const [statsResult, sellersResult] = await Promise.all([
+        getIntelligenceDashboardStats().catch(() => null),
+        getMotivatedSellers({ min_score: 60 }).catch(() => ({ success: false, sellers: [] })),
+      ])
+      if (statsResult?.success) setIntelligenceStats(statsResult.stats)
+      setMotivatedSellers(sellersResult?.sellers ?? [])
     }
     loadHotLeads()
   }, [])
@@ -470,6 +490,97 @@ export default function LeadsPage() {
                     </div>
                   )
                 })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Lead Intelligence Dashboard */}
+        {intelligenceStats && (
+          <div className="mb-6 grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Card className="p-4">
+              <p className="text-xs text-muted-foreground">Total Profiles</p>
+              <p className="text-2xl font-bold">{intelligenceStats.totalLeads}</p>
+              <p className="text-xs text-emerald-600">{intelligenceStats.hotLeads} hot</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-xs text-muted-foreground">Ready for Outreach</p>
+              <p className="text-2xl font-bold">{intelligenceStats.readyForOutreach}</p>
+              <p className="text-xs text-muted-foreground">AI-qualified</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-xs text-muted-foreground">Motivated Sellers</p>
+              <p className="text-2xl font-bold">{intelligenceStats.motivatedSellers}</p>
+              <p className="text-xs text-amber-600">Active signals</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-xs text-muted-foreground">Conversion Rate</p>
+              <p className="text-2xl font-bold">
+                {intelligenceStats.totalLeads > 0
+                  ? Math.round((intelligenceStats.readyForOutreach / intelligenceStats.totalLeads) * 100)
+                  : 0}%
+              </p>
+              <p className="text-xs text-muted-foreground">Pipeline to outreach</p>
+            </Card>
+          </div>
+        )}
+
+        {/* Motivated Sellers — collapsible, starts collapsed */}
+        {motivatedSellers.length > 0 && (
+          <div className="mb-6 rounded-lg border bg-card">
+            <button
+              onClick={() => setSellersExpanded((v) => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-muted/50 transition-colors rounded-lg"
+            >
+              <span className="flex items-center gap-2">
+                <Home className="h-4 w-4 text-amber-500" />
+                {motivatedSellers.length} Motivated Seller{motivatedSellers.length !== 1 ? "s" : ""} detected
+              </span>
+              {sellersExpanded ? (
+                <ChevronUp className="h-4 w-4 text-muted-foreground" />
+              ) : (
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              )}
+            </button>
+            {sellersExpanded && (
+              <div className="px-4 pb-4">
+                <div className="flex gap-3 overflow-x-auto pb-1">
+                  {motivatedSellers.map((seller: any, i: number) => {
+                    const prop = seller.property
+                    const address = prop?.address ?? "Unknown address"
+                    const city = prop?.city ?? ""
+                    const score = seller.readiness_to_sell_score ?? 0
+                    const timeframe = seller.predicted_timeframe ?? "unknown"
+                    const signalType = seller.motivation_type ?? seller.signal_source ?? "signal detected"
+                    const profileId = seller.unified_lead_profile_id ?? null
+                    return (
+                      <div
+                        key={seller.id ?? i}
+                        className="shrink-0 w-56 rounded-lg border bg-background p-3 flex flex-col gap-2"
+                      >
+                        <div>
+                          <p className="text-sm font-medium leading-snug truncate">{address}</p>
+                          {city && <p className="text-xs text-muted-foreground">{city}</p>}
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-2 py-0.5">
+                            Score: {score}
+                          </span>
+                          <span className="text-xs text-muted-foreground capitalize">{timeframe}</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground truncate capitalize">{signalType}</p>
+                        {profileId && (
+                          <a
+                            href={`/crm/${profileId}`}
+                            className="mt-auto text-xs text-primary underline underline-offset-2 hover:no-underline"
+                          >
+                            View Profile
+                          </a>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
             )}
           </div>

@@ -1263,7 +1263,7 @@ Timeline: ${profile.estimated_timeline}
 
     const valueOffer = profile.intent_type === "seller" ? {
       type: "cma_report",
-      link: `/tools/home-value?ref=${profile.id}`,
+      link: `/home-value?ref=${profile.id}`,
     } : {
       type: "neighborhood_tool",
       link: `/tools/neighborhood-compare?ref=${profile.id}`,
