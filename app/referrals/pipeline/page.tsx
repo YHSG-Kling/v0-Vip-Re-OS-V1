@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Phone, CheckCircle, XCircle, Clock } from "lucide-react"
 import Link from "next/link"
 import { getAgentContext } from "@/lib/identity"
+import { PipelineOsClient } from "./pipeline-os-client"
 
 export const dynamic = "force-dynamic"
 
@@ -41,6 +42,23 @@ export default async function ReferralPipelinePage() {
 
   return (
     <div className="container mx-auto p-6 space-y-6">
+      {/* OS Pipeline Panel */}
+      <PipelineOsClient
+        agentId={agentId}
+        brokerageId={brokerageId}
+        referrals={(referrals || []).map((r) => ({
+          id: r.id,
+          referral_name: r.referred_name,
+          status: r.status,
+          source_contact_id: r.referring_contact_id,
+          source_contact_name: r.referring_contact
+            ? `${r.referring_contact.first_name} ${r.referring_contact.last_name}`
+            : undefined,
+          created_at: r.referral_date,
+          value_estimate: r.potential_value,
+        }))}
+      />
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Referral Pipeline</h1>

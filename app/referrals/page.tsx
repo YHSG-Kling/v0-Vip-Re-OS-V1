@@ -1,9 +1,13 @@
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { getReferralROI, getReferralLeaderboard } from "@/app/actions/referral-management"
+import { getReferralROI, getReferralLeaderboard, getReferrals } from "@/app/actions/referral-management"
+import { aiScoreSphereEngagement } from "@/app/actions/ai-sphere-management"
+import { getLeaderboardWidget } from "@/app/actions/gamification"
 import { PlusCircle, Users, DollarSign, TrendingUp, Award } from "lucide-react"
 import Link from "next/link"
 import { CreateReferralSheet } from "@/app/components/referrals/CreateReferralSheet"
+import { getAgentContext } from "@/lib/identity"
+import { ReferralsOsClient } from "./referrals-os-client"
 
 export const dynamic = "force-dynamic"
 
@@ -13,12 +17,48 @@ export default async function ReferralsPage({
   searchParams: Promise<{ action?: string }>
 }) {
   const params = await searchParams
-  const stats = await getReferralROI()
-  const leaderboard = await getReferralLeaderboard()
+  const { agentId, brokerageId } = await getAgentContext()
+
+  const [stats, leaderboard, referrals, sphereScore, leaderboardWidget] = await Promise.all([
+    getReferralROI(),
+    getReferralLeaderboard(),
+    getReferrals({ agentId, brokerageId }),
+    aiScoreSphereEngagement({ agentId }).catch(() => null),
+    getLeaderboardWidget({ agentId, brokerageId }).catch(() => null),
+  ])
+
   const isCreateOpen = params.action === "create"
+  const pendingReferrals = referrals?.filter((r: any) => r.status === "new" || r.status === "contacted").length || 0
 
   return (
     <div className="container mx-auto p-6 space-y-6">
+      {/* OS Command Strip + Pipeline + Action Stack */}
+      <ReferralsOsClient
+        agentId={agentId}
+        brokerageId={brokerageId}
+        referralCount={stats.totalReferrals}
+        pendingReferrals={pendingReferrals}
+        roiSummary={{
+          totalReferrals: stats.totalReferrals,
+          converted: stats.closed,
+          conversionRate: stats.conversionRate,
+          totalValue: stats.totalValue,
+        }}
+        referrals={(referrals || []).map((r: any) => ({
+          id: r.id,
+          referral_name: r.referred_name,
+          status: r.status,
+          source_contact_id: r.referring_contact_id,
+          source_contact_name: r.referring_contact
+            ? `${r.referring_contact.first_name} ${r.referring_contact.last_name}`
+            : undefined,
+          created_at: r.referral_date,
+          value_estimate: r.potential_value,
+        }))}
+        sphereScore={sphereScore}
+        leaderboardWidget={leaderboardWidget}
+      />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

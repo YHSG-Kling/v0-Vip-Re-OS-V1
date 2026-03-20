@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 import { aiGenerateReviewRequest } from "@/app/actions/ai-review-automation"
+import { ReviewRequestPanel, GratitudeGiftingPanel } from "@/app/dashboard/referrals/components/os"
 
 interface ReputationClientProps {
   agentId: string
@@ -195,6 +196,37 @@ export function ReputationClient({
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* OS Review Request Panel */}
+      <div id="review-section">
+        <ReviewRequestPanel
+          agentId={agentId}
+          recentClosings={recentClosings.map((c: any) => ({
+            id: c.id,
+            contact_id: c.contact_id,
+            contactName: `${c.contacts?.first_name || ""} ${c.contacts?.last_name || ""}`.trim() || "Client",
+            address: c.property_address,
+            closeDate: c.close_date,
+            transactionId: c.id,
+          }))}
+          existingReviews={reviews.map((r: any) => ({
+            id: r.id,
+            platform: r.platform || "google",
+            rating: r.rating || 5,
+            review_text: r.review_text || "",
+          }))}
+        />
+      </div>
+
+      {/* OS Gratitude Panel - for first recent closing */}
+      {recentClosings && recentClosings.length > 0 && (
+        <GratitudeGiftingPanel
+          agentId={agentId}
+          contactId={recentClosings[0].contact_id}
+          contactName={`${recentClosings[0].contacts?.first_name || ""} ${recentClosings[0].contacts?.last_name || ""}`.trim() || "Client"}
+          occasion="closing"
+        />
       )}
 
       {/* Main Reputation Panel */}
