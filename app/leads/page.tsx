@@ -28,6 +28,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Upload,
   Search,
@@ -43,6 +44,8 @@ import {
   ChevronDown,
   ChevronUp,
   Home,
+  Brain,
+  ExternalLink,
 } from "lucide-react"
 import {
   getLeads,
@@ -55,7 +58,9 @@ import { getTopConversionCandidates } from "@/app/actions/ai-predictions"
 import {
   getIntelligenceDashboardStats,
   getMotivatedSellers,
+  getUnifiedLeadProfiles,
 } from "@/app/actions/lead-intelligence"
+import LeadIntelligencePanel from "@/app/components/intelligence/LeadIntelligencePanel"
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
 import { HotLeadCard } from "@/app/components/shared/HotLeadCard"
 import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/types/lead-management"
@@ -98,6 +103,14 @@ export default function LeadsPage() {
   const [intelligenceStats, setIntelligenceStats] = useState<any>(null)
   const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
   const [sellersExpanded, setSellersExpanded] = useState(false)
+
+  // Unified lead profiles (Part C — ready for outreach, min confidence 70)
+  const [unifiedProfiles, setUnifiedProfiles] = useState<any[]>([])
+  const [profilesLoading, setProfilesLoading] = useState(false)
+
+  // Selected lead for inline LeadIntelligencePanel
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null)
+  const [selectedLeadData, setSelectedLeadData] = useState<any>(null)
 
   // Fetch leads
   const fetchLeads = async () => {
@@ -162,13 +175,17 @@ export default function LeadsPage() {
         setCandidatesLoading(false)
       }
 
-      // Load intelligence stats + motivated sellers in parallel
-      const [statsResult, sellersResult] = await Promise.all([
+      // Load intelligence stats + motivated sellers + unified profiles in parallel
+      setProfilesLoading(true)
+      const [statsResult, sellersResult, profilesResult] = await Promise.all([
         getIntelligenceDashboardStats().catch(() => null),
         getMotivatedSellers({ min_score: 60 }).catch(() => ({ success: false, sellers: [] })),
+        getUnifiedLeadProfiles({ ready_for_outreach: true, min_confidence: 70 }).catch(() => ({ success: false, profiles: [] })),
       ])
       if (statsResult?.success) setIntelligenceStats(statsResult.stats)
       setMotivatedSellers(sellersResult?.sellers ?? [])
+      setUnifiedProfiles(profilesResult?.profiles ?? [])
+      setProfilesLoading(false)
     }
     loadHotLeads()
   }, [])
@@ -304,6 +321,22 @@ export default function LeadsPage() {
             </DialogContent>
           </Dialog>
         </div>
+
+        <Tabs defaultValue="leads" className="space-y-6">
+          <TabsList>
+            <TabsTrigger value="leads">Lead List</TabsTrigger>
+            <TabsTrigger value="intelligence" className="flex items-center gap-1.5">
+              <Brain className="h-3.5 w-3.5" />
+              Intelligence
+              {intelligenceStats?.readyForOutreach > 0 && (
+                <span className="ml-1 rounded-full bg-primary text-primary-foreground text-xs px-1.5 py-0.5 leading-none">
+                  {intelligenceStats.readyForOutreach}
+                </span>
+              )}
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="leads" className="space-y-6 mt-0">
 
         {/* Filters Card */}
         <Card>
@@ -525,8 +558,8 @@ export default function LeadsPage() {
           </div>
         )}
 
-        {/* Motivated Sellers — collapsible, starts collapsed */}
-        {motivatedSellers.length > 0 && (
+          {/* Motivated Sellers — collapsible, starts collapsed — in Lead List tab */}
+          {motivatedSellers.length > 0 && (
           <div className="mb-6 rounded-lg border bg-card">
             <button
               onClick={() => setSellersExpanded((v) => !v)}
@@ -586,7 +619,197 @@ export default function LeadsPage() {
           </div>
         )}
 
-        {/* Leads Table */}
+          {/* ── INTELLIGENCE TAB ──────────────────────────────────── */}
+          <TabsContent value="intelligence" className="space-y-6 mt-0">
+
+            {/* Stats row */}
+            {intelligenceStats && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <Card className="p-4">
+                  <p className="text-xs text-muted-foreground">Total Profiles</p>
+                  <p className="text-2xl font-bold">{intelligenceStats.totalLeads}</p>
+                  <p className="text-xs text-emerald-600">{intelligenceStats.hotLeads} hot</p>
+                </Card>
+                <Card className="p-4">
+                  <p className="text-xs text-muted-foreground">Ready for Outreach</p>
+                  <p className="text-2xl font-bold">{intelligenceStats.readyForOutreach}</p>
+                  <p className="text-xs text-muted-foreground">AI-qualified</p>
+                </Card>
+                <Card className="p-4">
+                  <p className="text-xs text-muted-foreground">Motivated Sellers</p>
+                  <p className="text-2xl font-bold">{intelligenceStats.motivatedSellers}</p>
+                  <p className="text-xs text-amber-600">Active signals</p>
+                </Card>
+                <Card className="p-4">
+                  <p className="text-xs text-muted-foreground">Pipeline Rate</p>
+                  <p className="text-2xl font-bold">
+                    {intelligenceStats.totalLeads > 0
+                      ? Math.round((intelligenceStats.readyForOutreach / intelligenceStats.totalLeads) * 100)
+                      : 0}%
+                  </p>
+                  <p className="text-xs text-muted-foreground">to outreach</p>
+                </Card>
+              </div>
+            )}
+
+            {/* Part C — Top Profiles Ready for Outreach */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="h-4 w-4 text-emerald-500" />
+                  <h2 className="text-base font-semibold">Top Profiles Ready for Outreach</h2>
+                  <span className="text-xs text-muted-foreground">min. 70% confidence · AI-qualified</span>
+                </div>
+              </div>
+              {profilesLoading ? (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {[1, 2, 3].map((i) => (
+                    <div key={i} className="h-24 bg-muted animate-pulse rounded-lg" />
+                  ))}
+                </div>
+              ) : unifiedProfiles.length === 0 ? (
+                <Card>
+                  <CardContent className="py-10 text-center text-muted-foreground text-sm">
+                    No profiles at 70%+ confidence yet. Enrich more leads to surface candidates.
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {unifiedProfiles.map((profile: any) => {
+                    const name = profile.full_name
+                      ?? `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim()
+                      || "Unknown"
+                    const confidence = Math.round((profile.confidence_score ?? profile.min_confidence ?? 0) * 100)
+                    const leadId = profile.lead_id ?? profile.id
+                    const isSelected = selectedLeadId === leadId
+                    return (
+                      <button
+                        key={profile.id}
+                        onClick={() => {
+                          setSelectedLeadId(isSelected ? null : leadId)
+                          setSelectedLeadData(isSelected ? null : profile)
+                        }}
+                        className={`text-left rounded-lg border bg-card p-4 space-y-2 transition-colors hover:bg-muted/50 w-full ${
+                          isSelected ? "border-primary ring-1 ring-primary" : ""
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <p className="font-medium text-sm truncate">{name}</p>
+                          <span className="text-xs font-bold text-emerald-600 shrink-0">
+                            {confidence}%
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {profile.intent_type && (
+                            <Badge variant="outline" className="text-xs capitalize">
+                              {profile.intent_type}
+                            </Badge>
+                          )}
+                          {profile.temperature && (
+                            <Badge
+                              className={`text-xs ${
+                                profile.temperature === "hot"
+                                  ? "bg-red-100 text-red-700"
+                                  : profile.temperature === "warm"
+                                  ? "bg-amber-100 text-amber-700"
+                                  : "bg-slate-100 text-slate-600"
+                              }`}
+                            >
+                              {profile.temperature}
+                            </Badge>
+                          )}
+                        </div>
+                        {profile.lead_id && (
+                          <a
+                            href={`/leads/${profile.lead_id}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="flex items-center gap-1 text-xs text-primary underline underline-offset-2 hover:no-underline"
+                          >
+                            View lead <ExternalLink className="h-3 w-3" />
+                          </a>
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Canonical LeadIntelligencePanel — shown when a profile is selected */}
+            {selectedLeadId && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-primary" />
+                  <h2 className="text-base font-semibold">Lead Intelligence</h2>
+                  <button
+                    onClick={() => { setSelectedLeadId(null); setSelectedLeadData(null) }}
+                    className="ml-auto text-xs text-muted-foreground underline underline-offset-2 hover:no-underline"
+                  >
+                    Close
+                  </button>
+                </div>
+                <LeadIntelligencePanel
+                  leadId={selectedLeadId}
+                  initialData={selectedLeadData}
+                />
+              </div>
+            )}
+
+            {/* Motivated Sellers — expanded by default in Intelligence tab */}
+            {motivatedSellers.length > 0 && (
+              <div className="rounded-lg border bg-card">
+                <div className="flex items-center gap-2 px-4 py-3">
+                  <Home className="h-4 w-4 text-amber-500" />
+                  <h2 className="text-sm font-semibold">
+                    {motivatedSellers.length} Motivated Seller{motivatedSellers.length !== 1 ? "s" : ""} — Active Signals
+                  </h2>
+                </div>
+                <div className="px-4 pb-4">
+                  <div className="flex gap-3 overflow-x-auto pb-1">
+                    {motivatedSellers.map((seller: any, i: number) => {
+                      const prop = seller.property
+                      const address = prop?.address ?? "Unknown address"
+                      const city = prop?.city ?? ""
+                      const score = seller.readiness_to_sell_score ?? 0
+                      const timeframe = seller.predicted_timeframe ?? "unknown"
+                      const signalType = seller.motivation_type ?? seller.signal_source ?? "signal detected"
+                      const profileId = seller.unified_lead_profile_id ?? null
+                      return (
+                        <div
+                          key={seller.id ?? i}
+                          className="shrink-0 w-56 rounded-lg border bg-background p-3 flex flex-col gap-2"
+                        >
+                          <div>
+                            <p className="text-sm font-medium leading-snug truncate">{address}</p>
+                            {city && <p className="text-xs text-muted-foreground">{city}</p>}
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-2 py-0.5">
+                              Score: {score}
+                            </span>
+                            <span className="text-xs text-muted-foreground capitalize">{timeframe}</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground truncate capitalize">{signalType}</p>
+                          {profileId && (
+                            <a
+                              href={`/crm/${profileId}`}
+                              className="mt-auto text-xs text-primary underline underline-offset-2 hover:no-underline"
+                            >
+                              View Profile
+                            </a>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+          </TabsContent>{/* end Intelligence tab */}
+        </Tabs>{/* end Tabs wrapper */}
+
+        {/* Leads Table — always visible (shared context for both tabs) */}
         <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto">

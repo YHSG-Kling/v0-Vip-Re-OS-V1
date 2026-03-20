@@ -1,3 +1,6 @@
+// CANONICAL — always import LeadIntelligencePanel from this path.
+// The duplicate at app/components/features/intelligence/LeadIntelligencePanel.tsx
+// re-exports from here and exists only for backwards-compat during migration.
 "use client"
 
 import { useState } from "react"

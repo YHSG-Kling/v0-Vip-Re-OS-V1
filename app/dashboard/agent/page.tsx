@@ -8,8 +8,12 @@ import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTran
 import { getUpcomingAnniversaries } from "@/app/actions/past-clients"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
+import { getMotivatedSellers } from "@/app/actions/lead-intelligence"
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import Link from "next/link"
 // Components
 import { AgentCommandStrip } from "./components/agent-command-strip"
 import { AgentOperatingRadar } from "./components/agent-operating-radar"
@@ -50,6 +54,7 @@ export default function AgentDashboard() {
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
+  const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
 
   useEffect(() => {
     const loadData = async () => {
@@ -166,6 +171,11 @@ export default function AgentDashboard() {
           setLifeChanges(results[8].value || [])
         }
 
+        // Motivated sellers — loaded separately to not block main data
+        getMotivatedSellers({ min_score: 60 })
+          .then((r) => setMotivatedSellers(r?.sellers ?? []))
+          .catch(() => null)
+
       } catch (error) {
         console.error("[v0] Error loading agent dashboard:", error)
       } finally {
@@ -277,6 +287,44 @@ export default function AgentDashboard() {
               activeTransactionCount={stats.activeTransactions}
               loading={loading}
             />
+            {motivatedSellers.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      Motivated Seller Alerts
+                    </span>
+                    <Link
+                      href="/leads?tab=intelligence"
+                      className="text-xs text-primary font-normal underline underline-offset-2 hover:no-underline"
+                    >
+                      View all
+                    </Link>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {motivatedSellers.slice(0, 4).map((seller: any, i: number) => {
+                    const prop = seller.property
+                    const address = prop?.address ?? "Unknown"
+                    const score = seller.readiness_to_sell_score ?? 0
+                    const timeframe = seller.predicted_timeframe ?? ""
+                    return (
+                      <div key={seller.id ?? i} className="flex items-center justify-between gap-2 text-sm">
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-xs">{address}</p>
+                          {timeframe && (
+                            <p className="text-xs text-muted-foreground capitalize">{timeframe}</p>
+                          )}
+                        </div>
+                        <Badge className="shrink-0 text-xs bg-amber-100 text-amber-700 border-amber-200">
+                          {score}
+                        </Badge>
+                      </div>
+                    )
+                  })}
+                </CardContent>
+              </Card>
+            )}
             <AgentSystemReadiness />
             {agentId && <ThisWeekPreview agentId={agentId} />}
           </div>
