@@ -32,27 +32,22 @@ import {
   getPendingQuoteApprovalsAction,
 } from "@/app/actions/transaction-inspections"
 import {
-  ArrowLeft,
-  ArrowRight,
-  AlertTriangle,
   CheckCircle2,
   Clock,
+  AlertTriangle,
+  CircleDot,
   FileText,
   Users,
-  DollarSign,
-  Calendar,
-  Shield,
-  Home,
-  Wrench,
-  Building2,
-  CircleDot,
-  XCircle,
-  Upload,
-  Plus,
-  Loader2,
-  MapPin,
   Sparkles,
-  CheckSquare,
+  ChevronDown,
+  Loader2,
+  Home,
+  DollarSign,
+  CalendarDays,
+  Building2,
+  Scale,
+  ClipboardList,
+  PenLine,
 } from "lucide-react"
 import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
 import { Progress } from "@/components/ui/progress"
@@ -840,6 +835,33 @@ export function TransactionDetailClient({
                 )}
               </CardContent>
             </Card>
+
+            {/* Pending Signatures Blocker — shown when contract_signatures rows are not yet fully signed */}
+            {Object.values(contractSignatures).some(s => s.esign_status !== "fully_signed") && (
+              <Card className="border-amber-200 bg-amber-50/30">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2 text-amber-800">
+                    <PenLine className="h-4 w-4" />
+                    Signatures Pending
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1.5">
+                  {Object.entries(contractSignatures)
+                    .filter(([, s]) => s.esign_status !== "fully_signed")
+                    .map(([docType, s]) => (
+                      <div key={docType} className="flex items-center justify-between text-xs">
+                        <span className="capitalize text-amber-900">{docType.replace(/_/g, " ")}</span>
+                        <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200">
+                          {s.esign_status?.replace(/_/g, " ") ?? "pending"}
+                        </Badge>
+                      </div>
+                    ))}
+                  <p className="text-xs text-amber-700 pt-1">
+                    Go to the Documents tab to send or resend for signatures.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Next Deadline */}
             {deadlines.length > 0 && (

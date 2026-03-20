@@ -306,6 +306,50 @@ export function DocumentsClient({
         </Card>
       </div>
 
+      {/* Action Required — docs pending buyer/seller signature */}
+      {txDocs.filter(d => d.status === "pending_signature").length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 text-amber-600 shrink-0" />
+            <div>
+              <p className="font-semibold text-sm text-amber-900">Action Required — Signature Needed</p>
+              <p className="text-xs text-amber-700">
+                {txDocs.filter(d => d.status === "pending_signature").length} document(s) are waiting for your signature.
+              </p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {txDocs
+              .filter(d => d.status === "pending_signature")
+              .map(d => (
+                <div key={d.id} className="flex items-center justify-between bg-white rounded-md border border-amber-200 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium">{d.doc_label ?? d.doc_type ?? "Document"}</p>
+                    <p className="text-xs text-muted-foreground capitalize">
+                      {(d.doc_type ?? "").replace(/_/g, " ")}
+                      {d.uploaded_at && (
+                        <> &middot; {formatDistanceToNow(new Date(d.uploaded_at), { addSuffix: true })}</>
+                      )}
+                    </p>
+                  </div>
+                  {d.storage_url ? (
+                    <a href={d.storage_url} target="_blank" rel="noreferrer">
+                      <Button size="sm" className="text-xs bg-amber-600 hover:bg-amber-700 text-white">
+                        <Send className="h-3.5 w-3.5 mr-1.5" />
+                        Open to Sign
+                      </Button>
+                    </a>
+                  ) : (
+                    <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200">
+                      Link pending
+                    </Badge>
+                  )}
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <Tabs defaultValue="my-documents" className="space-y-4">
         <TabsList>
