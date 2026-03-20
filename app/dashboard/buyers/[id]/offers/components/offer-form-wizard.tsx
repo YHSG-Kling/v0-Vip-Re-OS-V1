@@ -134,23 +134,37 @@ export function OfferFormWizard({
   contactId, brokerageId, agentUserId, contactName, contactEmail,
   recommendation, formSource, formProviderRef, esignProvider,
   propertyAddress, propertyCity, propertyState, propertyZip,
-  listingId, propertyAddressAiFilled, onBack, onSuccess,
+  listingId, propertyAddressAiFilled,
+  contingencies, buyerMaxBudget, buyerRiskTolerance,
+  onBack, onSuccess,
 }: OfferFormWizardProps) {
   const [step, setStep]           = useState<Step>("Price")
-  const [form, setForm]           = useState<OfferFormData>(() => ({
-    ...defaultForm(recommendation, propertyAddress),
-    property_city:              propertyCity,
-    property_state:             propertyState,
-    property_zip:               propertyZip,
-    listing_id:                 listingId ?? null,
-    property_address_ai_filled: propertyAddressAiFilled ?? false,
-    form_source:                formSource,
-    form_provider_ref:          formProviderRef,
-    esign_provider:             esignProvider,
-  }))
-  const [createdOfferId, setCreatedOfferId] = useState<string | null>(null)
-  const [submitError, setSubmitError]       = useState<string | null>(null)
-  const [isPending, startTrans]             = useTransition()
+  const [form, setForm]           = useState<OfferFormData>(() => {
+    const base = defaultForm(recommendation, propertyAddress)
+    // Override contingency booleans from the AI contingency step selection
+    // Buyers write offers on properties they don't own — listingId may be null
+    if (contingencies && contingencies.length > 0) {
+      if (!contingencies.includes("Financing Contingency")) base.financing_contingency = false
+      if (!contingencies.includes("Inspection Contingency")) base.inspection_contingency = false
+      if (!contingencies.includes("Appraisal Contingency")) base.appraisal_contingency = false
+    }
+    return {
+      ...base,
+      property_city:              propertyCity,
+      property_state:             propertyState,
+      property_zip:               propertyZip,
+      listing_id:                 listingId ?? null,   // null when buyer's property, set when listing
+      property_address_ai_filled: propertyAddressAiFilled ?? false,
+      form_source:                formSource,
+      form_provider_ref:          formProviderRef,
+      esign_provider:             esignProvider,
+    }
+  })
+  const [createdOfferId, setCreatedOfferId]   = useState<string | null>(null)
+  const [submitError, setSubmitError]         = useState<string | null>(null)
+  const [workflowResult, setWorkflowResult]   = useState<any>(null)
+  const [workflowError, setWorkflowError]     = useState<string | null>(null)
+  const [isPending, startTrans]               = useTransition()
 
   const stepIndex = STEPS.indexOf(step)
   const progress  = ((stepIndex + 1) / STEPS.length) * 100
@@ -188,6 +202,35 @@ export function OfferFormWizard({
     startTrans(async () => {
       await sendOfferForESign(createdOfferId, contactId, brokerageId, agentUserId)
       onSuccess()
+    })
+  }
+
+  // Runs the full AI-orchestrated offer workflow: creates offer, generates docs,
+  // triggers e-sign, logs timeline events — all in one call.
+  function runWorkflow() {
+    setWorkflowError(null)
+    startTrans(async () => {
+      const result = await runCompleteOfferWorkflow({
+        agentId:            agentUserId,
+        buyerId:            contactId,
+        // Buyers write offers on properties they do not own.
+        // listingId is only set when the property is one of the brokerage's listings.
+        listingId:          listingId ?? undefined,
+        propertyAddress:    form.property_address,
+        offerPrice:         form.offer_price,
+        financingType:      form.financing_type,
+        buyerMaxBudget:     buyerMaxBudget ?? form.offer_price,
+        buyerMotivation:    "primary_residence",
+        buyerRiskTolerance: buyerRiskTolerance ?? "moderate",
+        contingencies:      contingencies ?? [],
+        brokerageId,
+      })
+      if (result.success) {
+        setWorkflowResult(result)
+        if (result.offerId) setCreatedOfferId(result.offerId)
+      } else {
+        setWorkflowError(result.error ?? "Workflow failed — try manually submitting the offer.")
+      }
     })
   }
 
@@ -442,6 +485,33 @@ export function OfferFormWizard({
 
   return (
     <div className="flex flex-col h-full">
+      {/* Workflow result banner */}
+      {workflowResult && (
+        <div className="mx-5 mt-4 flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+          <Check className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+          <div className="flex-1 space-y-1">
+            <p className="text-sm font-medium text-emerald-800">Offer workflow complete</p>
+            {workflowResult.stepsCompleted?.length > 0 && (
+              <ul className="space-y-0.5">
+                {workflowResult.stepsCompleted.map((s: string) => (
+                  <li key={s} className="text-xs text-emerald-700">{s}</li>
+                ))}
+              </ul>
+            )}
+            {workflowResult.nextSteps?.length > 0 && (
+              <p className="text-xs text-emerald-700 pt-1 font-medium">
+                Next: {workflowResult.nextSteps[0]}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+      {workflowError && (
+        <div className="mx-5 mt-4 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+          {workflowError}
+        </div>
+      )}
+
       {/* Progress */}
       <div className="px-5 pt-4 pb-2">
         <div className="flex items-center justify-between mb-2">
@@ -478,30 +548,58 @@ export function OfferFormWizard({
 
       {/* Footer nav */}
       {!isESignPanel && (
-        <div className="border-t border-border px-5 py-4 flex items-center gap-3">
-          <button
-            onClick={prev}
-            disabled={isPending}
-            className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
-          >
-            {stepIndex === 0 ? "Back to Strategy" : "Back"}
-          </button>
+        <div className="border-t border-border px-5 py-4">
           {isReview ? (
-            <button
-              onClick={submitOffer}
-              disabled={isPending}
-              className="ml-auto rounded-md bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
-            >
-              {isPending ? "Creating..." : "Create Offer"}
-            </button>
+            <div className="space-y-2">
+              {/* Primary: full AI workflow */}
+              <button
+                onClick={runWorkflow}
+                disabled={isPending || !!workflowResult}
+                className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {isPending ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" />Running workflow...</>
+                ) : workflowResult ? (
+                  <><Check className="h-4 w-4" />Workflow complete</>
+                ) : (
+                  <><Sparkles className="h-4 w-4" />Run Complete Offer Workflow</>
+                )}
+              </button>
+              {/* Secondary: manual submit */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={prev}
+                  disabled={isPending}
+                  className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={submitOffer}
+                  disabled={isPending || !!workflowResult}
+                  className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
+                >
+                  {isPending ? "Submitting..." : "Submit Manually"}
+                </button>
+              </div>
+            </div>
           ) : (
-            <button
-              onClick={next}
-              disabled={isPending}
-              className="ml-auto rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
-            >
-              Next
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={prev}
+                disabled={isPending}
+                className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
+              >
+                {stepIndex === 0 ? "Back to Strategy" : "Back"}
+              </button>
+              <button
+                onClick={next}
+                disabled={isPending}
+                className="ml-auto rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                Next
+              </button>
+            </div>
           )}
         </div>
       )}
