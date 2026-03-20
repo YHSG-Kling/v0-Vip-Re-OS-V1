@@ -60,7 +60,8 @@ import {
 import { shareListingPost } from "@/app/actions/social-share"
 import { predictPerformanceAction } from "@/app/actions/content-prediction"
 import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
-import { BarChart3 } from "lucide-react"
+import { BarChart3, Sparkles } from "lucide-react"
+import { SocialAiComposer } from "@/app/components/ai-copilot/social-ai-composer"
 
 // Platform icons and colors
 const PLATFORM_CONFIG: Record<
@@ -531,12 +532,26 @@ export function SocialDashboardClient({
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-4">
+          <TabsTrigger value="ai-composer" className="gap-1">
+            <Sparkles className="h-4 w-4" />
+            AI Composer
+          </TabsTrigger>
           <TabsTrigger value="draft">Draft ({counts.draft})</TabsTrigger>
           <TabsTrigger value="scheduled">Scheduled ({counts.scheduled})</TabsTrigger>
           <TabsTrigger value="publishing">Publishing ({counts.publishing})</TabsTrigger>
           <TabsTrigger value="published">Published ({counts.published})</TabsTrigger>
           <TabsTrigger value="failed">Failed ({counts.failed})</TabsTrigger>
         </TabsList>
+
+        {/* AI Composer Tab */}
+        <TabsContent value="ai-composer">
+          <SocialAiComposer
+            agentId={userId}
+            brokerageId={brokerageId}
+            connectedPlatforms={accounts.map(a => a.platform)}
+            onPostScheduled={() => router.refresh()}
+          />
+        </TabsContent>
 
         {["draft", "scheduled", "publishing", "published", "failed"].map((tabValue) => (
           <TabsContent key={tabValue} value={tabValue} className="space-y-4">

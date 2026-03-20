@@ -78,7 +78,7 @@ export function QuickContactPanel({
         isPriority ? "bg-yellow-50 border border-yellow-200" : "bg-muted/30"
       }`}
     >
-      <Link href="/dashboard/communications/inbox" className="flex items-center gap-2 flex-1 min-w-0">
+      <Link href={`/mobile/contacts/${contact.id}`} className="flex items-center gap-2 flex-1 min-w-0">
         <Avatar className="h-8 w-8">
           <AvatarFallback className="text-xs">
             {contact.first_name?.[0]}
@@ -179,7 +179,7 @@ export function QuickContactPanel({
 
         {/* View All Link */}
         {contacts.length > 8 && (
-          <Link href="/dashboard/communications/inbox">
+          <Link href="/mobile/contacts">
             <Button variant="outline" size="sm" className="w-full">
               View All Contacts
             </Button>

@@ -111,7 +111,7 @@ export function CommunicationsCommandStrip({
           </Button>
         </Link>
 
-        <Link href="/dashboard/communications/inbox">
+        <Link href="/dashboard/chat">
           <Button variant="ghost" size="sm" className="gap-2">
             <MessageSquare className="h-4 w-4" />
             AI Chat
