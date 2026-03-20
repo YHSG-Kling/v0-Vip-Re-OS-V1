@@ -15,14 +15,14 @@ import {
 } from "@/components/ui/select"
 import { Sparkles, Loader2, Check, AlertTriangle, Copy, Send } from "lucide-react"
 import {
-  generateSmartResponse,
   getAiSuggestions,
   acceptAiSuggestion,
   analyzeClientMessageTemperature,
   checkThemFirstCompliance,
   getChatTemplates,
 } from "@/app/actions/ai-chat"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
+import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
+import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
 
 interface RelationshipAiChatPanelProps {
   contactId: string

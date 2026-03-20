@@ -5,9 +5,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { FileText, Sparkles, Loader2, Save, MessageSquare, Wand2 } from "lucide-react"
-import { generateSmartResponse } from "@/app/actions/ai-chat"
-import { generateCommunicationSummary } from "@/app/actions/ai-communication-hub"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
+import { generateSmartResponse, generateCommunicationSummary } from "@/app/actions/ai-communication-hub"
+import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
 
 interface SmartNoteComposerProps {
   contactId: string
