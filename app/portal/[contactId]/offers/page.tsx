@@ -10,6 +10,7 @@ import { NetSheetCalculator } from "@/components/portal/NetSheetCalculator"
 import { analyzeMultipleOffers } from "@/app/actions/offer-management"
 import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, Filter, DollarSign, Calendar, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
 
 // Buyer offer card component
 function OfferCard({ offer, contactId }: { offer: any; contactId: string }) {
@@ -52,10 +53,20 @@ function OfferCard({ offer, contactId }: { offer: any; contactId: string }) {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col items-end gap-1.5">
             <Badge variant="secondary" className={cn("shrink-0", status.color)}>
               {status.label}
             </Badge>
+            {(offer.esign_status || offer.esign_sent_at) && (
+              <SignatureStatusBadge
+                esignStatus={offer.esign_status}
+                esignProvider={offer.esign_provider}
+                esignSentAt={offer.esign_sent_at}
+                esignCompletedAt={offer.esign_completed_at}
+                buyerSignedAt={offer.buyer_signed_at}
+                compact
+              />
+            )}
           </div>
         </div>
       </CardContent>
@@ -107,7 +118,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   if (portalView === "buyer") {
     const { data: buyerOffers } = await supabase
       .from("offers")
-      .select("id, listing_id, transaction_id, offer_price, status, created_at, expiration_date, listing:listings(id, address, property_address, list_price)")
+      .select("id, listing_id, transaction_id, offer_price, status, created_at, expiration_date, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at, listing:listings(id, address, property_address, list_price)")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
 

@@ -57,6 +57,7 @@ import {
 import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
 import { Progress } from "@/components/ui/progress"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
+import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -279,6 +280,20 @@ interface TransactionDetailClientProps {
   }>
   stages: TransactionStage[]
   currentStageIndex: number
+  // Contact details for e-sign
+  contactEmail?: string | null
+  contactName?: string | null
+  // E-sign provider resolved from platform_credentials (null = none connected)
+  connectedEsignProvider?: { platform: string; accountName: string | null } | null
+  // Linked buyer offer for signature workflow (null = no offer linked)
+  linkedOffer?: {
+    id: string
+    esign_status?: string | null
+    esign_provider?: string | null
+    esign_sent_at?: string | null
+    esign_completed_at?: string | null
+    buyer_signed_at?: string | null
+  } | null
 }
 
 // ─── COMPONENT ─────────────────────────────────────────────────────────────────
@@ -309,6 +324,10 @@ export function TransactionDetailClient({
   commissions,
   stages,
   currentStageIndex,
+  contactEmail,
+  contactName,
+  connectedEsignProvider,
+  linkedOffer,
 }: TransactionDetailClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -347,6 +366,9 @@ export function TransactionDetailClient({
   const [emAmount, setEmAmount] = useState(titleEscrow?.earnest_money_amount?.toString() ?? "")
   const [emHeldBy, setEmHeldBy] = useState(titleEscrow?.earnest_money_held_by ?? "")
   const [emReceivedDate, setEmReceivedDate] = useState(titleEscrow?.earnest_money_received_date ?? "")
+
+  // E-sign local state (optimistic updates for linked offer)
+  const [esignSent, setEsignSent] = useState(false)
 
   // Contract review state
   const [contractReview, setContractReview] = useState<any>(null)
@@ -1588,6 +1610,26 @@ export function TransactionDetailClient({
                     </div>
                   ) : (
                     <p className="text-sm text-muted-foreground">No documents uploaded.</p>
+                  )}
+
+                  {/* E-sign Panel — shown when a buyer offer is linked */}
+                  {linkedOffer && (
+                    <div className="mt-4 border-t pt-4">
+                      <p className="text-sm font-semibold mb-2">Offer Signatures</p>
+                      <SendForSignaturesPanel
+                        offerId={linkedOffer.id}
+                        userId={userId}
+                        connectedProvider={connectedEsignProvider ?? null}
+                        buyerName={contactName ?? ""}
+                        buyerEmail={contactEmail ?? ""}
+                        esignStatus={esignSent ? "sent" : (linkedOffer.esign_status ?? undefined)}
+                        esignProvider={linkedOffer.esign_provider ?? undefined}
+                        esignSentAt={esignSent ? new Date().toISOString() : (linkedOffer.esign_sent_at ?? undefined)}
+                        esignCompletedAt={linkedOffer.esign_completed_at ?? undefined}
+                        buyerSignedAt={linkedOffer.buyer_signed_at ?? undefined}
+                        onSent={() => setEsignSent(true)}
+                      />
+                    </div>
                   )}
 
                   <div className="mt-6 border-t pt-6 space-y-4">

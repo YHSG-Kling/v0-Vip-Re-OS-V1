@@ -71,6 +71,39 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     redirect("/dashboard")
   }
 
+  // Fetch contact + esign provider + linked offer in parallel with main data
+  const [{ data: contactRow }, { data: providerCred }, { data: linkedOfferRow }] = await Promise.all([
+    supabase
+      .from("contacts")
+      .select("id, first_name, last_name, name, email")
+      .eq("id", transaction.contact_id)
+      .maybeSingle(),
+    supabase
+      .from("platform_credentials")
+      .select("platform, account_name")
+      .eq("brokerage_id", brokerageId)
+      .in("platform", ["dotloop", "docusign", "skyslope", "authentisign"])
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("offers")
+      .select("id, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at")
+      .eq("contact_id", transaction.contact_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+
+  const contactEmail = contactRow?.email ?? null
+  const contactName = contactRow
+    ? (contactRow.name ?? [contactRow.first_name, contactRow.last_name].filter(Boolean).join(" ") || null)
+    : null
+  const connectedEsignProvider = providerCred
+    ? { platform: providerCred.platform, accountName: providerCred.account_name ?? null }
+    : null
+
   // Fetch all related data in parallel — using actual Supabase tables
   const [
     { data: milestones },
@@ -252,6 +285,10 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       commissions={commissions ?? []}
       stages={stages}
       currentStageIndex={currentStageIndex}
+      contactEmail={contactEmail}
+      contactName={contactName}
+      connectedEsignProvider={connectedEsignProvider}
+      linkedOffer={linkedOfferRow ?? null}
     />
   )
 }

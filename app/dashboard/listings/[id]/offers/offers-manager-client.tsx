@@ -69,6 +69,11 @@ type Offer = {
   contact_id: string
   agent_id: string | null
   brokerage_id: string | null
+  esign_status?: string | null
+  esign_provider?: string | null
+  esign_sent_at?: string | null
+  esign_completed_at?: string | null
+  buyer_signed_at?: string | null
 }
 
 interface Props {

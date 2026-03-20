@@ -19,12 +19,6 @@ const STATUS_BADGES: Record<string, string> = {
   countered: "bg-purple-50 border-purple-200 text-purple-700",
 }
 
-const ESIGN_BADGES: Record<string, string> = {
-  pending:            "bg-muted border-border text-muted-foreground",
-  sent:               "bg-blue-50 border-blue-200 text-blue-700",
-  partially_signed:   "bg-amber-50 border-amber-200 text-amber-700",
-  fully_signed:       "bg-green-50 border-green-200 text-green-700",
-}
 
 interface Offer {
   id: string
