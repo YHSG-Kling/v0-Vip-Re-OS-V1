@@ -20,6 +20,7 @@ import {
   aiGenerateReviewResponse,
 } from "@/app/actions/ai-review-automation"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
+import { ContextualAiAssistBar } from "@/app/components/ai-copilot"
 
 interface RecentClosing {
   id: string
@@ -200,6 +201,16 @@ export function ReviewRequestPanel({
               onChange={(e) => setDraft(e.target.value)}
               rows={5}
               className="font-mono text-sm"
+            />
+            <ContextualAiAssistBar
+              agentId={agentId}
+              context={{
+                type: 'review_request',
+                contactName: recentClosings.find(c => c.id === selectedContact)?.contactName,
+                propertyAddress: recentClosings.find(c => c.id === selectedContact)?.address,
+                currentContent: draft,
+              }}
+              onAcceptDraft={(newDraft) => setDraft(newDraft)}
             />
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={() => copyToClipboard(draft, "draft")}>

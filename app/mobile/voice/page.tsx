@@ -10,6 +10,7 @@ import Link from "next/link"
 import { VoiceSessionButton } from "./voice-session-button"
 import { QuickDialSearch } from "./quick-dial-search"
 import { MobileCommandStrip, QuickContactPanel } from "../components/os"
+import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
 
 export const dynamic = "force-dynamic"
 
@@ -92,6 +93,13 @@ export default async function MobileVoicePage() {
       </header>
 
       <main className="px-4 py-4 space-y-6">
+        {/* Voice Assistant Panel as Hero */}
+        <VoiceAssistantPanel
+          userId={userId}
+          userRole="agent"
+          brokerageId={brokerageId}
+        />
+
         {/* Mobile OS Command Strip */}
         <MobileCommandStrip agentId={agentId} activeSection="voice" />
 

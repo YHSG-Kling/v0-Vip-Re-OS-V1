@@ -11,6 +11,7 @@ import {
   generateSellerUpdateDraft,
   sendSellerUpdate,
 } from "@/app/actions/seller-updates"
+import { ContextualAiAssistBar } from "@/app/components/ai-copilot"
 
 interface SellerUpdateComposerProps {
   listingId: string
@@ -188,6 +189,17 @@ export function SellerUpdateComposer({
                 className="min-h-[200px]"
               />
             )}
+
+            <ContextualAiAssistBar
+              agentId={agentId}
+              context={{
+                type: 'seller_update',
+                propertyAddress: listingAddress,
+                contactName: sellerName,
+                currentContent: draft,
+              }}
+              onAcceptDraft={(newDraft) => setDraft(newDraft)}
+            />
 
             <div className="flex flex-wrap gap-2">
               <Button

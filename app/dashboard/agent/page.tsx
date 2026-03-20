@@ -22,6 +22,7 @@ import { AgentFinancialIntelligence } from "./components/agent-financial-intelli
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
+import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -208,7 +209,14 @@ export default function AgentDashboard() {
   }, [])
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background relative">
+      {/* Voice Assistant Panel */}
+      <VoiceAssistantPanel
+        userId={agentId}
+        userRole="agent"
+        brokerageId={brokerageId}
+      />
+
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
         <ApprovalsBanner />

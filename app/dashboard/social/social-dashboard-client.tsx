@@ -62,6 +62,7 @@ import { predictPerformanceAction } from "@/app/actions/content-prediction"
 import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
 import { BarChart3, Sparkles } from "lucide-react"
 import { SocialAiComposer } from "@/app/components/ai-copilot/social-ai-composer"
+import { SocialCalendarAiPlanner } from "@/app/components/ai-copilot/social-calendar-ai-planner"
 
 // Platform icons and colors
 const PLATFORM_CONFIG: Record<
@@ -536,6 +537,10 @@ export function SocialDashboardClient({
             <Sparkles className="h-4 w-4" />
             AI Composer
           </TabsTrigger>
+          <TabsTrigger value="calendar" className="gap-1">
+            <Calendar className="h-4 w-4" />
+            Calendar
+          </TabsTrigger>
           <TabsTrigger value="draft">Draft ({counts.draft})</TabsTrigger>
           <TabsTrigger value="scheduled">Scheduled ({counts.scheduled})</TabsTrigger>
           <TabsTrigger value="publishing">Publishing ({counts.publishing})</TabsTrigger>
@@ -550,6 +555,17 @@ export function SocialDashboardClient({
             brokerageId={brokerageId}
             connectedPlatforms={accounts.map(a => a.platform)}
             onPostScheduled={() => router.refresh()}
+          />
+        </TabsContent>
+
+        {/* Social Calendar Tab */}
+        <TabsContent value="calendar">
+          <SocialCalendarAiPlanner
+            agentId={userId}
+            brokerageId={brokerageId}
+            userId={userId}
+            posts={posts}
+            onRefresh={() => router.refresh()}
           />
         </TabsContent>
 
