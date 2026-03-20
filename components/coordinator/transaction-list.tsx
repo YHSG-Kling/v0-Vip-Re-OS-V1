@@ -6,6 +6,7 @@ import { Progress } from "@/components/ui/progress"
 import { Button } from "@/components/ui/button"
 import { Home, Calendar, ChevronRight } from "lucide-react"
 import Link from "next/link"
+import { ClosingReadinessGate } from "@/app/dashboard/coordinator/components/closing-readiness-gate"
 
 interface Transaction {
   id: string
@@ -14,6 +15,8 @@ interface Transaction {
   closing_date?: string
   agent_name?: string
   completion_percent: number
+  stage?: string
+  agent_id?: string
 }
 
 interface CoordinatorTransactionListProps {
@@ -72,32 +75,45 @@ export function CoordinatorTransactionList({ transactions = [] }: CoordinatorTra
       <CardContent>
         <div className="space-y-4">
           {transactions.map((tx) => (
-            <Link href={`/transactions/${tx.id}`} key={tx.id}>
-              <div className="p-4 border rounded-lg hover:bg-muted/50 transition-colors cursor-pointer">
-                <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <p className="font-medium">{tx.property_address}</p>
-                    {tx.agent_name && (
-                      <p className="text-sm text-muted-foreground">Agent: {tx.agent_name}</p>
-                    )}
-                  </div>
-                  <Badge variant={getStatusColor(tx.status)}>{tx.status}</Badge>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Completion</span>
-                    <span className="font-medium">{tx.completion_percent}%</span>
-                  </div>
-                  <Progress value={tx.completion_percent} className="h-2" />
-                  {tx.closing_date && (
-                    <div className="flex items-center gap-1 text-xs text-muted-foreground mt-2">
-                      <Calendar className="w-3 h-3" />
-                      <span>Closing: {new Date(tx.closing_date).toLocaleDateString()}</span>
-                    </div>
+            <div key={tx.id} className="p-4 border rounded-lg space-y-3">
+              {/* Header row */}
+              <div className="flex items-start justify-between">
+                <div>
+                  <Link
+                    href={`/transactions/${tx.id}`}
+                    className="font-medium hover:underline"
+                  >
+                    {tx.property_address}
+                  </Link>
+                  {tx.agent_name && (
+                    <p className="text-sm text-muted-foreground">Agent: {tx.agent_name}</p>
                   )}
                 </div>
+                <Badge variant={getStatusColor(tx.status)}>{tx.status}</Badge>
               </div>
-            </Link>
+
+              {/* Progress */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Completion</span>
+                  <span className="font-medium">{tx.completion_percent}%</span>
+                </div>
+                <Progress value={tx.completion_percent} className="h-2" />
+                {tx.closing_date && (
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Calendar className="w-3 h-3" />
+                    <span>Closing: {new Date(tx.closing_date).toLocaleDateString()}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Closing Readiness Gate */}
+              <ClosingReadinessGate
+                transactionId={tx.id}
+                transactionStage={tx.stage ?? tx.status}
+                agentId={tx.agent_id ?? ""}
+              />
+            </div>
           ))}
         </div>
       </CardContent>

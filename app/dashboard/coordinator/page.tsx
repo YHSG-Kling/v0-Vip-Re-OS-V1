@@ -20,6 +20,7 @@ import {
 } from "./components/os"
 import { AlertCircle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar } from "lucide-react"
 import Link from "next/link"
+import { TcFastActionPanel } from "./components/tc-fast-action-panel"
 
 export default async function CoordinatorDashboard({
   searchParams,
@@ -246,6 +247,20 @@ export default async function CoordinatorDashboard({
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <ClosingPrepPanel brokerageId={brokerageId || ""} />
       </div>
+
+      {/* TC Fast Actions Panel */}
+      {transactions.length > 0 && (
+        <TcFastActionPanel
+          transactions={transactions.map((t: any) => ({
+            id: t.id,
+            property_address: t.property_address ?? "",
+            stage: t.stage,
+          }))}
+          agentId={user.id}
+          brokerageId={brokerageId || ""}
+          userRole={userData?.role ?? "tc"}
+        />
+      )}
 
       {/* Key Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
