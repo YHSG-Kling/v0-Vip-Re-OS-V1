@@ -25,10 +25,15 @@ import {
   DollarSign,
   Target,
   Activity,
+  Loader2,
+  ArrowRight,
+  X,
 } from "lucide-react"
+import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { loadValueDrivenDashboard, getLeadValueJourneys } from "@/app/actions/analytics"
+import { generatePageInsight } from "@/app/actions/generate-page-insight"
 import { cn } from "@/lib/utils"
 
 export default function AnalyticsDashboard() {
@@ -37,6 +42,8 @@ export default function AnalyticsDashboard() {
   const [dashboardData, setDashboardData] = useState<any>(null)
   const [leadJourneys, setLeadJourneys] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [aiSummary, setAiSummary] = useState<string | null>(null)
+  const [aiSummaryLoading, setAiSummaryLoading] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -73,6 +80,17 @@ export default function AnalyticsDashboard() {
       console.error("[v0] Failed to load analytics:", error)
       setLoading(false)
     }
+  }
+
+  const handleAiSummary = async () => {
+    setAiSummaryLoading(true)
+    const context = `Trust capital score: ${dashboardData?.trust_capital_score ?? 0}. Generosity score: ${dashboardData?.generosity_score ?? 0}%. Total value delivered: $${dashboardData?.total_value_delivered ?? 0}. Converted leads: ${dashboardData?.converted_leads ?? 0}. Period: ${period}.`
+    const result = await generatePageInsight({
+      context,
+      question: "Based on this data, what is the single most important thing I should focus on next week to grow my business?",
+    })
+    setAiSummary(result.success ? (result.insight ?? null) : "Could not generate summary.")
+    setAiSummaryLoading(false)
   }
 
   if (loading) {
@@ -122,12 +140,45 @@ export default function AnalyticsDashboard() {
                 </SelectContent>
               </Select>
 
+              <Link href="/dashboard/diagnosis">
+                <Button variant="ghost" size="sm" className="text-primary gap-1">
+                  Open Diagnosis
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Button>
+              </Link>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleAiSummary}
+                disabled={aiSummaryLoading || !dashboardData}
+              >
+                {aiSummaryLoading ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4 mr-2" />
+                )}
+                AI Summary
+              </Button>
               <Button variant="outline">
                 <Download className="h-4 w-4 mr-2" />
                 Export
               </Button>
             </div>
           </div>
+
+          {/* AI Summary banner — shown after request */}
+          {aiSummary && (
+            <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3">
+              <Sparkles className="h-4 w-4 text-indigo-500 mt-0.5 shrink-0" />
+              <p className="text-sm text-indigo-900 leading-relaxed flex-1">{aiSummary}</p>
+              <button
+                onClick={() => setAiSummary(null)}
+                className="shrink-0 text-indigo-300 hover:text-indigo-600"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

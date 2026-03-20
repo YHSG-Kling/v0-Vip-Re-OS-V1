@@ -39,6 +39,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  TrendingUp,
 } from "lucide-react"
 import {
   getLeads,
@@ -47,6 +48,7 @@ import {
   rejectLead,
 } from "@/app/actions/lead-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
+import { getTopConversionCandidates } from "@/app/actions/ai-predictions"
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
 import { HotLeadCard } from "@/app/components/shared/HotLeadCard"
 import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/types/lead-management"
@@ -80,6 +82,10 @@ export default function LeadsPage() {
   const [hotLeadsLoading, setHotLeadsLoading] = useState(true)
   const [agentId, setAgentId] = useState('')
   const [callingId, setCallingId] = useState<string | null>(null)
+
+  // Top conversion candidates
+  const [conversionCandidates, setConversionCandidates] = useState<any[]>([])
+  const [candidatesLoading, setCandidatesLoading] = useState(true)
 
   // Fetch leads
   const fetchLeads = async () => {
@@ -132,6 +138,16 @@ export default function LeadsPage() {
         setHotLeads([])
       } finally {
         setHotLeadsLoading(false)
+      }
+
+      // Load top conversion candidates
+      try {
+        const candidates = await getTopConversionCandidates(3)
+        setConversionCandidates(Array.isArray(candidates) ? candidates : [])
+      } catch {
+        setConversionCandidates([])
+      } finally {
+        setCandidatesLoading(false)
       }
     }
     loadHotLeads()
@@ -395,6 +411,70 @@ export default function LeadsPage() {
           </div>
         )}
 
+        {/* Top Conversion Candidates */}
+        {(conversionCandidates.length > 0 || candidatesLoading) && (
+          <div>
+            <div className="flex items-center gap-2 mb-3">
+              <TrendingUp className="h-5 w-5 text-emerald-500" />
+              <h2 className="text-base font-semibold">Most Likely to Convert</h2>
+              <span className="text-xs text-muted-foreground">AI-ranked by conversion probability</span>
+            </div>
+            {candidatesLoading ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="h-20 bg-muted animate-pulse rounded-lg" />
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {conversionCandidates.map((candidate: any) => {
+                  const lead = candidate.leads
+                  const contact = candidate.contacts
+                  const name = lead
+                    ? `${lead.first_name ?? ""} ${lead.last_name ?? ""}`.trim()
+                    : contact
+                    ? `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
+                    : "Unknown"
+                  const probability = Math.round((candidate.conversion_probability ?? 0) * 100)
+                  const tier = candidate.score_tier ?? "bronze"
+                  const tierColors: Record<string, string> = {
+                    platinum: "bg-violet-100 text-violet-800 border-violet-200",
+                    gold: "bg-amber-100 text-amber-800 border-amber-200",
+                    silver: "bg-slate-100 text-slate-700 border-slate-200",
+                    bronze: "bg-orange-100 text-orange-800 border-orange-200",
+                  }
+                  const contactId = candidate.contacts?.id
+                  return (
+                    <div
+                      key={candidate.lead_id}
+                      className="rounded-lg border bg-card p-4 flex items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-medium text-sm truncate">{name || "Unnamed Lead"}</p>
+                        <span className={`mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${tierColors[tier] ?? tierColors.bronze}`}>
+                          {tier}
+                        </span>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-2xl font-bold text-emerald-600">{probability}%</p>
+                        <p className="text-xs text-muted-foreground">conversion</p>
+                      </div>
+                      {contactId && (
+                        <a
+                          href={`/crm/${contactId}`}
+                          className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs font-medium hover:bg-muted transition-colors"
+                        >
+                          Open Contact
+                        </a>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Leads Table */}
         <Card>
           <CardContent className="p-0">
@@ -463,8 +543,16 @@ export default function LeadsPage() {
                     </TableRow>
                   ) : leads.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-12">
-                        <p className="text-sm text-muted-foreground">No leads found</p>
+                      <TableCell colSpan={9} className="text-center py-16">
+                        <Search className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
+                        <p className="text-sm font-medium text-foreground mb-1">No leads match your filters</p>
+                        <p className="text-xs text-muted-foreground mb-4">Try clearing filters or importing new leads</p>
+                        <button
+                          onClick={() => { setScoreFilter("all"); setIntentFilter("all"); setStatusFilter("all"); setSourceFilter("all"); setSearch("") }}
+                          className="text-xs text-primary underline underline-offset-2 hover:no-underline"
+                        >
+                          Clear all filters
+                        </button>
                       </TableCell>
                     </TableRow>
                   ) : (
