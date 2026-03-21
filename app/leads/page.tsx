@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, Fragment } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -977,7 +977,8 @@ export default function LeadsPage() {
                     </TableRow>
                   ) : (
                     leads.map((lead) => (
-                      <TableRow key={lead.id}>
+                      <Fragment key={lead.id}>
+                      <TableRow>
                         <TableCell>
                           <Badge className={cn("capitalize", getSourceColor(lead.source))}>{lead.source}</Badge>
                         </TableCell>
@@ -1058,7 +1059,7 @@ export default function LeadsPage() {
                       </TableRow>
                       {/* AI Property Match Genius inline result */}
                       {matchGeniusResults[lead.id] && (
-                        <TableRow key={`${lead.id}-genius`} className="bg-indigo-50/60">
+                        <TableRow className="bg-indigo-50/60">
                           <TableCell colSpan={7} className="py-3 px-4">
                             <div className="flex items-start gap-3">
                               <Brain className="h-4 w-4 text-indigo-500 mt-0.5 shrink-0" />
@@ -1097,6 +1098,7 @@ export default function LeadsPage() {
                           </TableCell>
                         </TableRow>
                       )}
+                      </Fragment>
                     ))
                   )}
                 </TableBody>
