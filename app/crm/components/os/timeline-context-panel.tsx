@@ -2,8 +2,9 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Clock, User, Briefcase, Home, CheckCircle2 } from "lucide-react"
+import { Clock, User, Briefcase, Home, CheckCircle2, ExternalLink } from "lucide-react"
 import { format } from "date-fns"
+import Link from "next/link"
 
 interface Transaction {
   id: string
@@ -110,7 +111,13 @@ export function TimelineContextPanel({
                     Assigned: {format(new Date(isaHandoffContext.assignedAt), "MMM d, yyyy")}
                   </p>
                 )}
-                <p className="text-xs text-purple-600 mt-1">Original lead intelligence</p>
+                <Link
+                  href="/dashboard/isa"
+                  className="inline-flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 mt-1"
+                >
+                  View ISA History
+                  <ExternalLink className="h-3 w-3" />
+                </Link>
               </div>
             </div>
           )}

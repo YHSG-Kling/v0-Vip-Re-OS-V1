@@ -8,6 +8,7 @@ import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientCh
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft } from "@/app/actions/portal-messages"
+import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -115,6 +116,12 @@ export default function CRMPage() {
   const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
   const [referralGenerating, setReferralGenerating] = useState(false)
   const [noteSaving, setNoteSaving] = useState(false)
+  const [isaHandoffContext, setIsaHandoffContext] = useState<{
+    qualificationScore?: number
+    qualificationResult?: string
+    qualificationSignals?: Record<string, any>
+    assignedAt?: string
+  } | null>(null)
 
   // Resolve agentId from user context
   useEffect(() => {
@@ -165,6 +172,7 @@ export default function CRMPage() {
       if (!agentId) return
 
       setDetailLoading(true)
+      setIsaHandoffContext(null)
       try {
         // Parallel data loads
         const [contactResult, churnResult, autopilotResult, followUpResult, convIntelResult] =
@@ -179,6 +187,27 @@ export default function CRMPage() {
         if (contactResult?.success && contactResult.contact) {
           setSelectedContact(contactResult.contact)
         }
+
+        // Fetch ISA qualification data — non-blocking
+        const supabase = createClient()
+        supabase
+          .from("ai_isa_qualifications")
+          .select("qualification_score, qualification_result, qualification_signals, assigned_at")
+          .eq("contact_id", contactId)
+          .order("qualified_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+          .then(({ data }) => {
+            if (data) {
+              setIsaHandoffContext({
+                qualificationScore: data.qualification_score ?? undefined,
+                qualificationResult: data.qualification_result ?? undefined,
+                qualificationSignals: data.qualification_signals ?? undefined,
+                assignedAt: data.assigned_at ?? undefined,
+              })
+            }
+          })
+          .catch(() => {/* non-blocking */})
 
         setChurnRisk(churnResult)
         setAutopilotPlans(autopilotResult || [])
@@ -458,6 +487,7 @@ export default function CRMPage() {
                   contactId={selectedContactId}
                   originalLeadSource={selectedContact.lead_source}
                   createdAt={selectedContact.created_at}
+                  isaHandoffContext={isaHandoffContext}
                 />
 
                 {/* Buyer Match Panel - only for buyer contacts */}

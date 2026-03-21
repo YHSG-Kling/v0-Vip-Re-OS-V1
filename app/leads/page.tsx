@@ -102,6 +102,15 @@ export default function LeadsPage() {
   // Unassigned lead count for admin badge
   const [unassignedCount, setUnassignedCount] = useState<number | null>(null)
 
+  // Admin pipeline stats bar
+  const [pipelineStats, setPipelineStats] = useState<{
+    unassigned: number
+    assigned: number
+    isa_working: number
+    stale: number
+    ghost_recovery: number
+  } | null>(null)
+
   // Admin assignment panel
   const [adminPanelOpen, setAdminPanelOpen] = useState(false)
   const [userId, setUserId] = useState('')
@@ -277,6 +286,25 @@ export default function LeadsPage() {
         listUnassignedLeads({ brokerageId: userRow.brokerage_id, limit: 1 })
           .then((r) => setUnassignedCount(r.total ?? (r.leads?.length ?? 0)))
           .catch(() => setUnassignedCount(null))
+
+        // Load pipeline stats for admin stats bar — single query, client-side aggregate
+        supabase
+          .from("leads")
+          .select("lead_stage, agent_id, reengagement_status, lifecycle_state")
+          .eq("brokerage_id", userRow.brokerage_id)
+          .eq("is_active", true)
+          .then(({ data }) => {
+            if (data) {
+              setPipelineStats({
+                unassigned:    data.filter((l) => !l.agent_id).length,
+                assigned:      data.filter((l) => !!l.agent_id).length,
+                isa_working:   data.filter((l) => l.lifecycle_state === "isa_qualifying").length,
+                stale:         data.filter((l) => l.lead_stage === "stale").length,
+                ghost_recovery: data.filter((l) => l.reengagement_status === "active").length,
+              })
+            }
+          })
+          .catch(() => {/* non-blocking */})
       }
 
       // Load hot leads
@@ -361,13 +389,16 @@ export default function LeadsPage() {
       const result = await convertLeadToContact({ leadId: lead.id, agentId, brokerageId })
       if (result.success) {
         setConvertedIds((prev) => new Set(prev).add(lead.id))
-        if (result.contactId) {
-          setConvertSuccessMap((prev) => ({ ...prev, [lead.id]: result.contactId! }))
+        const contactId = result.contactId
+        if (contactId) {
+          setConvertSuccessMap((prev) => ({ ...prev, [lead.id]: contactId }))
         }
         fetchLeads()
+        setConvertConfirmLead(null)
+        router.push(contactId ? `/crm?contact=${contactId}` : "/crm")
       }
     } catch {
-      // surface error via toast if desired
+      // silent — conversion errors surface via the result.success check above
     }
     setConvertingId(null)
     setConvertConfirmLead(null)
@@ -1184,6 +1215,58 @@ export default function LeadsPage() {
 
           </TabsContent>
         </Tabs>
+
+        {/* Admin pipeline stats bar */}
+        {isAdminOrBroker && pipelineStats && (
+          <div className="grid grid-cols-5 gap-3">
+            {/* Unassigned */}
+            <button
+              type="button"
+              onClick={() => setAdminPanelOpen(true)}
+              className="flex flex-col items-start gap-1 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-left hover:bg-amber-100 transition-colors"
+            >
+              <span className="text-xs text-amber-700 font-medium">Unassigned</span>
+              <span className="text-2xl font-bold text-amber-900">{pipelineStats.unassigned}</span>
+              <span className="text-xs text-amber-600">Assign now</span>
+            </button>
+            {/* Assigned */}
+            <div className="flex flex-col items-start gap-1 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+              <span className="text-xs text-blue-700 font-medium">Assigned</span>
+              <span className="text-2xl font-bold text-blue-900">{pipelineStats.assigned}</span>
+              <span className="text-xs text-blue-600">Active leads</span>
+            </div>
+            {/* ISA Working */}
+            <button
+              type="button"
+              onClick={() => router.push("/dashboard/isa")}
+              className="flex flex-col items-start gap-1 rounded-lg border border-purple-200 bg-purple-50 px-4 py-3 text-left hover:bg-purple-100 transition-colors"
+            >
+              <span className="text-xs text-purple-700 font-medium">ISA Working</span>
+              <span className="text-2xl font-bold text-purple-900">{pipelineStats.isa_working}</span>
+              <span className="text-xs text-purple-600">View ISA</span>
+            </button>
+            {/* Stale */}
+            <button
+              type="button"
+              onClick={() => setStatusFilter("stale" as any)}
+              className="flex flex-col items-start gap-1 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-left hover:bg-red-100 transition-colors"
+            >
+              <span className="text-xs text-red-700 font-medium">Stale</span>
+              <span className="text-2xl font-bold text-red-900">{pipelineStats.stale}</span>
+              <span className="text-xs text-red-600">Review leads</span>
+            </button>
+            {/* Ghost Recovery */}
+            <button
+              type="button"
+              onClick={() => setStatusFilter("ghost" as any)}
+              className="flex flex-col items-start gap-1 rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 text-left hover:bg-orange-100 transition-colors"
+            >
+              <span className="text-xs text-orange-700 font-medium">Ghost Recovery</span>
+              <span className="text-2xl font-bold text-orange-900">{pipelineStats.ghost_recovery}</span>
+              <span className="text-xs text-orange-600">Review leads</span>
+            </button>
+          </div>
+        )}
 
         {/* Ready to Convert — only shown to the assigned agent */}
         {!isAdminOrBroker && agentId && (() => {
