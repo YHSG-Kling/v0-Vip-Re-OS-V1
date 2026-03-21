@@ -12,8 +12,7 @@ import { Loader2, Sparkles, Radio, CheckCircle, Clock, ArrowRight } from "lucide
 import { prepareComingSoonAssets, activateComingSoon } from "@/app/actions/seller-listing/execution-engine"
 import { createListingPosts } from "@/app/actions/social-media-automation"
 import { prepareListingEmailCampaign } from "@/app/actions/email-campaign-automation"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
-import { generateText } from "ai"
+import { generateComingSoonContent } from "@/app/actions/coming-soon-content"
 import Link from "next/link"
 
 interface ComingSoonCommandCardProps {
@@ -99,27 +98,17 @@ export function ComingSoonCommandCard({
 
   function handleGenerateContent() {
     startGenerating(async () => {
-      const brandVoice = await getBrandVoiceProfile(userId).catch(() => null)
-      const tone = (brandVoice as any)?.tone ?? "exciting and professional"
-
-      try {
-        const { text } = await generateText({
-          model: "openai/gpt-4o-mini",
-          prompt: `Write a coming soon real estate listing announcement.
-Property: ${listingAddress}.
-Going live in ${daysUntilLaunch} days (${launchDateStr}).
-Tone: ${tone}.
-Generate two versions separated by "---EMAIL---":
-1. Social post (2-3 sentences, engaging, includes CTA to request a showing)
-2. Email teaser (4-5 sentences, builds anticipation, includes showing request CTA)
-Format: social content first, then ---EMAIL--- then email content.`,
-        })
-
-        const parts = text.split("---EMAIL---")
-        setSocialPost((parts[0] ?? "").trim())
-        setEmailBody((parts[1] ?? "").trim())
+      const result = await generateComingSoonContent({
+        agentId: userId,
+        listingAddress,
+        daysUntilLaunch,
+        launchDateStr,
+      })
+      if (result.success) {
+        setSocialPost(result.socialPost ?? "")
+        setEmailBody(result.emailBody ?? "")
         showToast("success", "AI content generated — review and edit before activating.")
-      } catch {
+      } else {
         showToast("error", "AI generation failed. Enter content manually.")
       }
     })

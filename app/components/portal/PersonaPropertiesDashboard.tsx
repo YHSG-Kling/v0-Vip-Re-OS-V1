@@ -37,16 +37,15 @@ interface PersonaPropertiesDashboardProps {
   contactId: string
   comingSoonListings?: Array<{
     id: string
-    property_address: string
+    address: string
     city: string
     state: string
     list_price: number | null
     bedrooms: number | null
     bathrooms: number | null
     sqft: number | null
-    primary_photo_url: string | null
-    listing_url: string | null
-    listed_at: string | null
+    lifecycle_stage?: string | null
+    zip?: string | null
   }>
 }
 
@@ -596,17 +595,9 @@ export default function PersonaPropertiesDashboard({
             {comingSoonListings.map((listing) => (
               <Card key={listing.id} className="overflow-hidden border-purple-200">
                 <div className="relative h-40 bg-muted">
-                  {listing.primary_photo_url ? (
-                    <img
-                      src={listing.primary_photo_url}
-                      alt={listing.property_address}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <Home className="h-8 w-8 text-muted-foreground/40" />
-                    </div>
-                  )}
+                  <div className="w-full h-full flex items-center justify-center">
+                    <Home className="h-8 w-8 text-muted-foreground/40" />
+                  </div>
                   <Badge className="absolute top-2 left-2 bg-purple-600 text-white text-xs flex items-center gap-1">
                     <span className="relative flex h-1.5 w-1.5">
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75" />
@@ -624,7 +615,7 @@ export default function PersonaPropertiesDashboard({
                     </p>
                     <p className="text-sm text-muted-foreground flex items-center gap-1 truncate">
                       <MapPin className="h-3 w-3 shrink-0" />
-                      {listing.property_address}, {listing.city}
+                      {listing.address}, {listing.city}
                     </p>
                   </div>
                   <div className="flex items-center gap-3 text-sm text-muted-foreground">
