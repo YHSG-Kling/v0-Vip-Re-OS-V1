@@ -49,6 +49,7 @@ import {
   ExternalLink,
   Zap,
   Users,
+  Bot,
 } from "lucide-react"
 import { AvailableLeadsSheet } from "@/app/components/leads/AvailableLeadsSheet"
 import { AdminAssignmentPanel } from "@/app/components/leads/AdminAssignmentPanel"
@@ -571,6 +572,35 @@ export default function LeadsPage() {
                   </Button>
                 )}
               </div>
+            </div>
+          )
+        })()}
+
+        {/* Agent: AI-ISA active notification strip */}
+        {!isAdminOrBroker && agentId && (() => {
+          const isaActiveLeads = leads.filter(
+            (l: any) => l.agent_id === agentId && l.lifecycle_state === "isa_qualifying"
+          )
+          if (isaActiveLeads.length === 0) return null
+          return (
+            <div className="flex items-center gap-3 rounded-lg border border-purple-200 bg-purple-50 px-4 py-3">
+              <Bot className="h-4 w-4 text-purple-600 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-purple-900">
+                  AI-ISA is working {isaActiveLeads.length} of your lead{isaActiveLeads.length !== 1 ? "s" : ""}
+                </p>
+                <p className="text-xs text-purple-700">
+                  These leads went cold — AI is re-engaging them on your behalf. You will be notified when they respond.
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="ml-auto shrink-0 border-purple-300 text-purple-700 hover:bg-purple-100 text-xs h-7"
+                onClick={() => router.push("/dashboard/isa")}
+              >
+                View Activity
+              </Button>
             </div>
           )
         })()}
@@ -1203,6 +1233,7 @@ export default function LeadsPage() {
                     </TableHead>
                     <TableHead>Intent</TableHead>
                     <TableHead>Stage</TableHead>
+                    {isAdminOrBroker && <TableHead>AI-ISA</TableHead>}
                     <TableHead>
                       <button
                         onClick={() => handleSort("status")}
@@ -1227,14 +1258,14 @@ export default function LeadsPage() {
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={10} className="text-center py-12">
+                      <TableCell colSpan={isAdminOrBroker ? 11 : 10} className="text-center py-12">
                         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mx-auto" />
                         <p className="text-sm text-muted-foreground mt-2">Loading leads...</p>
                       </TableCell>
                     </TableRow>
                   ) : leads.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={10} className="text-center py-16">
+                      <TableCell colSpan={isAdminOrBroker ? 11 : 10} className="text-center py-16">
                         <Search className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
                         <p className="text-sm font-medium text-foreground mb-1">No leads match your filters</p>
                         <p className="text-xs text-muted-foreground mb-4">Try clearing filters or importing new leads</p>
@@ -1282,6 +1313,26 @@ export default function LeadsPage() {
                             )
                           })()}
                         </TableCell>
+                        {isAdminOrBroker && (
+                          <TableCell>
+                            {lead.reengagement_status === "active" ? (
+                              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-purple-100 text-purple-800 border border-purple-200">
+                                <Bot className="h-3 w-3" />
+                                Active
+                              </span>
+                            ) : lead.reengagement_status === "completed" ? (
+                              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                Recovered
+                              </span>
+                            ) : lead.reengagement_status === "paused" ? (
+                              <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-100 text-amber-800 border border-amber-200">
+                                Paused
+                              </span>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        )}
                         <TableCell>
                           <Badge variant={getStatusColor(lead.status)} className="capitalize">
                             {lead.status}

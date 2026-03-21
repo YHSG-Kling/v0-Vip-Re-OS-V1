@@ -3,6 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { detectStaleLeads } from "@/lib/lead-assignment/stale-lead-detector"
+import { triggerGhostRecovery } from "@/app/actions/ai-isa"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -111,6 +112,16 @@ export async function processStaleLeadsAndSLA(
     const staleLeads = await detectStaleLeads(brokerageId)
     staleCount = staleLeads.length
 
+    // Fetch a default active AI-ISA campaign for this brokerage (needed by triggerGhostRecovery)
+    const { data: defaultCampaign } = await supabase
+      .from("ai_isa_campaigns")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
     // Emit STALE_LEAD_ALERT event for each stale lead not already tracked
     for (const lead of staleLeads) {
       try {
@@ -144,6 +155,62 @@ export async function processStaleLeadsAndSLA(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         errors.push(`Stale alert error for lead ${lead.id}: ${msg}`)
+      }
+
+      // ── AI-ISA Takeover: hand off each stale lead to AI-ISA ────────────
+      try {
+        // Resolve the full lead row to get contact_id and agent_id
+        const { data: leadRow } = await supabase
+          .from("leads")
+          .select("id, contact_id, agent_id, lifecycle_state, reengagement_status")
+          .eq("id", lead.id)
+          .maybeSingle()
+
+        if (
+          leadRow &&
+          leadRow.contact_id &&
+          defaultCampaign?.id &&
+          leadRow.lifecycle_state !== "isa_qualifying" &&
+          leadRow.reengagement_status !== "active"
+        ) {
+          // Trigger AI-ISA ghost recovery (non-blocking)
+          const recoveryResult = await triggerGhostRecovery({
+            contactId:   leadRow.contact_id,
+            campaignId:  defaultCampaign.id,
+            brokerageId,
+          })
+
+          if (recoveryResult.success) {
+            // Mark the lead as ISA-owned and in re-engagement
+            await supabase
+              .from("leads")
+              .update({
+                lifecycle_state:    "isa_qualifying",
+                reengagement_status: "active",
+                updated_at:          new Date().toISOString(),
+              })
+              .eq("id", lead.id)
+
+            // Notify the assigned agent via activity — schema has no metadata column
+            if (leadRow.agent_id) {
+              await supabase.from("activities").insert({
+                agent_id:      leadRow.agent_id,
+                contact_id:    leadRow.contact_id,
+                brokerage_id:  brokerageId,
+                activity_type: "isa_takeover_notification",
+                entity_type:   "lead",
+                title:         "AI-ISA took over a stale lead",
+                description:   `Your lead has been inactive for ${lead.daysStale ?? 0} days. AI-ISA is now attempting re-engagement on your behalf. You'll be notified when they respond.`,
+                status:        "pending",
+                priority:      "medium",
+              })
+            }
+          }
+        }
+      } catch (err) {
+        // Non-blocking — log but don't fail the broader processor
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error('[stale-processor] AI-ISA takeover failed:', msg)
       }
     }
   } catch (err) {
