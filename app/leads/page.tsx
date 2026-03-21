@@ -70,6 +70,8 @@ import LeadIntelligencePanel from "@/app/components/intelligence/LeadIntelligenc
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
 import { aiBatchReengagement } from "@/app/actions/ai-lead-nurturing"
 import { HotLeadCard } from "@/app/components/shared/HotLeadCard"
+import { StaleLeadQueue } from "@/app/leads/components/StaleLeadQueue"
+import { GhostRecoveryQueue } from "@/app/leads/components/GhostRecoveryQueue"
 import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/types/lead-management"
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
@@ -533,6 +535,14 @@ export default function LeadsPage() {
             </div>
           )
         })()}
+
+        {/* Admin Stale Lead Queue & Ghost Recovery Queue */}
+        {isAdminOrBroker && brokerageId && (
+          <div className="space-y-3">
+            <StaleLeadQueue brokerageId={brokerageId} />
+            <GhostRecoveryQueue brokerageId={brokerageId} />
+          </div>
+        )}
 
         {/* Filters Card */}
         <Card>
