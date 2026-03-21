@@ -150,20 +150,41 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
                 {preferredVendors.slice(0, 3).map((v: any) => (
                   <div
                     key={v.id}
-                    className="flex items-center justify-between p-2 rounded-lg bg-muted/50"
+                    className="flex items-center justify-between p-3 rounded-lg border"
                   >
                     <div>
-                      <p className="font-medium text-sm">{v.vendors?.business_name}</p>
-                      <p className="text-xs text-muted-foreground">{v.category}</p>
+                      <p className="font-medium text-sm">
+                        {v.vendors?.business_name || v.business_name}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {v.category || v.service_type}
+                      </p>
                     </div>
-                    {v.is_featured && <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />}
+                    <div className="flex items-center gap-1.5">
+                      {v.rating && (
+                        <div className="flex items-center gap-1">
+                          <Star className="h-3.5 w-3.5 fill-yellow-400 text-yellow-400" />
+                          <span className="text-xs">{v.rating}</span>
+                        </div>
+                      )}
+                      {v.is_featured && !v.rating && (
+                        <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">
-                Vendor recommendations coming soon
-              </p>
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  Trusted service providers recommended by your agent for home maintenance and improvements.
+                </p>
+                <Button variant="outline" size="sm" asChild>
+                  <Link href={`/portal/${contactId}/resources`}>
+                    Browse Service Providers
+                  </Link>
+                </Button>
+              </div>
             )}
             <Button variant="outline" className="w-full" asChild>
               <Link href={`/portal/${contactId}/resources`}>
