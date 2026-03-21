@@ -13,6 +13,7 @@ import {
   aiCalculateEscalation,
   aiGenerateBuyerLetter,
   aiRecommendContingencies,
+  aiOfferStrategyAdvisor,
   getOfferForms,
 } from "@/app/actions/ai-offer-creation"
 import { Button } from "@/components/ui/button"
@@ -20,8 +21,9 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
+import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Loader2, Check, AlertTriangle, ExternalLink } from "lucide-react"
+import { Loader2, Check, AlertTriangle, ExternalLink, Sparkles } from "lucide-react"
 
 type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard"
 
@@ -66,6 +68,12 @@ export function OfferInitiationFlow({
   const [isLoadingAddress, startAddressLoad] = useTransition()
   const [isLoadingFormSrc, startFormSrcLoad] = useTransition()
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // AI Strategy Briefing state
+  const [mktConditions, setMktConditions] = useState("balanced")
+  const [buyerMotiv, setBuyerMotiv] = useState("would_like")
+  const [strategyAdvice, setStrategyAdvice] = useState<any>(null)
+  const [strategyLoading, setStrategyLoading] = useState(false)
 
   // Escalation state
   const [escalationResult, setEscalationResult] = useState<any>(null)
@@ -198,7 +206,101 @@ export function OfferInitiationFlow({
           </button>
           <p className="text-sm font-semibold">AI Strategy Recommendation</p>
         </div>
-        <div className="flex-1 px-5 py-4">
+        <div className="flex-1 px-5 py-4 space-y-4">
+          {/* AI Offer Strategy Briefing */}
+          <Card className="border-blue-200 bg-blue-50">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="h-4 w-4 text-blue-600" />
+                <span className="text-sm font-semibold text-blue-900">AI Offer Strategy</span>
+              </div>
+              {!strategyAdvice ? (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <Label className="text-xs">Market conditions</Label>
+                      <Select value={mktConditions} onValueChange={setMktConditions}>
+                        <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="hot">Hot market</SelectItem>
+                          <SelectItem value="balanced">Balanced</SelectItem>
+                          <SelectItem value="cooling">Cooling</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <Label className="text-xs">Buyer motivation</Label>
+                      <Select value={buyerMotiv} onValueChange={setBuyerMotiv}>
+                        <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Select" /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="must_have">Must have this home</SelectItem>
+                          <SelectItem value="would_like">Would like it</SelectItem>
+                          <SelectItem value="nice_to_have">Nice to have</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      setStrategyLoading(true)
+                      const res = await aiOfferStrategyAdvisor({
+                        agentId: agentUserId,
+                        buyerId: contactId,
+                        listingId: property?.listingId ?? "",
+                        listPrice: property?.listPrice ?? 0,
+                        daysOnMarket: 14,
+                        marketConditions: mktConditions as "hot" | "balanced" | "cooling",
+                        buyerMotivation: buyerMotiv as "must_have" | "would_like" | "nice_to_have",
+                        buyerMaxBudget: (property?.listPrice ?? 0) * 1.05,
+                      })
+                      setStrategyAdvice(res)
+                      setStrategyLoading(false)
+                    }}
+                    disabled={strategyLoading || !property?.listingId}
+                    className="w-full"
+                  >
+                    {strategyLoading
+                      ? <><Loader2 className="h-3 w-3 mr-1 animate-spin" />Analyzing...</>
+                      : "Get AI Strategy"}
+                  </Button>
+                  {!property?.listingId && (
+                    <p className="text-xs text-blue-700">Select an internal listing to enable AI strategy</p>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-blue-100 text-blue-800 border-blue-200 capitalize text-xs">
+                      {(strategyAdvice as any).strategy ?? "strategy ready"}
+                    </Badge>
+                    {(strategyAdvice as any).winProbability != null && (
+                      <span className="text-xs text-blue-700">
+                        Win probability: {(strategyAdvice as any).winProbability}%
+                      </span>
+                    )}
+                  </div>
+                  {(strategyAdvice as any).recommendedOfferPrice && (
+                    <p className="text-sm font-semibold text-blue-900">
+                      Recommended: ${Number((strategyAdvice as any).recommendedOfferPrice).toLocaleString()}
+                      {(strategyAdvice as any).priceRangeLow && (strategyAdvice as any).priceRangeHigh && (
+                        <span className="text-xs font-normal ml-1 text-blue-700">
+                          (${Number((strategyAdvice as any).priceRangeLow).toLocaleString()} – ${Number((strategyAdvice as any).priceRangeHigh).toLocaleString()})
+                        </span>
+                      )}
+                    </p>
+                  )}
+                  {(strategyAdvice as any).reasoning && (
+                    <p className="text-xs text-blue-700">{(strategyAdvice as any).reasoning}</p>
+                  )}
+                  <Button variant="ghost" size="sm" onClick={() => setStrategyAdvice(null)} className="text-xs text-blue-700 px-0">
+                    Redo Analysis
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           <StrategyAdvisor
             contactId={contactId}
             listingId={property?.listingId ?? null}

@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Upload, Sparkles, Link, RefreshCw, Loader2, Target, AlertCircle, Wrench } from "lucide-react"
+import { Upload, Sparkles, Link, RefreshCw, Loader2, Target, AlertCircle, Wrench, TrendingDown } from "lucide-react"
 import { OfferUploadZone } from "./components/offer-upload-zone"
 import { OfferComparisonMatrix } from "./components/offer-comparison-matrix"
 import { OfferCard } from "./components/offer-card"
@@ -27,6 +27,7 @@ import {
   getRepairNegotiationItems,
 } from "@/app/actions/seller-offers"
 import { aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
+import { aiCounterOfferStrategy } from "@/app/actions/ai-offer-creation"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
 import { DecisionHistoryPanel } from "./components/decision-history-panel"
 import { toast } from "@/hooks/use-toast"
@@ -112,6 +113,11 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   const [repairsAdvisorLoading, setRepairsAdvisorLoading] = useState(false)
   const [repairsAdvisorError, setRepairsAdvisorError] = useState<string | null>(null)
   const [repairItems, setRepairItems] = useState<any[]>([])
+
+  // AI Counter-Offer Strategy (aiCounterOfferStrategy) — direct, no transaction required
+  const [counterOfferStrategy, setCounterOfferStrategy] = useState<any>(null)
+  const [counterOfferStrategyLoading, setCounterOfferStrategyLoading] = useState(false)
+  const [counterOfferStrategyError, setCounterOfferStrategyError] = useState<string | null>(null)
 
   const selectedOffer = selectedOfferId ? offers.find(o => o.id === selectedOfferId) ?? null : null
 
@@ -244,6 +250,31 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
       setRepairsAdvisorError(result.error ?? "Repairs advisor failed.")
     }
     setRepairsAdvisorLoading(false)
+  }
+
+  async function handleCounterOfferStrategy(offer: typeof activeOffers[0]) {
+    setCounterOfferStrategyLoading(true)
+    setCounterOfferStrategyError(null)
+    setCounterOfferStrategy(null)
+    try {
+      const result = await aiCounterOfferStrategy({
+        originalOffer: offer.offer_price,
+        listPrice: listing.list_price ?? offer.offer_price,
+        counterAmount: offer.offer_price * 1.02,
+        counterTerms: {},
+        buyerMaxBudget: offer.offer_price * 1.1,
+        negotiationRound: offer.current_round ?? 1,
+      })
+      if ((result as any).success === false) {
+        setCounterOfferStrategyError((result as any).error ?? "Counter strategy failed.")
+      } else {
+        setCounterOfferStrategy(result)
+      }
+    } catch {
+      setCounterOfferStrategyError("Unexpected error — please try again.")
+    } finally {
+      setCounterOfferStrategyLoading(false)
+    }
   }
 
   return (
@@ -447,6 +478,92 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                         </div>
                       )}
                       {counterAdvisor && <NegotiationAdvisorResult data={counterAdvisor} />}
+                    </CardContent>
+                  </Card>
+
+                  {/* AI Counter-Offer Strategy — direct, no transaction required */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm flex items-center gap-1.5">
+                          <TrendingDown className="h-4 w-4 text-indigo-500" />
+                          Counter-Offer Strategy
+                        </CardTitle>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleCounterOfferStrategy(selectedOffer)}
+                          disabled={counterOfferStrategyLoading}
+                          className="h-7 text-xs"
+                        >
+                          {counterOfferStrategyLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Analyze"}
+                        </Button>
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      {counterOfferStrategyError && (
+                        <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                          <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                          {counterOfferStrategyError}
+                        </div>
+                      )}
+                      {!counterOfferStrategy && !counterOfferStrategyLoading && !counterOfferStrategyError && (
+                        <p className="text-xs text-muted-foreground">
+                          AI-powered counter response: accept, counter, or walk away — with pricing guidance and negotiation tactics. Works without an existing transaction.
+                        </p>
+                      )}
+                      {counterOfferStrategyLoading && (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Building counter strategy...
+                        </div>
+                      )}
+                      {counterOfferStrategy && (
+                        <div className="space-y-3">
+                          {counterOfferStrategy.recommendedResponse && (
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium border ${
+                                counterOfferStrategy.recommendedResponse === "accept"
+                                  ? "bg-green-50 text-green-800 border-green-200"
+                                  : counterOfferStrategy.recommendedResponse === "walk_away"
+                                  ? "bg-red-50 text-red-800 border-red-200"
+                                  : "bg-blue-50 text-blue-800 border-blue-200"
+                              }`}>
+                                {counterOfferStrategy.recommendedResponse === "accept" ? "Accept" : counterOfferStrategy.recommendedResponse === "walk_away" ? "Walk Away" : "Counter"}
+                              </span>
+                              {counterOfferStrategy.riskOfLosingDeal != null && (
+                                <span className="text-xs text-muted-foreground">
+                                  Deal risk: {counterOfferStrategy.riskOfLosingDeal}%
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {counterOfferStrategy.suggestedCounterPrice && (
+                            <p className="text-sm font-semibold">
+                              Suggested counter: ${Number(counterOfferStrategy.suggestedCounterPrice).toLocaleString()}
+                            </p>
+                          )}
+                          {counterOfferStrategy.estimatedFinalPrice && (
+                            <p className="text-xs text-muted-foreground">
+                              Estimated final price: ${Number(counterOfferStrategy.estimatedFinalPrice).toLocaleString()}
+                            </p>
+                          )}
+                          {counterOfferStrategy.reasoning && (
+                            <p className="text-xs text-muted-foreground">{counterOfferStrategy.reasoning}</p>
+                          )}
+                          {counterOfferStrategy.negotiationTactics?.length > 0 && (
+                            <div className="space-y-1">
+                              <p className="text-xs font-medium">Tactics</p>
+                              {counterOfferStrategy.negotiationTactics.map((t: string, i: number) => (
+                                <div key={i} className="rounded border border-border bg-muted/10 px-2.5 py-1.5 text-xs text-muted-foreground">{t}</div>
+                              ))}
+                            </div>
+                          )}
+                          {counterOfferStrategy.nextMoveTimeline && (
+                            <p className="text-xs text-muted-foreground">Timeline: {counterOfferStrategy.nextMoveTimeline}</p>
+                          )}
+                        </div>
+                      )}
                     </CardContent>
                   </Card>
 

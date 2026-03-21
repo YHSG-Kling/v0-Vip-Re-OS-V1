@@ -18,8 +18,9 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Eye, Target, Lightbulb, MapPin, Info } from "lucide-react"
+import { Loader2, Eye, Target, Lightbulb, MapPin, Info, BarChart2, TrendingUp } from "lucide-react"
 import { analyzeCompetitorLandscape } from "./ad-os-actions"
+import { competitiveIntelligence } from "@/app/actions/ai-predictions"
 
 interface Listing {
   id: string
@@ -47,6 +48,11 @@ export function CompetitorWatchPanel({ listings, agentId }: Props) {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  // Live competitive intelligence via competitiveIntelligence()
+  const [liveIntelLoading, setLiveIntelLoading] = useState(false)
+  const [liveIntelResult, setLiveIntelResult] = useState<any>(null)
+  const [liveIntelError, setLiveIntelError] = useState<string | null>(null)
 
   async function handleAnalyze() {
     if (!marketArea.trim()) return
@@ -133,6 +139,87 @@ export function CompetitorWatchPanel({ listings, agentId }: Props) {
                     {city}
                   </button>
                 ))}
+            </div>
+          )}
+        </div>
+
+        {/* Live Competitive Intelligence */}
+        <div className="border-t pt-3 space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+            <BarChart2 className="h-3.5 w-3.5" />
+            Live Competitive Data
+          </p>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={async () => {
+              if (!marketArea.trim()) return
+              setLiveIntelLoading(true)
+              setLiveIntelResult(null)
+              setLiveIntelError(null)
+              try {
+                const res = await competitiveIntelligence({
+                  agentId,
+                  marketArea: marketArea.trim(),
+                })
+                if ((res as any).success === false) {
+                  setLiveIntelError((res as any).error ?? "Competitive intelligence failed")
+                } else {
+                  setLiveIntelResult(res)
+                }
+              } catch {
+                setLiveIntelError("Unexpected error — please try again")
+              } finally {
+                setLiveIntelLoading(false)
+              }
+            }}
+            disabled={liveIntelLoading || !marketArea.trim()}
+            className="w-full justify-start gap-2 h-8 text-xs"
+          >
+            {liveIntelLoading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <TrendingUp className="h-3.5 w-3.5" />
+            )}
+            Pull Live Competitive Data
+          </Button>
+
+          {liveIntelError && (
+            <p className="text-xs text-red-600 bg-red-50 rounded-md p-2">{liveIntelError}</p>
+          )}
+
+          {liveIntelResult && (
+            <div className="space-y-3 rounded-md border border-border bg-muted/20 p-3">
+              {liveIntelResult.activeListings != null && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-xs text-muted-foreground">Active listings in area</span>
+                  <span className="font-semibold">{liveIntelResult.activeListings}</span>
+                </div>
+              )}
+              {liveIntelResult.medianListPrice != null && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-xs text-muted-foreground">Median list price</span>
+                  <span className="font-semibold">${Number(liveIntelResult.medianListPrice).toLocaleString()}</span>
+                </div>
+              )}
+              {liveIntelResult.averageDaysOnMarket != null && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-xs text-muted-foreground">Avg. days on market</span>
+                  <span className="font-semibold">{liveIntelResult.averageDaysOnMarket}d</span>
+                </div>
+              )}
+              {liveIntelResult.marketPositioning && (
+                <div className="pt-1 border-t border-border">
+                  <p className="text-xs font-medium mb-1">Market Positioning</p>
+                  <p className="text-xs text-muted-foreground leading-relaxed">{liveIntelResult.marketPositioning}</p>
+                </div>
+              )}
+              {liveIntelResult.aiAnalysis && (
+                <div className="rounded-md bg-violet-50 border border-violet-100 p-2.5">
+                  <p className="text-xs font-semibold text-violet-800 mb-1">AI Analysis</p>
+                  <p className="text-xs text-violet-700 leading-relaxed">{liveIntelResult.aiAnalysis}</p>
+                </div>
+              )}
             </div>
           )}
         </div>

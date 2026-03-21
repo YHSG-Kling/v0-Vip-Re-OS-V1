@@ -23,11 +23,15 @@ import {
   ChevronRight,
   Calculator,
   CheckCircle2,
+  FileBarChart,
+  Copy,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { generateListingPresentation, generateBrochureContent, generateSellerNetSheet } from "@/app/actions/ai-listing-presentation"
 import { matchBuyersForListing } from "@/app/actions/property-buyer-matching"
+import { generateAICMA } from "@/app/actions/ai-predictions"
 import { useToast } from "@/hooks/use-toast"
 
 interface WorkbenchRailProps {
@@ -74,6 +78,12 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
   const [netSalePrice, setNetSalePrice] = useState(defaultPrice > 0 ? String(defaultPrice) : "")
   const [netMortgagePayoff, setNetMortgagePayoff] = useState("")
   const [netCommissionRate, setNetCommissionRate] = useState("3")
+
+  // AI CMA state
+  const [cmaOpen, setCmaOpen] = useState(false)
+  const [cmaLoading, setCmaLoading] = useState(false)
+  const [cmaResult, setCmaResult] = useState<any>(null)
+  const [cmaPurpose, setCmaPurpose] = useState<"listing" | "buyer_offer" | "seller_consultation">("listing")
 
   function handleMatchBuyers() {
     startMatchTransition(async () => {
@@ -250,6 +260,20 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
             Seller Net Sheet
           </Button>
 
+          <Button
+            size="sm"
+            variant={cmaResult ? "secondary" : "outline"}
+            className="text-xs gap-1.5 justify-start"
+            onClick={() => setCmaOpen((o) => !o)}
+          >
+            {cmaResult ? (
+              <CheckCircle2 className="h-3 w-3 text-indigo-500" />
+            ) : (
+              <FileBarChart className="h-3 w-3" />
+            )}
+            AI CMA
+          </Button>
+
           {sellerId && (
             <Link href={`/portal/seller/${sellerId}?listing=${listingId}`} target="_blank">
               <Button size="sm" variant="outline" className="w-full text-xs gap-1.5 justify-start">
@@ -333,6 +357,107 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
                 {netSheetResult.notes && (
                   <p className="text-xs text-emerald-700 pt-1">{netSheetResult.notes}</p>
                 )}
+              </div>
+            )}
+          </div>
+        )}
+        {/* AI CMA inline panel */}
+        {cmaOpen && (
+          <div className="border-t pt-3 space-y-3">
+            <p className="text-xs font-medium text-muted-foreground">AI Comparative Market Analysis</p>
+            <div className="space-y-2">
+              <div className="space-y-1">
+                <Label className="text-xs">Property Address</Label>
+                <p className="text-xs text-muted-foreground bg-muted/30 rounded px-2 py-1">{listing.address}</p>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Purpose</Label>
+                <Select value={cmaPurpose} onValueChange={(v) => setCmaPurpose(v as typeof cmaPurpose)}>
+                  <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="listing">Listing Pricing</SelectItem>
+                    <SelectItem value="seller_consultation">Seller Consultation</SelectItem>
+                    <SelectItem value="buyer_offer">Buyer Offer</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">State</Label>
+                <p className="text-xs text-muted-foreground bg-muted/30 rounded px-2 py-1">{listing.state || "—"}</p>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              className="w-full text-xs gap-1.5"
+              onClick={async () => {
+                setCmaLoading(true)
+                try {
+                  const res = await generateAICMA({
+                    propertyAddress: listing.address,
+                    leadId: "",
+                    purpose: cmaPurpose,
+                    state: listing.state || "FL",
+                  })
+                  setCmaResult(res)
+                  toast({ title: "AI CMA generated" })
+                } catch {
+                  toast({ title: "CMA generation failed", variant: "destructive" })
+                } finally {
+                  setCmaLoading(false)
+                }
+              }}
+              disabled={cmaLoading}
+            >
+              {cmaLoading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <FileBarChart className="h-3 w-3" />
+              )}
+              Generate CMA
+            </Button>
+
+            {cmaResult && (
+              <div className="rounded-md border bg-indigo-50 border-indigo-100 p-3 space-y-2">
+                {cmaResult.recommendedPrice && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-indigo-900">Recommended Price</span>
+                    <span className="text-sm font-bold text-indigo-700">
+                      ${Number(cmaResult.recommendedPrice).toLocaleString()}
+                    </span>
+                  </div>
+                )}
+                {cmaResult.priceRange && (
+                  <p className="text-xs text-indigo-700">
+                    Range: ${Number(cmaResult.priceRange.low).toLocaleString()} – ${Number(cmaResult.priceRange.high).toLocaleString()}
+                  </p>
+                )}
+                {cmaResult.marketAnalysis && (
+                  <p className="text-xs text-indigo-800 leading-relaxed">{cmaResult.marketAnalysis}</p>
+                )}
+                {cmaResult.comparables?.length > 0 && (
+                  <div className="pt-1 border-t border-indigo-200 space-y-1">
+                    <p className="text-xs font-medium text-indigo-900">Comparable Sales</p>
+                    {cmaResult.comparables.slice(0, 3).map((c: any, i: number) => (
+                      <div key={i} className="flex items-center justify-between text-xs text-indigo-700">
+                        <span className="truncate mr-2">{c.address}</span>
+                        <span className="shrink-0">${Number(c.soldPrice ?? c.price ?? 0).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs text-indigo-700 px-0 gap-1"
+                  onClick={() => {
+                    const text = JSON.stringify(cmaResult, null, 2)
+                    navigator.clipboard.writeText(text)
+                    toast({ title: "CMA copied to clipboard" })
+                  }}
+                >
+                  <Copy className="h-3 w-3" />
+                  Copy Summary
+                </Button>
               </div>
             )}
           </div>
