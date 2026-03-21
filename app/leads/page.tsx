@@ -47,7 +47,9 @@ import {
   Home,
   Brain,
   ExternalLink,
+  Zap,
 } from "lucide-react"
+import { AvailableLeadsSheet } from "@/app/components/leads/AvailableLeadsSheet"
 import {
   getLeads,
   enrichLead,
@@ -77,6 +79,9 @@ export default function LeadsPage() {
   const [isAdminOrBroker, setIsAdminOrBroker] = useState(false)
   const [roleResolved, setRoleResolved] = useState(false)
 
+  // Available leads sheet
+  const [availableSheetOpen, setAvailableSheetOpen] = useState(false)
+
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
@@ -101,6 +106,7 @@ export default function LeadsPage() {
   const [hotLeads, setHotLeads] = useState<any[]>([])
   const [hotLeadsLoading, setHotLeadsLoading] = useState(true)
   const [agentId, setAgentId] = useState('')
+  const [brokerageId, setBrokerageId] = useState('')
   const [callingId, setCallingId] = useState<string | null>(null)
 
   // Top conversion candidates
@@ -209,6 +215,16 @@ export default function LeadsPage() {
 
       const adminBroker = ["admin", "broker", "superadmin"].includes(resolvedType)
       setIsAdminOrBroker(adminBroker)
+
+      // Resolve brokerageId from users table
+      const { data: userRow } = await supabase
+        .from("users")
+        .select("brokerage_id")
+        .eq("id", user.id)
+        .single()
+      if (userRow?.brokerage_id) {
+        setBrokerageId(userRow.brokerage_id)
+      }
 
       // Resolve agentId
       const { data: agentRow } = await supabase
@@ -377,27 +393,39 @@ export default function LeadsPage() {
               {total} total leads · Page {page} of {totalPages}
             </p>
           </div>
-          <Dialog>
-            <DialogTrigger asChild>
-              <Button>
-                <Upload className="h-4 w-4 mr-2" />
-                Import Leads
+          <div className="flex items-center gap-2">
+            {/* Available Leads pool — visible to agents only */}
+            {roleResolved && !isAdminOrBroker && (
+              <Button
+                variant="outline"
+                onClick={() => setAvailableSheetOpen(true)}
+              >
+                <Zap className="h-4 w-4 mr-2 text-yellow-500" />
+                Available Leads
               </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Import Leads</DialogTitle>
-                <DialogDescription>Upload a CSV file or paste lead data to import</DialogDescription>
-              </DialogHeader>
-              <div className="space-y-4 py-4">
-                <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
-                  <Upload className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-                  <p className="text-sm text-foreground font-medium">Drop CSV file here or click to browse</p>
-                  <p className="text-xs text-muted-foreground mt-1">CSV format: name, email, phone, source</p>
+            )}
+            <Dialog>
+              <DialogTrigger asChild>
+                <Button>
+                  <Upload className="h-4 w-4 mr-2" />
+                  Import Leads
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Import Leads</DialogTitle>
+                  <DialogDescription>Upload a CSV file or paste lead data to import</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
+                    <Upload className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
+                    <p className="text-sm text-foreground font-medium">Drop CSV file here or click to browse</p>
+                    <p className="text-xs text-muted-foreground mt-1">CSV format: name, email, phone, source</p>
+                  </div>
                 </div>
-              </div>
-            </DialogContent>
-          </Dialog>
+              </DialogContent>
+            </Dialog>
+          </div>
         </div>
 
         {/* Role-aware context strip */}
@@ -1263,6 +1291,15 @@ export default function LeadsPage() {
           </div>
         )}
       </div>
+
+      {/* Available Leads Sheet — agents claim from the brokerage pool */}
+      <AvailableLeadsSheet
+        open={availableSheetOpen}
+        onOpenChange={setAvailableSheetOpen}
+        agentId={agentId}
+        brokerageId={brokerageId}
+        onLeadClaimed={() => fetchLeads()}
+      />
     </div>
   )
 }
