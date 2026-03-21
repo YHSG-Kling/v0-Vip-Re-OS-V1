@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/table"
 import { Building2, AlertTriangle, DollarSign, Users } from "lucide-react"
 import { TierOverrideModal } from "./tier-override-modal"
+import { CreateSubscriberModal } from "./create-subscriber-modal"
 
 export const dynamic = "force-dynamic"
 
@@ -74,11 +75,14 @@ export default async function AdminBillingPage() {
 
   return (
     <div className="container mx-auto p-6 space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Billing Administration</h1>
-        <p className="text-muted-foreground mt-1">
-          Manage brokerage subscriptions and billing across the platform
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Billing Administration</h1>
+          <p className="text-muted-foreground mt-1">
+            Manage brokerage subscriptions and billing across the platform
+          </p>
+        </div>
+        <CreateSubscriberModal tiers={tiers} onCreated={() => {}} />
       </div>
 
       {/* KPI Cards */}

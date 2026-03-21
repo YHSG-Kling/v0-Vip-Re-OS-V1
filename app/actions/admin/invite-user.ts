@@ -1,0 +1,90 @@
+"use server"
+
+import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+
+export async function inviteUser(params: {
+  email: string
+  firstName: string
+  lastName: string
+  userType: string
+  brokerageId?: string
+}): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Unauthenticated" }
+
+  const { data: caller } = await supabase
+    .from("users")
+    .select("user_type, role, brokerage_id")
+    .eq("id", user.id)
+    .single()
+
+  const callerType = caller?.user_type ?? caller?.role
+  if (!["admin", "superadmin"].includes(callerType ?? "")) {
+    return { success: false, error: "Forbidden: admin or superadmin only" }
+  }
+
+  // Non-superadmin admins can only invite to their own brokerage
+  const resolvedBrokerageId =
+    callerType === "superadmin"
+      ? params.brokerageId || caller?.brokerage_id || null
+      : caller?.brokerage_id || null
+
+  const service = createServiceClient()
+
+  try {
+    await service.auth.admin.inviteUserByEmail(params.email, {
+      data: {
+        first_name: params.firstName,
+        last_name: params.lastName,
+        user_type: params.userType,
+        brokerage_id: resolvedBrokerageId,
+      },
+      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
+    })
+
+    // Upsert users record so they appear in admin panel immediately
+    await service
+      .from("users")
+      .upsert(
+        {
+          email: params.email,
+          first_name: params.firstName,
+          last_name: params.lastName,
+          user_type: params.userType,
+          role: params.userType,
+          brokerage_id: resolvedBrokerageId,
+          is_contact: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "email" }
+      )
+      .catch(() => {})
+
+    // Audit log
+    await service
+      .from("activities")
+      .insert({
+        activity_type: "admin.user.invited",
+        agent_id: user.id,
+        brokerage_id: resolvedBrokerageId,
+        title: `User invited: ${params.email}`,
+        notes: JSON.stringify({
+          user_type: params.userType,
+          brokerage_id: resolvedBrokerageId,
+          invited_by: user.id,
+        }),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .catch(() => {})
+
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message }
+  }
+}

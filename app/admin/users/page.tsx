@@ -3,7 +3,8 @@ import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Users, Plus, Search } from 'lucide-react'
+import { Users } from 'lucide-react'
+import { InviteUserButton } from './invite-user-button'
 
 export const dynamic = 'force-dynamic'
 
@@ -48,10 +49,10 @@ export default async function AdminUsersPage() {
           </h1>
           <p className="text-gray-500 text-sm">{userList.length} users</p>
         </div>
-        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">
-          <Plus className="w-4 h-4 mr-2" />
-          Invite User
-        </Button>
+        <InviteUserButton
+          callerRole={profile?.role ?? "admin"}
+          brokerageId={profile?.brokerage_id}
+        />
       </div>
 
       {userList.length === 0 ? (
