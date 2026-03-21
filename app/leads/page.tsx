@@ -59,7 +59,7 @@ import {
   convertLeadToContact as convertLeadToContactLegacy,
   rejectLead,
 } from "@/app/actions/lead-management"
-import { convertLeadToContact } from "@/app/actions/lead-lifecycle"
+import { convertLeadToContact, listUnassignedLeads } from "@/app/actions/lead-lifecycle"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -97,6 +97,9 @@ export default function LeadsPage() {
 
   // Available leads sheet (agents)
   const [availableSheetOpen, setAvailableSheetOpen] = useState(false)
+
+  // Unassigned lead count for admin badge
+  const [unassignedCount, setUnassignedCount] = useState<number | null>(null)
 
   // Admin assignment panel
   const [adminPanelOpen, setAdminPanelOpen] = useState(false)
@@ -267,6 +270,13 @@ export default function LeadsPage() {
 
       // Mark role resolved — triggers fetchLeads
       setRoleResolved(true)
+
+      // Load unassigned lead count for admin badge
+      if (adminBroker && userRow?.brokerage_id) {
+        listUnassignedLeads({ brokerageId: userRow.brokerage_id, limit: 1 })
+          .then((r) => setUnassignedCount(r.total ?? (r.leads?.length ?? 0)))
+          .catch(() => setUnassignedCount(null))
+      }
 
       // Load hot leads
       try {
@@ -445,13 +455,20 @@ export default function LeadsPage() {
           <div className="flex items-center gap-2">
             {/* Assign Leads — visible to admin/broker only */}
             {roleResolved && isAdminOrBroker && (
-              <Button
-                variant="outline"
-                onClick={() => setAdminPanelOpen(true)}
-              >
-                <Users className="h-4 w-4 mr-2" />
-                Assign Leads
-              </Button>
+              <div className="relative">
+                <Button
+                  variant="outline"
+                  onClick={() => setAdminPanelOpen(true)}
+                >
+                  <Users className="h-4 w-4 mr-2" />
+                  Assign Leads
+                  {unassignedCount !== null && unassignedCount > 0 && (
+                    <span className="ml-2 inline-flex items-center justify-center h-4.5 min-w-[1.125rem] px-1 rounded-full text-[10px] font-bold bg-amber-400 text-amber-900 leading-none">
+                      {unassignedCount}
+                    </span>
+                  )}
+                </Button>
+              </div>
             )}
             {/* Available Leads pool — visible to agents only */}
             {roleResolved && !isAdminOrBroker && (
@@ -1518,7 +1535,14 @@ export default function LeadsPage() {
           onOpenChange={setAdminPanelOpen}
           brokerageId={brokerageId}
           userId={userId}
-          onAssigned={() => fetchLeads()}
+          onAssigned={() => {
+            fetchLeads()
+            if (brokerageId) {
+              listUnassignedLeads({ brokerageId, limit: 1 })
+                .then((r) => setUnassignedCount(r.total ?? (r.leads?.length ?? 0)))
+                .catch(() => {})
+            }
+          }}
         />
       )}
 
