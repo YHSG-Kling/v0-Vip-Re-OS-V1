@@ -70,7 +70,6 @@ import { HotLeadCard } from "@/app/components/shared/HotLeadCard"
 import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/types/lead-management"
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
-import { Zap } from "lucide-react"
 
 export default function LeadsPage() {
   const router = useRouter()
