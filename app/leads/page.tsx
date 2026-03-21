@@ -462,27 +462,30 @@ export default function LeadsPage() {
                 Available Leads
               </Button>
             )}
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button>
-                  <Upload className="h-4 w-4 mr-2" />
-                  Import Leads
-                </Button>
-              </DialogTrigger>
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>Import Leads</DialogTitle>
-                  <DialogDescription>Upload a CSV file or paste lead data to import</DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4 py-4">
-                  <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
-                    <Upload className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-                    <p className="text-sm text-foreground font-medium">Drop CSV file here or click to browse</p>
-                    <p className="text-xs text-muted-foreground mt-1">CSV format: name, email, phone, source</p>
+            {/* Import Leads — admin/broker only */}
+            {roleResolved && isAdminOrBroker && (
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button>
+                    <Upload className="h-4 w-4 mr-2" />
+                    Import Leads
+                  </Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Import Leads</DialogTitle>
+                    <DialogDescription>Upload a CSV file or paste lead data to import</DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-4 py-4">
+                    <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
+                      <Upload className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
+                      <p className="text-sm text-foreground font-medium">Drop CSV file here or click to browse</p>
+                      <p className="text-xs text-muted-foreground mt-1">CSV format: name, email, phone, source</p>
+                    </div>
                   </div>
-                </div>
-              </DialogContent>
-            </Dialog>
+                </DialogContent>
+              </Dialog>
+            )}
           </div>
         </div>
 
