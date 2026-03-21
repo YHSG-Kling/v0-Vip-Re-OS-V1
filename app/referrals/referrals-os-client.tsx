@@ -12,6 +12,7 @@ import {
   RepeatBusinessPanel,
 } from "@/app/dashboard/referrals/components/os"
 import { updateReferralStatus, sendReferralThankYou } from "@/app/actions/referral-management"
+import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
 interface Referral {
   id: string
@@ -94,6 +95,7 @@ export function ReferralsOsClient({
 
   const handleSendThankYou = async (referralId: string) => {
     await sendReferralThankYou(referralId)
+    awardPointsForAction(agentId, "referral_received").catch(() => {})
     router.refresh()
   }
 

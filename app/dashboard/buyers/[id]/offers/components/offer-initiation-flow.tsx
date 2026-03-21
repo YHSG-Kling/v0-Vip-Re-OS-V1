@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, Check, AlertTriangle, ExternalLink, Sparkles } from "lucide-react"
+import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
 type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard"
 
@@ -725,7 +726,10 @@ export function OfferInitiationFlow({
         buyerMaxBudget={Number(escalationForm.maxBudget) || undefined}
         buyerRiskTolerance={contingencyForm.riskTolerance}
         onBack={() => setFlowStep("contingencies")}
-        onSuccess={onSuccess}
+        onSuccess={() => {
+          awardPointsForAction(agentUserId, "offer_submitted").catch(() => {})
+          onSuccess()
+        }}
       />
     )
   }

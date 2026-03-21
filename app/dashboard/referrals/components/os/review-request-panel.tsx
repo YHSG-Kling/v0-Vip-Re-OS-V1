@@ -21,6 +21,7 @@ import {
 } from "@/app/actions/ai-review-automation"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 import { ContextualAiAssistBar } from "@/app/components/ai-copilot"
+import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
 interface RecentClosing {
   id: string
@@ -79,6 +80,7 @@ export function ReviewRequestPanel({
 
       if (result.success && result.message) {
         setDraft(result.message)
+        awardPointsForAction(agentId, "review_received").catch(() => {})
         // Check compliance
         const compliance = await checkThemFirstCompliance(result.message)
         setComplianceOk(compliance.isCompliant)

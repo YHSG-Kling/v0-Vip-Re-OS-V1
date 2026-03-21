@@ -64,6 +64,7 @@ import {
   getIntelligenceDashboardStats,
   getMotivatedSellers,
   getUnifiedLeadProfiles,
+  deliverIntelligentValue,
 } from "@/app/actions/lead-intelligence"
 import LeadIntelligencePanel from "@/app/components/intelligence/LeadIntelligencePanel"
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
@@ -111,6 +112,8 @@ export default function LeadsPage() {
   const [hotLeads, setHotLeads] = useState<any[]>([])
   const [hotLeadsLoading, setHotLeadsLoading] = useState(true)
   const [agentId, setAgentId] = useState('')
+  const [deliveredProfiles, setDeliveredProfiles] = useState<Set<string>>(new Set())
+  const [deliveringId, setDeliveringId] = useState<string | null>(null)
   const [brokerageId, setBrokerageId] = useState('')
   const [callingId, setCallingId] = useState<string | null>(null)
 

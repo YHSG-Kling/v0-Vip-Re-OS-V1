@@ -20,6 +20,7 @@ import { scheduleSocialPost } from "@/app/actions/social-media-automation"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
 import { toast } from "sonner"
+import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
 interface SocialAiComposerProps {
   agentId: string
@@ -139,7 +140,8 @@ Generate ONLY the post content, no explanations.`
       })
 
       toast.success("Post scheduled successfully!")
-      
+      awardPointsForAction(agentId, "social_posted").catch(() => {})
+
       // Reset form
       setGeneratedContent("")
       setTopic("")

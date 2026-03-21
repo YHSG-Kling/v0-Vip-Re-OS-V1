@@ -19,6 +19,7 @@ import {
   LaunchActionsPanel,
 } from "../components/launch"
 import { ListingAgreementStatusCard } from "./components/listing-agreement-status-card"
+import { DecisionHistoryPanel } from "./components/decision-history-panel"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -248,6 +249,8 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
             agreement={listingAgreement ?? null}
           />
         </div>
+
+        <DecisionHistoryPanel listingId={listingId} />
 
         <SellerCoachingCard
           listingId={listingId}

@@ -21,6 +21,7 @@ import {
   showingTimeDecline,
 } from "@/app/actions/seller-showings"
 import { aiSendShowingConfirmation, aiCollectShowingFeedback } from "@/app/actions/ai-showing-management"
+import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
   scheduled:   { label: "Scheduled",  variant: "secondary" },
@@ -104,7 +105,11 @@ export default function ConfirmedShowingsList({ showings, listing, brokerageId, 
         brokerageId,
         agentUserId,
       })
-      if (res.success) { updateShowing(activeId, { status: "completed" }); close() }
+      if (res.success) {
+        updateShowing(activeId, { status: "completed" })
+        close()
+        awardPointsForAction(agentUserId, "showing_completed").catch(() => {})
+      }
     })
   }
 

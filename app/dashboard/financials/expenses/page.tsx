@@ -3,13 +3,14 @@ import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Receipt, ArrowLeft, Plus, TrendingDown } from 'lucide-react'
+import { Receipt, ArrowLeft, TrendingDown } from 'lucide-react'
 import Link from 'next/link'
 import {
   ExpenseIntelligencePanel,
   FinancialActionStack,
   type FinancialAction,
 } from '../components/os'
+import { AddExpenseDialog } from './components/add-expense-dialog'
 
 export const dynamic = 'force-dynamic'
 
@@ -89,10 +90,7 @@ export default async function ExpensesPage() {
             <p className="text-muted-foreground">Track and categorize your business expenses for tax purposes</p>
           </div>
         </div>
-        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">
-          <Plus className="w-4 h-4 mr-2" />
-          Add Expense
-        </Button>
+        <AddExpenseDialog agentId={user.id} />
       </div>
 
       {/* KPI Row */}
