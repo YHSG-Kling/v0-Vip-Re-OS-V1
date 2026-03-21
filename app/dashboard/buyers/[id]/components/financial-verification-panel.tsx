@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { createClient } from "@/lib/supabase/client"
 import { Badge }    from "@/components/ui/badge"
 import { Button }   from "@/components/ui/button"
 import { Input }    from "@/components/ui/input"
@@ -91,17 +92,29 @@ function FinancialVerificationForm({
   const [verifyAmount, setVerifyAmount] = useState("")
   const [isPending, setIsPending] = useState(false)
 
-  // Simulate file upload (real upload would use Vercel Blob)
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
     setIsPending(true)
     startTransition(async () => {
       const docCategory = buyerType === "financing" ? "pre_approval_letter" : "proof_of_funds"
+
+      // Upload to Supabase Storage first — store a real persistent URL
+      const supabase = createClient()
+      const ext = file.name.split(".").pop()
+      const path = `documents/${contactId}/${Date.now()}.${ext}`
+      const { error: storageErr } = await supabase.storage
+        .from("agent-media")
+        .upload(path, file, { upsert: false })
+
+      const uploadedUrl = storageErr
+        ? URL.createObjectURL(file) // fallback if storage fails
+        : supabase.storage.from("agent-media").getPublicUrl(path).data.publicUrl
+
       const result = await recordDocumentUpload({
         contactId, brokerageId, uploadedBy: agentUserId,
         documentName:  file.name,
-        documentUrl:   URL.createObjectURL(file), // placeholder until Blob integration
+        documentUrl:   uploadedUrl,
         docCategory,
         verificationAmount: buyerType === "cash" && verifyAmount ? Number(verifyAmount) : undefined,
         verificationLender: buyerType === "financing" && lender ? lender : undefined,

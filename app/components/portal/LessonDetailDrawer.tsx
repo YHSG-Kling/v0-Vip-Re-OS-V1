@@ -3,7 +3,7 @@
 // components/portal/LessonDetailDrawer.tsx
 // Full lesson detail drawer with content and "Mark as Read" action.
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import {
   Sheet,
   SheetContent,
@@ -28,7 +28,7 @@ import {
   Loader2
 } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { markLessonRead } from "@/app/actions/portal-education"
+import { markLessonRead, getLessonByKey } from "@/app/actions/portal-education"
 import type { LessonFeedItem } from "@/app/actions/portal-education"
 
 interface LessonDetailDrawerProps {
@@ -122,32 +122,34 @@ export function LessonDetailDrawer({
 }: LessonDetailDrawerProps) {
   const [isMarking, setIsMarking] = useState(false)
   const [marked, setMarked] = useState(false)
+  const [content, setContent] = useState<string>(lesson ? (LESSON_CONTENT[lesson.key] || "") : "")
+  const [loadingContent, setLoadingContent] = useState(lesson ? !LESSON_CONTENT[lesson.key] : false)
+
+  useEffect(() => {
+    if (!lesson) return
+    // If hardcoded content exists, use it immediately — no fetch needed
+    if (LESSON_CONTENT[lesson.key]) {
+      setContent(LESSON_CONTENT[lesson.key])
+      setLoadingContent(false)
+      return
+    }
+    setLoadingContent(true)
+    getLessonByKey(lesson.key, contactId)
+      .then(r => {
+        if (r?.lesson?.body_markdown) {
+          setContent(r.lesson.body_markdown)
+        } else {
+          setContent("Lesson content will be available soon.")
+        }
+      })
+      .catch(() => setContent("Lesson content will be available soon."))
+      .finally(() => setLoadingContent(false))
+  }, [lesson?.key, contactId])
 
   if (!lesson) return null
 
   const Icon = FORMAT_ICONS[lesson.format] || FileText
   const formatColor = FORMAT_COLORS[lesson.format] || "bg-muted text-muted-foreground"
-  
-  // Get content or use description as fallback
-  const content = LESSON_CONTENT[lesson.key] || `
-## ${lesson.title}
-
-${lesson.description}
-
----
-
-*Full lesson content will be available soon. This lesson covers important information about ${lesson.tags.join(", ")}.*
-
-### Key Points
-
-- Understanding the basics of ${lesson.tags[0] || "this topic"}
-- How it affects your real estate journey
-- Next steps to take
-
-### Additional Resources
-
-Your agent can provide more detailed information specific to your situation.
-  `
 
   const handleMarkAsRead = async () => {
     setIsMarking(true)
@@ -208,7 +210,13 @@ Your agent can provide more detailed information specific to your situation.
 
         {/* Lesson Content */}
         <div className="prose prose-sm max-w-none dark:prose-invert">
-          {content.split("\n").map((line, index) => {
+          {loadingContent && (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground py-6">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading lesson content...
+            </div>
+          )}
+          {!loadingContent && content.split("\n").map((line, index) => {
             if (line.startsWith("## ")) {
               return (
                 <h2 key={index} className="text-lg font-bold mt-6 mb-3">
