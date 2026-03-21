@@ -1,19 +1,26 @@
-'use client';
+import { createClient } from "@/lib/supabase/server"
+import { redirect } from "next/navigation"
 
-import React from 'react';
-import { SettingsCard } from '@/app/components/settings/SettingsCard';
+export default async function SettingsUsersPage() {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
 
-export default function UsersPage() {
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
-        <p className="text-gray-600 mt-2">Manage brokerage users and roles</p>
-      </div>
+  if (!user) redirect("/login")
 
-      <SettingsCard title="Users">
-        <p className="text-gray-600">User management coming soon</p>
-      </SettingsCard>
-    </div>
-  );
+  const { data: profile } = await supabase
+    .from("users")
+    .select("user_type, role")
+    .eq("id", user.id)
+    .single()
+
+  const userType = profile?.user_type ?? profile?.role ?? "agent"
+
+  if (["admin", "broker", "superadmin"].includes(userType)) {
+    redirect("/admin")
+  }
+
+  // Agents and other roles don't have user management access
+  redirect("/dashboard/settings/general")
 }
