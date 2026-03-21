@@ -1,13 +1,30 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { QrCode, Download, Users, Flame, UserCheck, ExternalLink } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import {
+  QrCode,
+  Download,
+  Users,
+  Flame,
+  UserCheck,
+  ExternalLink,
+  RefreshCw,
+  CloudSun,
+  AlertTriangle,
+  CheckCircle2,
+} from "lucide-react"
 import { endOpenHouseEvent, createQrCodeForEvent } from "@/app/actions/seller-open-house"
+import {
+  checkInAttendee,
+  getOpenHouseVisitors,
+  fetchWeatherForEvent,
+  monitorCompetingEvents,
+} from "@/app/actions/open-house-automation"
 import { useToast } from "@/hooks/use-toast"
-import { createClient } from "@/lib/supabase/client"
 
 interface Props {
   listingId: string
@@ -27,6 +44,83 @@ export function EventDayTab({ listingId, data, onRefresh }: Props) {
   const { toast } = useToast()
   const { listing, events, attendees, packetJob } = data
 
+  // Active event = first scheduled or in_progress, fallback to most recent
+  const activeEvent =
+    events.find((e: any) => e.status === "in_progress") ??
+    events.find((e: any) => e.status === "scheduled") ??
+    events[0] ??
+    null
+  const activeEventId: string | null = activeEvent?.id ?? null
+
+  // Event Day Operations state
+  const [visitors, setVisitors] = useState<any[]>([])
+  const [weather, setWeather] = useState<any>(null)
+  const [competing, setCompeting] = useState<any>(null)
+  const [walkInName, setWalkInName] = useState("")
+  const [walkInPhone, setWalkInPhone] = useState("")
+  const [checkingIn, setCheckingIn] = useState(false)
+  const [refreshingVisitors, setRefreshingVisitors] = useState(false)
+
+  async function loadVisitors(eventId: string) {
+    const res = await getOpenHouseVisitors(eventId).catch(() => null)
+    setVisitors(res?.visitors ?? [])
+  }
+
+  useEffect(() => {
+    if (!activeEventId) return
+
+    // Load visitors, weather, and competing in parallel
+    loadVisitors(activeEventId)
+
+    fetchWeatherForEvent(activeEventId)
+      .then((w) => setWeather(w))
+      .catch(() => null)
+
+    monitorCompetingEvents(activeEventId)
+      .then((c) => setCompeting(c))
+      .catch(() => null)
+  }, [activeEventId])
+
+  async function handleCheckIn() {
+    if (!activeEventId) return
+    if (!walkInName.trim()) {
+      toast({ title: "Enter visitor name", variant: "destructive" })
+      return
+    }
+    setCheckingIn(true)
+    try {
+      const res = await checkInAttendee({
+        eventId: activeEventId,
+        contactEmail: walkInPhone
+          ? `${walkInPhone.replace(/\D/g, "")}@walkin.open`
+          : `${Date.now()}@walkin.open`,
+        contactName: walkInName.trim(),
+        contactPhone: walkInPhone.trim() || undefined,
+        interestLevel: "just_looking",
+        optInFollowUp: true,
+      })
+      if (res.success) {
+        toast({ title: "Visitor checked in", description: walkInName })
+        setWalkInName("")
+        setWalkInPhone("")
+        await loadVisitors(activeEventId)
+      } else {
+        toast({ title: "Check-in failed", description: res.error, variant: "destructive" })
+      }
+    } catch {
+      toast({ title: "Check-in failed", variant: "destructive" })
+    } finally {
+      setCheckingIn(false)
+    }
+  }
+
+  async function handleRefreshVisitors() {
+    if (!activeEventId) return
+    setRefreshingVisitors(true)
+    await loadVisitors(activeEventId)
+    setRefreshingVisitors(false)
+  }
+
   function handleEndEvent(eventId: string) {
     setEndingEventId(eventId)
     startTransition(async () => {
@@ -35,7 +129,7 @@ export function EventDayTab({ listingId, data, onRefresh }: Props) {
         listingId,
         brokerageId: listing.brokerage_id,
         agentId: listing.agent_id,
-        userId: listing.agent_id, // resolved by auth in action; placeholder matches agent
+        userId: listing.agent_id,
       })
       setEndingEventId(null)
       if (res.success) {
@@ -72,8 +166,184 @@ export function EventDayTab({ listingId, data, onRefresh }: Props) {
     )
   }
 
+  const weatherOk = weather && !weather.error
+  const competingOk = competing && !competing.error
+
   return (
     <div className="flex flex-col gap-6">
+      {/* ── Event Day Operations ── */}
+      {activeEventId && (
+        <div className="flex flex-col gap-4">
+          {/* Row 1: Weather + Competing */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {/* Weather */}
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center gap-2">
+                  <CloudSun className="h-4 w-4 text-muted-foreground" />
+                  <CardTitle className="text-sm">Weather Forecast</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {weatherOk ? (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-2xl font-bold">{weather.temperature}°F</span>
+                    <span className="text-sm text-muted-foreground capitalize">{weather.conditions}</span>
+                    <div className="flex flex-wrap gap-3 mt-1 text-xs text-muted-foreground">
+                      <span>Precip: {weather.precip_chance}%</span>
+                      <span>Wind: {weather.wind_speed} mph</span>
+                      {weather.quality_score !== undefined && (
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] ${weather.quality_score >= 70 ? "border-green-300 text-green-700" : weather.quality_score >= 40 ? "border-yellow-300 text-yellow-700" : "border-red-300 text-red-700"}`}
+                        >
+                          Score {weather.quality_score}/100
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    {weather?.error ?? "Weather unavailable for this property location."}
+                  </span>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Competing Events */}
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-muted-foreground" />
+                  <CardTitle className="text-sm">Competition</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {competingOk ? (
+                  <div className="flex flex-col gap-1">
+                    {competing.total_competing === 0 ? (
+                      <div className="flex items-center gap-1.5 text-sm text-green-700">
+                        <CheckCircle2 className="h-4 w-4" />
+                        No competing open houses on this date
+                      </div>
+                    ) : (
+                      <>
+                        <span className="text-2xl font-bold">{competing.total_competing}</span>
+                        <span className="text-sm text-muted-foreground">
+                          competing open house{competing.total_competing !== 1 ? "s" : ""} on same date
+                        </span>
+                        {competing.same_time_conflicts > 0 && (
+                          <Badge variant="outline" className="w-fit text-xs border-amber-300 text-amber-700 mt-1">
+                            {competing.same_time_conflicts} overlapping time slot{competing.same_time_conflicts !== 1 ? "s" : ""}
+                          </Badge>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-sm text-muted-foreground">
+                    Competition data unavailable.
+                  </span>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Row 2: Live Visitor Check-In */}
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">Live Visitor Check-In</CardTitle>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    Live Attendees: <strong>{visitors.length}</strong>
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 w-7 p-0"
+                    onClick={handleRefreshVisitors}
+                    disabled={refreshingVisitors}
+                    aria-label="Refresh visitors"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${refreshingVisitors ? "animate-spin" : ""}`} />
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              {/* Walk-in form */}
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="flex flex-col gap-1.5 flex-1 min-w-32">
+                  <label className="text-xs font-medium text-muted-foreground">Name</label>
+                  <Input
+                    placeholder="Visitor name"
+                    value={walkInName}
+                    onChange={(e) => setWalkInName(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5 flex-1 min-w-32">
+                  <label className="text-xs font-medium text-muted-foreground">Phone</label>
+                  <Input
+                    placeholder="Phone number"
+                    value={walkInPhone}
+                    onChange={(e) => setWalkInPhone(e.target.value)}
+                    type="tel"
+                  />
+                </div>
+                <Button onClick={handleCheckIn} disabled={checkingIn || !walkInName.trim()} className="shrink-0">
+                  {checkingIn ? (
+                    <RefreshCw className="mr-1.5 h-4 w-4 animate-spin" />
+                  ) : (
+                    <UserCheck className="mr-1.5 h-4 w-4" />
+                  )}
+                  Check In
+                </Button>
+              </div>
+
+              {/* Live visitor list */}
+              {visitors.length > 0 && (
+                <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto">
+                  {visitors.map((v: any) => {
+                    const name =
+                      v.contact_name ??
+                      (v.contact ? `${v.contact.first_name ?? ""} ${v.contact.last_name ?? ""}`.trim() : null) ??
+                      "Guest"
+                    const phone = v.contact_phone ?? v.contact?.phone ?? null
+                    const checkInTime = v.check_in_time
+                      ? new Date(v.check_in_time).toLocaleTimeString("en-US", {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })
+                      : null
+
+                    return (
+                      <div
+                        key={v.id}
+                        className="flex items-center justify-between rounded-md border border-border bg-background px-3 py-2"
+                      >
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-sm font-medium">{name}</span>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            {phone && <span>{phone}</span>}
+                            {checkInTime && <span>Checked in {checkInTime}</span>}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {visitors.length === 0 && (
+                <p className="text-xs text-muted-foreground">No visitors checked in yet.</p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* ── Per-event cards (existing structure) ── */}
       {events.map((event: any) => {
         const eventAttendees = attendees.filter((a: any) => a.event_id === event.id)
         const hotLeads = eventAttendees.filter((a: any) => (a.ai_lead_score ?? 0) >= 70)
@@ -86,7 +356,9 @@ export function EventDayTab({ listingId, data, onRefresh }: Props) {
                 <div className="flex flex-col gap-1">
                   <CardTitle className="text-base">
                     {new Date(event.event_date).toLocaleDateString("en-US", {
-                      weekday: "long", month: "long", day: "numeric",
+                      weekday: "long",
+                      month: "long",
+                      day: "numeric",
                     })}
                   </CardTitle>
                   <span className="text-sm text-muted-foreground">
@@ -142,7 +414,12 @@ export function EventDayTab({ listingId, data, onRefresh }: Props) {
                     <ExternalLink className="h-3 w-3 text-muted-foreground" />
                   </a>
                 ) : (
-                  <Button variant="outline" size="sm" onClick={() => handleCreateQr(event.id)} disabled={isPending}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCreateQr(event.id)}
+                    disabled={isPending}
+                  >
                     <QrCode className="mr-1.5 h-3.5 w-3.5" />
                     Generate QR Code
                   </Button>
@@ -213,7 +490,11 @@ function AttendeeRow({ attendee }: { attendee: any }) {
           </span>
           {attendee.check_in_time && (
             <span className="text-xs text-muted-foreground">
-              Check-in: {new Date(attendee.check_in_time).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+              Check-in:{" "}
+              {new Date(attendee.check_in_time).toLocaleTimeString("en-US", {
+                hour: "numeric",
+                minute: "2-digit",
+              })}
             </span>
           )}
         </div>
@@ -228,11 +509,13 @@ function AttendeeRow({ attendee }: { attendee: any }) {
         <Badge className={`text-xs border ${INTEREST_COLORS[interest] ?? INTEREST_COLORS.cold}`}>
           {interest}
         </Badge>
-        <span className="text-xs font-mono text-muted-foreground w-10 text-right">
-          {score}/100
-        </span>
+        <span className="text-xs font-mono text-muted-foreground w-10 text-right">{score}/100</span>
         {isHot && (
-          <Button size="sm" variant="outline" className="text-xs h-6 px-2 border-amber-300 text-amber-800 hover:bg-amber-100">
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-xs h-6 px-2 border-amber-300 text-amber-800 hover:bg-amber-100"
+          >
             Enroll
           </Button>
         )}

@@ -1,12 +1,31 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Mail, MessageSquare, Users, CheckCircle, Clock, Send } from "lucide-react"
+import {
+  Mail,
+  MessageSquare,
+  Users,
+  CheckCircle,
+  Clock,
+  Send,
+  CalendarPlus,
+  Sparkles,
+  Loader2,
+  RefreshCw,
+} from "lucide-react"
 import { inviteFarmContacts } from "@/app/actions/seller-open-house"
+import {
+  createOpenHouseEvent,
+  getOpenHouseEvents,
+  sendOpenHouseInvitations,
+  optimizeOpenHouseTiming,
+} from "@/app/actions/open-house-automation"
+import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/hooks/use-toast"
 
 interface Props {
@@ -27,14 +46,40 @@ const STATUS_COLORS: Record<string, string> = {
   draft: "bg-muted text-muted-foreground border-border",
 }
 
+const EVENT_STATUS_COLORS: Record<string, string> = {
+  scheduled: "bg-blue-100 text-blue-800 border-blue-200",
+  in_progress: "bg-green-100 text-green-800 border-green-200",
+  completed: "bg-muted text-muted-foreground border-border",
+  cancelled: "bg-red-100 text-red-800 border-red-200",
+}
+
 export function MarketingTab({ listingId, data, onRefresh }: Props) {
   const [channel, setChannel] = useState<"email" | "sms" | "both">("email")
   const [isPending, startTransition] = useTransition()
   const { toast } = useToast()
-  const { listing, socialPosts, events, invitations } = data
+  const { listing, socialPosts, events: dataEvents, invitations } = data
 
-  // Pick the upcoming event for invitations
-  const upcomingEvent = events.find((e: any) => e.status === "scheduled") ?? events[0]
+  // Schedule open house state
+  const [eventDate, setEventDate] = useState("")
+  const [startTime, setStartTime] = useState("10:00")
+  const [endTime, setEndTime] = useState("12:00")
+  const [creatingEvent, setCreatingEvent] = useState(false)
+  const [scheduledEvents, setScheduledEvents] = useState<any[]>([])
+  const [timingResult, setTimingResult] = useState<any>(null)
+  const [optimizingTiming, setOptimizingTiming] = useState(false)
+  const [invitingEventId, setInvitingEventId] = useState<string | null>(null)
+
+  // Load events on mount
+  useEffect(() => {
+    if (listing?.agent_id) {
+      getOpenHouseEvents(listing.agent_id).then((evts) => {
+        setScheduledEvents(evts ?? [])
+      })
+    }
+  }, [listing?.agent_id])
+
+  // Pick the upcoming event for invitations (existing farm invite section)
+  const upcomingEvent = dataEvents.find((e: any) => e.status === "scheduled") ?? dataEvents[0]
 
   // RSVP tallies
   const rsvpYes = invitations.filter((i: any) => i.rsvp_response === "yes").length
@@ -43,6 +88,94 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
 
   const comingSoonPosts = socialPosts.filter((p: any) => p.post_type === "coming_soon")
   const openHousePosts = socialPosts.filter((p: any) => p.post_type !== "coming_soon")
+
+  async function handleOptimizeTiming() {
+    setOptimizingTiming(true)
+    try {
+      const result = await optimizeOpenHouseTiming({
+        propertyId: listingId,
+        agentId: listing.agent_id,
+      })
+      setTimingResult(result)
+    } catch {
+      toast({ title: "Failed to optimize timing", variant: "destructive" })
+    } finally {
+      setOptimizingTiming(false)
+    }
+  }
+
+  async function handleCreateEvent() {
+    if (!eventDate) {
+      toast({ title: "Select a date first", variant: "destructive" })
+      return
+    }
+    setCreatingEvent(true)
+    try {
+      const res = await createOpenHouseEvent({
+        propertyId: listingId,
+        agentId: listing.agent_id,
+        eventDate,
+        startTime,
+        endTime,
+      })
+      if (res.success) {
+        toast({ title: "Open house scheduled", description: `${eventDate} from ${startTime} to ${endTime}` })
+        setEventDate("")
+        setStartTime("10:00")
+        setEndTime("12:00")
+        setTimingResult(null)
+        // Reload events
+        const evts = await getOpenHouseEvents(listing.agent_id)
+        setScheduledEvents(evts ?? [])
+      } else {
+        toast({ title: "Failed to schedule event", description: res.error, variant: "destructive" })
+      }
+    } catch {
+      toast({ title: "Failed to schedule event", variant: "destructive" })
+    } finally {
+      setCreatingEvent(false)
+    }
+  }
+
+  async function handleSendInvitations(eventId: string) {
+    setInvitingEventId(eventId)
+    try {
+      const supabase = createClient()
+      const { data: farmContacts } = await supabase
+        .from("contacts")
+        .select("id")
+        .eq("brokerage_id", listing.brokerage_id)
+        .eq("zip", listing.zip)
+        .limit(100)
+
+      if (!farmContacts?.length) {
+        toast({
+          title: "No farm contacts found",
+          description: `No contacts found for zip ${listing.zip}.`,
+          variant: "destructive",
+        })
+        return
+      }
+
+      const res = await sendOpenHouseInvitations({
+        eventId,
+        contactIds: farmContacts.map((c: any) => c.id),
+      })
+
+      if (res.success) {
+        toast({
+          title: "Invitations sent",
+          description: `Invitations sent to ${farmContacts.length} contacts in ${listing.zip}.`,
+        })
+      } else {
+        toast({ title: "Failed to send invitations", description: res.error, variant: "destructive" })
+      }
+    } catch {
+      toast({ title: "Failed to send invitations", variant: "destructive" })
+    } finally {
+      setInvitingEventId(null)
+    }
+  }
 
   function handleInvite() {
     if (!upcomingEvent) {
@@ -59,7 +192,10 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
         channel,
       })
       if (res.success) {
-        toast({ title: `Invitations sent`, description: `${res.invited} invitation${res.invited === 1 ? "" : "s"} queued via ${channel}.` })
+        toast({
+          title: `Invitations sent`,
+          description: `${res.invited} invitation${res.invited === 1 ? "" : "s"} queued via ${channel}.`,
+        })
       } else {
         toast({ title: "Failed to send invitations", description: res.error, variant: "destructive" })
       }
@@ -68,6 +204,136 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* ── Schedule Open House ── */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <CalendarPlus className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">Schedule Open House</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Date</label>
+              <Input
+                type="date"
+                value={eventDate}
+                onChange={(e) => setEventDate(e.target.value)}
+                min={new Date().toISOString().split("T")[0]}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">Start Time</label>
+              <Input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">End Time</label>
+              <Input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={handleOptimizeTiming} disabled={optimizingTiming}>
+              {optimizingTiming ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Optimize Timing First
+            </Button>
+            <Button size="sm" onClick={handleCreateEvent} disabled={creatingEvent || !eventDate}>
+              {creatingEvent ? (
+                <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CalendarPlus className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              Schedule Event
+            </Button>
+          </div>
+
+          {/* Timing recommendation */}
+          {timingResult && timingResult.recommended_times && (
+            <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
+              <span className="text-xs font-medium">AI Timing Recommendations</span>
+              {timingResult.recommended_times.slice(0, 2).map((rec: any, idx: number) => (
+                <div key={idx} className="flex items-start justify-between gap-2">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-sm font-medium">{rec.date} · {rec.time}</span>
+                    <span className="text-xs text-muted-foreground">{rec.reasoning}</span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Badge variant="secondary" className="text-xs">Score {rec.score}</Badge>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 text-xs px-2"
+                      onClick={() => {
+                        setEventDate(rec.date)
+                        const [s, e] = rec.time.split("-")
+                        if (s) setStartTime(s.trim())
+                        if (e) setEndTime(e.trim())
+                      }}
+                    >
+                      Use
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Existing scheduled events list */}
+          {scheduledEvents.length > 0 && (
+            <div className="flex flex-col gap-2 border-t border-border pt-4">
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Scheduled Events</span>
+              {scheduledEvents.map((event: any) => (
+                <div
+                  key={event.id}
+                  className="flex items-center justify-between rounded-md border border-border px-3 py-2.5"
+                >
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-sm font-medium">
+                      {new Date(event.event_date).toLocaleDateString("en-US", {
+                        weekday: "short",
+                        month: "short",
+                        day: "numeric",
+                      })}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {event.start_time} – {event.end_time}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      className={`text-xs border ${EVENT_STATUS_COLORS[event.status] ?? EVENT_STATUS_COLORS.scheduled}`}
+                    >
+                      {event.status}
+                    </Badge>
+                    {(event.status === "scheduled" || event.status === "in_progress") && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => handleSendInvitations(event.id)}
+                        disabled={invitingEventId === event.id}
+                      >
+                        {invitingEventId === event.id ? (
+                          <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                        ) : (
+                          <Send className="mr-1.5 h-3 w-3" />
+                        )}
+                        Send Invitations
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Coming Soon Posts */}
       <Card>
         <CardHeader>
@@ -123,13 +389,22 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="email">
-                  <span className="flex items-center gap-1.5"><Mail className="h-3.5 w-3.5" />Email</span>
+                  <span className="flex items-center gap-1.5">
+                    <Mail className="h-3.5 w-3.5" />
+                    Email
+                  </span>
                 </SelectItem>
                 <SelectItem value="sms">
-                  <span className="flex items-center gap-1.5"><MessageSquare className="h-3.5 w-3.5" />SMS</span>
+                  <span className="flex items-center gap-1.5">
+                    <MessageSquare className="h-3.5 w-3.5" />
+                    SMS
+                  </span>
                 </SelectItem>
                 <SelectItem value="both">
-                  <span className="flex items-center gap-1.5"><Send className="h-3.5 w-3.5" />Both</span>
+                  <span className="flex items-center gap-1.5">
+                    <Send className="h-3.5 w-3.5" />
+                    Both
+                  </span>
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -156,9 +431,7 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
                 <span className="font-medium">{noResponse}</span>
                 <span className="text-muted-foreground">No response</span>
               </div>
-              <span className="text-xs text-muted-foreground ml-auto">
-                {invitations.length} total invited
-              </span>
+              <span className="text-xs text-muted-foreground ml-auto">{invitations.length} total invited</span>
             </div>
           )}
         </CardContent>
@@ -176,18 +449,23 @@ function PostRow({ post }: { post: any }) {
           <span className="text-sm font-medium capitalize">{post.platform}</span>
           <span className="text-xs text-muted-foreground">{POST_TYPE_LABELS[post.post_type] ?? post.post_type}</span>
           {isAuto && (
-            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">Auto</Badge>
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+              Auto
+            </Badge>
           )}
         </div>
         {post.scheduled_for && (
           <span className="text-xs text-muted-foreground">
-            {new Date(post.scheduled_for).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+            {new Date(post.scheduled_for).toLocaleString("en-US", {
+              month: "short",
+              day: "numeric",
+              hour: "numeric",
+              minute: "2-digit",
+            })}
           </span>
         )}
       </div>
-      <Badge className={`text-xs border ${STATUS_COLORS[post.status] ?? STATUS_COLORS.draft}`}>
-        {post.status}
-      </Badge>
+      <Badge className={`text-xs border ${STATUS_COLORS[post.status] ?? STATUS_COLORS.draft}`}>{post.status}</Badge>
     </div>
   )
 }

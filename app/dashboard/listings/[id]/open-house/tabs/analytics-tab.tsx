@@ -2,9 +2,16 @@
 
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Users, Mail, Flame, Star, TrendingUp } from "lucide-react"
+import { Users, Mail, Flame, Star, TrendingUp, BarChart3, Loader2, CheckCircle2, Send } from "lucide-react"
 import { getOpenHouseAnalytics } from "@/app/actions/seller-open-house"
+import {
+  generatePerformanceInsights,
+  sendFeedbackRequestToAttendee,
+  getOpenHouseVisitors,
+} from "@/app/actions/open-house-automation"
+import { useToast } from "@/hooks/use-toast"
 
 interface Props {
   listingId: string
@@ -13,6 +20,11 @@ interface Props {
 export function AnalyticsTab({ listingId }: Props) {
   const [analytics, setAnalytics] = useState<Awaited<ReturnType<typeof getOpenHouseAnalytics>>>(null)
   const [loading, setLoading] = useState(true)
+  const [insights, setInsights] = useState<any>(null)
+  const [generatingInsights, setGeneratingInsights] = useState(false)
+  const [feedbackSent, setFeedbackSent] = useState<Set<string>>(new Set())
+  const [eventAttendees, setEventAttendees] = useState<any[]>([])
+  const { toast } = useToast()
 
   useEffect(() => {
     getOpenHouseAnalytics(listingId).then((d) => {
@@ -20,6 +32,16 @@ export function AnalyticsTab({ listingId }: Props) {
       setLoading(false)
     })
   }, [listingId])
+
+  // When analytics loads, fetch attendees for the first completed event
+  useEffect(() => {
+    if (!analytics?.events) return
+    const completedEvent = analytics.events.find((e: any) => e.status === "completed")
+    if (!completedEvent?.id) return
+    getOpenHouseVisitors(completedEvent.id)
+      .then((res) => setEventAttendees(res?.visitors ?? []))
+      .catch(() => null)
+  }, [analytics])
 
   if (loading) {
     return (
@@ -40,13 +62,201 @@ export function AnalyticsTab({ listingId }: Props) {
   }
 
   const { totals, events } = analytics
+  const completedEvent = events.find((e: any) => e.status === "completed")
+  const completedEventId: string | null = completedEvent?.id ?? null
 
   const rsvpRate = totals.totalInvitations
     ? Math.round((totals.rsvpYes / totals.totalInvitations) * 100)
     : 0
 
+  async function handleGenerateInsights() {
+    if (!completedEventId) {
+      toast({ title: "No completed event found", description: "Complete an event first.", variant: "destructive" })
+      return
+    }
+    setGeneratingInsights(true)
+    try {
+      const result = await generatePerformanceInsights(completedEventId)
+      if (result && !result.error) {
+        setInsights(result)
+        toast({ title: "Performance report generated" })
+      } else {
+        toast({ title: "Failed to generate report", description: result?.error, variant: "destructive" })
+      }
+    } catch {
+      toast({ title: "Failed to generate report", variant: "destructive" })
+    } finally {
+      setGeneratingInsights(false)
+    }
+  }
+
+  async function handleSendFeedback(attendeeId: string) {
+    try {
+      const res = await sendFeedbackRequestToAttendee(attendeeId)
+      if (res.success) {
+        setFeedbackSent((prev) => new Set(prev).add(attendeeId))
+        toast({ title: "Feedback request sent" })
+      } else {
+        toast({ title: "Failed to send request", description: res.error, variant: "destructive" })
+      }
+    } catch {
+      toast({ title: "Failed to send request", variant: "destructive" })
+    }
+  }
+
+  async function handleSendFeedbackToAll() {
+    const pending = eventAttendees.filter((a: any) => !feedbackSent.has(a.id))
+    if (!pending.length) {
+      toast({ title: "All feedback requests already sent" })
+      return
+    }
+    await Promise.all(pending.map((a: any) => handleSendFeedback(a.id)))
+  }
+
   return (
     <div className="flex flex-col gap-6">
+      {/* ── Event Performance ── */}
+      {completedEventId && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Event Performance</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {/* Generate report */}
+            {!insights ? (
+              <div className="flex flex-col gap-2">
+                <p className="text-xs text-muted-foreground">
+                  Generate an AI performance report for the most recently completed event.
+                </p>
+                <Button
+                  size="sm"
+                  onClick={handleGenerateInsights}
+                  disabled={generatingInsights}
+                  className="self-start"
+                >
+                  {generatingInsights ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <BarChart3 className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  Generate Performance Report
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-3">
+                  <span className="text-3xl font-bold">{insights.overall_grade}</span>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{insights.performance_summary}</p>
+                </div>
+
+                {insights.strengths?.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Strengths
+                    </span>
+                    <ul className="flex flex-col gap-0.5">
+                      {insights.strengths.map((s: string, i: number) => (
+                        <li key={i} className="flex items-start gap-1.5 text-xs text-foreground">
+                          <CheckCircle2 className="h-3.5 w-3.5 text-green-600 mt-0.5 shrink-0" />
+                          {s}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {insights.recommendations?.length > 0 && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                      Recommendations
+                    </span>
+                    <ul className="flex flex-col gap-0.5">
+                      {insights.recommendations.map((r: string, i: number) => (
+                        <li key={i} className="text-xs text-muted-foreground leading-relaxed">
+                          {i + 1}. {r}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleGenerateInsights}
+                  disabled={generatingInsights}
+                  className="self-start text-xs h-7"
+                >
+                  {generatingInsights ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
+                  Regenerate
+                </Button>
+              </div>
+            )}
+
+            {/* Feedback requests */}
+            {eventAttendees.length > 0 && (
+              <div className="flex flex-col gap-3 border-t border-border pt-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Feedback Requests
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                    onClick={handleSendFeedbackToAll}
+                  >
+                    <Send className="mr-1.5 h-3 w-3" />
+                    Send to All
+                  </Button>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {eventAttendees.map((attendee: any) => {
+                    const sent = feedbackSent.has(attendee.id)
+                    const name =
+                      attendee.contact_name ??
+                      (attendee.contact
+                        ? `${attendee.contact.first_name ?? ""} ${attendee.contact.last_name ?? ""}`.trim()
+                        : null) ??
+                      `Attendee ${attendee.id.slice(0, 6)}`
+                    return (
+                      <div
+                        key={attendee.id}
+                        className="flex items-center justify-between rounded-md border border-border px-3 py-2"
+                      >
+                        <span className="text-sm">{name}</span>
+                        {sent ? (
+                          <Badge
+                            variant="outline"
+                            className="text-xs border-green-300 text-green-700 bg-green-50"
+                          >
+                            <CheckCircle2 className="mr-1 h-3 w-3" />
+                            Sent
+                          </Badge>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-xs"
+                            onClick={() => handleSendFeedback(attendee.id)}
+                          >
+                            <Send className="mr-1.5 h-3 w-3" />
+                            Send Request
+                          </Button>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Summary metrics */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <MetricCard
@@ -110,10 +320,17 @@ export function AnalyticsTab({ listingId }: Props) {
           <CardContent>
             <div className="flex flex-col gap-2">
               {events.map((ev: any) => (
-                <div key={ev.id} className="flex items-center justify-between rounded-md border border-border px-3 py-2.5">
+                <div
+                  key={ev.id}
+                  className="flex items-center justify-between rounded-md border border-border px-3 py-2.5"
+                >
                   <div className="flex flex-col gap-0.5">
                     <span className="text-sm font-medium">
-                      {new Date(ev.event_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                      {new Date(ev.event_date).toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
                     </span>
                     <Badge
                       variant="outline"
@@ -150,7 +367,15 @@ export function AnalyticsTab({ listingId }: Props) {
   )
 }
 
-function MetricCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string | number }) {
+function MetricCard({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode
+  label: string
+  value: string | number
+}) {
   return (
     <Card>
       <CardContent className="flex flex-col gap-2 pt-4">
