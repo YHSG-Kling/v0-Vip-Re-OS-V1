@@ -965,15 +965,48 @@ export default function LeadsPage() {
                             </Badge>
                           )}
                         </div>
-                        {profile.lead_id && (
-                          <a
-                            href={`/leads/${profile.lead_id}`}
-                            onClick={(e) => e.stopPropagation()}
-                            className="flex items-center gap-1 text-xs text-primary underline underline-offset-2 hover:no-underline"
+                        <div className="flex items-center justify-between pt-0.5" onClick={(e) => e.stopPropagation()}>
+                          {profile.lead_id ? (
+                            <a
+                              href={`/leads/${profile.lead_id}`}
+                              className="flex items-center gap-1 text-xs text-primary underline underline-offset-2 hover:no-underline"
+                            >
+                              View lead <ExternalLink className="h-3 w-3" />
+                            </a>
+                          ) : (
+                            <span />
+                          )}
+                          <button
+                            type="button"
+                            disabled={deliveringId === profile.id || deliveredProfiles.has(profile.id)}
+                            onClick={async (e) => {
+                              e.stopPropagation()
+                              if (deliveredProfiles.has(profile.id) || deliveringId === profile.id) return
+                              setDeliveringId(profile.id)
+                              try {
+                                await deliverIntelligentValue(profile.id)
+                                setDeliveredProfiles((prev) => new Set(prev).add(profile.id))
+                              } catch {
+                                // silent — non-blocking
+                              } finally {
+                                setDeliveringId(null)
+                              }
+                            }}
+                            className={`flex items-center gap-1 text-xs rounded px-2 py-1 transition-colors ${
+                              deliveredProfiles.has(profile.id)
+                                ? "bg-emerald-50 text-emerald-700 border border-emerald-200 cursor-default"
+                                : "bg-muted hover:bg-muted/80 text-muted-foreground border border-border"
+                            } disabled:opacity-60`}
                           >
-                            View lead <ExternalLink className="h-3 w-3" />
-                          </a>
-                        )}
+                            {deliveringId === profile.id ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : deliveredProfiles.has(profile.id) ? (
+                              <>Delivered</>
+                            ) : (
+                              <><Sparkles className="h-3 w-3" /> Deliver Value</>
+                            )}
+                          </button>
+                        </div>
                       </button>
                     )
                   })}
