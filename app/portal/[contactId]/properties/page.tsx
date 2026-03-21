@@ -53,6 +53,17 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     .eq("contact_id", contactId)
     .order("created_at", { ascending: false })
 
+  // Fetch coming soon listings delivered to this buyer via property alerts
+  const { data: comingSoonAlertResults } = await supabase
+    .from("property_alert_results")
+    .select(
+      "id, property_address, city, state, zip, list_price, bedrooms, bathrooms, sqft, primary_photo_url, listing_url, mls_status, listed_at, contact_id"
+    )
+    .eq("contact_id", contactId)
+    .eq("mls_status", "coming_soon")
+    .order("created_at", { ascending: false })
+    .limit(12)
+
   // Parse custom_fields
   const customFields = typeof contact.custom_fields === "string" 
     ? JSON.parse(contact.custom_fields || "{}") 
@@ -70,6 +81,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       propertyAlerts={propertyAlerts || []}
       propertyInterests={propertyInterests || []}
       contactId={contactId}
+      comingSoonListings={comingSoonAlertResults || []}
     />
   )
 }

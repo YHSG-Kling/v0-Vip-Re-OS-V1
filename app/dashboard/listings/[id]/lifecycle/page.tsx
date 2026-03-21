@@ -20,6 +20,7 @@ import {
 } from "../components/launch"
 import { ListingAgreementStatusCard } from "./components/listing-agreement-status-card"
 import { DecisionHistoryPanel } from "./components/decision-history-panel"
+import { ComingSoonCommandCard } from "./components/coming-soon-command-card"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -78,6 +79,24 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
+
+  // Coming soon state — media approved gate + transaction ID for email campaigns
+  const [mediaApprovedResult, transactionResult] = await Promise.all([
+    supabase
+      .from("activities")
+      .select("id")
+      .eq("listing_id", listingId)
+      .eq("activity_type", "seller.media.approved")
+      .maybeSingle(),
+    supabase
+      .from("transactions")
+      .select("id")
+      .eq("listing_id", listingId)
+      .maybeSingle(),
+  ])
+
+  const mediaApproved = !!mediaApprovedResult.data
+  const transactionId = transactionResult.data?.id ?? null
 
   // Parallel fetch for launch readiness data
   const [mediaResult, videosResult, openHouseResult, tierResult, neighborhoodResult, packetResult] =
@@ -249,6 +268,25 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
             agreement={listingAgreement ?? null}
           />
         </div>
+
+        {(currentStage === "COMING_SOON_PREP" ||
+          currentStage === "COMING_SOON_ACTIVE" ||
+          currentStage === "MEDIA_APPROVED" ||
+          currentStage === "PRE_LISTING") && (
+          <div className="mb-6">
+            <ComingSoonCommandCard
+              listingId={listingId}
+              userId={user.id}
+              brokerageId={userRow.brokerage_id}
+              role={userRow.role as "agent" | "team_lead" | "admin" | "broker"}
+              currentStage={currentStage}
+              listingAddress={`${listing.address}, ${listing.city} ${listing.state}`}
+              listingStatus={listing.status ?? ""}
+              mediaApproved={mediaApproved}
+              transactionId={transactionId}
+            />
+          </div>
+        )}
 
         <DecisionHistoryPanel listingId={listingId} />
 

@@ -28,6 +28,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bgColor: str
   sold: { label: "Sold", color: "text-purple-700", bgColor: "bg-purple-100" },
   expired: { label: "Expired", color: "text-red-700", bgColor: "bg-red-100" },
   withdrawn: { label: "Withdrawn", color: "text-gray-700", bgColor: "bg-gray-100" },
+  coming_soon: { label: "Coming Soon", color: "text-purple-700", bgColor: "bg-purple-100" },
 }
 
 export default async function ListingsPage() {
@@ -41,7 +42,7 @@ export default async function ListingsPage() {
   // Fetch listings with expanded data
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, address, city, state, price, status, beds, baths, sqft, created_at, days_on_market, views_count")
+    .select("id, address, city, state, price, status, lifecycle_stage, beds, baths, sqft, created_at, days_on_market, views_count")
     .eq("agent_id", user.id)
     .order("created_at", { ascending: false })
     .limit(50)
@@ -49,6 +50,9 @@ export default async function ListingsPage() {
   // Calculate stats
   const activeListings = listings?.filter(l => l.status === "active") || []
   const pendingListings = listings?.filter(l => l.status === "pending" || l.status === "under_contract") || []
+  const comingSoonListings = listings?.filter(
+    l => l.lifecycle_stage === "COMING_SOON_PREP" || l.lifecycle_stage === "COMING_SOON_ACTIVE"
+  ) || []
   const totalVolume = activeListings.reduce((sum, l) => sum + (l.price || 0), 0)
   const avgDaysOnMarket = activeListings.length > 0 
     ? Math.round(activeListings.reduce((sum, l) => sum + (l.days_on_market || 0), 0) / activeListings.length)
@@ -143,6 +147,25 @@ export default async function ListingsPage() {
               </div>
             </CardContent>
           </Card>
+
+          {comingSoonListings.length > 0 && (
+            <Card className="border-l-4 border-l-violet-500 md:col-span-4">
+              <CardContent className="p-4 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-violet-500" />
+                  </span>
+                  <div>
+                    <p className="text-sm font-medium text-foreground">
+                      {comingSoonListings.length} listing{comingSoonListings.length !== 1 ? "s" : ""} in Coming Soon mode
+                    </p>
+                    <p className="text-xs text-muted-foreground">Building buyer anticipation before going active</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Listings Grid */}
@@ -157,17 +180,28 @@ export default async function ListingsPage() {
             {listings && listings.length > 0 ? (
               <div className="divide-y divide-border">
                 {listings.map((listing) => {
-                  const statusConfig = STATUS_CONFIG[listing.status] || STATUS_CONFIG.active
-                  return (
-                    <Link key={listing.id} href={`/listings/${listing.id}`}>
+                    const isComingSoon =
+                      listing.lifecycle_stage === "COMING_SOON_PREP" ||
+                      listing.lifecycle_stage === "COMING_SOON_ACTIVE"
+                    const statusConfig = isComingSoon
+                      ? STATUS_CONFIG.coming_soon
+                      : STATUS_CONFIG[listing.status] || STATUS_CONFIG.active
+                    return (
+                      <Link key={listing.id} href={isComingSoon ? `/dashboard/listings/${listing.id}/lifecycle` : `/listings/${listing.id}`}>
                       <div className="p-4 hover:bg-muted/50 transition-colors flex items-center gap-4">
                         <div className="flex-shrink-0 w-16 h-16 bg-muted rounded-lg flex items-center justify-center">
                           <Home className="h-6 w-6 text-muted-foreground" />
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <h3 className="font-medium text-foreground truncate">{listing.address}</h3>
-                            <Badge className={`${statusConfig.bgColor} ${statusConfig.color} text-xs`}>
+                            <Badge className={`${statusConfig.bgColor} ${statusConfig.color} text-xs flex items-center gap-1`}>
+                              {isComingSoon && (
+                                <span className="relative flex h-2 w-2">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500" />
+                                </span>
+                              )}
                               {statusConfig.label}
                             </Badge>
                           </div>

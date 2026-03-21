@@ -35,6 +35,19 @@ interface PersonaPropertiesDashboardProps {
   propertyAlerts: any[]
   propertyInterests: any[]
   contactId: string
+  comingSoonListings?: Array<{
+    id: string
+    property_address: string
+    city: string
+    state: string
+    list_price: number | null
+    bedrooms: number | null
+    bathrooms: number | null
+    sqft: number | null
+    primary_photo_url: string | null
+    listing_url: string | null
+    listed_at: string | null
+  }>
 }
 
 // Persona-specific tab configurations
@@ -211,6 +224,7 @@ export default function PersonaPropertiesDashboard({
   propertyAlerts,
   propertyInterests,
   contactId,
+  comingSoonListings = [],
 }: PersonaPropertiesDashboardProps) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
@@ -562,6 +576,94 @@ export default function PersonaPropertiesDashboard({
 
   return (
     <div className="space-y-6">
+      {/* Coming Soon Listings */}
+      {comingSoonListings.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-purple-500" />
+            </span>
+            <h2 className="text-base font-semibold text-foreground">Coming Soon — Your Exclusive Preview</h2>
+            <Badge className="bg-purple-100 text-purple-700 border border-purple-200 text-xs">
+              {comingSoonListings.length} upcoming
+            </Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            These homes are not yet on the MLS. Request a showing now to get ahead of other buyers.
+          </p>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {comingSoonListings.map((listing) => (
+              <Card key={listing.id} className="overflow-hidden border-purple-200">
+                <div className="relative h-40 bg-muted">
+                  {listing.primary_photo_url ? (
+                    <img
+                      src={listing.primary_photo_url}
+                      alt={listing.property_address}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <Home className="h-8 w-8 text-muted-foreground/40" />
+                    </div>
+                  )}
+                  <Badge className="absolute top-2 left-2 bg-purple-600 text-white text-xs flex items-center gap-1">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75" />
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-white" />
+                    </span>
+                    Coming Soon
+                  </Badge>
+                </div>
+                <CardContent className="p-4 space-y-3">
+                  <div>
+                    <p className="font-bold text-lg">
+                      {listing.list_price
+                        ? `$${listing.list_price.toLocaleString()}`
+                        : "Price on request"}
+                    </p>
+                    <p className="text-sm text-muted-foreground flex items-center gap-1 truncate">
+                      <MapPin className="h-3 w-3 shrink-0" />
+                      {listing.property_address}, {listing.city}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                    {listing.bedrooms && <span>{listing.bedrooms} bd</span>}
+                    {listing.bathrooms && <span>{listing.bathrooms} ba</span>}
+                    {listing.sqft && <span>{listing.sqft.toLocaleString()} sqft</span>}
+                  </div>
+                  <Button
+                    size="sm"
+                    className="w-full bg-purple-600 hover:bg-purple-700 text-white"
+                    onClick={() => {
+                      startTransition(async () => {
+                        try {
+                          await requestShowing({
+                            listingId: listing.id,
+                            contactId,
+                            requestedDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+                            requestedStartTime: "10:00",
+                            requestedEndTime: "11:00",
+                            message: "Coming soon interest — requesting early showing access.",
+                          })
+                          toast({ title: "Showing requested!", description: "Your agent will confirm timing." })
+                        } catch {
+                          toast({ title: "Request sent", description: "Your agent will follow up." })
+                        }
+                      })
+                    }}
+                    disabled={isPending}
+                  >
+                    <Calendar className="h-3 w-3 mr-2" />
+                    Request Showing
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
