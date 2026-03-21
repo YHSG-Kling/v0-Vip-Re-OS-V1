@@ -63,6 +63,7 @@ import { PredictionWidget, type PredictionData } from "@/components/prediction-w
 import { BarChart3, Sparkles } from "lucide-react"
 import { SocialAiComposer } from "@/app/components/ai-copilot/social-ai-composer"
 import { SocialCalendarAiPlanner } from "@/app/components/ai-copilot/social-calendar-ai-planner"
+import { getPublishedPostUrl } from "@/lib/social/get-published-post-url"
 
 // Platform icons and colors
 const PLATFORM_CONFIG: Record<
@@ -702,13 +703,16 @@ export function SocialDashboardClient({
                         )}
 
                         {/* External link for published posts */}
-                        {post.status === "published" && post.external_post_id && (
-                          <Button size="sm" variant="ghost" asChild>
-                            <a href="#" target="_blank" rel="noopener noreferrer">
-                              <ExternalLink className="h-4 w-4" />
-                            </a>
-                          </Button>
-                        )}
+                        {post.status === "published" && post.external_post_id && (() => {
+                          const postUrl = getPublishedPostUrl(post.platform, post.external_post_id)
+                          return postUrl ? (
+                            <Button size="sm" variant="ghost" asChild>
+                              <a href={postUrl} target="_blank" rel="noopener noreferrer">
+                                <ExternalLink className="h-4 w-4" />
+                              </a>
+                            </Button>
+                          ) : null
+                        })()}
 
 {/* Predict Performance button */}
                                         <Button
