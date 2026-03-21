@@ -53,6 +53,7 @@ import {
 } from "lucide-react"
 import { AvailableLeadsSheet } from "@/app/components/leads/AvailableLeadsSheet"
 import { AdminAssignmentPanel } from "@/app/components/leads/AdminAssignmentPanel"
+import { LeadStatusBadge } from "@/app/components/leads/LeadStatusBadge"
 import {
   getLeads,
   enrichLead,
@@ -1321,14 +1322,7 @@ export default function LeadsPage() {
                           )}
                         </TableCell>
                         <TableCell>
-                          {(() => {
-                            const badge = getLeadStatusBadge(lead)
-                            return (
-                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.color}`}>
-                                {badge.label}
-                              </span>
-                            )
-                          })()}
+                          <LeadStatusBadge lead={lead} />
                         </TableCell>
                         {isAdminOrBroker && (
                           <TableCell>
