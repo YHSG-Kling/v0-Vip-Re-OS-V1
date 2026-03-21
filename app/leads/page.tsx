@@ -48,8 +48,10 @@ import {
   Brain,
   ExternalLink,
   Zap,
+  Users,
 } from "lucide-react"
 import { AvailableLeadsSheet } from "@/app/components/leads/AvailableLeadsSheet"
+import { AdminAssignmentPanel } from "@/app/components/leads/AdminAssignmentPanel"
 import {
   getLeads,
   enrichLead,
@@ -78,8 +80,12 @@ export default function LeadsPage() {
   const [isAdminOrBroker, setIsAdminOrBroker] = useState(false)
   const [roleResolved, setRoleResolved] = useState(false)
 
-  // Available leads sheet
+  // Available leads sheet (agents)
   const [availableSheetOpen, setAvailableSheetOpen] = useState(false)
+
+  // Admin assignment panel
+  const [adminPanelOpen, setAdminPanelOpen] = useState(false)
+  const [userId, setUserId] = useState('')
 
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
@@ -196,6 +202,8 @@ export default function LeadsPage() {
       const supabase = createClient()
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
+
+      setUserId(user.id)
 
       // Resolve user role
       const { data: profile } = await supabase
@@ -393,6 +401,16 @@ export default function LeadsPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Assign Leads — visible to admin/broker only */}
+            {roleResolved && isAdminOrBroker && (
+              <Button
+                variant="outline"
+                onClick={() => setAdminPanelOpen(true)}
+              >
+                <Users className="h-4 w-4 mr-2" />
+                Assign Leads
+              </Button>
+            )}
             {/* Available Leads pool — visible to agents only */}
             {roleResolved && !isAdminOrBroker && (
               <Button
@@ -1299,6 +1317,17 @@ export default function LeadsPage() {
         brokerageId={brokerageId}
         onLeadClaimed={() => fetchLeads()}
       />
+
+      {/* Admin Assignment Panel — admin/broker only */}
+      {isAdminOrBroker && (
+        <AdminAssignmentPanel
+          open={adminPanelOpen}
+          onOpenChange={setAdminPanelOpen}
+          brokerageId={brokerageId}
+          userId={userId}
+          onAssigned={() => fetchLeads()}
+        />
+      )}
     </div>
   )
 }
