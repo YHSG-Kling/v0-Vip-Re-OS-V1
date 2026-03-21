@@ -55,9 +55,20 @@ import { AdminAssignmentPanel } from "@/app/components/leads/AdminAssignmentPane
 import {
   getLeads,
   enrichLead,
-  convertLeadToContact,
+  convertLeadToContact as convertLeadToContactLegacy,
   rejectLead,
 } from "@/app/actions/lead-management"
+import { convertLeadToContact } from "@/app/actions/lead-lifecycle"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/app/components/ui/alert-dialog"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
 import { getTopConversionCandidates, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
 import {
@@ -118,6 +129,12 @@ export default function LeadsPage() {
   const [deliveringId, setDeliveringId] = useState<string | null>(null)
   const [brokerageId, setBrokerageId] = useState('')
   const [callingId, setCallingId] = useState<string | null>(null)
+
+  // Lead-to-contact conversion confirmation
+  const [convertConfirmLead, setConvertConfirmLead] = useState<Lead | null>(null)
+  const [convertingId, setConvertingId] = useState<string | null>(null)
+  const [convertedIds, setConvertedIds] = useState<Set<string>>(new Set())
+  const [convertSuccessMap, setConvertSuccessMap] = useState<Record<string, string>>({}) // leadId → contactId
 
   // Top conversion candidates
   const [conversionCandidates, setConversionCandidates] = useState<any[]>([])
@@ -318,11 +335,30 @@ export default function LeadsPage() {
 
   const handleConvert = async (leadId: string) => {
     setActionLoading(leadId)
-    const result = await convertLeadToContact(leadId)
+    const result = await convertLeadToContactLegacy(leadId)
     if (result.success) {
       fetchLeads()
     }
     setActionLoading(null)
+  }
+
+  const handleConvertToContact = async (lead: Lead) => {
+    if (!agentId || !brokerageId) return
+    setConvertingId(lead.id)
+    try {
+      const result = await convertLeadToContact({ leadId: lead.id, agentId, brokerageId })
+      if (result.success) {
+        setConvertedIds((prev) => new Set(prev).add(lead.id))
+        if (result.contactId) {
+          setConvertSuccessMap((prev) => ({ ...prev, [lead.id]: result.contactId! }))
+        }
+        fetchLeads()
+      }
+    } catch {
+      // surface error via toast if desired
+    }
+    setConvertingId(null)
+    setConvertConfirmLead(null)
   }
 
   const handleReject = async (leadId: string) => {
@@ -1098,6 +1134,35 @@ export default function LeadsPage() {
           </TabsContent>
         </Tabs>
 
+        {/* Ready to Convert — only shown to the assigned agent */}
+        {!isAdminOrBroker && agentId && (() => {
+          const readyLeads = leads.filter(
+            (l: any) =>
+              l.agent_id === agentId &&
+              l.is_active &&
+              (l.lead_stage === "qualified" || l.lead_stage === "claimed")
+          )
+          if (readyLeads.length === 0) return null
+          return (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <Users className="shrink-0 h-4 w-4 text-emerald-600" />
+                <p className="text-sm text-emerald-900 font-medium">
+                  {readyLeads.length} qualified lead{readyLeads.length !== 1 ? "s" : ""} ready to become contact{readyLeads.length !== 1 ? "s" : ""}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-emerald-300 text-emerald-800 hover:bg-emerald-100 text-xs h-7 shrink-0"
+                onClick={() => setStatusFilter("qualified" as any)}
+              >
+                View Qualified
+              </Button>
+            </div>
+          )
+        })()}
+
         <Card>
           <CardContent className="p-0">
             <div className="overflow-x-auto">
@@ -1251,14 +1316,42 @@ export default function LeadsPage() {
                                 <Sparkles className="h-4 w-4" />
                               )}
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleConvert(lead.id)}
-                              disabled={actionLoading === lead.id || lead.status === "converted"}
-                            >
-                              <UserPlus className="h-4 w-4" />
-                            </Button>
+                            {/* Converted badge */}
+                            {convertedIds.has(lead.id) && convertSuccessMap[lead.id] ? (
+                              <a
+                                href={`/crm?contactId=${convertSuccessMap[lead.id]}`}
+                                className="flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 hover:bg-emerald-100"
+                              >
+                                <UserPlus className="h-3 w-3" />
+                                Open in CRM
+                              </a>
+                            ) : lead.agent_id === agentId &&
+                              lead.is_active &&
+                              (lead.lead_stage === "qualified" || lead.lead_stage === "claimed") ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs border-emerald-300 text-emerald-800 hover:bg-emerald-50"
+                                onClick={() => setConvertConfirmLead(lead)}
+                                disabled={convertingId === lead.id}
+                              >
+                                {convertingId === lead.id ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                ) : (
+                                  <UserPlus className="h-3 w-3 mr-1" />
+                                )}
+                                Convert
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleConvert(lead.id)}
+                                disabled={actionLoading === lead.id || lead.status === "converted"}
+                              >
+                                <UserPlus className="h-4 w-4" />
+                              </Button>
+                            )}
                             <Button
                               variant="ghost"
                               size="sm"
@@ -1374,6 +1467,37 @@ export default function LeadsPage() {
           onAssigned={() => fetchLeads()}
         />
       )}
+
+      {/* Lead-to-Contact Conversion Confirmation */}
+      <AlertDialog
+        open={!!convertConfirmLead}
+        onOpenChange={(open) => { if (!open) setConvertConfirmLead(null) }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Convert {convertConfirmLead?.first_name} {convertConfirmLead?.last_name} to a Contact?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Once converted, this lead will appear in your CRM as a full contact. The lead will be marked inactive and all Contact OS features will apply.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={!!convertingId}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={!!convertingId}
+              onClick={() => convertConfirmLead && handleConvertToContact(convertConfirmLead)}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            >
+              {convertingId ? (
+                <><Loader2 className="h-4 w-4 animate-spin mr-2" />Converting...</>
+              ) : (
+                "Confirm Conversion"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
