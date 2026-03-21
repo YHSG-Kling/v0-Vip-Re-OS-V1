@@ -35,7 +35,7 @@ export default async function SocialDashboardPage({
     .single()
 
   if (!profile?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Get connected social accounts

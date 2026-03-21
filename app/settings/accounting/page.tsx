@@ -32,7 +32,7 @@ export default async function AccountingSettingsPage() {
     .eq("id", user.id)
     .single()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Role gate: broker + admin only
   if (!["broker", "admin"].includes(profile.role ?? "")) {

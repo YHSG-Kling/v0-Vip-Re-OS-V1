@@ -35,7 +35,7 @@ export default async function CampaignROIPage() {
     .single()
 
   if (!profile?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Get current month date range

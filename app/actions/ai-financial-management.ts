@@ -955,7 +955,7 @@ export async function trackDeposit(params: {
     })
 
     revalidatePath("/financials")
-    revalidatePath("/transactions")
+    revalidatePath("/dashboard/transactions")
 
     return {
       success: true,

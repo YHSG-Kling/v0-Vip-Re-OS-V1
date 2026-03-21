@@ -24,7 +24,7 @@ export default async function IntelligencePage() {
 
   const agentContext = await getAgentContext()
   if (!agentContext) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   const { agentId, brokerageId } = agentContext

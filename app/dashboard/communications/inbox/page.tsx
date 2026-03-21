@@ -36,13 +36,13 @@ export default async function InboxPage() {
   ])
 
   const profile = profileRes.data
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId: string  = profile.brokerage_id
   const assistantName: string = profile.assistant_wake_name ?? "VIP"
   const role: string          = profile.user_type ?? "agent"
   const agentId = await resolveAgentId(service, user.id)
-  if (!agentId) redirect("/onboarding")
+  if (!agentId) redirect("/dashboard/onboarding")
 
   // Fetch conversations + email_templates in parallel
   const [conversationsResult, templatesRes] = await Promise.all([

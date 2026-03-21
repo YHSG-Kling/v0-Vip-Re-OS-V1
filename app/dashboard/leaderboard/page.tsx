@@ -23,7 +23,7 @@ export default async function LeaderboardPage({
   if (!user) redirect("/login")
 
   const agentContext = await getAgentContext()
-  if (!agentContext) redirect("/onboarding")
+  if (!agentContext) redirect("/dashboard/onboarding")
 
   // Default values
   const scope = (params.scope as "agent" | "team" | "brokerage") || "agent"

@@ -38,7 +38,7 @@ export default async function VendorsPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Fetch parallel data for all tabs
   const [

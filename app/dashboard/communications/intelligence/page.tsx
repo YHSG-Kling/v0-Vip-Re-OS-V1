@@ -22,7 +22,7 @@ export default async function IntelligencePage() {
     .eq("id", user.id)
     .single()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId: string = profile.brokerage_id
   const today = new Date()

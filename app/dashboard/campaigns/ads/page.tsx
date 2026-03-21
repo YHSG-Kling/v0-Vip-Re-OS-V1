@@ -30,7 +30,7 @@ export default async function AdsCampaignsPage() {
     .single()
 
   if (!profile?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Get ad campaigns with creatives

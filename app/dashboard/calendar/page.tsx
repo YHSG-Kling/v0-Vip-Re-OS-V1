@@ -27,7 +27,7 @@ export default async function CalendarPage() {
     .maybeSingle()
 
   if (!agentRow) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   const agentId = agentRow.id

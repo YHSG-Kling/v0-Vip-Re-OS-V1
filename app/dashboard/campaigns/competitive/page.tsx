@@ -38,7 +38,7 @@ export default async function CompetitiveMonitorPage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   const brokerageId = userData.brokerage_id

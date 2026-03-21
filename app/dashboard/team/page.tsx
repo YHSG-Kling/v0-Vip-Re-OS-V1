@@ -34,7 +34,7 @@ export default async function TeamPage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Fetch team members with performance data

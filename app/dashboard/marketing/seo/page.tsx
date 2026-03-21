@@ -25,7 +25,7 @@ export default async function SeoKeywordsPage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Fetch SEO keywords

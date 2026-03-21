@@ -31,7 +31,7 @@ export default async function RecruitingROIPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Check RBAC - only brokers and admins can access
   if (!["broker", "admin", "superadmin"].includes(profile.role || "")) {

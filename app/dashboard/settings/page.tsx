@@ -17,7 +17,7 @@ export default async function SettingsControlOSPage() {
     .eq("id", user.id)
     .single()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
   
   // Role gate: broker + admin only for full settings
   if (!["broker", "admin"].includes(profile.role ?? "")) {

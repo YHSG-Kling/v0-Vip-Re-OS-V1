@@ -571,7 +571,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
 
     revalidatePath("/offers")
     revalidatePath(`/listings/${params.listingId}`)
-    revalidatePath("/transactions")
+    revalidatePath("/dashboard/transactions")
 
     return {
       success: true,

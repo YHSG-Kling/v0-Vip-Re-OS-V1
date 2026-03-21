@@ -48,12 +48,12 @@ export default async function CommunicationsOSPage() {
   ])
 
   const profile = profileRes.data
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId: string = profile.brokerage_id
   const role: string = profile.user_type ?? "agent"
   const agentId = await resolveAgentId(service, user.id)
-  if (!agentId) redirect("/onboarding")
+  if (!agentId) redirect("/dashboard/onboarding")
 
   // Fetch data in parallel
   const [

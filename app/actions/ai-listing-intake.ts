@@ -671,7 +671,7 @@ export async function createListing(params: ListingIntakeData) {
     }
 
     revalidatePath("/listings")
-    revalidatePath("/transactions")
+    revalidatePath("/dashboard/transactions")
 
     return {
       success: true,

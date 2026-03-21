@@ -34,7 +34,7 @@ export default async function ISACalendarPage() {
     .single()
 
   if (!profile) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   const agentId = user.id

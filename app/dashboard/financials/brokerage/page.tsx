@@ -56,7 +56,7 @@ export default async function BrokeragePLPage() {
     redirect("/dashboard/financials/agent")
   }
 
-  if (!profile.brokerage_id) redirect("/onboarding")
+  if (!profile.brokerage_id) redirect("/dashboard/onboarding")
 
   // ─── PARALLEL DATA FETCHING ────────────────────────────────────────────────
   const [
@@ -421,7 +421,7 @@ export default async function BrokeragePLPage() {
         </Card>
       </div>
 
-      {/* ─── SECTION 3: PER-TEAM REVENUE TABLE ────────────────────────────────── */}
+      {/* ─��─ SECTION 3: PER-TEAM REVENUE TABLE ────────────────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">

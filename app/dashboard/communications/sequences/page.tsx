@@ -27,12 +27,12 @@ export default async function SequencesPage({
     .eq("id", user.id)
     .single()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = profile.brokerage_id
 
   const agentId = await resolveAgentId(service, user.id)
-  if (!agentId) redirect("/onboarding")
+  if (!agentId) redirect("/dashboard/onboarding")
 
   // Fetch existing campaign sequences for this brokerage
   // Table: campaign_sequences (NOT drip_campaigns — that table does not exist)

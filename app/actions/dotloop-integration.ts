@@ -65,7 +65,7 @@ export async function createDotloopTransaction(data: DotloopTransactionData) {
       if (error) throw error
     }
 
-    revalidatePath("/transactions")
+    revalidatePath("/dashboard/transactions")
     revalidatePath(`/listings/${data.listingId}`)
 
     return { success: true, loopId }

@@ -30,7 +30,7 @@ export default async function BlogEditorPage({ params }: BlogEditorPageProps) {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Fetch blog post

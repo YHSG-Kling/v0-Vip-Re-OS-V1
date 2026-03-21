@@ -25,7 +25,7 @@ export default async function BlogDashboardPage() {
     .single()
 
   if (!userData?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Fetch blog posts
