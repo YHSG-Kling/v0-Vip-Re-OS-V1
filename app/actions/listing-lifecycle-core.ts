@@ -58,7 +58,7 @@ export async function validateListingTransition(params: {
   // Get user profile with role
   const { data: profile } = await supabase
     .from("users")
-    .select("role, brokerage_id")
+    .select("user_type, role, brokerage_id")
     .eq("id", user.id)
     .single()
   
@@ -91,12 +91,14 @@ export async function validateListingTransition(params: {
     params.listingId,
     targetDef.readinessChecks
   )
+
+  const resolvedRole = (profile.user_type ?? profile.role) || "agent"
   
   // Validate transition
   const validationContext: TransitionValidationContext = {
     currentStage,
     targetStage: params.targetStage,
-    userRole: profile.role || "agent",
+    userRole: resolvedRole,
     userId: user.id,
     listingId: params.listingId,
     completedReadinessChecks: readinessEval.passedChecks,
@@ -122,7 +124,7 @@ export async function validateListingTransition(params: {
       },
       nextAllowedStages: validation.allowed
         ? []
-        : getNextAllowedStages(currentStage || "LEAD", profile.role || "agent"),
+        : getNextAllowedStages(currentStage || "LEAD", resolvedRole),
     },
   }
 }
@@ -153,7 +155,7 @@ export async function executeListingTransition(params: {
   // Get user profile with role
   const { data: profile } = await supabase
     .from("users")
-    .select("role, brokerage_id")
+    .select("user_type, role, brokerage_id")
     .eq("id", user.id)
     .single()
   
@@ -311,7 +313,7 @@ export async function getListingNextStages(listingId: string) {
   // Get user role
   const { data: profile } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", user.id)
     .single()
   

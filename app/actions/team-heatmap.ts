@@ -98,7 +98,7 @@ export async function getHeatmapSnapshots(
   // Check user role for filtering
   const { data: user } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
@@ -452,7 +452,7 @@ export async function getAgentsForFilter(): Promise<{
 
   const { data: user } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
@@ -499,7 +499,7 @@ export async function getTeamsForFilter(): Promise<{
 
   const { data: user } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 

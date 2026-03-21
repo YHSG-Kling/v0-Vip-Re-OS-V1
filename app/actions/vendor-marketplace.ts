@@ -398,7 +398,7 @@ export async function getVendorReviews(vendorId: string) {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("brokerage_id, role")
+    .select("brokerage_id, user_type, role")
     .eq("id", user.id)
     .maybeSingle()
 

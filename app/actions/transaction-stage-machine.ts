@@ -27,7 +27,7 @@ export async function checkStageAdvancement(params: {
   // Get user's role in brokerage
   const { data: profile } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -61,7 +61,7 @@ export async function advanceTransactionStage(params: {
   // Get user's role in brokerage
   const { data: profile } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -111,7 +111,7 @@ export async function markTransactionLost(params: {
   // Get user's role
   const { data: profile } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -170,7 +170,7 @@ export async function getTransactionStageInfo(params: {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", user.id)
     .maybeSingle()
 

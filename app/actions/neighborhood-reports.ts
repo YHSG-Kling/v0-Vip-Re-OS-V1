@@ -162,7 +162,7 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
   if (!isExpired) {
     const { data: user } = await supabase
       .from("users")
-      .select("role")
+      .select("user_type, role")
       .eq("id", (await supabase.auth.getUser()).data.user?.id)
       .single()
 

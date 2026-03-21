@@ -30,7 +30,7 @@ export async function getListingCoaching(
 
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id, role")
+    .select("brokerage_id, user_type, role")
     .eq("id", user.id)
     .single()
 
