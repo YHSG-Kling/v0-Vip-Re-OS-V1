@@ -12,6 +12,21 @@ export async function GET(request: Request) {
 
     const supabase = await createClient()
 
+    // Verify schema exists before running — tables may not be created in production yet
+    const { error: schemaCheck } = await supabase
+      .from("workflow_executions")
+      .select("id")
+      .limit(1)
+
+    if (schemaCheck?.code === "42P01" || schemaCheck?.message?.includes("does not exist")) {
+      return NextResponse.json({
+        ok: false,
+        message: "Workflow tables not yet created. Run scripts/220-create-workflow-orchestration.sql",
+        ranAt: new Date().toISOString(),
+        processed: 0,
+      })
+    }
+
     // Get all pending retries that are due
     const { data: retries, error } = await supabase
       .from("workflow_retries")

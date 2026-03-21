@@ -8,6 +8,7 @@ import {
   SyncHealthPanel,
   SystemAlertsPanel,
   OperationalImpactPanel,
+  SchemaReadinessPanel,
 } from './components/os'
 
 // Force dynamic rendering - this page requires authentication
@@ -70,6 +71,9 @@ export default async function SystemPage() {
             <OperationalImpactPanel brokerageId={brokerageId} />
           </div>
         </div>
+
+        {/* Database Schema Readiness — full width below the grid */}
+        <SchemaReadinessPanel brokerageId={brokerageId} />
 
         {/* Footer Note */}
         <div className="text-center text-xs text-muted-foreground pt-4 border-t border-border">
