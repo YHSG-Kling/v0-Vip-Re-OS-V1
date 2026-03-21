@@ -40,6 +40,9 @@ import {
   getPublishingStats,
   getSavedIdeas,
 } from "@/app/actions/content-studio"
+import { aiWriteNewsletterContent, aiGenerateSubjectLines } from "@/app/actions/ai-newsletter"
+import { createMailCampaign } from "@/app/actions/direct-mail"
+import { createClient } from "@/lib/supabase/client"
 import LinkToVideoGenerator from "@/components/content-studio/LinkToVideoGenerator"
 import { executeWorkflow } from "@/app/actions/workflows"
 import { generateVideoFromScript } from "@/app/actions/video-generation"
@@ -90,6 +93,13 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
     contentCta: "",
     status: "draft",
   })
+
+  // AI newsletter draft result state
+  const [generatedNewsletterContent, setGeneratedNewsletterContent] = useState<{
+    subjects: string[]
+    body: string
+    topic: string
+  } | null>(null)
 
   // Long-form video state
   const [longVideos, setLongVideos] = useState<any[]>([])
@@ -243,33 +253,123 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
   }
 
   async function handleCreateNewsletter() {
+    if (!userId) {
+      alert("Unable to create newsletter: user not authenticated.")
+      return
+    }
     setIsProcessing("create-newsletter")
-    // TODO: Create newsletter server action
-    console.log("[v0] Newsletter creation not yet implemented")
-    setIsCreatingNewsletter(false)
-    setIsProcessing(null)
+    try {
+      const topic = newNewsletter.title || "Monthly real estate market update"
+      const [contentResult, subjectResult] = await Promise.all([
+        aiWriteNewsletterContent({
+          brokerageId: userId, // falls back to userId until brokerageId is surfaced in props
+          agentId: userId,
+          topic,
+          targetAudience: "past_clients",
+          tone: "friendly",
+        }),
+        aiGenerateSubjectLines({
+          brokerageId: userId,
+          agentId: userId,
+          newsletterTopic: topic,
+        }),
+      ])
+      if (contentResult?.success) {
+        setGeneratedNewsletterContent({
+          subjects: subjectResult?.subjectLines ?? [],
+          body: contentResult.content ?? "",
+          topic,
+        })
+        alert("Newsletter drafted! Review and copy the content below.")
+      } else {
+        alert(`Newsletter generation failed: ${contentResult?.error ?? "Unknown error"}`)
+      }
+    } catch {
+      alert("Newsletter generation failed. Please try again.")
+    } finally {
+      setIsCreatingNewsletter(false)
+      setIsProcessing(null)
+    }
   }
 
   async function handleCreateMail() {
+    if (!userId) {
+      alert("Unable to create campaign: user not authenticated.")
+      return
+    }
     setIsProcessing("create-mail")
-    // TODO: Create direct mail server action
-    console.log("[v0] Direct mail creation not yet implemented")
-    setIsCreatingMail(false)
-    setIsProcessing(null)
+    try {
+      const result = await createMailCampaign({
+        brokerageId: userId,
+        agentId: userId,
+        campaignName: newMail.title || "Direct Mail Campaign",
+        targetAudience: "farm_area",
+        quantity: 100,
+        createdBy: userId,
+      })
+      if (result?.success) {
+        alert("Direct mail campaign created!")
+        setIsCreatingMail(false)
+        setNewMail({ title: "", mailType: "postcard", templateId: "listing_announce", contentHeadline: "", contentBody: "", contentCta: "", status: "draft" })
+        loadData()
+      } else {
+        alert(`Failed to create campaign: ${result?.error ?? "Unknown error"}`)
+      }
+    } catch {
+      alert("Failed to create campaign. Please try again.")
+    } finally {
+      setIsProcessing(null)
+    }
   }
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
-    if (!file || !newVideoTitle) return
+    if (!file || !newVideoTitle || !userId) return
     setIsUploading(true)
     setUploadProgress(10)
-    // TODO: Implement video upload server action
-    console.log("[v0] Video upload not yet implemented")
-    setTimeout(() => {
+    try {
+      const supabase = createClient()
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError || !user) throw new Error("Not authenticated")
+
+      const ext = file.name.split(".").pop() ?? "mp4"
+      const path = `videos/${user.id}/${Date.now()}.${ext}`
+
+      setUploadProgress(30)
+      const { error: uploadError } = await supabase.storage
+        .from("agent-media")
+        .upload(path, file, { upsert: false })
+
+      setUploadProgress(70)
+      if (uploadError) throw uploadError
+
+      const { data: urlData } = supabase.storage.from("agent-media").getPublicUrl(path)
+      const publicUrl = urlData?.publicUrl
+
+      if (publicUrl) {
+        const { error: dbError } = await supabase.from("ai_video_projects").insert({
+          agent_id: user.id,
+          brokerage_id: user.id,
+          title: newVideoTitle,
+          video_url: publicUrl,
+          status: "uploaded",
+          video_type: "upload",
+          video_provider: "upload",
+        })
+        if (dbError) throw dbError
+        setUploadProgress(100)
+        alert(`${file.name} uploaded successfully.`)
+        setNewVideoTitle("")
+        loadData()
+      } else {
+        throw new Error("Failed to get public URL")
+      }
+    } catch (err: any) {
+      alert(`Upload failed: ${err?.message ?? "Unknown error"}`)
+    } finally {
       setIsUploading(false)
       setUploadProgress(0)
-      setNewVideoTitle("")
-    }, 1500)
+    }
   }
 
   async function handleGenerateVideo(script: string, title: string, type: "avatar" | "voice") {
@@ -1098,13 +1198,66 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
                   </div>
                   <Button
                     onClick={handleCreateNewsletter}
-                    disabled={isProcessing === "create-newsletter"}
+                    disabled={!newNewsletter.title || isProcessing === "create-newsletter"}
                     size="lg"
                     className="bg-orange-600 hover:bg-orange-700 text-white"
                   >
-                    <CheckCircle className="mr-2 h-4 w-4" />
-                    Create Newsletter
+                    {isProcessing === "create-newsletter" ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle className="mr-2 h-4 w-4" />
+                        Create Newsletter
+                      </>
+                    )}
                   </Button>
+
+                  {generatedNewsletterContent && (
+                    <div className="mt-4 rounded-lg border border-orange-200 bg-orange-50 p-4 space-y-3">
+                      <p className="text-sm font-semibold text-orange-900">Newsletter Drafted</p>
+                      {generatedNewsletterContent.subjects.length > 0 && (
+                        <div>
+                          <p className="text-xs font-medium text-orange-800 mb-1">Suggested subject lines:</p>
+                          <ul className="space-y-1">
+                            {generatedNewsletterContent.subjects.map((s, i) => (
+                              <li key={i} className="text-sm text-orange-700 pl-2 border-l-2 border-orange-300">
+                                {s}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <Textarea
+                        rows={8}
+                        className="text-sm"
+                        value={generatedNewsletterContent.body}
+                        onChange={(e) =>
+                          setGeneratedNewsletterContent((prev) =>
+                            prev ? { ...prev, body: e.target.value } : null,
+                          )
+                        }
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => navigator.clipboard.writeText(generatedNewsletterContent.body)}
+                        >
+                          Copy
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setGeneratedNewsletterContent(null)}
+                        >
+                          Discard
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
