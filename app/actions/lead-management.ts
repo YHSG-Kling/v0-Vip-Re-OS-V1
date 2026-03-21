@@ -23,6 +23,7 @@ export async function getLeads(params?: {
   limit?: number
   sortBy?: string
   sortOrder?: "asc" | "desc"
+  adminView?: boolean
 }) {
   try {
     const { agentId, brokerageId } = await getAgentContext()

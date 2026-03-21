@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, Fragment } from "react"
+import { useState, useEffect, Fragment, useCallback } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -70,6 +71,12 @@ import { createClient } from "@/lib/supabase/client"
 import { Zap } from "lucide-react"
 
 export default function LeadsPage() {
+  const router = useRouter()
+
+  // Role resolution state
+  const [isAdminOrBroker, setIsAdminOrBroker] = useState(false)
+  const [roleResolved, setRoleResolved] = useState(false)
+
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
@@ -149,8 +156,9 @@ export default function LeadsPage() {
     }
   }
 
-  // Fetch leads
-  const fetchLeads = async () => {
+  // Fetch leads — respects resolved role; waits until role is known
+  const fetchLeads = useCallback(async () => {
+    if (!roleResolved) return
     setLoading(true)
     const result = await getLeads({
       search: search || undefined,
@@ -162,6 +170,7 @@ export default function LeadsPage() {
       limit: 10,
       sortBy,
       sortOrder,
+      adminView: isAdminOrBroker,
     })
 
     if (result.success) {
@@ -170,18 +179,36 @@ export default function LeadsPage() {
       setTotalPages(result.totalPages)
     }
     setLoading(false)
-  }
+  }, [roleResolved, isAdminOrBroker, search, scoreFilter, intentFilter, statusFilter, sourceFilter, page, sortBy, sortOrder])
 
   useEffect(() => {
     fetchLeads()
-  }, [page, scoreFilter, intentFilter, statusFilter, sourceFilter, sortBy, sortOrder])
+  }, [fetchLeads])
 
-  // Load hot leads and resolve agentId
+  // Load hot leads, resolve agentId, and enforce role-based access
   useEffect(() => {
     const loadHotLeads = async () => {
       const supabase = createClient()
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) return
+
+      // Resolve user role
+      const { data: profile } = await supabase
+        .from("users")
+        .select("user_type, role")
+        .eq("id", user.id)
+        .single()
+
+      const resolvedType = profile?.user_type ?? profile?.role ?? "agent"
+
+      // TC / vendor / lender: redirect immediately
+      if (["tc", "vendor", "lender"].includes(resolvedType)) {
+        router.push("/dashboard")
+        return
+      }
+
+      const adminBroker = ["admin", "broker", "superadmin"].includes(resolvedType)
+      setIsAdminOrBroker(adminBroker)
 
       // Resolve agentId
       const { data: agentRow } = await supabase
@@ -191,6 +218,9 @@ export default function LeadsPage() {
         .maybeSingle()
       const resolvedAgentId = agentRow?.id || ''
       setAgentId(resolvedAgentId)
+
+      // Mark role resolved — triggers fetchLeads
+      setRoleResolved(true)
 
       // Load hot leads
       try {
@@ -227,8 +257,9 @@ export default function LeadsPage() {
     loadHotLeads()
   }, [])
 
-  // Debounced search
+  // Debounced search — only runs after role is resolved
   useEffect(() => {
+    if (!roleResolved) return
     const timer = setTimeout(() => {
       if (page === 1) {
         fetchLeads()
@@ -237,7 +268,7 @@ export default function LeadsPage() {
       }
     }, 500)
     return () => clearTimeout(timer)
-  }, [search])
+  }, [search, roleResolved])
 
   const handleSort = (column: string) => {
     if (sortBy === column) {
@@ -325,6 +356,16 @@ export default function LeadsPage() {
     return colors[status]
   }
 
+  const getLeadStatusBadge = (lead: any): { label: string; color: string } => {
+    if (!lead.agent_id && !lead.assigned_agent_id) return { label: "Unassigned", color: "bg-amber-100 text-amber-800" }
+    if (lead.lifecycle_state === "isa_qualifying") return { label: "AI-ISA Qualifying", color: "bg-purple-100 text-purple-800" }
+    if (lead.reengagement_status === "active") return { label: "Ghost Recovery", color: "bg-red-100 text-red-800" }
+    if (lead.lead_stage === "stale") return { label: "Stale", color: "bg-gray-100 text-gray-600" }
+    if (lead.lead_stage === "claimed") return { label: "Claimed", color: "bg-blue-100 text-blue-800" }
+    if (lead.lead_stage === "qualified") return { label: "Qualified", color: "bg-green-100 text-green-800" }
+    return { label: lead.lead_stage || "New", color: "bg-slate-100 text-slate-700" }
+  }
+
   return (
     <div className="min-h-screen bg-background p-6">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -359,6 +400,31 @@ export default function LeadsPage() {
           </Dialog>
         </div>
 
+        {/* Role-aware context strip */}
+        {roleResolved && (
+          <div className="flex items-center gap-3 rounded-lg border bg-card px-4 py-2.5">
+            {isAdminOrBroker ? (
+              <>
+                <Badge className="bg-blue-100 text-blue-800 border-blue-200 hover:bg-blue-100">
+                  Brokerage View — All Leads
+                </Badge>
+                {leads.filter((l: any) => !(l.agent_id || l.assigned_agent_id)).length > 0 && (
+                  <span className="text-sm text-muted-foreground">
+                    {leads.filter((l: any) => !(l.agent_id || l.assigned_agent_id)).length} awaiting assignment
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <Badge className="bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-100">
+                  My Leads
+                </Badge>
+                <span className="text-sm text-muted-foreground">Showing leads assigned to you</span>
+              </>
+            )}
+          </div>
+        )}
+
         <Tabs defaultValue="leads" className="space-y-6">
           <TabsList>
             <TabsTrigger value="leads">Lead List</TabsTrigger>
@@ -374,6 +440,51 @@ export default function LeadsPage() {
           </TabsList>
 
           <TabsContent value="leads" className="space-y-6 mt-0">
+
+        {/* Admin stale/ghost recovery alert strip */}
+        {isAdminOrBroker && leads.length > 0 && (() => {
+          const staleLeads = leads.filter((l: any) => l.lead_stage === "stale")
+          const ghostLeads = leads.filter((l: any) => l.reengagement_status === "active")
+          if (staleLeads.length === 0 && ghostLeads.length === 0) return null
+          return (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="shrink-0 h-4 w-4 text-amber-600">
+                  <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                    <path fillRule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 5a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 5zm0 9a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
+                  </svg>
+                </span>
+                <p className="text-sm text-amber-900 font-medium truncate">
+                  {staleLeads.length > 0 && `${staleLeads.length} stale lead${staleLeads.length !== 1 ? "s" : ""} need attention`}
+                  {staleLeads.length > 0 && ghostLeads.length > 0 && " — "}
+                  {ghostLeads.length > 0 && `${ghostLeads.length} in AI ghost recovery`}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {staleLeads.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-amber-300 text-amber-800 hover:bg-amber-100 text-xs h-7"
+                    onClick={() => setStatusFilter("stale" as any)}
+                  >
+                    Review Stale
+                  </Button>
+                )}
+                {ghostLeads.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-amber-300 text-amber-800 hover:bg-amber-100 text-xs h-7"
+                    onClick={() => setStatusFilter("ghost_recovery" as any)}
+                  >
+                    Review Ghost Recovery
+                  </Button>
+                )}
+              </div>
+            </div>
+          )
+        })()}
 
         {/* Filters Card */}
         <Card>
@@ -932,6 +1043,7 @@ export default function LeadsPage() {
                       </button>
                     </TableHead>
                     <TableHead>Intent</TableHead>
+                    <TableHead>Stage</TableHead>
                     <TableHead>
                       <button
                         onClick={() => handleSort("status")}
@@ -956,14 +1068,14 @@ export default function LeadsPage() {
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-12">
+                      <TableCell colSpan={10} className="text-center py-12">
                         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mx-auto" />
                         <p className="text-sm text-muted-foreground mt-2">Loading leads...</p>
                       </TableCell>
                     </TableRow>
                   ) : leads.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-16">
+                      <TableCell colSpan={10} className="text-center py-16">
                         <Search className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
                         <p className="text-sm font-medium text-foreground mb-1">No leads match your filters</p>
                         <p className="text-xs text-muted-foreground mb-4">Try clearing filters or importing new leads</p>
@@ -1000,6 +1112,16 @@ export default function LeadsPage() {
                           ) : (
                             "—"
                           )}
+                        </TableCell>
+                        <TableCell>
+                          {(() => {
+                            const badge = getLeadStatusBadge(lead)
+                            return (
+                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.color}`}>
+                                {badge.label}
+                              </span>
+                            )
+                          })()}
                         </TableCell>
                         <TableCell>
                           <Badge variant={getStatusColor(lead.status)} className="capitalize">
