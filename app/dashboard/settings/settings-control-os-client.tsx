@@ -11,6 +11,7 @@ import {
   ProviderActionPanel,
   SettingsBatchMaintenancePanel,
 } from "./components/os"
+import { IsaAutoRespondSettings } from "@/app/components/isa/IsaAutoRespondSettings"
 
 interface ProviderData {
   id: string
@@ -84,6 +85,10 @@ interface SettingsControlOSClientProps {
   accountingStatus: AccountingStatus
   commissionSettings: CommissionSettings
   brokerageId: string
+  isaSettings: {
+    current: Record<string, unknown>
+    existing: Record<string, unknown>
+  }
 }
 
 export function SettingsControlOSClient({
@@ -100,6 +105,7 @@ export function SettingsControlOSClient({
   accountingStatus,
   commissionSettings,
   brokerageId,
+  isaSettings,
 }: SettingsControlOSClientProps) {
   // Provider test action (placeholder - would call real action)
   const handleTestProvider = async (providerId: string) => {
@@ -185,6 +191,13 @@ export function SettingsControlOSClient({
 
         {/* Maintenance Tasks */}
         <SettingsBatchMaintenancePanel onRunTask={handleRunTask} />
+
+        {/* AI-ISA Auto-Response Settings */}
+        <IsaAutoRespondSettings
+          brokerageId={brokerageId}
+          currentSettings={isaSettings.current as any}
+          existingAdditionalSettings={isaSettings.existing}
+        />
       </div>
     </div>
   )

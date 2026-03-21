@@ -176,6 +176,15 @@ export default async function SettingsControlOSPage() {
       accountingStatus={accountingStatus}
       commissionSettings={commissionSettings}
       brokerageId={brokerageId}
+      isaSettings={{
+        current: {
+          isa_auto_respond_new_leads: (globalSettings?.additional_settings as any)?.isa_auto_respond_new_leads ?? false,
+          isa_auto_respond_ghost_threshold_days: (globalSettings?.additional_settings as any)?.isa_auto_respond_ghost_threshold_days ?? 14,
+          isa_require_admin_approval_before_send: (globalSettings?.additional_settings as any)?.isa_require_admin_approval_before_send ?? true,
+          isa_auto_respond_hours: (globalSettings?.additional_settings as any)?.isa_auto_respond_hours ?? "8-20",
+        },
+        existing: (globalSettings?.additional_settings as Record<string, unknown>) ?? {},
+      }}
     />
   )
 }

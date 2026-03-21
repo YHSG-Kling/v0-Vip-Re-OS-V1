@@ -222,7 +222,7 @@ export default function CRMPage() {
   const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive") => {
     if (!selectedContactId || !agentId) return
     startTransition(async () => {
-      await enableAIPilot({ contactId: selectedContactId, agentId, level })
+      await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
       const plans = await getActiveAutoPilotPlans(agentId)
       setAutopilotPlans(plans || [])
     })
