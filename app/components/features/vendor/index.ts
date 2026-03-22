@@ -1,1 +1,1 @@
-export { default as bookings-list } from './bookings-list.tsx'
+export { default as BookingsList } from './bookings-list.tsx'
