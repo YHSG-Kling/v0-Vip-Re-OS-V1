@@ -133,9 +133,18 @@ function TrustCard({
 function FormSkeleton() {
   return (
     <Card className="p-6">
-      <Skeleton className="h-8 w-48 mb-4" />
+      <div className="flex justify-center mb-5">
+        <Skeleton className="h-9 w-64" />
+      </div>
+      <Skeleton className="h-6 w-48 mx-auto mb-1" />
+      <Skeleton className="h-4 w-56 mx-auto mb-6" />
       <div className="space-y-4">
         <Skeleton className="h-10 w-full" />
+        <div className="grid grid-cols-3 gap-3">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+        </div>
         <div className="grid grid-cols-2 gap-4">
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />

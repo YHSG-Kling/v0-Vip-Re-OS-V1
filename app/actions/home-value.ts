@@ -18,6 +18,7 @@ interface HomeValueFormData {
   squareFeet: number
   yearBuilt: number
   condition: string
+  propertyType?: string
   firstName: string
   lastName: string
   email: string
@@ -25,6 +26,15 @@ interface HomeValueFormData {
   agentSlug?: string
   brokerageId?: string
   utmSource?: string
+  qualificationData?: {
+    sellTimeline?: string
+    motivation?: string
+    hasAgent?: string
+    mortgageStatus?: string
+    priceExpectation?: string
+    buyAfterSell?: string
+    additionalNotes?: string
+  }
 }
 
 interface AIValuationResponse {
@@ -68,6 +78,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       squareFeet,
       yearBuilt,
       condition,
+      propertyType,
       firstName,
       lastName,
       email,
@@ -75,6 +86,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       agentSlug,
       brokerageId,
       utmSource,
+      qualificationData,
     } = formData
 
     // Step 1: Resolve agent from slug if provided, else get default brokerage agent
@@ -164,6 +176,8 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         square_feet: squareFeet,
         year_built: yearBuilt,
         condition,
+        property_type: propertyType ?? null,
+        qualification_data: qualificationData ?? null,
         agent_id: resolvedAgentId,
         brokerage_id: resolvedBrokerageId,
         utm_source: utmSource,
@@ -251,7 +265,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
           brokerage_id: resolvedBrokerageId,
           type: "home_value_lead",
           title: "New Home Value Request",
-          body: `${firstName} ${lastName} requested a home value for ${propertyAddress}, ${city}. Review and start a drip campaign.`,
+          body: `${firstName} ${lastName} requested a home value for ${propertyAddress}, ${city || zipCode}. Timeline: ${qualificationData?.sellTimeline ?? "unknown"}. Motivation: ${qualificationData?.motivation ?? "unknown"}. Review and start a drip campaign.`,
           entity_type: "contact",
           entity_id: contactId,
           priority: "high",
