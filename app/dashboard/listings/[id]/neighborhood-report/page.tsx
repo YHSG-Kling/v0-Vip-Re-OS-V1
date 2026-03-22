@@ -40,10 +40,7 @@ import {
 import { PriceHistoryChart } from "@/app/components/neighborhood-report/PriceHistoryChart"
 import { Progress } from "@/components/ui/progress"
 import { createClient } from "@/lib/supabase/server"
-import {
-  predictPropertyPrice,
-  analyzeNeighborhood,
-} from "@/app/actions/ai-market-intelligence"
+import { analyzeNeighborhood } from "@/app/actions/ai-market-intelligence"
 
 export const dynamic = "force-dynamic"
 
@@ -76,48 +73,69 @@ export default async function NeighborhoodReportPage({
     agentId = agentRow?.id ?? ""
   }
 
-  // Load neighborhood report + full listing details in parallel
-  const [{ report, listing, priceHistory, dataSources }, listingDetails] = await Promise.all([
-    getNeighborhoodReport(listingId),
-    supabase
-      .from("listings")
-      .select("bedrooms, bathrooms, sqft, year_built, property_type, address, city, state, zip_code")
-      .eq("id", listingId)
-      .maybeSingle()
-      .then((r) => r.data),
-  ])
+  // Load neighborhood report + area market data in parallel
+  // Neighborhood reports are about the property's surrounding market —
+  // NOT the listed property's own valuation. We pull market_data,
+  // market_insights, home_value_estimates, and BatchData motivated-seller
+  // counts for the zip to give a true area intelligence picture.
+  const { report, listing, priceHistory, dataSources } = await getNeighborhoodReport(listingId)
 
   if (!listing) {
     notFound()
   }
 
-  // AI calls — parallel, each catches to null so they never block the page
-  const [priceAnalysis, neighborhoodAI] = await Promise.all([
-    agentId && listingDetails
-      ? predictPropertyPrice({
-          agentId,
-          propertyData: {
-            address: listingDetails.address ?? listing.address,
-            city: listingDetails.city ?? listing.city,
-            state: listingDetails.state ?? listing.state,
-            zipCode: listingDetails.zip_code ?? listing.zip_code,
-            bedrooms: listingDetails.bedrooms ?? 0,
-            bathrooms: listingDetails.bathrooms ?? 0,
-            sqft: listingDetails.sqft ?? 0,
-            yearBuilt: listingDetails.year_built ?? undefined,
-            propertyType: listingDetails.property_type ?? "residential",
-          },
-        }).catch(() => null)
-      : Promise.resolve(null),
-    agentId && report
-      ? analyzeNeighborhood({
-          agentId,
-          neighborhood: report.neighborhood_name ?? listing.city,
-          city: listing.city,
-          state: listing.state,
-        }).catch(() => null)
-      : Promise.resolve(null),
+  const zip = listing.zip_code
+
+  const [marketData, marketInsight, homeValueEstimate, motivatedSellerCount] = await Promise.all([
+    // Area market snapshot from market_data table (MLS-sourced)
+    supabase
+      .from("market_data")
+      .select(
+        "median_sale_price, median_list_price, price_trend_pct_1yr, price_trend_pct_30d, months_of_inventory, avg_days_on_market, active_listings, sold_listings_30d, list_to_sale_ratio, market_type, data_date"
+      )
+      .eq("zip_code", zip)
+      .order("data_date", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then((r) => r.data),
+
+    // AI market narrative from market_insights table
+    supabase
+      .from("market_insights")
+      .select("ai_narrative, headline, summary, price_trend, dom_trend, inventory_level, key_stats, market_type, insight_date")
+      .eq("zip_code", zip)
+      .order("insight_date", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then((r) => r.data),
+
+    // Property-level comps valuation from home_value_estimates
+    supabase
+      .from("home_value_estimates")
+      .select("estimated_value_low, estimated_value_mid, estimated_value_high, ai_narrative, market_trend, confidence_score, comps_json, generated_at")
+      .eq("property_address", listing.address)
+      .order("generated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then((r) => r.data),
+
+    // BatchData: count of nearby motivated/distressed properties in this zip
+    supabase
+      .from("batchdata_motivated_sellers_raw")
+      .select("id", { count: "exact", head: true })
+      .eq("property_zip", zip)
+      .then((r) => r.count ?? 0),
   ])
+
+  // AI neighborhood analysis — area-based, no property specs
+  const neighborhoodAI = agentId && report
+    ? await analyzeNeighborhood({
+        agentId,
+        neighborhood: report.neighborhood_name ?? listing.city,
+        city: listing.city,
+        state: listing.state,
+      }).catch(() => null)
+    : null
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -138,7 +156,10 @@ export default async function NeighborhoodReportPage({
             priceHistory={priceHistory}
             dataSources={dataSources}
             listingId={listingId}
-            priceAnalysis={priceAnalysis}
+            marketData={marketData}
+            marketInsight={marketInsight}
+            homeValueEstimate={homeValueEstimate}
+            motivatedSellerCount={motivatedSellerCount as number}
             neighborhoodAI={neighborhoodAI}
           />
         ) : (
@@ -176,19 +197,41 @@ interface ReportContentProps {
   priceHistory: PriceHistoryPoint[]
   dataSources: DataSource[]
   listingId: string
-  priceAnalysis: {
-    success: boolean
-    prediction?: {
-      estimatedPrice: number
-      priceRangeLow: number
-      priceRangeHigh: number
-      confidenceLevel: "high" | "medium" | "low"
-      comparablesSummary: string
-      pricePerSqft: number
-      listingRecommendation: { suggestedListPrice: number; strategy: string; expectedDaysOnMarket: number }
-      marketTiming: { recommendation: string; reasoning: string }
-    }
+  marketData: {
+    median_sale_price: number | null
+    median_list_price: number | null
+    price_trend_pct_1yr: number | null
+    price_trend_pct_30d: number | null
+    months_of_inventory: number | null
+    avg_days_on_market: number | null
+    active_listings: number | null
+    sold_listings_30d: number | null
+    list_to_sale_ratio: number | null
+    market_type: string | null
+    data_date: string | null
   } | null
+  marketInsight: {
+    ai_narrative: string | null
+    headline: string | null
+    summary: string | null
+    price_trend: string | null
+    dom_trend: string | null
+    inventory_level: string | null
+    key_stats: Record<string, unknown> | null
+    market_type: string | null
+    insight_date: string | null
+  } | null
+  homeValueEstimate: {
+    estimated_value_low: number | null
+    estimated_value_mid: number | null
+    estimated_value_high: number | null
+    ai_narrative: string | null
+    market_trend: string | null
+    confidence_score: number | null
+    comps_json: Record<string, unknown> | null
+    generated_at: string | null
+  } | null
+  motivatedSellerCount: number
   neighborhoodAI: {
     success: boolean
     analysis?: {
@@ -208,7 +251,10 @@ function NeighborhoodReportContent({
   priceHistory,
   dataSources,
   listingId,
-  priceAnalysis,
+  marketData,
+  marketInsight,
+  homeValueEstimate,
+  motivatedSellerCount,
   neighborhoodAI,
 }: ReportContentProps) {
   const generatedDate = new Date(report.generated_at)
@@ -290,72 +336,106 @@ function NeighborhoodReportContent({
         </CardContent>
       </Card>
 
-      {/* Section A: AI Price Intelligence */}
-      {priceAnalysis?.success && priceAnalysis.prediction && (
-        <Card className="border-indigo-200 bg-gradient-to-br from-indigo-50 to-white">
+      {/* Section A: Area Market Data (from market_data table — MLS-sourced) */}
+      {marketData && (
+        <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">
-              <Sparkles className="h-5 w-5 text-indigo-600" />
-              AI Price Intelligence
+              <TrendingUp className="h-5 w-5" />
+              Area Market Conditions
             </CardTitle>
             <CardDescription>
-              Confidence:{" "}
-              <span className="font-medium capitalize">{priceAnalysis.prediction.confidenceLevel}</span>
+              {listing.zip_code} · {marketData.market_type ? <span className="capitalize">{marketData.market_type.replace(/_/g, " ")} market</span> : null}
+              {marketData.data_date && (
+                <span className="ml-2 text-muted-foreground">
+                  · as of {new Date(marketData.data_date).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+                </span>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-3 gap-4">
-              <div className="text-center">
-                <p className="text-2xl font-bold text-indigo-900">
-                  {formatCurrency(priceAnalysis.prediction.estimatedPrice)}
-                </p>
-                <p className="text-xs text-muted-foreground">AI Estimate</p>
-              </div>
-              <div className="text-center">
-                <p className="text-2xl font-bold">{formatCurrency(priceAnalysis.prediction.priceRangeLow)}</p>
-                <p className="text-xs text-muted-foreground">Conservative</p>
-              </div>
-              <div className="text-center">
-                <p className="text-2xl font-bold">{formatCurrency(priceAnalysis.prediction.priceRangeHigh)}</p>
-                <p className="text-xs text-muted-foreground">Optimistic</p>
-              </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {marketData.median_sale_price && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Median Sale Price</p>
+                  <p className="text-lg font-bold">{formatCurrency(marketData.median_sale_price)}</p>
+                  {marketData.price_trend_pct_1yr !== null && (
+                    <p className={`text-xs font-medium ${marketData.price_trend_pct_1yr >= 0 ? "text-green-600" : "text-red-600"}`}>
+                      {marketData.price_trend_pct_1yr >= 0 ? "+" : ""}{marketData.price_trend_pct_1yr.toFixed(1)}% YoY
+                    </p>
+                  )}
+                </div>
+              )}
+              {marketData.avg_days_on_market !== null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Avg Days on Market</p>
+                  <p className="text-lg font-bold">{marketData.avg_days_on_market}d</p>
+                </div>
+              )}
+              {marketData.months_of_inventory !== null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Months of Inventory</p>
+                  <p className="text-lg font-bold">{marketData.months_of_inventory.toFixed(1)}</p>
+                </div>
+              )}
+              {marketData.list_to_sale_ratio !== null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">List-to-Sale Ratio</p>
+                  <p className="text-lg font-bold">{(marketData.list_to_sale_ratio * 100).toFixed(1)}%</p>
+                </div>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-4 text-sm">
+            {motivatedSellerCount > 0 && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+                <p className="text-amber-800">
+                  <span className="font-semibold">{motivatedSellerCount} distressed/motivated</span> properties identified in this zip from BatchData — potential market softness signal.
+                </p>
+              </div>
+            )}
+            {marketInsight?.ai_narrative && (
+              <p className="text-sm text-muted-foreground leading-relaxed">{marketInsight.ai_narrative}</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Home Value Estimate (from home_value_estimates — comps-based) */}
+      {homeValueEstimate && homeValueEstimate.estimated_value_mid && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Home className="h-5 w-5" />
+              Property Value Estimate
+            </CardTitle>
+            <CardDescription>
+              Based on comparable sales · Confidence:{" "}
+              {homeValueEstimate.confidence_score !== null
+                ? `${Math.round(homeValueEstimate.confidence_score * 100)}%`
+                : "N/A"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-3 gap-4 text-center">
               <div>
-                <p className="text-muted-foreground">Suggested List Price</p>
-                <p className="font-semibold">
-                  {formatCurrency(priceAnalysis.prediction.listingRecommendation.suggestedListPrice)}
-                </p>
+                <p className="text-xs text-muted-foreground">Low</p>
+                <p className="text-xl font-bold">{homeValueEstimate.estimated_value_low ? formatCurrency(homeValueEstimate.estimated_value_low) : "—"}</p>
               </div>
               <div>
-                <p className="text-muted-foreground">Est. Days on Market</p>
-                <p className="font-semibold">
-                  {priceAnalysis.prediction.listingRecommendation.expectedDaysOnMarket}d
-                </p>
+                <p className="text-xs text-muted-foreground">Mid</p>
+                <p className="text-2xl font-bold text-primary">{formatCurrency(homeValueEstimate.estimated_value_mid)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">High</p>
+                <p className="text-xl font-bold">{homeValueEstimate.estimated_value_high ? formatCurrency(homeValueEstimate.estimated_value_high) : "—"}</p>
               </div>
             </div>
-            <p className="text-sm text-muted-foreground">{priceAnalysis.prediction.comparablesSummary}</p>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">
-                Confidence:{" "}
-                {priceAnalysis.prediction.confidenceLevel === "high"
-                  ? "90"
-                  : priceAnalysis.prediction.confidenceLevel === "medium"
-                    ? "60"
-                    : "30"}
-                %
-              </p>
-              <Progress
-                value={
-                  priceAnalysis.prediction.confidenceLevel === "high"
-                    ? 90
-                    : priceAnalysis.prediction.confidenceLevel === "medium"
-                      ? 60
-                      : 30
-                }
-                className="h-1.5"
-              />
-            </div>
+            {homeValueEstimate.confidence_score !== null && (
+              <Progress value={homeValueEstimate.confidence_score * 100} className="h-1.5" />
+            )}
+            {homeValueEstimate.ai_narrative && (
+              <p className="text-sm text-muted-foreground">{homeValueEstimate.ai_narrative}</p>
+            )}
           </CardContent>
         </Card>
       )}
