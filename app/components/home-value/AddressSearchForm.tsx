@@ -18,10 +18,33 @@ import {
 import { ArrowRight, ArrowLeft, Loader2, Home, ClipboardList, User, Shield, CheckCircle2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
+interface ActiveQuestions {
+  sellTimeline?: boolean
+  motivation?: boolean
+  mortgageStatus?: boolean
+  priceExpectation?: boolean
+  hasAgent?: boolean
+  buyAfterSell?: boolean
+  additionalNotes?: boolean
+}
+
+interface QuestionLabels {
+  sellTimeline?: string | null
+  motivation?: string | null
+  mortgageStatus?: string | null
+  priceExpectation?: string | null
+  hasAgent?: string | null
+  buyAfterSell?: string | null
+}
+
 interface AddressSearchFormProps {
   agentSlug?: string
   brokerageId?: string
   utmSource?: string
+  activeQuestions?: ActiveQuestions
+  questionLabels?: QuestionLabels
+  ctaButtonText?: string
+  accentColor?: string
 }
 
 type FormStep = 1 | 2 | 3
@@ -36,7 +59,31 @@ export function AddressSearchForm({
   agentSlug,
   brokerageId,
   utmSource,
+  activeQuestions,
+  questionLabels,
+  ctaButtonText,
+  accentColor,
 }: AddressSearchFormProps) {
+  // Build a resolved show-map so callers don't have to pass everything
+  const show = {
+    sellTimeline: activeQuestions?.sellTimeline ?? true,
+    motivation: activeQuestions?.motivation ?? true,
+    mortgageStatus: activeQuestions?.mortgageStatus ?? true,
+    priceExpectation: activeQuestions?.priceExpectation ?? true,
+    hasAgent: activeQuestions?.hasAgent ?? true,
+    buyAfterSell: activeQuestions?.buyAfterSell ?? true,
+    additionalNotes: activeQuestions?.additionalNotes ?? true,
+  }
+  const labels = {
+    sellTimeline: questionLabels?.sellTimeline ?? "When are you thinking about selling?",
+    motivation: questionLabels?.motivation ?? "What's driving the potential sale?",
+    mortgageStatus: questionLabels?.mortgageStatus ?? "What's the mortgage situation?",
+    priceExpectation: questionLabels?.priceExpectation ?? "What price range are you expecting?",
+    hasAgent: questionLabels?.hasAgent ?? "Are you currently working with a real estate agent?",
+    buyAfterSell: questionLabels?.buyAfterSell ?? "Will you be buying after you sell?",
+  }
+  // Step 2 is valid only if all *shown* required questions are answered
+
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [step, setStep] = useState<FormStep>(1)
@@ -82,14 +129,14 @@ export function AddressSearchForm({
     yearBuilt.trim() !== "" &&
     condition !== ""
 
-  // All qualification questions required except additionalNotes
+  // Only require answers for shown questions
   const isStep2Valid =
-    sellTimeline !== "" &&
-    motivation !== "" &&
-    hasAgent !== "" &&
-    mortgageStatus !== "" &&
-    priceExpectation !== "" &&
-    buyAfterSell !== ""
+    (!show.sellTimeline || sellTimeline !== "") &&
+    (!show.motivation || motivation !== "") &&
+    (!show.hasAgent || hasAgent !== "") &&
+    (!show.mortgageStatus || mortgageStatus !== "") &&
+    (!show.priceExpectation || priceExpectation !== "") &&
+    (!show.buyAfterSell || buyAfterSell !== "")
 
   const isStep3Valid =
     firstName.trim() !== "" &&
@@ -354,8 +401,9 @@ export function AddressSearchForm({
               size="lg"
               onClick={() => isStep1Valid && setStep(2)}
               disabled={!isStep1Valid}
+              style={accentColor ? { background: accentColor, borderColor: accentColor } : undefined}
             >
-              Next: Your Situation
+              {ctaButtonText ?? "Next: Your Situation"}
               <ArrowRight className="h-4 w-4 ml-2" />
             </Button>
           </>
@@ -364,118 +412,123 @@ export function AddressSearchForm({
         {/* ── STEP 2: Qualification ── */}
         {step === 2 && (
           <>
-            <div className="space-y-2">
-              <Label htmlFor="sellTimeline">When are you thinking about selling?</Label>
-              <Select value={sellTimeline} onValueChange={setSellTimeline}>
-                <SelectTrigger id="sellTimeline">
-                  <SelectValue placeholder="Select timeline" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="asap">As soon as possible</SelectItem>
-                  <SelectItem value="1_3_months">1–3 months</SelectItem>
-                  <SelectItem value="3_6_months">3–6 months</SelectItem>
-                  <SelectItem value="6_12_months">6–12 months</SelectItem>
-                  <SelectItem value="1_2_years">1–2 years</SelectItem>
-                  <SelectItem value="just_curious">Just curious about value</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {show.sellTimeline && (
+              <div className="space-y-2">
+                <Label htmlFor="sellTimeline">{labels.sellTimeline}</Label>
+                <Select value={sellTimeline} onValueChange={setSellTimeline}>
+                  <SelectTrigger id="sellTimeline"><SelectValue placeholder="Select timeline" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="asap">As soon as possible</SelectItem>
+                    <SelectItem value="1_3_months">1–3 months</SelectItem>
+                    <SelectItem value="3_6_months">3–6 months</SelectItem>
+                    <SelectItem value="6_12_months">6–12 months</SelectItem>
+                    <SelectItem value="1_2_years">1–2 years</SelectItem>
+                    <SelectItem value="just_curious">Just curious about value</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
-            <div className="space-y-2">
-              <Label htmlFor="motivation">What's driving the potential sale?</Label>
-              <Select value={motivation} onValueChange={setMotivation}>
-                <SelectTrigger id="motivation">
-                  <SelectValue placeholder="Select reason" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="upsizing">Upsizing / growing family</SelectItem>
-                  <SelectItem value="downsizing">Downsizing</SelectItem>
-                  <SelectItem value="relocating">Job relocation</SelectItem>
-                  <SelectItem value="financial">Financial reasons</SelectItem>
-                  <SelectItem value="divorce">Divorce / separation</SelectItem>
-                  <SelectItem value="inherited">Inherited property</SelectItem>
-                  <SelectItem value="investment">Selling investment property</SelectItem>
-                  <SelectItem value="lifestyle">Lifestyle change</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {show.motivation && (
+              <div className="space-y-2">
+                <Label htmlFor="motivation">{labels.motivation}</Label>
+                <Select value={motivation} onValueChange={setMotivation}>
+                  <SelectTrigger id="motivation"><SelectValue placeholder="Select reason" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="upsizing">Upsizing / growing family</SelectItem>
+                    <SelectItem value="downsizing">Downsizing</SelectItem>
+                    <SelectItem value="relocating">Job relocation</SelectItem>
+                    <SelectItem value="financial">Financial reasons</SelectItem>
+                    <SelectItem value="divorce">Divorce / separation</SelectItem>
+                    <SelectItem value="inherited">Inherited property</SelectItem>
+                    <SelectItem value="investment">Selling investment property</SelectItem>
+                    <SelectItem value="lifestyle">Lifestyle change</SelectItem>
+                    <SelectItem value="other">Other</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
-            <div className="space-y-2">
-              <Label htmlFor="mortgageStatus">What's the mortgage situation?</Label>
-              <Select value={mortgageStatus} onValueChange={setMortgageStatus}>
-                <SelectTrigger id="mortgageStatus">
-                  <SelectValue placeholder="Select" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="owned_free_clear">Own free and clear</SelectItem>
-                  <SelectItem value="mortgage_current">Have a mortgage — current</SelectItem>
-                  <SelectItem value="mortgage_behind">Behind on mortgage</SelectItem>
-                  <SelectItem value="heloc">Have a HELOC</SelectItem>
-                  <SelectItem value="not_sure">Not sure</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {show.mortgageStatus && (
+              <div className="space-y-2">
+                <Label htmlFor="mortgageStatus">{labels.mortgageStatus}</Label>
+                <Select value={mortgageStatus} onValueChange={setMortgageStatus}>
+                  <SelectTrigger id="mortgageStatus"><SelectValue placeholder="Select" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="owned_free_clear">Own free and clear</SelectItem>
+                    <SelectItem value="mortgage_current">Have a mortgage — current</SelectItem>
+                    <SelectItem value="mortgage_behind">Behind on mortgage</SelectItem>
+                    <SelectItem value="heloc">Have a HELOC</SelectItem>
+                    <SelectItem value="not_sure">Not sure</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
-            <div className="space-y-2">
-              <Label htmlFor="priceExpectation">What price range are you expecting?</Label>
-              <Select value={priceExpectation} onValueChange={setPriceExpectation}>
-                <SelectTrigger id="priceExpectation">
-                  <SelectValue placeholder="Select expectation" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="under_200k">Under $200k</SelectItem>
-                  <SelectItem value="200_400k">$200k – $400k</SelectItem>
-                  <SelectItem value="400_600k">$400k – $600k</SelectItem>
-                  <SelectItem value="600_800k">$600k – $800k</SelectItem>
-                  <SelectItem value="800k_1m">$800k – $1M</SelectItem>
-                  <SelectItem value="over_1m">Over $1M</SelectItem>
-                  <SelectItem value="no_idea">Not sure yet</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {show.priceExpectation && (
+              <div className="space-y-2">
+                <Label htmlFor="priceExpectation">{labels.priceExpectation}</Label>
+                <Select value={priceExpectation} onValueChange={setPriceExpectation}>
+                  <SelectTrigger id="priceExpectation"><SelectValue placeholder="Select expectation" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="under_200k">Under $200k</SelectItem>
+                    <SelectItem value="200_400k">$200k – $400k</SelectItem>
+                    <SelectItem value="400_600k">$400k – $600k</SelectItem>
+                    <SelectItem value="600_800k">$600k – $800k</SelectItem>
+                    <SelectItem value="800k_1m">$800k – $1M</SelectItem>
+                    <SelectItem value="over_1m">Over $1M</SelectItem>
+                    <SelectItem value="no_idea">Not sure yet</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
-            <div className="space-y-2">
-              <Label htmlFor="hasAgent">Are you currently working with a real estate agent?</Label>
-              <Select value={hasAgent} onValueChange={setHasAgent}>
-                <SelectTrigger id="hasAgent">
-                  <SelectValue placeholder="Select" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="no">No, looking for an agent</SelectItem>
-                  <SelectItem value="yes_committed">Yes, I have one</SelectItem>
-                  <SelectItem value="interviewing">Interviewing agents</SelectItem>
-                  <SelectItem value="fsbo">Planning to sell myself (FSBO)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {show.hasAgent && (
+              <div className="space-y-2">
+                <Label htmlFor="hasAgent">{labels.hasAgent}</Label>
+                <Select value={hasAgent} onValueChange={setHasAgent}>
+                  <SelectTrigger id="hasAgent"><SelectValue placeholder="Select" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="no">No, looking for an agent</SelectItem>
+                    <SelectItem value="yes_committed">Yes, I have one</SelectItem>
+                    <SelectItem value="interviewing">Interviewing agents</SelectItem>
+                    <SelectItem value="fsbo">Planning to sell myself (FSBO)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
-            <div className="space-y-2">
-              <Label htmlFor="buyAfterSell">Will you be buying after you sell?</Label>
-              <Select value={buyAfterSell} onValueChange={setBuyAfterSell}>
-                <SelectTrigger id="buyAfterSell">
-                  <SelectValue placeholder="Select" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="yes_local">Yes, staying in the area</SelectItem>
-                  <SelectItem value="yes_relocating">Yes, relocating</SelectItem>
-                  <SelectItem value="no">No, not buying</SelectItem>
-                  <SelectItem value="not_sure">Not sure yet</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {show.buyAfterSell && (
+              <div className="space-y-2">
+                <Label htmlFor="buyAfterSell">{labels.buyAfterSell}</Label>
+                <Select value={buyAfterSell} onValueChange={setBuyAfterSell}>
+                  <SelectTrigger id="buyAfterSell"><SelectValue placeholder="Select" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="yes_local">Yes, staying in the area</SelectItem>
+                    <SelectItem value="yes_relocating">Yes, relocating</SelectItem>
+                    <SelectItem value="no">No, not buying</SelectItem>
+                    <SelectItem value="not_sure">Not sure yet</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
-            <div className="space-y-2">
-              <Label htmlFor="additionalNotes">Anything else we should know? <span className="text-muted-foreground text-xs">(optional)</span></Label>
-              <Textarea
-                id="additionalNotes"
-                placeholder="e.g. we've done a kitchen remodel, there's an easement issue, we need a specific close date..."
-                value={additionalNotes}
-                onChange={(e) => setAdditionalNotes(e.target.value)}
-                rows={3}
-                className="resize-none"
-              />
-            </div>
+            {show.additionalNotes && (
+              <div className="space-y-2">
+                <Label htmlFor="additionalNotes">
+                  Anything else we should know?{" "}
+                  <span className="text-muted-foreground text-xs">(optional)</span>
+                </Label>
+                <Textarea
+                  id="additionalNotes"
+                  placeholder="e.g. we've done a kitchen remodel, there's an easement issue, we need a specific close date..."
+                  value={additionalNotes}
+                  onChange={(e) => setAdditionalNotes(e.target.value)}
+                  rows={3}
+                  className="resize-none"
+                />
+              </div>
+            )}
 
             <div className="flex gap-3 mt-2">
               <Button variant="outline" onClick={() => setStep(1)}>

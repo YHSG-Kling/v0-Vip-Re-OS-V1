@@ -517,66 +517,105 @@ export async function getAvailableAgentSlots(brokerageId: string): Promise<{
   }
 
   const now = new Date()
-  const windowEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+  // Earliest bookable slot is 48 hours from now
+  const earliestSlot = new Date(now.getTime() + 48 * 60 * 60 * 1000)
+  const windowEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000) // show 14 days ahead
 
-  // Fetch all calendar_events in the next 7 days for all agents in one query
   const agentIds = agents.map((a) => a.id)
-  const { data: existingEvents } = await supabase
-    .from("calendar_events")
-    .select("entity_id, start_at, end_at")
-    .in("entity_id", agentIds)
-    .eq("entity_type", "agent")
-    .gte("start_at", now.toISOString())
-    .lte("start_at", windowEnd.toISOString())
+
+  // Fetch existing calendar events and agent page configs in parallel
+  const [eventsRes, configsRes] = await Promise.all([
+    supabase
+      .from("calendar_events")
+      .select("entity_id, start_at, end_at")
+      .in("entity_id", agentIds)
+      .eq("entity_type", "agent")
+      .gte("start_at", now.toISOString())
+      .lte("start_at", windowEnd.toISOString()),
+    supabase
+      .from("home_value_page_configs")
+      .select("agent_id, working_hours, show_scheduler")
+      .in("agent_id", agentIds),
+  ])
 
   const bookedByAgent: Record<string, Array<{ start: Date; end: Date }>> = {}
-  for (const ev of existingEvents ?? []) {
+  for (const ev of eventsRes.data ?? []) {
     if (!bookedByAgent[ev.entity_id]) bookedByAgent[ev.entity_id] = []
     bookedByAgent[ev.entity_id].push({ start: new Date(ev.start_at), end: new Date(ev.end_at) })
   }
 
-  // Generate 1-hour slots Mon–Fri 9am–5pm for next 7 days
+  // Map agent_id -> working_hours config (fall back to Mon-Fri 9-17 if no config)
+  const DEFAULT_HOURS: WorkingHourSlot[] = [
+    { day: 1, start_hour: 9, end_hour: 17 },
+    { day: 2, start_hour: 9, end_hour: 17 },
+    { day: 3, start_hour: 9, end_hour: 17 },
+    { day: 4, start_hour: 9, end_hour: 17 },
+    { day: 5, start_hour: 9, end_hour: 17 },
+  ]
+  const configByAgent: Record<string, { hours: WorkingHourSlot[]; showScheduler: boolean }> = {}
+  for (const c of configsRes.data ?? []) {
+    configByAgent[c.agent_id] = {
+      hours: (c.working_hours as WorkingHourSlot[]) ?? DEFAULT_HOURS,
+      showScheduler: c.show_scheduler ?? true,
+    }
+  }
+
+  // Generate 1-hour slots within agent-defined working hours, 48h+ out
   function generateSlots(agentId: string): Array<{ startAt: string; endAt: string; label: string }> {
     const slots: Array<{ startAt: string; endAt: string; label: string }> = []
     const booked = bookedByAgent[agentId] ?? []
-    const cursor = new Date(now)
-    cursor.setMinutes(0, 0, 0)
-    cursor.setHours(cursor.getHours() + 1) // start from next full hour
+    const agentConfig = configByAgent[agentId]
 
-    for (let day = 0; day < 7; day++) {
-      const d = new Date(cursor)
-      d.setDate(cursor.getDate() + day)
+    // Skip scheduler-disabled agents
+    if (agentConfig && agentConfig.showScheduler === false) return []
+
+    const hours = agentConfig?.hours ?? DEFAULT_HOURS
+    // Build a fast lookup: day -> [{start_hour, end_hour}]
+    const hoursByDay: Record<number, Array<{ start: number; end: number }>> = {}
+    for (const h of hours) {
+      if (!hoursByDay[h.day]) hoursByDay[h.day] = []
+      hoursByDay[h.day].push({ start: h.start_hour, end: h.end_hour })
+    }
+
+    // Iterate day by day for 14 days, starting from tomorrow
+    for (let dayOffset = 0; dayOffset < 14; dayOffset++) {
+      const d = new Date(now)
+      d.setDate(d.getDate() + dayOffset)
+      d.setHours(0, 0, 0, 0)
       const dow = d.getDay()
-      if (dow === 0 || dow === 6) continue // skip weekends
+      const dayRanges = hoursByDay[dow]
+      if (!dayRanges?.length) continue
 
-      for (let h = 9; h < 17; h++) {
-        const slotStart = new Date(d)
-        slotStart.setHours(h, 0, 0, 0)
-        const slotEnd = new Date(slotStart)
-        slotEnd.setHours(h + 1)
+      for (const range of dayRanges) {
+        for (let h = range.start; h < range.end; h++) {
+          const slotStart = new Date(d)
+          slotStart.setHours(h, 0, 0, 0)
+          const slotEnd = new Date(slotStart)
+          slotEnd.setHours(h + 1)
 
-        if (slotStart <= now) continue // no past slots
+          // Must be at least 48h from now
+          if (slotStart < earliestSlot) continue
 
-        const conflict = booked.some(
-          (b) => slotStart < b.end && slotEnd > b.start,
-        )
-        if (!conflict) {
-          slots.push({
-            startAt: slotStart.toISOString(),
-            endAt: slotEnd.toISOString(),
-            label: slotStart.toLocaleString("en-US", {
-              weekday: "short",
-              month: "short",
-              day: "numeric",
-              hour: "numeric",
-              minute: "2-digit",
-              hour12: true,
-            }),
-          })
+          const conflict = booked.some((b) => slotStart < b.end && slotEnd > b.start)
+          if (!conflict) {
+            slots.push({
+              startAt: slotStart.toISOString(),
+              endAt: slotEnd.toISOString(),
+              label: slotStart.toLocaleString("en-US", {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+                hour12: true,
+              }),
+            })
+          }
+          if (slots.length >= 20) break
         }
-        if (slots.length >= 14) break // cap per agent
+        if (slots.length >= 20) break
       }
-      if (slots.length >= 14) break
+      if (slots.length >= 20) break
     }
     return slots
   }
@@ -701,9 +740,149 @@ export async function getAgentBySlug(slug: string) {
 
   const { data: agent } = await supabase
     .from("agents")
-    .select("id, first_name, last_name, phone_mobile, email, profile_image_url, brokerage_id")
-    .eq("slug", slug)
+    .select("id, user_id, phone_mobile, profile_image_url, brokerage_id, users(first_name, last_name, email)")
+    .eq("ref_agent_slug", slug)
+    .maybeSingle()
+
+  if (!agent) return null
+  const user = Array.isArray(agent.users) ? agent.users[0] : (agent.users as any)
+  return {
+    id: agent.id,
+    user_id: agent.user_id,
+    first_name: user?.first_name ?? "",
+    last_name: user?.last_name ?? "",
+    email: user?.email ?? null,
+    phone_mobile: agent.phone_mobile ?? null,
+    profile_image_url: agent.profile_image_url ?? null,
+    brokerage_id: agent.brokerage_id,
+  }
+}
+
+// ============================================================================
+// HomeValuePageConfig types
+// ============================================================================
+
+export interface WorkingHourSlot {
+  day: number        // 0=Sun … 6=Sat
+  start_hour: number // 0–23
+  end_hour: number   // 0–23 (exclusive, so 20 means last slot starts at 19:00)
+}
+
+export interface HomeValuePageConfig {
+  id?: string
+  agentId: string
+  brokerageId: string
+  headline: string
+  subheadline: string
+  ctaButtonText: string
+  primaryColor: string
+  agentBioOverride: string | null
+  showQSellTimeline: boolean
+  showQMotivation: boolean
+  showQMortgageStatus: boolean
+  showQPriceExpectation: boolean
+  showQHasAgent: boolean
+  showQBuyAfterSell: boolean
+  showQAdditionalNotes: boolean
+  labelSellTimeline: string | null
+  labelMotivation: string | null
+  labelMortgageStatus: string | null
+  labelPriceExpectation: string | null
+  labelHasAgent: string | null
+  labelBuyAfterSell: string | null
+  workingHours: WorkingHourSlot[]
+  showScheduler: boolean
+}
+
+// ============================================================================
+// savePageConfig
+// ============================================================================
+
+export async function savePageConfig(config: HomeValuePageConfig): Promise<{ success: boolean; id?: string; error?: string }> {
+  const supabase = await createClient()
+
+  const row = {
+    agent_id: config.agentId,
+    brokerage_id: config.brokerageId,
+    headline: config.headline,
+    subheadline: config.subheadline,
+    cta_button_text: config.ctaButtonText,
+    primary_color: config.primaryColor,
+    agent_bio_override: config.agentBioOverride,
+    show_q_sell_timeline: config.showQSellTimeline,
+    show_q_motivation: config.showQMotivation,
+    show_q_mortgage_status: config.showQMortgageStatus,
+    show_q_price_expectation: config.showQPriceExpectation,
+    show_q_has_agent: config.showQHasAgent,
+    show_q_buy_after_sell: config.showQBuyAfterSell,
+    show_q_additional_notes: config.showQAdditionalNotes,
+    label_sell_timeline: config.labelSellTimeline,
+    label_motivation: config.labelMotivation,
+    label_mortgage_status: config.labelMortgageStatus,
+    label_price_expectation: config.labelPriceExpectation,
+    label_has_agent: config.labelHasAgent,
+    label_buy_after_sell: config.labelBuyAfterSell,
+    working_hours: config.workingHours,
+    show_scheduler: config.showScheduler,
+    updated_at: new Date().toISOString(),
+  }
+
+  const { data, error } = await supabase
+    .from("home_value_page_configs")
+    .upsert(row, { onConflict: "agent_id" })
+    .select("id")
     .single()
 
-  return agent
+  if (error) return { success: false, error: error.message }
+  return { success: true, id: data.id }
+}
+
+// ============================================================================
+// getPageConfig — for the dashboard builder
+// ============================================================================
+
+export async function getPageConfig(agentId: string): Promise<HomeValuePageConfig | null> {
+  const supabase = await createClient()
+
+  const { data } = await supabase
+    .from("home_value_page_configs")
+    .select("*")
+    .eq("agent_id", agentId)
+    .maybeSingle()
+
+  if (!data) return null
+
+  return {
+    id: data.id,
+    agentId: data.agent_id,
+    brokerageId: data.brokerage_id,
+    headline: data.headline,
+    subheadline: data.subheadline,
+    ctaButtonText: data.cta_button_text,
+    primaryColor: data.primary_color,
+    agentBioOverride: data.agent_bio_override,
+    showQSellTimeline: data.show_q_sell_timeline,
+    showQMotivation: data.show_q_motivation,
+    showQMortgageStatus: data.show_q_mortgage_status,
+    showQPriceExpectation: data.show_q_price_expectation,
+    showQHasAgent: data.show_q_has_agent,
+    showQBuyAfterSell: data.show_q_buy_after_sell,
+    showQAdditionalNotes: data.show_q_additional_notes,
+    labelSellTimeline: data.label_sell_timeline,
+    labelMotivation: data.label_motivation,
+    labelMortgageStatus: data.label_mortgage_status,
+    labelPriceExpectation: data.label_price_expectation,
+    labelHasAgent: data.label_has_agent,
+    labelBuyAfterSell: data.label_buy_after_sell,
+    workingHours: (data.working_hours as WorkingHourSlot[]) ?? [],
+    showScheduler: data.show_scheduler,
+  }
+}
+
+// ============================================================================
+// getPageConfigByAgentId — public-facing, used by home-value/page.tsx
+// ============================================================================
+
+export async function getPageConfigByAgentId(agentId: string): Promise<HomeValuePageConfig | null> {
+  return getPageConfig(agentId)
 }
