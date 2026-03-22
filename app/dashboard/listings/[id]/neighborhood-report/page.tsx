@@ -110,16 +110,41 @@ export default async function NeighborhoodReportPage({
       .maybeSingle()
       .then((r) => r.data),
 
-    // Property-level comps valuation from home_value_estimates
-    // Matched by property address — this is the correct join, not listing_id
+    // Property value from cma_reports (primary) — joined by listing_id.
+    // CMAs are the agent-generated comps-based valuation for this listing.
+    // Falls back to home_value_estimates (consumer-facing) only if no CMA exists.
     supabase
-      .from("home_value_estimates")
-      .select("estimated_value_low, estimated_value_mid, estimated_value_high, ai_narrative, market_trend, confidence_score, comps_json, generated_at")
-      .eq("property_address", listing.address)
-      .order("generated_at", { ascending: false })
+      .from("cma_reports")
+      .select("price_range_low, price_range_high, recommended_price, market_conditions, comparable_count, quality_score, created_at")
+      .eq("listing_id", listingId)
+      .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle()
-      .then((r) => r.data),
+      .then(async (r) => {
+        if (r.data) {
+          // Map CMA fields to the shape the component expects
+          return {
+            estimated_value_low: r.data.price_range_low,
+            estimated_value_mid: r.data.recommended_price,
+            estimated_value_high: r.data.price_range_high,
+            ai_narrative: r.data.market_conditions ?? null,
+            market_trend: null,
+            confidence_score: r.data.quality_score ? r.data.quality_score / 100 : null,
+            comps_json: { comparable_count: r.data.comparable_count } as Record<string, unknown>,
+            generated_at: r.data.created_at,
+            source: "cma" as const,
+          }
+        }
+        // Fallback: home_value_estimates (filled by consumer valuation request flow)
+        const hve = await supabase
+          .from("home_value_estimates")
+          .select("estimated_value_low, estimated_value_mid, estimated_value_high, ai_narrative, market_trend, confidence_score, comps_json, generated_at")
+          .eq("property_address", listing.address)
+          .order("generated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        return hve.data ? { ...hve.data, source: "hve" as const } : null
+      }),
 
     // BatchData property history: prior distress/ownership signals for this
     // specific property address AND nearby properties in the zip.
@@ -240,6 +265,7 @@ interface ReportContentProps {
     confidence_score: number | null
     comps_json: Record<string, unknown> | null
     generated_at: string | null
+    source?: "cma" | "hve"
   } | null
   propertyHistory: Array<{
     property_address: string | null
@@ -438,7 +464,7 @@ function NeighborhoodReportContent({
         </Card>
       )}
 
-      {/* Home Value Estimate (from home_value_estimates — comps-based) */}
+      {/* Property Value Estimate — sourced from CMA (primary) or home_value_estimates (fallback) */}
       {homeValueEstimate && homeValueEstimate.estimated_value_mid && (
         <Card>
           <CardHeader>
@@ -447,7 +473,10 @@ function NeighborhoodReportContent({
               Property Value Estimate
             </CardTitle>
             <CardDescription>
-              Based on comparable sales · Confidence:{" "}
+              {homeValueEstimate.source === "cma"
+                ? "Based on agent CMA (comparable sales analysis)"
+                : "Based on comparable sales (valuation request)"}{" "}
+              · Confidence:{" "}
               {homeValueEstimate.confidence_score !== null
                 ? `${Math.round(homeValueEstimate.confidence_score * 100)}%`
                 : "N/A"}
