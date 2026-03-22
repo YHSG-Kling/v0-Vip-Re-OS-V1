@@ -33,10 +33,17 @@ import {
   AlertCircle,
   CheckCircle,
   Star,
+  Sparkles,
 } from "lucide-react"
 
 // Import chart component as a separate client component
 import { PriceHistoryChart } from "@/app/components/neighborhood-report/PriceHistoryChart"
+import { Progress } from "@/components/ui/progress"
+import { createClient } from "@/lib/supabase/server"
+import {
+  predictPropertyPrice,
+  analyzeNeighborhood,
+} from "@/app/actions/ai-market-intelligence"
 
 export const dynamic = "force-dynamic"
 
@@ -55,11 +62,62 @@ export default async function NeighborhoodReportPage({
   params: Promise<{ id: string }>
 }) {
   const { id: listingId } = await params
-  const { report, listing, priceHistory, dataSources } = await getNeighborhoodReport(listingId)
+
+  // Resolve agentId from session — needed for AI calls
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  let agentId = ""
+  if (user) {
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle()
+    agentId = agentRow?.id ?? ""
+  }
+
+  // Load neighborhood report + full listing details in parallel
+  const [{ report, listing, priceHistory, dataSources }, listingDetails] = await Promise.all([
+    getNeighborhoodReport(listingId),
+    supabase
+      .from("listings")
+      .select("bedrooms, bathrooms, sqft, year_built, property_type, address, city, state, zip_code")
+      .eq("id", listingId)
+      .maybeSingle()
+      .then((r) => r.data),
+  ])
 
   if (!listing) {
     notFound()
   }
+
+  // AI calls — parallel, each catches to null so they never block the page
+  const [priceAnalysis, neighborhoodAI] = await Promise.all([
+    agentId && listingDetails
+      ? predictPropertyPrice({
+          agentId,
+          propertyData: {
+            address: listingDetails.address ?? listing.address,
+            city: listingDetails.city ?? listing.city,
+            state: listingDetails.state ?? listing.state,
+            zipCode: listingDetails.zip_code ?? listing.zip_code,
+            bedrooms: listingDetails.bedrooms ?? 0,
+            bathrooms: listingDetails.bathrooms ?? 0,
+            sqft: listingDetails.sqft ?? 0,
+            yearBuilt: listingDetails.year_built ?? undefined,
+            propertyType: listingDetails.property_type ?? "residential",
+          },
+        }).catch(() => null)
+      : Promise.resolve(null),
+    agentId && report
+      ? analyzeNeighborhood({
+          agentId,
+          neighborhood: report.neighborhood_name ?? listing.city,
+          city: listing.city,
+          state: listing.state,
+        }).catch(() => null)
+      : Promise.resolve(null),
+  ])
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -80,6 +138,8 @@ export default async function NeighborhoodReportPage({
             priceHistory={priceHistory}
             dataSources={dataSources}
             listingId={listingId}
+            priceAnalysis={priceAnalysis}
+            neighborhoodAI={neighborhoodAI}
           />
         ) : (
           <EmptyState listingId={listingId} listing={listing} />
@@ -116,6 +176,30 @@ interface ReportContentProps {
   priceHistory: PriceHistoryPoint[]
   dataSources: DataSource[]
   listingId: string
+  priceAnalysis: {
+    success: boolean
+    prediction?: {
+      estimatedPrice: number
+      priceRangeLow: number
+      priceRangeHigh: number
+      confidenceLevel: "high" | "medium" | "low"
+      comparablesSummary: string
+      pricePerSqft: number
+      listingRecommendation: { suggestedListPrice: number; strategy: string; expectedDaysOnMarket: number }
+      marketTiming: { recommendation: string; reasoning: string }
+    }
+  } | null
+  neighborhoodAI: {
+    success: boolean
+    analysis?: {
+      overview: string
+      lifestyle: { walkScore: number; transitScore: number; bikeScore: number; crimeRating: string; schoolRating: string }
+      amenities: { schools: string[]; parks: string[]; shopping: string[]; dining: string[]; transportation: string[] }
+      marketMetrics: { avgHomePrice: number; priceGrowthYoY: number; avgDaysOnMarket: number; inventoryMonths: number }
+      demographics: { primaryBuyerProfile: string }
+      investmentPotential: { rating: string; reasoning: string; appreciationForecast: string }
+    }
+  } | null
 }
 
 function NeighborhoodReportContent({
@@ -124,6 +208,8 @@ function NeighborhoodReportContent({
   priceHistory,
   dataSources,
   listingId,
+  priceAnalysis,
+  neighborhoodAI,
 }: ReportContentProps) {
   const generatedDate = new Date(report.generated_at)
   const now = new Date()
@@ -203,6 +289,137 @@ function NeighborhoodReportContent({
           )}
         </CardContent>
       </Card>
+
+      {/* Section A: AI Price Intelligence */}
+      {priceAnalysis?.success && priceAnalysis.prediction && (
+        <Card className="border-indigo-200 bg-gradient-to-br from-indigo-50 to-white">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Sparkles className="h-5 w-5 text-indigo-600" />
+              AI Price Intelligence
+            </CardTitle>
+            <CardDescription>
+              Confidence:{" "}
+              <span className="font-medium capitalize">{priceAnalysis.prediction.confidenceLevel}</span>
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-3 gap-4">
+              <div className="text-center">
+                <p className="text-2xl font-bold text-indigo-900">
+                  {formatCurrency(priceAnalysis.prediction.estimatedPrice)}
+                </p>
+                <p className="text-xs text-muted-foreground">AI Estimate</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold">{formatCurrency(priceAnalysis.prediction.priceRangeLow)}</p>
+                <p className="text-xs text-muted-foreground">Conservative</p>
+              </div>
+              <div className="text-center">
+                <p className="text-2xl font-bold">{formatCurrency(priceAnalysis.prediction.priceRangeHigh)}</p>
+                <p className="text-xs text-muted-foreground">Optimistic</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <p className="text-muted-foreground">Suggested List Price</p>
+                <p className="font-semibold">
+                  {formatCurrency(priceAnalysis.prediction.listingRecommendation.suggestedListPrice)}
+                </p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Est. Days on Market</p>
+                <p className="font-semibold">
+                  {priceAnalysis.prediction.listingRecommendation.expectedDaysOnMarket}d
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-muted-foreground">{priceAnalysis.prediction.comparablesSummary}</p>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">
+                Confidence:{" "}
+                {priceAnalysis.prediction.confidenceLevel === "high"
+                  ? "90"
+                  : priceAnalysis.prediction.confidenceLevel === "medium"
+                    ? "60"
+                    : "30"}
+                %
+              </p>
+              <Progress
+                value={
+                  priceAnalysis.prediction.confidenceLevel === "high"
+                    ? 90
+                    : priceAnalysis.prediction.confidenceLevel === "medium"
+                      ? 60
+                      : 30
+                }
+                className="h-1.5"
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Section B: AI Neighborhood Intelligence */}
+      {neighborhoodAI?.success && neighborhoodAI.analysis && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <MapPin className="h-5 w-5" />
+              AI Neighborhood Intelligence
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <ScoreCard
+                label="Walk Score"
+                score={neighborhoodAI.analysis.lifestyle.walkScore}
+                description={
+                  neighborhoodAI.analysis.lifestyle.walkScore >= 70
+                    ? "Very Walkable"
+                    : neighborhoodAI.analysis.lifestyle.walkScore >= 50
+                      ? "Somewhat Walkable"
+                      : "Car-Dependent"
+                }
+              />
+              <ScoreCard
+                label="Transit"
+                score={neighborhoodAI.analysis.lifestyle.transitScore}
+                description={
+                  neighborhoodAI.analysis.lifestyle.transitScore >= 70
+                    ? "Excellent Transit"
+                    : neighborhoodAI.analysis.lifestyle.transitScore >= 50
+                      ? "Good Transit"
+                      : "Minimal Transit"
+                }
+              />
+              <ScoreCard
+                label="Schools"
+                score={null}
+                description={neighborhoodAI.analysis.lifestyle.schoolRating}
+              />
+              <ScoreCard
+                label="Safety"
+                score={null}
+                description={neighborhoodAI.analysis.lifestyle.crimeRating}
+              />
+            </div>
+            {neighborhoodAI.analysis.overview && (
+              <p className="text-sm text-muted-foreground">{neighborhoodAI.analysis.overview}</p>
+            )}
+            {neighborhoodAI.analysis.investmentPotential && (
+              <div className="rounded-lg bg-muted/50 p-3 text-sm">
+                <p className="font-medium capitalize mb-1">
+                  Investment Potential: {neighborhoodAI.analysis.investmentPotential.rating}
+                </p>
+                <p className="text-muted-foreground">
+                  {neighborhoodAI.analysis.investmentPotential.appreciationForecast}
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Section 4: Schools Section */}
       {report.school_ratings && report.school_ratings.length > 0 && (
@@ -352,6 +569,49 @@ function NeighborhoodReportContent({
 // ============================================================================
 // Helper Components
 // ============================================================================
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value)
+}
+
+function ScoreCard({
+  label,
+  score,
+  description,
+}: {
+  label: string
+  score: number | null
+  description?: string
+}) {
+  const color =
+    score === null
+      ? "text-muted-foreground"
+      : score >= 70
+        ? "text-green-600"
+        : score >= 50
+          ? "text-yellow-600"
+          : "text-orange-600"
+
+  return (
+    <div className="flex flex-col items-center text-center rounded-lg border p-3 gap-1">
+      {score !== null ? (
+        <>
+          <p className={`text-2xl font-bold ${color}`}>{score}</p>
+          <Progress
+            value={score}
+            className="h-1.5 w-full"
+          />
+        </>
+      ) : (
+        <p className={`text-sm font-semibold ${color} capitalize`}>{description ?? "N/A"}</p>
+      )}
+      <p className="text-xs text-muted-foreground font-medium">{label}</p>
+      {score !== null && description && (
+        <p className="text-xs text-muted-foreground leading-tight">{description}</p>
+      )}
+    </div>
+  )
+}
 
 function StatCard({
   icon,
