@@ -121,6 +121,10 @@ export enum KernelEvent {
   ISA_APPOINTMENT_SCHEDULED      = 'isa_appointment_scheduled',
   ISA_OUTREACH_PAUSED            = 'isa_outreach_paused',
 
+  // ── Opt-Out & Suppression ────────────────────────────────────────────────
+  CONTACT_DNC_SET                = 'contact_dnc_set',
+  CONTACT_CHANNEL_OPT_OUT        = 'contact_channel_opt_out',
+
   // ── Consent & TCPA ──────────────────────────���────────────────────────────
   CONSENT_RECEIVED               = 'consent_received',
   LEAD_READY_FOR_ASSIGNMENT      = 'lead_ready_for_assignment',
