@@ -9,6 +9,7 @@ import { BuyerCoachingCard }                  from "./components/buyer-coaching-
 import { ConversationCoachingPanel }          from "./components/conversation-coaching-panel"
 import BuyerInsightsPanel                     from "./components/buyer-insights-panel"
 import { FatiguePanel }                       from "./components/fatigue-panel"
+import { BuyerLifecyclePanel }               from "./components/buyer-lifecycle-panel"
 import { FatigueWidget }                      from "./components/fatigue-widget"
 import { isTourAllowed, isOfferAllowed }      from "@/lib/buyer-lifecycle/gating-helpers"
 import { TourPipelineStepper }                from "@/app/components/shared/TourPipelineStepper"
@@ -90,7 +91,7 @@ function getOfferGateCopy() {
 
 // ─── TABS ────────────────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Search", "Alerts", "Tours", "Fatigue", "Offers"] as const
+const TABS = ["Overview", "Search", "Alerts", "Tours", "Fatigue", "Offers", "Lifecycle"] as const
 type Tab = typeof TABS[number]
 
 // ─── MAIN CLIENT SHELL ───────────────────────────────────────────────────────
@@ -245,6 +246,15 @@ export function BuyerOverviewClient({
               </button>
             </div>
           )}
+        </div>
+      ) : activeTab === "Lifecycle" ? (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <BuyerLifecyclePanel
+            contactId={buyerId}
+            agentId={agentUserId}
+            brokerageId={brokerageId}
+            userRole="agent"
+          />
         </div>
       ) : activeTab !== "Overview" ? (
         <div className="flex items-center justify-center h-64">
