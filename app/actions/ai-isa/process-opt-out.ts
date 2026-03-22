@@ -5,8 +5,6 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
 import type { OptOutChannel } from "@/lib/ai-isa/opt-out-utils"
 
-export type { OptOutChannel }
-
 export interface OptOutParams {
   entityType: "contact" | "lead"
   entityId: string
