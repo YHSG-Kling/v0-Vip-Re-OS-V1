@@ -50,6 +50,7 @@ import {
   Zap,
   Users,
   Bot,
+  ShieldCheck,
 } from "lucide-react"
 import { AvailableLeadsSheet } from "@/app/components/leads/AvailableLeadsSheet"
 import { AdminAssignmentPanel } from "@/app/components/leads/AdminAssignmentPanel"
@@ -203,9 +204,11 @@ export default function LeadsPage() {
     }
   }
 
-  // Fetch leads — respects resolved role; waits until role is known
+  // Fetch leads — respects resolved role; waits until role is known.
+  // Non-admin agents never fetch leads — they see the gate screen instead.
   const fetchLeads = useCallback(async () => {
     if (!roleResolved) return
+    if (!isAdminOrBroker) return
     setLoading(true)
     const result = await getLeads({
       search: search || undefined,
@@ -471,6 +474,26 @@ export default function LeadsPage() {
     if (lead.lead_stage === "claimed") return { label: "Claimed", color: "bg-blue-100 text-blue-800" }
     if (lead.lead_stage === "qualified") return { label: "Qualified", color: "bg-green-100 text-green-800" }
     return { label: lead.lead_stage || "New", color: "bg-slate-100 text-slate-700" }
+  }
+
+  // Non-admin agents: show gate screen instead of leads table
+  if (roleResolved && !isAdminOrBroker) {
+    return (
+      <div className="min-h-screen bg-background p-6">
+        <div className="max-w-7xl mx-auto">
+          <div className="flex flex-col items-center justify-center h-64 text-center">
+            <ShieldCheck className="h-12 w-12 text-muted-foreground mb-4" />
+            <h3 className="font-semibold">Leads are managed by your brokerage</h3>
+            <p className="text-sm text-muted-foreground mt-2">
+              When a lead is qualified and assigned to you, it will appear as a Contact in your CRM.
+            </p>
+            <Button className="mt-4" onClick={() => router.push("/crm")}>
+              Go to My Contacts
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
