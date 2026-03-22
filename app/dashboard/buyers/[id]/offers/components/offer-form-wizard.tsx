@@ -9,6 +9,7 @@ import {
 import { runCompleteOfferWorkflow } from "@/app/actions/ai-offer-creation"
 import { Loader2, Sparkles, Check } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
+import { getOfferContext } from "@/lib/contacts/ownership-model"
 
 interface OfferFormWizardProps {
   contactId:    string
@@ -206,12 +207,14 @@ export function OfferFormWizard({
       })
 
       if (listingRow.agent_id) {
+        const ctx = getOfferContext(listingId, listingRow.agent_id, agentUserId)
+        const agencyLabel = ctx.isCrossSide && ctx.isSameAgent ? " (dual agency)" : " via another agent"
         await supabase.from("activities").insert({
           agent_id:      listingRow.agent_id,
           brokerage_id:  brokerageId,
           activity_type: "offer_received_on_listing",
           title:         `New offer received on ${listingRow.address}`,
-          description:   `${contactName} submitted an offer${listingRow.agent_id === agentUserId ? " (dual agency)" : " via another agent"}. Review in the listing offer manager.`,
+          description:   `${contactName} submitted an offer${agencyLabel}. Review in the listing offer manager.`,
           status:        "pending",
           priority:      "high",
           notes:         baseNotes,

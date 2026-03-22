@@ -26,6 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Loader2, Check, AlertTriangle, ExternalLink, Sparkles, Building2 } from "lucide-react"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 import { createClient } from "@/lib/supabase/client"
+import { getOfferContext, type OfferContext } from "@/lib/contacts/ownership-model"
 
 type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard"
 
@@ -71,9 +72,8 @@ export function OfferInitiationFlow({
   const [isLoadingFormSrc, startFormSrcLoad] = useTransition()
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Cross-side routing state — populated when the selected property is a brokerage listing
-  const [isOwnListing, setIsOwnListing] = useState(false)
-  const [listingAgentId, setListingAgentId] = useState<string | null>(null)
+  // Cross-side routing context — derived from listing DB check; null = no property selected yet
+  const [offerCtx, setOfferCtx] = useState<OfferContext | null>(null)
 
   // AI Strategy Briefing state
   const [mktConditions, setMktConditions] = useState("balanced")
@@ -166,12 +166,12 @@ export function OfferInitiationFlow({
           .eq("id", resolved.listingId)
           .single()
         if (listingRow) {
-          setListingAgentId(listingRow.agent_id)
-          setIsOwnListing(listingRow.agent_id === agentUserId)
+          setOfferCtx(getOfferContext(resolved.listingId, listingRow.agent_id, agentUserId))
+        } else {
+          setOfferCtx(getOfferContext(resolved.listingId, null, agentUserId))
         }
       } else {
-        setListingAgentId(null)
-        setIsOwnListing(false)
+        setOfferCtx(getOfferContext(null, null, agentUserId))
       }
 
       const src = await resolveFormSource(contactId, brokerageId)
@@ -825,22 +825,22 @@ export function OfferInitiationFlow({
             <p className="text-sm font-medium">Form Source</p>
 
             {/* Cross-side banner — only when property is a brokerage listing */}
-            {property?.listingId && (
+            {offerCtx?.isCrossSide && (
               <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
                 <div className="flex items-start gap-3">
                   <Building2 className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
                   <div>
                     <p className="text-sm font-semibold text-blue-900">
-                      {isOwnListing
+                      {offerCtx.isSameAgent
                         ? "Dual Agency — Your Own Listing"
                         : "Brokerage Listing Detected"}
                     </p>
                     <p className="text-sm text-blue-700 mt-1">
-                      {isOwnListing
+                      {offerCtx.isSameAgent
                         ? "This property is listed by you. Both the buyer and seller are your clients. Disclose dual agency to all parties before proceeding."
                         : "This offer will be submitted to the listing agent within your brokerage. The seller will receive a notification in their portal."}
                     </p>
-                    {isOwnListing && (
+                    {offerCtx.isSameAgent && (
                       <p className="text-xs text-blue-600 mt-1 font-medium">
                         Dual agency disclosure required by your brokerage and state law.
                       </p>

@@ -31,6 +31,7 @@ import { aiCounterOfferStrategy } from "@/app/actions/ai-offer-creation"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
 import { DecisionHistoryPanel } from "./components/decision-history-panel"
 import { toast } from "@/hooks/use-toast"
+import { getOfferContext } from "@/lib/contacts/ownership-model"
 
 type Offer = {
   id: string
@@ -383,13 +384,16 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                         Uploaded
                       </Badge>
                     )}
-                    {offer.agent_id && (
-                      <span className="text-xs text-muted-foreground">
-                        {offer.agent_id === listing.agent_id
-                          ? "Dual Agency"
-                          : `Buyer's Agent: ${offer.buyer_agent?.full_name ?? "Unknown"}`}
-                      </span>
-                    )}
+                    {offer.agent_id && (() => {
+                      const ctx = getOfferContext(listing.id, listing.agent_id ?? null, offer.agent_id)
+                      return (
+                        <span className="text-xs text-muted-foreground">
+                          {ctx.isCrossSide && ctx.isSameAgent
+                            ? "Dual Agency"
+                            : `Buyer's Agent: ${offer.buyer_agent?.full_name ?? "Unknown"}`}
+                        </span>
+                      )
+                    })()}
                   </div>
                   <SellerNetSheetCard
                     offer={offer}
