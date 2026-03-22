@@ -18,7 +18,7 @@ import {
   ComplianceRiskRadar,
   FlaggedFilesPanel,
   MissingDisclosuresPanel,
-  ExceptionReviewPanel,
+  ExceptionReviewPanelWrapper,
   AuditFeedPanel,
   AIComplianceReviewPanel,
   PolicyReportingPanel,
@@ -126,7 +126,7 @@ export default async function ComplianceDashboardPage() {
         {/* Center Column: Missing Disclosures + Exception Review */}
         <div className="space-y-6">
           <MissingDisclosuresPanel missingDisclosures={missingDisclosures} />
-          <ExceptionReviewPanel exceptions={exceptions} />
+          <ExceptionReviewPanelWrapper exceptions={exceptions} />
         </div>
 
         {/* Right Column: Audit Feed + AI Review + Reporting */}

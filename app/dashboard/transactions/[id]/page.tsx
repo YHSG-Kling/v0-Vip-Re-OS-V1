@@ -130,7 +130,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     supabase
       .from("lender_portal_users")
       .select("id, lender_company")
-      .eq("brokerage_id", brokerageId),
+      .order("lender_company"),
   ])
   const currentCoordinatorId = txnCoordinatorRow?.coordinator_id ?? null
   const currentLenderId = txnLenderRow?.lender_id ?? null

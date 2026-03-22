@@ -29,6 +29,7 @@ import {
   Clock,
   Shield,
 } from "lucide-react"
+import { ClientFeedbackWidget } from "./client-feedback-widget"
 import { cn } from "@/lib/utils"
 
 interface DashboardData {
@@ -446,6 +447,15 @@ export default function TransactionDashboard() {
                   ))}
                 </div>
               </Card>
+            )}
+
+            {/* Client Feedback — shown once progress is at 80%+ (near or at closing) */}
+            {data.hero.progress_percent >= 80 && data.team && data.team.length > 0 && (
+              <ClientFeedbackWidget
+                contactId={contactId}
+                transactionId={transactionId}
+                agentId={data.team.find((m) => m.role.toLowerCase().includes("agent"))?.id ?? data.team[0].id}
+              />
             )}
           </div>
         </div>

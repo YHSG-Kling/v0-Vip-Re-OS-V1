@@ -68,15 +68,17 @@ export default async function TeamPage() {
       .from("activity_log")
       .select("id, action, created_at, user_id")
       .eq("brokerage_id", userData.brokerage_id)
-      .order("created_at", { ascending: false })
-      .limit(5),
-    supabase
-      .from("teams")
-      .select("id, name, team_lead_id, created_at")
-      .eq("brokerage_id", userData.brokerage_id)
-      .is("deleted_at", null)
       .order("created_at", { ascending: false }),
   ])
+
+  // Fetch agents for the Create Team leader picker
+  const { data: agentUsers } = await supabase
+    .from("users")
+    .select("id, first_name, last_name, email")
+    .eq("brokerage_id", userData.brokerage_id)
+    .in("role", ["agent", "broker"])
+    .eq("status", "active")
+    .order("first_name")
 
   const getInitials = (firstName: string, lastName: string) => {
     return `${firstName?.[0] || ""}${lastName?.[0] || ""}`.toUpperCase()
@@ -102,7 +104,8 @@ export default async function TeamPage() {
 
       <div className="p-6 space-y-6">
         {/* Command Strip */}
-        <div className="flex flex-wrap items-center gap-3 p-4 bg-muted/30 border border-border rounded-lg">
+        <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-muted/30 border border-border rounded-lg">
+          <div className="flex flex-wrap items-center gap-3">
           <span className="text-sm font-semibold text-foreground">Team Operations</span>
           <div className="flex gap-2 flex-wrap">
             <Link href="/dashboard/team-heatmap">
@@ -130,6 +133,12 @@ export default async function TeamPage() {
               </Button>
             </Link>
           </div>
+          </div>
+          <CreateTeamDialog
+            brokerageId={userData.brokerage_id}
+            agents={agentUsers ?? []}
+            userRole={userData.role ?? "agent"}
+          />
         </div>
 
         {/* Status Radar */}
@@ -190,6 +199,34 @@ export default async function TeamPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* Agent Teams */}
+        {existingTeams && existingTeams.length > 0 && (
+          <div>
+            <h2 className="text-base font-semibold text-foreground mb-3">Teams</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+              {existingTeams.map((team) => (
+                <Card key={team.id} className="bg-card border-border">
+                  <CardContent className="pt-4 pb-4">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-foreground truncate">{team.team_name}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {Array.isArray(team.team_members) ? team.team_members.length : 0} member
+                          {Array.isArray(team.team_members) && team.team_members.length !== 1 ? "s" : ""}
+                        </p>
+                      </div>
+                      <Badge variant="outline" className="text-xs shrink-0 ml-2">Team</Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Created {new Date(team.created_at).toLocaleDateString()}
+                    </p>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Team Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
