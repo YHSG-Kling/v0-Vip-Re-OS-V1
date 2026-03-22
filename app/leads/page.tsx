@@ -56,7 +56,7 @@ import { AvailableLeadsSheet } from "@/app/components/leads/AvailableLeadsSheet"
 import { AdminAssignmentPanel } from "@/app/components/leads/AdminAssignmentPanel"
 import { LeadStatusBadge } from "@/app/components/leads/LeadStatusBadge"
 import {
-  getLeads,
+  getLeadsAdmin,
   enrichLead,
   convertLeadToContact as convertLeadToContactLegacy,
   rejectLead,
@@ -210,7 +210,7 @@ export default function LeadsPage() {
     if (!roleResolved) return
     if (!isAdminOrBroker) return
     setLoading(true)
-    const result = await getLeads({
+    const result = await getLeadsAdmin({
       search: search || undefined,
       score: scoreFilter !== "all" ? scoreFilter : undefined,
       intent: intentFilter !== "all" ? intentFilter : undefined,
