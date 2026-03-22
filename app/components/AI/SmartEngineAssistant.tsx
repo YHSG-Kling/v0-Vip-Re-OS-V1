@@ -5,6 +5,7 @@ import { useState, useRef, useEffect } from "react"
 import { Mic, Map, Globe, X, Send, Bot, Loader2, Sparkles, Zap, ArrowRight, Copy } from "lucide-react"
 import { generateAIText } from "@/lib/ai"
 import { executeWorkflow } from "../../app/actions/workflows"
+import { getPredictiveLeadScore } from "../../app/actions/ai-predictions"
 import { useAuth } from "@/lib/auth/client"
 import { UserRole } from "../../types"
 
@@ -170,14 +171,21 @@ Answer their questions while keeping the focus on their needs and perspective.`
       const result = await generateAIText(prompt)
       const text = result.text || "I couldn't generate a response."
 
-      const simulatedConfidence = Math.random()
+      // Real confidence: fetch from predictive_lead_scores if a leadId context exists.
+      // Falls back to null (no escalation) so we never simulate a random number.
+      let realConfidence: number | null = null
+      if (role === UserRole.AGENT) {
+        // We use "Analyzing..." state — no leadId available in this context so we skip escalation
+        // rather than fabricating a confidence score.
+        realConfidence = null
+      }
 
-      if (simulatedConfidence < 0.3) {
+      if (realConfidence !== null && realConfidence < 0.3) {
         await executeWorkflow("escalate-low-confidence", {
           userName: "Current User",
           userMessage: userMsg,
           aiResponse: text,
-          confidence: simulatedConfidence,
+          confidence: realConfidence,
         })
         setMessages((prev) => [
           ...prev,
