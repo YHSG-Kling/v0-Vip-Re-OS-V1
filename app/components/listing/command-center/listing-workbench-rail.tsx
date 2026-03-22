@@ -20,11 +20,11 @@ import {
   Sparkles,
   RefreshCw,
   AlertCircle,
-  ChevronRight,
   Calculator,
   CheckCircle2,
   FileBarChart,
   Copy,
+  TrendingDown,
 } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -32,6 +32,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { generateListingPresentation, generateBrochureContent, generateSellerNetSheet } from "@/app/actions/ai-listing-presentation"
 import { matchBuyersForListing } from "@/app/actions/property-buyer-matching"
 import { generateAICMA } from "@/app/actions/ai-predictions"
+import { getAIPriceAdjustmentRecommendation } from "@/app/actions/ai-cma"
 import { useToast } from "@/hooks/use-toast"
 
 interface WorkbenchRailProps {
@@ -49,6 +50,8 @@ interface WorkbenchRailProps {
     property_type?: string
     list_price?: number
     price?: number
+    days_on_market?: number
+    showing_count?: number
   }
 }
 
@@ -84,6 +87,11 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
   const [cmaLoading, setCmaLoading] = useState(false)
   const [cmaResult, setCmaResult] = useState<any>(null)
   const [cmaPurpose, setCmaPurpose] = useState<"listing" | "buyer_offer" | "seller_consultation">("listing")
+
+  // AI Price Adjustment Advisor state
+  const [advisorLoading, setAdvisorLoading] = useState(false)
+  const [advisorResult, setAdvisorResult] = useState<any>(null)
+  const daysOnMarket = listing.days_on_market ?? 0
 
   function handleMatchBuyers() {
     startMatchTransition(async () => {
@@ -274,6 +282,43 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
             AI CMA
           </Button>
 
+          {cmaResult?.id && daysOnMarket >= 7 && (
+            <Button
+              size="sm"
+              variant={advisorResult ? "secondary" : "outline"}
+              className="text-xs gap-1.5 justify-start col-span-2"
+              onClick={async () => {
+                setAdvisorLoading(true)
+                try {
+                  const res = await getAIPriceAdjustmentRecommendation(
+                    cmaResult.id,
+                    listing.list_price ?? listing.price ?? 0,
+                    daysOnMarket,
+                    listing.showing_count ?? 0,
+                  )
+                  if (res.success) {
+                    setAdvisorResult(res.recommendation)
+                    toast({ title: "Price advisor ready" })
+                  } else {
+                    toast({ title: (res as any).error ?? "Advisor failed", variant: "destructive" })
+                  }
+                } catch {
+                  toast({ title: "Advisor failed", variant: "destructive" })
+                } finally {
+                  setAdvisorLoading(false)
+                }
+              }}
+              disabled={advisorLoading}
+            >
+              {advisorLoading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <TrendingDown className="h-3 w-3" />
+              )}
+              AI Price Advisor
+            </Button>
+          )}
+
           {sellerId && (
             <Link href={`/portal/seller/${sellerId}?listing=${listingId}`} target="_blank">
               <Button size="sm" variant="outline" className="w-full text-xs gap-1.5 justify-start">
@@ -460,6 +505,58 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
                 </Button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* AI Price Adjustment Advisor result */}
+        {advisorResult && (
+          <div className="border-t pt-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-muted-foreground">Price Advisor</p>
+              {(() => {
+                const action = advisorResult.recommendedAction
+                const cfg =
+                  action === "hold"
+                    ? { label: "Hold Price", cls: "bg-emerald-100 text-emerald-800 border-emerald-200" }
+                    : action === "reduce" && (advisorResult.percentageChange ?? 0) > 3
+                    ? { label: "Significant Reduction", cls: "bg-red-100 text-red-800 border-red-200" }
+                    : action === "reduce"
+                    ? { label: "Minor Reduction", cls: "bg-amber-100 text-amber-800 border-amber-200" }
+                    : { label: "Price Increase", cls: "bg-blue-100 text-blue-800 border-blue-200" }
+                return (
+                  <Badge className={`text-xs border ${cfg.cls}`}>{cfg.label}</Badge>
+                )
+              })()}
+            </div>
+            {advisorResult.suggestedNewPrice && (
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">Suggested Price</span>
+                <span className="font-bold">${Number(advisorResult.suggestedNewPrice).toLocaleString()}</span>
+              </div>
+            )}
+            {advisorResult.percentageChange != null && (
+              <p className="text-xs text-muted-foreground">
+                {advisorResult.percentageChange > 0 ? "+" : ""}{advisorResult.percentageChange}% from current
+              </p>
+            )}
+            {advisorResult.rationale && (
+              <p className="text-xs text-muted-foreground leading-relaxed">{advisorResult.rationale}</p>
+            )}
+            {advisorResult.expectedImpact && (
+              <p className="text-xs text-muted-foreground italic">{advisorResult.expectedImpact}</p>
+            )}
+            <div className="flex gap-1.5 pt-1">
+              <Link href={`/dashboard/listings/${listingId}/seller-updates`}>
+                <Button size="sm" variant="outline" className="h-6 text-xs px-2">
+                  Share with Seller
+                </Button>
+              </Link>
+              <Link href={`/dashboard/listings/${listingId}/edit`}>
+                <Button size="sm" variant="outline" className="h-6 text-xs px-2">
+                  Apply Price Change
+                </Button>
+              </Link>
+            </div>
           </div>
         )}
       </CardContent>

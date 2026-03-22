@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { MarketIntelligencePanel } from "./components/market-intelligence-panel"
+import { CmaHistorySheet } from "./components/cma-history-sheet"
 import { 
   Plus, 
   Home, 
@@ -178,7 +179,7 @@ export default async function ListingsPage() {
           </CardHeader>
           <CardContent className="p-0">
             {listings && listings.length > 0 ? (
-              <div className="divide-y divide-border">
+              <div>
                 {listings.map((listing) => {
                     const isComingSoon =
                       listing.lifecycle_stage === "COMING_SOON_PREP" ||
@@ -187,51 +188,61 @@ export default async function ListingsPage() {
                       ? STATUS_CONFIG.coming_soon
                       : STATUS_CONFIG[listing.status] || STATUS_CONFIG.active
                     return (
-                      <Link key={listing.id} href={isComingSoon ? `/dashboard/listings/${listing.id}/lifecycle` : `/listings/${listing.id}`}>
-                      <div className="p-4 hover:bg-muted/50 transition-colors flex items-center gap-4">
-                        <div className="flex-shrink-0 w-16 h-16 bg-muted rounded-lg flex items-center justify-center">
-                          <Home className="h-6 w-6 text-muted-foreground" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="font-medium text-foreground truncate">{listing.address}</h3>
-                            <Badge className={`${statusConfig.bgColor} ${statusConfig.color} text-xs flex items-center gap-1`}>
-                              {isComingSoon && (
-                                <span className="relative flex h-2 w-2">
-                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
-                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500" />
+                      <div key={listing.id} className="flex items-stretch border-b last:border-b-0 border-border hover:bg-muted/50 transition-colors">
+                        <Link
+                          href={isComingSoon ? `/dashboard/listings/${listing.id}/lifecycle` : `/listings/${listing.id}`}
+                          className="flex-1 p-4 flex items-center gap-4 min-w-0"
+                        >
+                          <div className="flex-shrink-0 w-16 h-16 bg-muted rounded-lg flex items-center justify-center">
+                            <Home className="h-6 w-6 text-muted-foreground" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h3 className="font-medium text-foreground truncate">{listing.address}</h3>
+                              <Badge className={`${statusConfig.bgColor} ${statusConfig.color} text-xs flex items-center gap-1`}>
+                                {isComingSoon && (
+                                  <span className="relative flex h-2 w-2">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500" />
+                                  </span>
+                                )}
+                                {statusConfig.label}
+                              </Badge>
+                            </div>
+                            <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground">
+                              <MapPin className="h-3 w-3" />
+                              <span>{listing.city}, {listing.state}</span>
+                              {listing.beds && <span className="ml-2">{listing.beds} bd</span>}
+                              {listing.baths && <span>{listing.baths} ba</span>}
+                              {listing.sqft && <span>{listing.sqft.toLocaleString()} sqft</span>}
+                            </div>
+                          </div>
+                          <div className="flex-shrink-0 text-right">
+                            <p className="text-lg font-bold text-foreground">
+                              ${listing.price?.toLocaleString() || "N/A"}
+                            </p>
+                            <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+                              {listing.views_count !== undefined && (
+                                <span className="flex items-center gap-1">
+                                  <Eye className="h-3 w-3" />
+                                  {listing.views_count}
                                 </span>
                               )}
-                              {statusConfig.label}
-                            </Badge>
+                              {listing.days_on_market !== undefined && (
+                                <span>{listing.days_on_market} DOM</span>
+                              )}
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground">
-                            <MapPin className="h-3 w-3" />
-                            <span>{listing.city}, {listing.state}</span>
-                            {listing.beds && <span className="ml-2">{listing.beds} bd</span>}
-                            {listing.baths && <span>{listing.baths} ba</span>}
-                            {listing.sqft && <span>{listing.sqft.toLocaleString()} sqft</span>}
-                          </div>
+                          <ArrowRight className="h-4 w-4 text-muted-foreground" />
+                        </Link>
+                        <div className="flex items-center pr-3">
+                          <CmaHistorySheet
+                            listingId={listing.id}
+                            agentId={user.id}
+                            listingAddress={listing.address}
+                          />
                         </div>
-                        <div className="flex-shrink-0 text-right">
-                          <p className="text-lg font-bold text-foreground">
-                            ${listing.price?.toLocaleString() || "N/A"}
-                          </p>
-                          <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                            {listing.views_count !== undefined && (
-                              <span className="flex items-center gap-1">
-                                <Eye className="h-3 w-3" />
-                                {listing.views_count}
-                              </span>
-                            )}
-                            {listing.days_on_market !== undefined && (
-                              <span>{listing.days_on_market} DOM</span>
-                            )}
-                          </div>
-                        </div>
-                        <ArrowRight className="h-4 w-4 text-muted-foreground" />
                       </div>
-                    </Link>
                   )
                 })}
               </div>
