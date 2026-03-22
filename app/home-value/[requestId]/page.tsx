@@ -8,8 +8,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Phone, Mail, TrendingUp, TrendingDown, Minus, Calendar, MapPin } from "lucide-react"
+import { Phone, Mail, TrendingUp, TrendingDown, Minus, MapPin } from "lucide-react"
 import Link from "next/link"
+import { AppointmentBookingCard } from "@/app/components/home-value/AppointmentBookingCard"
 
 export const dynamic = "force-dynamic"
 
@@ -34,7 +35,7 @@ export default async function HomeValueResultPage({ params }: PageProps) {
     notFound()
   }
 
-  const { estimate, agent } = result
+  const { estimate, agent, brokerageId, contactId } = result
   const marketTrendIcon =
     estimate.marketTrend === "appreciating" ? (
       <TrendingUp className="h-4 w-4 text-green-600" />
@@ -134,58 +135,112 @@ export default async function HomeValueResultPage({ params }: PageProps) {
           </CardContent>
         </Card>
 
-        {/* Section 6: Agent CTA Card */}
-        <Card className="border-primary/20 bg-primary/5">
-          <CardContent className="p-6">
-            <div className="flex flex-col sm:flex-row items-center gap-6">
-              {agent ? (
-                <>
-                  {agent.profile_image_url && (
-                    <img
-                      src={agent.profile_image_url}
-                      alt={`${agent.first_name} ${agent.last_name}`}
-                      className="h-20 w-20 rounded-full object-cover border-2 border-primary"
-                    />
-                  )}
-                  <div className="flex-1 text-center sm:text-left">
-                    <h3 className="text-xl font-semibold text-foreground">
-                      {agent.first_name} {agent.last_name}
-                    </h3>
-                    <p className="text-muted-foreground mb-4">Your Local Real Estate Expert</p>
-                    <div className="flex flex-col sm:flex-row gap-3">
-                      {agent.phone_mobile && (
-                        <Button asChild>
-                          <a href={`tel:${agent.phone_mobile}`}>
-                            <Phone className="h-4 w-4 mr-2" />
-                            Call Now
-                          </a>
-                        </Button>
-                      )}
-                      {agent.email && (
-                        <Button variant="outline" asChild>
-                          <a href={`mailto:${agent.email}?subject=Home Value Estimate Question`}>
-                            <Mail className="h-4 w-4 mr-2" />
-                            Email
-                          </a>
-                        </Button>
-                      )}
+        {/* Section 6: Schedule a Valuation Appointment */}
+        {brokerageId && contactId ? (
+          <AppointmentBookingCard
+            brokerageId={brokerageId}
+            contactId={contactId}
+            propertyAddress={estimate.propertyAddress}
+            contactName={
+              agent
+                ? `${agent.first_name} ${agent.last_name}`
+                : "Homeowner"
+            }
+          />
+        ) : (
+          /* Fallback: agent contact card when no brokerage context */
+          <Card className="border-primary/20 bg-primary/5">
+            <CardContent className="p-6">
+              <div className="flex flex-col sm:flex-row items-center gap-6">
+                {agent ? (
+                  <>
+                    {agent.profile_image_url && (
+                      <img
+                        src={agent.profile_image_url}
+                        alt={`${agent.first_name} ${agent.last_name}`}
+                        className="h-20 w-20 rounded-full object-cover border-2 border-primary"
+                      />
+                    )}
+                    <div className="flex-1 text-center sm:text-left">
+                      <h3 className="text-xl font-semibold text-foreground">
+                        {agent.first_name} {agent.last_name}
+                      </h3>
+                      <p className="text-muted-foreground mb-4">Your Local Real Estate Expert</p>
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        {agent.phone_mobile && (
+                          <Button asChild>
+                            <a href={`tel:${agent.phone_mobile}`}>
+                              <Phone className="h-4 w-4 mr-2" />
+                              Call Now
+                            </a>
+                          </Button>
+                        )}
+                        {agent.email && (
+                          <Button variant="outline" asChild>
+                            <a href={`mailto:${agent.email}?subject=Home Value Estimate Question`}>
+                              <Mail className="h-4 w-4 mr-2" />
+                              Email
+                            </a>
+                          </Button>
+                        )}
+                      </div>
                     </div>
+                  </>
+                ) : (
+                  <div className="flex-1 text-center">
+                    <h3 className="text-xl font-semibold text-foreground mb-2">
+                      Talk to a Local Expert
+                    </h3>
+                    <p className="text-muted-foreground mb-4">
+                      Get a more accurate, in-person assessment of your home's value
+                    </p>
                   </div>
-                </>
-              ) : (
-                <div className="flex-1 text-center">
-                  <h3 className="text-xl font-semibold text-foreground mb-2">
-                    Talk to a Local Expert
-                  </h3>
-                  <p className="text-muted-foreground mb-4">
-                    Get a more accurate, in-person assessment of your home's value
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Agent direct contact — shown alongside scheduler when agent is known */}
+        {agent && brokerageId && (
+          <Card className="border-primary/20 bg-primary/5">
+            <CardContent className="p-4">
+              <div className="flex items-center gap-4">
+                {agent.profile_image_url && (
+                  <img
+                    src={agent.profile_image_url}
+                    alt={`${agent.first_name} ${agent.last_name}`}
+                    className="h-12 w-12 rounded-full object-cover border-2 border-primary shrink-0"
+                  />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-foreground text-sm">
+                    {agent.first_name} {agent.last_name}
                   </p>
-                  <Button size="lg">Request a Free Consultation</Button>
+                  <p className="text-xs text-muted-foreground">Prefer to reach out directly?</p>
                 </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+                <div className="flex gap-2 shrink-0">
+                  {agent.phone_mobile && (
+                    <Button size="sm" asChild>
+                      <a href={`tel:${agent.phone_mobile}`}>
+                        <Phone className="h-3.5 w-3.5 mr-1.5" />
+                        Call
+                      </a>
+                    </Button>
+                  )}
+                  {agent.email && (
+                    <Button size="sm" variant="outline" asChild>
+                      <a href={`mailto:${agent.email}?subject=Home Value Estimate - ${estimate.propertyAddress}`}>
+                        <Mail className="h-3.5 w-3.5 mr-1.5" />
+                        Email
+                      </a>
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Back to Home Link */}
         <div className="text-center">
