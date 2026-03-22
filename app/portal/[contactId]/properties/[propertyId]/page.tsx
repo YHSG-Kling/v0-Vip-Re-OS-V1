@@ -1,6 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { PropertyDetailsView } from "@/components/portal/PropertyDetailsView"
+import { PropertyDetailIntelligenceClient } from "./PropertyDetailIntelligenceClient"
+import { getSmartInsights, isPropertySaved } from "@/app/actions/smart-insights"
 
 export default async function PropertyDetailsPage({
   params,
@@ -10,40 +12,75 @@ export default async function PropertyDetailsPage({
   const { contactId, propertyId } = await params
   const supabase = await createClient()
 
-  // Fetch contact info
-  const { data: contact } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("id", contactId)
-    .single()
+  // Fetch contact, saved property, showings, insights, and saved status in parallel
+  const [
+    { data: contact },
+    { data: savedProperty },
+    { data: showings },
+    smartInsights,
+    isSaved,
+  ] = await Promise.all([
+    supabase.from("contacts").select("*").eq("id", contactId).single(),
+    supabase
+      .from("saved_properties")
+      .select("*")
+      .eq("contact_id", contactId)
+      .eq("id", propertyId)
+      .maybeSingle(),
+    supabase
+      .from("showing_requests")
+      .select("id, status, feedback_rating, feedback_notes, requested_date")
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false }),
+    getSmartInsights(propertyId, contactId).catch(() => null),
+    isPropertySaved(contactId, propertyId).catch(() => false),
+  ])
 
   if (!contact) {
     redirect("/")
   }
 
-  // Fetch property from saved properties or search results
-  // Note: saved_properties uses 'id' as UUID and 'mls_number' for property identification
-  const { data: savedProperty } = await supabase
-    .from("saved_properties")
-    .select("*")
-    .eq("contact_id", contactId)
-    .eq("id", propertyId)
-    .maybeSingle()
+  // Build property data object from saved_property row for the intelligence layer
+  const propertyData: Record<string, any> = savedProperty
+    ? {
+        address: savedProperty.property_address,
+        price: savedProperty.list_price,
+        bedrooms: savedProperty.bedrooms,
+        bathrooms: savedProperty.bathrooms,
+        sqft: savedProperty.sqft,
+        city: savedProperty.city,
+        state: savedProperty.state,
+        property_type: savedProperty.property_type,
+        primary_photo_url: savedProperty.primary_photo_url,
+      }
+    : {}
 
-  // Get showing requests for this property
-  const { data: showings } = await supabase
-    .from("showing_requests")
-    .select("*")
-    .eq("contact_id", contactId)
-    .eq("property_id", propertyId)
+  const propertyAddress =
+    savedProperty?.property_address ?? propertyId
 
   return (
-    <PropertyDetailsView
-      contactId={contactId}
-      propertyId={propertyId}
-      contact={contact}
-      savedProperty={savedProperty}
-      showings={showings || []}
-    />
+    <div className="min-h-screen bg-background">
+      <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+        {/* Existing property view — photos, price, beds/baths, etc. */}
+        <PropertyDetailsView
+          contactId={contactId}
+          propertyId={propertyId}
+          contact={contact}
+          savedProperty={savedProperty}
+          showings={showings || []}
+        />
+
+        {/* AI Intelligence layer */}
+        <PropertyDetailIntelligenceClient
+          contactId={contactId}
+          propertyId={propertyId}
+          propertyAddress={propertyAddress}
+          propertyData={propertyData}
+          initialIsSaved={isSaved as boolean}
+          initialInsights={smartInsights}
+          showings={(showings ?? []) as any}
+        />
+      </div>
+    </div>
   )
 }
