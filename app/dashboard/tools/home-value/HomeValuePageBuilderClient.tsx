@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
-import { toast } from "@/components/ui/use-toast"
+import { useToast } from "@/hooks/use-toast"
 import { Copy, Check, ExternalLink, Save, Globe, Clock, ClipboardList, Palette } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -119,6 +119,7 @@ export function HomeValuePageBuilderClient({
   initialConfig,
 }: Props) {
   const router = useRouter()
+  const { toast } = useToast()
   const [config, setConfig] = useState<HomeValuePageConfig>(
     initialConfig ?? defaultConfig(agentId, brokerageId),
   )
