@@ -5,7 +5,6 @@ import { useState, useRef, useEffect } from "react"
 import { Mic, Map, Globe, X, Send, Bot, Loader2, Sparkles, Zap, ArrowRight, Copy } from "lucide-react"
 import { generateAIText } from "@/lib/ai"
 import { executeWorkflow } from "../../app/actions/workflows"
-import { getPredictiveLeadScore } from "../../app/actions/ai-predictions"
 import { useAuth } from "@/lib/auth/client"
 import { UserRole } from "../../types"
 
