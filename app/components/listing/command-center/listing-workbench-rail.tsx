@@ -31,7 +31,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { generateListingPresentation, generateBrochureContent, generateSellerNetSheet } from "@/app/actions/ai-listing-presentation"
 import { matchBuyersForListing } from "@/app/actions/property-buyer-matching"
-import { generateAICMA } from "@/app/actions/ai-predictions"
+import { generateAICMA } from "@/app/actions/ai-cma"
 import { getAIPriceAdjustmentRecommendation } from "@/app/actions/ai-cma"
 import { useToast } from "@/hooks/use-toast"
 
@@ -438,13 +438,24 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
                 setCmaLoading(true)
                 try {
                   const res = await generateAICMA({
+                    agentId,
+                    listingId,
                     propertyAddress: listing.address,
-                    leadId: agentId,
-                    purpose: cmaPurpose,
-                    state: listing.state || "FL",
+                    propertyCity: listing.city,
+                    propertyState: listing.state || "FL",
+                    propertyZip: listing.zip || "",
+                    propertyType: (listing.property_type as any) || "single_family",
+                    bedrooms: listing.bedrooms || 0,
+                    bathrooms: listing.bathrooms || 0,
+                    squareFeet: listing.square_footage || 0,
+                    listingType: "seller",
                   })
-                  setCmaResult(res)
-                  toast({ title: "AI CMA generated" })
+                  if (res.success) {
+                    setCmaResult(res)
+                    toast({ title: "AI CMA generated and saved" })
+                  } else {
+                    toast({ title: (res as any).error ?? "CMA generation failed", variant: "destructive" })
+                  }
                 } catch {
                   toast({ title: "CMA generation failed", variant: "destructive" })
                 } finally {
@@ -461,31 +472,31 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
               Generate CMA
             </Button>
 
-            {cmaResult && (
+            {cmaResult?.success && (
               <div className="rounded-md border bg-indigo-50 border-indigo-100 p-3 space-y-2">
-                {cmaResult.recommendedPrice && (
+                {cmaResult.pricingStrategy?.recommendedListPrice && (
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold text-indigo-900">Recommended Price</span>
                     <span className="text-sm font-bold text-indigo-700">
-                      ${Number(cmaResult.recommendedPrice).toLocaleString()}
+                      ${Number(cmaResult.pricingStrategy.recommendedListPrice).toLocaleString()}
                     </span>
                   </div>
                 )}
-                {cmaResult.priceRange && (
+                {cmaResult.pricingStrategy?.priceRangeLow && (
                   <p className="text-xs text-indigo-700">
-                    Range: ${Number(cmaResult.priceRange.low).toLocaleString()} – ${Number(cmaResult.priceRange.high).toLocaleString()}
+                    Range: ${Number(cmaResult.pricingStrategy.priceRangeLow).toLocaleString()} – ${Number(cmaResult.pricingStrategy.priceRangeHigh).toLocaleString()}
                   </p>
                 )}
-                {cmaResult.marketAnalysis && (
-                  <p className="text-xs text-indigo-800 leading-relaxed">{cmaResult.marketAnalysis}</p>
+                {cmaResult.pricingStrategy?.rationale && (
+                  <p className="text-xs text-indigo-800 leading-relaxed">{cmaResult.pricingStrategy.rationale}</p>
                 )}
                 {cmaResult.comparables?.length > 0 && (
                   <div className="pt-1 border-t border-indigo-200 space-y-1">
-                    <p className="text-xs font-medium text-indigo-900">Comparable Sales</p>
+                    <p className="text-xs font-medium text-indigo-900">Comparable Sales ({cmaResult.comparables.length})</p>
                     {cmaResult.comparables.slice(0, 3).map((c: any, i: number) => (
                       <div key={i} className="flex items-center justify-between text-xs text-indigo-700">
                         <span className="truncate mr-2">{c.address}</span>
-                        <span className="shrink-0">${Number(c.soldPrice ?? c.price ?? 0).toLocaleString()}</span>
+                        <span className="shrink-0">${Number(c.soldPrice ?? c.adjustedValue ?? 0).toLocaleString()}</span>
                       </div>
                     ))}
                   </div>

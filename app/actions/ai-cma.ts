@@ -31,6 +31,7 @@ interface CMAParams {
   condition?: "excellent" | "good" | "fair" | "poor"
   listingType: "seller" | "buyer"
   contactId?: string
+  listingId?: string
 }
 
 interface ComparableProperty {
@@ -105,33 +106,29 @@ export async function generateAICMA(params: CMAParams) {
     // 5. Generate presentation content
     const presentation = await generateCMAPresentation(params, comparables, marketTrends, pricingStrategy)
 
-    // 6. Save CMA report
+    // 6. Save CMA report — only insert columns that exist in cma_reports schema
     const { data: cmaReport, error } = await supabase
       .from("cma_reports")
       .insert({
         agent_id: params.agentId,
-        contact_id: params.contactId,
+        contact_id: params.contactId ?? null,
+        listing_id: params.listingId ?? null,
         property_address: params.propertyAddress,
         property_city: params.propertyCity,
         property_state: params.propertyState,
-        property_zip: params.propertyZip,
         property_type: params.propertyType,
         bedrooms: params.bedrooms,
         bathrooms: params.bathrooms,
         square_feet: params.squareFeet,
-        lot_size: params.lotSize,
-        year_built: params.yearBuilt,
-        features: params.features,
-        condition: params.condition,
-        listing_type: params.listingType,
-        comparables: comparables,
-        market_trends: marketTrends,
-        ai_valuation: valuation,
-        pricing_strategy: pricingStrategy,
-        presentation_content: presentation,
+        condition: params.condition ?? null,
+        recommended_price: pricingStrategy.recommendedListPrice,
+        price_range_low: pricingStrategy.priceRangeLow,
+        price_range_high: pricingStrategy.priceRangeHigh,
+        comparable_count: comparables.length,
         status: "completed",
+        disclaimer_included: true,
       })
-      .select()
+      .select("id")
       .single()
 
     if (error) throw error
@@ -139,6 +136,7 @@ export async function generateAICMA(params: CMAParams) {
     revalidatePath("/dashboard/cma")
     return {
       success: true,
+      id: cmaReport.id,
       cmaId: cmaReport.id,
       valuation,
       pricingStrategy,
