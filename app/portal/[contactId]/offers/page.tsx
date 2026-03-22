@@ -250,6 +250,18 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
 
   listing = contactWithListings.listings[0]
 
+  // Check for recent unacknowledged offer notifications (last 48h)
+  // activities has no acknowledged_at column — filter by created_at window only
+  const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()
+  const { data: recentOfferActivities } = await supabase
+    .from("activities")
+    .select("id, title, description, created_at, notes")
+    .eq("contact_id", contactId)
+    .eq("activity_type", "portal_offer_notification")
+    .gte("created_at", fortyEightHoursAgo)
+    .order("created_at", { ascending: false })
+    .limit(5)
+
   const { data: sellerOffers } = await supabase
     .from("offers")
     .select("*, buyer:contacts(*)")
@@ -263,6 +275,26 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     return (
       <div className="space-y-6">
         <h2 className="text-3xl font-bold">Offers</h2>
+        {recentOfferActivities && recentOfferActivities.length > 0 && (
+          <div className="rounded-xl border-2 border-green-400 bg-green-50 p-5">
+            <div className="flex items-center gap-3">
+              <div className="bg-green-500 rounded-full p-2 shrink-0">
+                <PartyPopper className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <p className="text-lg font-bold text-green-900">
+                  You have {recentOfferActivities.length} new offer{recentOfferActivities.length > 1 ? "s" : ""}!
+                </p>
+                <p className="text-sm text-green-700">
+                  Your agent is reviewing and will present the details to you.
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-green-600 mt-2">
+              Your agent will reach out soon to discuss terms and next steps.
+            </p>
+          </div>
+        )}
         <Card>
           <CardContent className="py-12 text-center">
             <Clock className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
@@ -284,6 +316,52 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     return (
       <div className="space-y-6">
         <h2 className="text-3xl font-bold">Your Offer</h2>
+
+        {recentOfferActivities && recentOfferActivities.length > 0 && (
+          <div className="rounded-xl border-2 border-green-400 bg-green-50 p-5">
+            <div className="flex items-center gap-3">
+              <div className="bg-green-500 rounded-full p-2 shrink-0">
+                <PartyPopper className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <p className="text-lg font-bold text-green-900">
+                  You have {recentOfferActivities.length} new offer{recentOfferActivities.length > 1 ? "s" : ""}!
+                </p>
+                <p className="text-sm text-green-700">
+                  Your agent is reviewing and will present the details to you.
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-green-600 mt-2">
+              Your agent will reach out soon to discuss terms and next steps.
+            </p>
+          </div>
+        )}
+
+        <Card className="border-blue-200 bg-blue-50">
+          <CardContent className="p-4">
+            <p className="text-sm font-semibold text-blue-900">Your Offer Posture</p>
+            <div className="grid grid-cols-3 gap-3 mt-3 text-center">
+              <div>
+                <p className="text-2xl font-bold text-blue-900">1</p>
+                <p className="text-xs text-blue-700">Total Offers</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-green-700">
+                  {(offer.offer_price || 0).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}
+                </p>
+                <p className="text-xs text-blue-700">Highest Offer</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-blue-900">1</p>
+                <p className="text-xs text-blue-700">Awaiting Response</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-3 text-center">
+              Your agent will guide you through each offer. This is a summary only.
+            </p>
+          </CardContent>
+        </Card>
 
         <div className="grid md:grid-cols-2 gap-6">
           {/* Offer Details */}
@@ -392,6 +470,56 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   return (
     <div className="space-y-6">
       <h2 className="text-3xl font-bold">Compare Offers ({offers.length})</h2>
+
+      {recentOfferActivities && recentOfferActivities.length > 0 && (
+        <div className="rounded-xl border-2 border-green-400 bg-green-50 p-5">
+          <div className="flex items-center gap-3">
+            <div className="bg-green-500 rounded-full p-2 shrink-0">
+              <PartyPopper className="h-6 w-6 text-white" />
+            </div>
+            <div>
+              <p className="text-lg font-bold text-green-900">
+                You have {recentOfferActivities.length} new offer{recentOfferActivities.length > 1 ? "s" : ""}!
+              </p>
+              <p className="text-sm text-green-700">
+                Your agent is reviewing and will present the details to you.
+              </p>
+            </div>
+          </div>
+          <p className="text-xs text-green-600 mt-2">
+            Your agent will reach out soon to discuss terms and next steps.
+          </p>
+        </div>
+      )}
+
+      {offers.length > 0 && (
+        <Card className="border-blue-200 bg-blue-50">
+          <CardContent className="p-4">
+            <p className="text-sm font-semibold text-blue-900">Your Offer Posture</p>
+            <div className="grid grid-cols-3 gap-3 mt-3 text-center">
+              <div>
+                <p className="text-2xl font-bold text-blue-900">{offers.length}</p>
+                <p className="text-xs text-blue-700">Total Offers</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-green-700">
+                  {Math.max(...offers.map((o: any) => o.offer_price || 0)).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 })}
+                </p>
+                <p className="text-xs text-blue-700">Highest Offer</p>
+              </div>
+              <div>
+                <p className="text-2xl font-bold text-blue-900">
+                  {offers.filter((o: any) => o.status === "pending").length}
+                </p>
+                <p className="text-xs text-blue-700">Awaiting Response</p>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-3 text-center">
+              Your agent will guide you through each offer. This is a summary only.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* AI Recommendation */}
       {analysis.success && analysis.analysis && (
