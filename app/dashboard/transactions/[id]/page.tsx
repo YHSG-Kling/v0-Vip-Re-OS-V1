@@ -104,6 +104,37 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     ? { platform: providerCred.platform, accountName: providerCred.account_name ?? null }
     : null
 
+  // Fetch transaction coordinator, available TCs, lender info, and available lenders
+  const [
+    { data: txnCoordinatorRow },
+    { data: availableTCs },
+    { data: txnLenderRow },
+    { data: availableLenders },
+  ] = await Promise.all([
+    supabase
+      .from("transactions")
+      .select("coordinator_id")
+      .eq("id", id)
+      .maybeSingle(),
+    supabase
+      .from("transaction_coordinators")
+      .select("id, display_name, active_transactions_count, max_active_deals")
+      .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
+      .order("display_name"),
+    supabase
+      .from("transactions")
+      .select("lender_id")
+      .eq("id", id)
+      .maybeSingle(),
+    supabase
+      .from("lender_portal_users")
+      .select("id, lender_company")
+      .eq("brokerage_id", brokerageId),
+  ])
+  const currentCoordinatorId = txnCoordinatorRow?.coordinator_id ?? null
+  const currentLenderId = txnLenderRow?.lender_id ?? null
+
   // Fetch contract_signatures for this brokerage — used to show send/resend per transaction doc
   const { data: contractSigsRows } = await supabase
     .from("contract_signatures")
@@ -312,6 +343,10 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       connectedEsignProvider={connectedEsignProvider}
       linkedOffer={linkedOfferRow ?? null}
       contractSignatures={contractSignatures}
+      currentCoordinatorId={currentCoordinatorId}
+      availableTCs={availableTCs ?? []}
+      currentLenderId={currentLenderId}
+      availableLenders={availableLenders ?? []}
     />
   )
 }

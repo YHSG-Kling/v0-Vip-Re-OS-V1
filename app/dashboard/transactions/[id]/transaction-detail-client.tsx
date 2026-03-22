@@ -58,6 +58,8 @@ import { SuggestedVendors } from "@/app/components/transactions/suggested-vendor
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 import { DocumentSignaturePanel } from "@/app/components/shared/DocumentSignaturePanel"
 import { isSignableDocType } from "@/lib/documents/signable-doc-types"
+import { AssignTCPanel } from "./assign-tc-panel"
+import { AssignLenderPanel } from "./assign-lender-panel"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -303,6 +305,20 @@ interface TransactionDetailClientProps {
     agent_signed_at: string | null
     fully_signed_at: string | null
   }>
+  // TC assignment
+  currentCoordinatorId?: string | null
+  availableTCs?: Array<{
+    id: string
+    display_name: string | null
+    active_transactions_count: number | null
+    max_active_deals: number | null
+  }>
+  // Lender assignment
+  currentLenderId?: string | null
+  availableLenders?: Array<{
+    id: string
+    lender_company: string | null
+  }>
 }
 
 // ─── COMPONENT ─────────────────────────────────────────────────────────────────
@@ -338,6 +354,10 @@ export function TransactionDetailClient({
   connectedEsignProvider,
   linkedOffer,
   contractSignatures = {},
+  currentCoordinatorId = null,
+  availableTCs = [],
+  currentLenderId = null,
+  availableLenders = [],
 }: TransactionDetailClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -955,6 +975,22 @@ export function TransactionDetailClient({
                 </CardContent>
               </Card>
             )}
+
+            {/* Assign TC Panel — broker/admin/tc only */}
+            <AssignTCPanel
+              transactionId={transaction.id}
+              currentCoordinatorId={currentCoordinatorId}
+              availableTCs={availableTCs}
+              userRole={userRole}
+            />
+
+            {/* Assign Lender Panel */}
+            <AssignLenderPanel
+              transactionId={transaction.id}
+              currentLenderId={currentLenderId}
+              availableLenders={availableLenders}
+              userRole={userRole}
+            />
 
             {/* Participants & Docs Summary */}
             <div className="grid grid-cols-2 gap-4">

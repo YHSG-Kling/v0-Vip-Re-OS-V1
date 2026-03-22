@@ -13,8 +13,10 @@ import {
   TrendingUp,
   Award,
   Activity,
-  Target
+  Target,
+  Plus,
 } from "lucide-react"
+import { CreateTeamDialog } from "./create-team-dialog"
 
 export const dynamic = "force-dynamic"
 
@@ -49,7 +51,8 @@ export default async function TeamPage() {
   const [
     { count: activeAgents },
     { count: totalTransactions },
-    { data: recentActivity }
+    { data: recentActivity },
+    { data: existingTeams },
   ] = await Promise.all([
     supabase
       .from("users")
@@ -66,7 +69,13 @@ export default async function TeamPage() {
       .select("id, action, created_at, user_id")
       .eq("brokerage_id", userData.brokerage_id)
       .order("created_at", { ascending: false })
-      .limit(5)
+      .limit(5),
+    supabase
+      .from("teams")
+      .select("id, name, team_lead_id, created_at")
+      .eq("brokerage_id", userData.brokerage_id)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false }),
   ])
 
   const getInitials = (firstName: string, lastName: string) => {
