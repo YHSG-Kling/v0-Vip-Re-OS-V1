@@ -2,9 +2,9 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Users } from 'lucide-react'
 import { InviteUserButton } from './invite-user-button'
+import { EditUserButton } from './edit-user-button'
 
 export const dynamic = 'force-dynamic'
 
@@ -74,7 +74,7 @@ export default async function AdminUsersPage() {
                   <Badge variant={u.status === 'active' ? 'outline' : 'secondary'} className="text-xs">
                     {u.status || 'active'}
                   </Badge>
-                  <Button size="sm" variant="ghost">Edit</Button>
+                  <EditUserButton userId={u.id} />
                 </div>
               </CardContent>
             </Card>
