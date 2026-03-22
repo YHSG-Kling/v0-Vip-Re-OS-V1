@@ -112,6 +112,24 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
   const [generatingVideo, setGeneratingVideo] = useState<string | null>(null)
   const [agentSettings, setAgentSettings] = useState<any>(null)
 
+  // Resolved brokerage id — fetched from users table once on mount
+  const [brokerageId, setBrokerageId] = useState("")
+
+  useEffect(() => {
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return
+      supabase
+        .from("users")
+        .select("brokerage_id")
+        .eq("id", user.id)
+        .single()
+        .then(({ data }) => {
+          if (data?.brokerage_id) setBrokerageId(data.brokerage_id)
+        })
+    })
+  }, [])
+
   const [bulkContentPeriod, setBulkContentPeriod] = useState<"week" | "month" | "year">("month")
   const [isBulkGenerating, setIsBulkGenerating] = useState(false)
   const [selectedKeyword, setSelectedKeyword] = useState<any>(null)
@@ -257,19 +275,23 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       alert("Unable to create newsletter: user not authenticated.")
       return
     }
+    if (!brokerageId) {
+      alert("Brokerage profile is still loading. Please wait a moment and try again.")
+      return
+    }
     setIsProcessing("create-newsletter")
     try {
       const topic = newNewsletter.title || "Monthly real estate market update"
       const [contentResult, subjectResult] = await Promise.all([
         aiWriteNewsletterContent({
-          brokerageId: userId, // falls back to userId until brokerageId is surfaced in props
+          brokerageId: brokerageId,
           agentId: userId,
           topic,
           targetAudience: "past_clients",
           tone: "friendly",
         }),
         aiGenerateSubjectLines({
-          brokerageId: userId,
+          brokerageId: brokerageId,
           agentId: userId,
           newsletterTopic: topic,
         }),
@@ -297,10 +319,14 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       alert("Unable to create campaign: user not authenticated.")
       return
     }
+    if (!brokerageId) {
+      alert("Brokerage profile is still loading. Please wait a moment and try again.")
+      return
+    }
     setIsProcessing("create-mail")
     try {
       const result = await createMailCampaign({
-        brokerageId: userId,
+        brokerageId: brokerageId,
         agentId: userId,
         campaignName: newMail.title || "Direct Mail Campaign",
         targetAudience: "farm_area",
@@ -349,7 +375,7 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       if (publicUrl) {
         const { error: dbError } = await supabase.from("ai_video_projects").insert({
           agent_id: user.id,
-          brokerage_id: user.id,
+          brokerage_id: brokerageId || user.id,
           title: newVideoTitle,
           video_url: publicUrl,
           status: "uploaded",
