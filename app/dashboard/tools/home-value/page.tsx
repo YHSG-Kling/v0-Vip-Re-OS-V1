@@ -1,5 +1,3 @@
-"use server"
-
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { getPageConfig } from "@/app/actions/home-value"
