@@ -394,7 +394,7 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
                 try {
                   const res = await generateAICMA({
                     propertyAddress: listing.address,
-                    leadId: "",
+                    leadId: agentId,
                     purpose: cmaPurpose,
                     state: listing.state || "FL",
                   })
