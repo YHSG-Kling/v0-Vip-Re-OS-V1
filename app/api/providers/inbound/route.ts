@@ -8,6 +8,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { normalizeInbound } from "@/lib/providers/inbound-router"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
+import { processOptOut, detectOptOutIntent } from "@/app/actions/ai-isa/process-opt-out"
 
 export const dynamic = "force-dynamic"
 
@@ -118,6 +119,50 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       .from("leads")
       .update({ last_activity_at: now })
       .eq("id", entityId)
+  }
+
+  // ── Step 7b: Opt-out detection ─────────────────────────────────────────────
+  // Check inbound message text for STOP / unsubscribe signals before kernel handoff.
+  // High-confidence matches suppress the channel immediately and automatically.
+  // Medium-confidence creates a high-priority agent review suggestion.
+  const messageText = inbound.text ?? inbound.subject ?? ""
+  if (messageText) {
+    const optOutCheck = detectOptOutIntent(messageText)
+
+    if (optOutCheck.isOptOut && optOutCheck.confidence === "high") {
+      await processOptOut({
+        entityType,
+        entityId,
+        channel: optOutCheck.channel,
+        source: inbound.providerType === "sms" ? "inbound_sms" : "inbound_email",
+        rawMessage: messageText,
+        brokerageId: inbound.brokerageId,
+      }).catch((err) => {
+        console.error("[InboundRouter] processOptOut failed (non-blocking):", err)
+      })
+    } else if (optOutCheck.isOptOut && optOutCheck.confidence === "medium") {
+      // smart_assistant_suggestions: no brokerage_id, no contact_id, no metadata column
+      // Map to available columns: agent_id via entity lookup, action_payload_json for context
+      await supabase
+        .from("smart_assistant_suggestions")
+        .insert({
+          title: "Possible opt-out request received",
+          description: `Message: "${messageText.slice(0, 200)}" — Review and suppress channel if needed.`,
+          priority: "high",
+          context_type: "compliance",
+          source_system: "inbound_router",
+          status: "pending",
+          action_type: "review_opt_out",
+          action_payload_json: JSON.stringify({
+            channel: optOutCheck.channel,
+            confidence: optOutCheck.confidence,
+            entityType,
+            entityId,
+            brokerageId: inbound.brokerageId,
+          }),
+        })
+        .catch(() => {})
+    }
   }
 
   // ── Step 8: Kernel handoff ──────────────────────────────────────────────────

@@ -15,8 +15,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { Phone, MessageSquare, ExternalLink, FileText, AlertTriangle, Zap, Pause, ChevronDown, Loader2 } from "lucide-react"
+import { Phone, MessageSquare, ExternalLink, FileText, AlertTriangle, Zap, Pause, ChevronDown, Loader2, ShieldOff } from "lucide-react"
 import Link from "next/link"
+import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
+import { createClient } from "@/lib/supabase/client"
 
 interface ContactCommandStripProps {
   contact: {
@@ -30,12 +32,19 @@ interface ContactCommandStripProps {
     phone?: string | null
     lead_source?: string | null
     created_at?: string | null
+    dnc_status?: boolean | null
+    email_opt_out?: boolean | null
+    sms_opt_out?: boolean | null
+    phone_opt_out?: boolean | null
+    direct_mail_opt_out?: boolean | null
   }
   churnRisk?: { churning: boolean; daysInactive?: number; reason?: string } | null
   autopilotPlans?: Array<{ id: string; is_active: boolean; autopilot_level: string }> | null
   agentId: string
+  brokerageId: string
   onEnableAutopilot: (level: "conservative" | "moderate" | "aggressive") => Promise<void>
   onToggleAutopilot: (planId: string, pause: boolean) => Promise<void>
+  onChannelToggled?: () => void
   loading?: boolean
 }
 
@@ -62,11 +71,14 @@ export function ContactCommandStrip({
   churnRisk,
   autopilotPlans,
   agentId,
+  brokerageId,
   onEnableAutopilot,
   onToggleAutopilot,
+  onChannelToggled,
   loading = false,
 }: ContactCommandStripProps) {
   const [autopilotLoading, setAutopilotLoading] = useState(false)
+  const [channelLoading, setChannelLoading] = useState<string | null>(null)
 
   const activePlan = autopilotPlans?.find((p) => p.is_active)
 
@@ -231,6 +243,74 @@ export function ContactCommandStrip({
         {contact.phone && <span>{contact.phone}</span>}
         {contact.lead_source && <span>Source: {contact.lead_source}</span>}
         {contact.buyer_stage && <span>Stage: {contact.buyer_stage}</span>}
+      </div>
+
+      {/* Channel preferences — always rendered so agents can see and manage suppression */}
+      <div className="mt-3 pt-3 border-t border-white/10">
+        <p className="text-xs text-white/60 mb-2">Communication Channels</p>
+        <div className="flex flex-wrap gap-2 items-center">
+          {(["email", "sms", "phone", "direct_mail"] as const).map((ch) => {
+            const isOptedOut =
+              ch === "email"       ? !!contact.email_opt_out
+              : ch === "sms"       ? !!contact.sms_opt_out
+              : ch === "phone"     ? !!contact.phone_opt_out
+              : !!contact.direct_mail_opt_out
+
+            const label = ch === "direct_mail" ? "Mail" : ch.charAt(0).toUpperCase() + ch.slice(1)
+            const isLoading = channelLoading === ch
+
+            return (
+              <button
+                key={ch}
+                type="button"
+                disabled={isLoading}
+                className={`text-xs px-2 py-1 rounded-full border transition-colors flex items-center gap-1 ${
+                  isOptedOut
+                    ? "bg-red-500/20 border-red-400/40 text-red-200 line-through"
+                    : "bg-white/10 border-white/20 text-white hover:bg-white/20"
+                }`}
+                onClick={async () => {
+                  setChannelLoading(ch)
+                  try {
+                    if (isOptedOut) {
+                      // Agent re-enabling a suppressed channel
+                      const supabase = createClient()
+                      await supabase
+                        .from("contacts")
+                        .update({ [`${ch}_opt_out`]: false })
+                        .eq("id", contact.id)
+                    } else {
+                      // Agent manually suppressing a channel
+                      await processOptOut({
+                        entityType: "contact",
+                        entityId: contact.id,
+                        channel: ch,
+                        source: "agent",
+                        brokerageId,
+                      })
+                    }
+                    onChannelToggled?.()
+                  } finally {
+                    setChannelLoading(null)
+                  }
+                }}
+              >
+                {isLoading ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <ShieldOff className={`h-3 w-3 ${isOptedOut ? "text-red-300" : "text-white/40"}`} />
+                )}
+                {label}
+              </button>
+            )
+          })}
+
+          {contact.dnc_status && (
+            <span className="text-xs px-2 py-1 rounded-full bg-red-600/40 border border-red-400/60 text-red-100 font-semibold">
+              Global DNC
+            </span>
+          )}
+        </div>
       </div>
     </div>
   )

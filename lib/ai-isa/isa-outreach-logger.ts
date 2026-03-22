@@ -107,6 +107,20 @@ export async function checkMaxTouches(
 ): Promise<boolean> {
   const supabase = createServiceClient()
 
+  // Belt-and-suspenders: if the entity is suppressed, skip touch counting entirely.
+  // evaluateOutbound is the primary gate — this ensures checkMaxTouches never logs
+  // a touch against a DNC/opted-out entity even if called out of the normal gate order.
+  const suppressionTable = entityType === 'contact' ? 'contacts' : 'leads'
+  const { data: suppressCheck } = await supabase
+    .from(suppressionTable)
+    .select('dnc_status, email_opt_out')
+    .eq('id', entityId)
+    .maybeSingle()
+
+  if (suppressCheck?.dnc_status || suppressCheck?.email_opt_out) {
+    return false  // suppressed — do not count or send
+  }
+
   let touchCount = 0
 
   if (entityType === 'lead') {
