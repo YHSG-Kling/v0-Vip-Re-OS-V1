@@ -76,6 +76,8 @@ type Offer = {
   esign_sent_at?: string | null
   esign_completed_at?: string | null
   buyer_signed_at?: string | null
+  counter_amount?: number | null
+  counter_terms?: Record<string, unknown> | null
 }
 
 interface Props {
@@ -186,33 +188,30 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     })
   }
 
-  // Counter-offer negotiation advisor — called when agent is deciding whether to counter.
-  // A transaction may not exist yet; if none found, still try to advise using offer + list price.
+  // Counter-offer negotiation advisor — wired to aiCounterOfferStrategy, no transaction required.
   async function handleCounterAdvisor(offer: typeof activeOffers[0]) {
     setCounterAdvisorLoading(true)
     setCounterAdvisorError(null)
     setCounterAdvisor(null)
-    const transaction = await getTransactionByListingId(listing.id)
-    if (!transaction) {
-      setCounterAdvisorError(
-        "No accepted transaction exists yet. Accept or counter an offer first, then the full advisor unlocks. " +
-        "In the meantime, use the Negotiation Recommendation card above."
-      )
+    try {
+      const result = await aiCounterOfferStrategy({
+        originalOffer:    offer.offer_price,
+        listPrice:        listing.list_price ?? offer.offer_price,
+        counterAmount:    offer.offer_price * 1.02,
+        counterTerms:     {},
+        buyerMaxBudget:   offer.offer_price * 1.1,
+        negotiationRound: offer.current_round ?? 1,
+      })
+      if ((result as any).success === false) {
+        setCounterAdvisorError((result as any).error ?? "Counter strategy failed.")
+      } else {
+        setCounterAdvisor(result)
+      }
+    } catch {
+      setCounterAdvisorError("Unexpected error — please try again.")
+    } finally {
       setCounterAdvisorLoading(false)
-      return
     }
-    const result = await aiNegotiationAdvisor({
-      transactionId: transaction.id,
-      scenario:      "counteroffer",
-      currentOffer:  offer.offer_price,
-      listPrice:     listing.list_price ?? undefined,
-    })
-    if (result.success) {
-      setCounterAdvisor(result)
-    } else {
-      setCounterAdvisorError(result.error ?? "Counter-offer advisor failed.")
-    }
-    setCounterAdvisorLoading(false)
   }
 
   // Repairs negotiation advisor — called during inspection/repair contingency period.
@@ -375,8 +374,60 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     agentId={listing.agent_id ?? currentUserId}
                     county={listing.city ?? undefined}
                   />
+                  {(offer.status === "countered" || offer.counter_amount != null) && (
+                    <div className="flex items-center gap-2 px-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-xs text-purple-700 border-purple-200 hover:bg-purple-50 h-7"
+                        onClick={() => handleCounterAdvisor(offer)}
+                        disabled={counterAdvisorLoading}
+                      >
+                        {counterAdvisorLoading ? (
+                          <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                        ) : (
+                          <Sparkles className="h-3 w-3 mr-1 text-purple-500" />
+                        )}
+                        Counter Strategy
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
+
+              {/* counterAdvisor result — shown below offers list once triggered */}
+              {counterAdvisor && (
+                <div className="rounded-lg border border-purple-200 bg-purple-50 p-4">
+                  <p className="text-sm font-semibold text-purple-900 mb-2">AI Counter Strategy</p>
+                  {counterAdvisor.recommendedResponse && (
+                    <p className="text-sm font-medium">
+                      Recommendation:{" "}
+                      <span className="capitalize">{counterAdvisor.recommendedResponse}</span>
+                    </p>
+                  )}
+                  {counterAdvisor.suggestedCounterPrice && (
+                    <p className="text-sm font-medium">
+                      Suggested counter: ${Number(counterAdvisor.suggestedCounterPrice).toLocaleString()}
+                    </p>
+                  )}
+                  {counterAdvisor.reasoning && (
+                    <p className="text-xs text-muted-foreground mt-1">{counterAdvisor.reasoning}</p>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setCounterAdvisor(null)}
+                    className="text-xs text-purple-600 hover:underline mt-2 px-0 h-auto"
+                  >
+                    Clear
+                  </Button>
+                </div>
+              )}
+              {counterAdvisorError && (
+                <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md p-2 mt-2">
+                  {counterAdvisorError}
+                </p>
+              )}
             </div>
           )}
         </TabsContent>
