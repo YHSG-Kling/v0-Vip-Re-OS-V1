@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Loader2,
   Radio,
+  BarChart2,
 } from "lucide-react"
 import {
   DropdownMenu,
@@ -34,6 +35,7 @@ import {
   generatePodcastAudio,
   publishPodcastEpisode,
   deletePodcastEpisode,
+  trackPodcastEvent,
 } from "@/app/actions/podcast-generation"
 
 interface Episode {
@@ -100,6 +102,10 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels }: Episodes
     } finally {
       setProcessingId(null)
     }
+  }
+
+  async function handleTrack(episodeId: string) {
+    await trackPodcastEvent(episodeId, "performance_view", { platform: "dashboard" })
   }
 
   async function handleDelete() {
@@ -276,6 +282,58 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels }: Episodes
                   )}
                 </div>
               )}
+
+              {/* Inline primary CTAs based on status */}
+              <div className="mt-3 flex flex-col gap-2">
+                {episode.status === "draft" && (
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    onClick={() => handleGenerateAudio(episode.id)}
+                    disabled={processingId === episode.id}
+                  >
+                    {processingId === episode.id ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        Generate Audio
+                      </>
+                    )}
+                  </Button>
+                )}
+                {episode.status === "completed" && (
+                  <Button
+                    size="sm"
+                    className="w-full"
+                    onClick={() => openPublishDialog(episode)}
+                    disabled={processingId === episode.id}
+                  >
+                    <Upload className="h-4 w-4 mr-2" />
+                    Publish
+                  </Button>
+                )}
+                {episode.status === "generating" && (
+                  <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground py-1">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Audio generating...
+                  </div>
+                )}
+                {(episode.status === "completed" || episode.status === "published") && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="w-full text-muted-foreground"
+                    onClick={() => handleTrack(episode.id)}
+                  >
+                    <BarChart2 className="h-4 w-4 mr-2" />
+                    Track Performance
+                  </Button>
+                )}
+              </div>
             </CardContent>
 
             <CardFooter className="pt-2 flex items-center justify-between">
