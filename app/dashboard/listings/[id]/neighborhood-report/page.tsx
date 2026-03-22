@@ -84,10 +84,11 @@ export default async function NeighborhoodReportPage({
     notFound()
   }
 
-  const zip = listing.zip_code
+  // listings.zip is the correct column name (confirmed from schema)
+  const zip = listing.zip
 
-  const [marketData, marketInsight, homeValueEstimate, motivatedSellerCount] = await Promise.all([
-    // Area market snapshot from market_data table (MLS-sourced)
+  const [marketData, marketInsight, homeValueEstimate, propertyHistory] = await Promise.all([
+    // Area market snapshot from market_data table (MLS-sourced, zip-level)
     supabase
       .from("market_data")
       .select(
@@ -99,7 +100,7 @@ export default async function NeighborhoodReportPage({
       .maybeSingle()
       .then((r) => r.data),
 
-    // AI market narrative from market_insights table
+    // AI market narrative from market_insights table (zip-level)
     supabase
       .from("market_insights")
       .select("ai_narrative, headline, summary, price_trend, dom_trend, inventory_level, key_stats, market_type, insight_date")
@@ -110,6 +111,7 @@ export default async function NeighborhoodReportPage({
       .then((r) => r.data),
 
     // Property-level comps valuation from home_value_estimates
+    // Matched by property address — this is the correct join, not listing_id
     supabase
       .from("home_value_estimates")
       .select("estimated_value_low, estimated_value_mid, estimated_value_high, ai_narrative, market_trend, confidence_score, comps_json, generated_at")
@@ -119,12 +121,20 @@ export default async function NeighborhoodReportPage({
       .maybeSingle()
       .then((r) => r.data),
 
-    // BatchData: count of nearby motivated/distressed properties in this zip
+    // BatchData property history: prior distress/ownership signals for this
+    // specific property address AND nearby properties in the zip.
+    // This is property history intelligence — not seller prospecting.
+    // We pull the actual records so we can show motivation types, estimated
+    // values over time, and sqft/beds — a true property history timeline.
     supabase
       .from("batchdata_motivated_sellers_raw")
-      .select("id", { count: "exact", head: true })
+      .select(
+        "property_address, property_city, property_zip, property_beds, property_baths, property_sqft, property_estimated_value, motivation_type, motivation_confidence, created_at"
+      )
       .eq("property_zip", zip)
-      .then((r) => r.count ?? 0),
+      .order("created_at", { ascending: false })
+      .limit(20)
+      .then((r) => r.data ?? []),
   ])
 
   // AI neighborhood analysis — area-based, no property specs
@@ -159,7 +169,7 @@ export default async function NeighborhoodReportPage({
             marketData={marketData}
             marketInsight={marketInsight}
             homeValueEstimate={homeValueEstimate}
-            motivatedSellerCount={motivatedSellerCount as number}
+            propertyHistory={propertyHistory}
             neighborhoodAI={neighborhoodAI}
           />
         ) : (
@@ -193,7 +203,7 @@ interface ReportContentProps {
     market_trend: string | null
     data_source: string | null
   }
-  listing: { address: string; city: string; state: string; zip_code: string }
+  listing: { address: string; city: string; state: string; zip: string }
   priceHistory: PriceHistoryPoint[]
   dataSources: DataSource[]
   listingId: string
@@ -231,7 +241,18 @@ interface ReportContentProps {
     comps_json: Record<string, unknown> | null
     generated_at: string | null
   } | null
-  motivatedSellerCount: number
+  propertyHistory: Array<{
+    property_address: string | null
+    property_city: string | null
+    property_zip: string | null
+    property_beds: number | null
+    property_baths: number | null
+    property_sqft: number | null
+    property_estimated_value: number | null
+    motivation_type: string | null
+    motivation_confidence: number | null
+    created_at: string
+  }>
   neighborhoodAI: {
     success: boolean
     analysis?: {
@@ -254,7 +275,7 @@ function NeighborhoodReportContent({
   marketData,
   marketInsight,
   homeValueEstimate,
-  motivatedSellerCount,
+  propertyHistory,
   neighborhoodAI,
 }: ReportContentProps) {
   const generatedDate = new Date(report.generated_at)
@@ -281,7 +302,7 @@ function NeighborhoodReportContent({
                 {report.neighborhood_name}
               </CardDescription>
               <p className="text-sm text-muted-foreground">
-                {listing.city}, {listing.state} {listing.zip_code}
+                {listing.city}, {listing.state} {listing.zip}
               </p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -345,7 +366,7 @@ function NeighborhoodReportContent({
               Area Market Conditions
             </CardTitle>
             <CardDescription>
-              {listing.zip_code} · {marketData.market_type ? <span className="capitalize">{marketData.market_type.replace(/_/g, " ")} market</span> : null}
+              {listing.zip} · {marketData.market_type ? <span className="capitalize">{marketData.market_type.replace(/_/g, " ")} market</span> : null}
               {marketData.data_date && (
                 <span className="ml-2 text-muted-foreground">
                   · as of {new Date(marketData.data_date).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
@@ -385,14 +406,31 @@ function NeighborhoodReportContent({
                 </div>
               )}
             </div>
-            {motivatedSellerCount > 0 && (
-              <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
-                <p className="text-amber-800">
-                  <span className="font-semibold">{motivatedSellerCount} distressed/motivated</span> properties identified in this zip from BatchData — potential market softness signal.
-                </p>
-              </div>
-            )}
+            {propertyHistory.length > 0 && (() => {
+              // Summarize distress events by type for the area
+              const byType = propertyHistory.reduce<Record<string, number>>((acc, r) => {
+                const t = r.motivation_type ?? "unknown"
+                acc[t] = (acc[t] ?? 0) + 1
+                return acc
+              }, {})
+              return (
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm space-y-1">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+                    <p className="font-semibold text-amber-800">
+                      {propertyHistory.length} distress/ownership signal{propertyHistory.length !== 1 ? "s" : ""} in this zip (BatchData)
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                    {Object.entries(byType).map(([type, count]) => (
+                      <Badge key={type} variant="outline" className="text-[10px] border-amber-200 text-amber-700 bg-amber-50 capitalize">
+                        {type.replace(/_/g, " ")} ×{count}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
             {marketInsight?.ai_narrative && (
               <p className="text-sm text-muted-foreground leading-relaxed">{marketInsight.ai_narrative}</p>
             )}
@@ -887,7 +925,7 @@ function EmptyState({
   listing,
 }: {
   listingId: string
-  listing: { address: string; city: string; state: string; zip_code: string }
+  listing: { address: string; city: string; state: string; zip: string }
 }) {
   async function handleGenerate() {
     "use server"
@@ -902,7 +940,7 @@ function EmptyState({
         <h2 className="text-xl font-semibold mb-2">Neighborhood report not yet generated</h2>
         <p className="text-muted-foreground mb-6 max-w-md">
           Generate a comprehensive neighborhood report for {listing.address}, {listing.city},{" "}
-          {listing.state} {listing.zip_code}
+          {listing.state} {listing.zip}
         </p>
         <form action={handleGenerate}>
           <Button type="submit" size="lg" className="gap-2">
