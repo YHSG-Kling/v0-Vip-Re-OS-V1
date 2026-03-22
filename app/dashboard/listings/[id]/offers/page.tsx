@@ -36,7 +36,8 @@ export default async function OffersPage({
         ai_extraction_status, offer_document_url, offer_document_name,
         status, offer_type, parent_offer_id, current_round,
         is_winning_offer, winning_offer, submitted_at, response_deadline,
-        seller_viewed_at, contact_id, agent_id, brokerage_id
+        seller_viewed_at, contact_id, agent_id, brokerage_id, form_source,
+        buyer_agent:users!agent_id ( full_name )
       `)
       .eq("listing_id", listingId)
       .order("submitted_at", { ascending: false }),

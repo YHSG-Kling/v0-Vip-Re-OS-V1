@@ -78,6 +78,8 @@ type Offer = {
   buyer_signed_at?: string | null
   counter_amount?: number | null
   counter_terms?: Record<string, unknown> | null
+  form_source?: string | null
+  buyer_agent?: { full_name: string | null } | null
 }
 
 interface Props {
@@ -364,6 +366,31 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     onReject={() => handleReject(offer.id)}
                     onCounter={() => setCounterTarget(offer)}
                   />
+                  {/* Source badge + buyer's agent — cross-side routing metadata */}
+                  <div className="flex items-center gap-2 flex-wrap px-1">
+                    {offer.form_source === "in_app" && (
+                      <Badge className="bg-blue-100 text-blue-800 border-blue-200 text-xs font-normal">
+                        Via Buyer Portal
+                      </Badge>
+                    )}
+                    {offer.form_source === "platform" && (
+                      <Badge className="bg-muted text-muted-foreground border-border text-xs font-normal">
+                        Via Platform
+                      </Badge>
+                    )}
+                    {offer.form_source === "uploaded_doc" && (
+                      <Badge className="bg-amber-100 text-amber-800 border-amber-200 text-xs font-normal">
+                        Uploaded
+                      </Badge>
+                    )}
+                    {offer.agent_id && (
+                      <span className="text-xs text-muted-foreground">
+                        {offer.agent_id === listing.agent_id
+                          ? "Dual Agency"
+                          : `Buyer's Agent: ${offer.buyer_agent?.full_name ?? "Unknown"}`}
+                      </span>
+                    )}
+                  </div>
                   <SellerNetSheetCard
                     offer={offer}
                     listing={{

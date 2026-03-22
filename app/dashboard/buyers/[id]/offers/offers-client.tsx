@@ -8,7 +8,8 @@ import { recordOfferOutcome, getConnectedEsignProvider } from "@/app/actions/buy
 import { getMlsNumberByAddress } from "@/app/actions/seller-offers"
 import { predictWinningOffer, aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
-import { Loader2, Target, TrendingUp } from "lucide-react"
+import { Loader2, Target, TrendingUp, ExternalLink } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 
 const STATUS_BADGES: Record<string, string> = {
   draft:     "bg-muted border-border text-muted-foreground",
@@ -38,6 +39,7 @@ interface Offer {
   financing_type: string | null
   earnest_money: number | null
   contingencies: string[] | null
+  listing_id?: string | null
 }
 
 interface OutcomeForm {
@@ -333,6 +335,20 @@ export function OffersClient({
                       )}>
                         {offer.status}
                       </span>
+                      {offer.listing_id && (
+                        <Badge className="bg-blue-100 text-blue-800 border-blue-200 text-xs font-normal">
+                          Brokerage Listing
+                        </Badge>
+                      )}
+                      {offer.listing_id && (
+                        <Link
+                          href={`/dashboard/listings/${offer.listing_id}`}
+                          className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          View Listing
+                        </Link>
+                      )}
                     </div>
 
                     {/* Signature panel — hidden for fully rejected/withdrawn offers */}

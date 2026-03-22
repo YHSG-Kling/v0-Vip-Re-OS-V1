@@ -23,8 +23,9 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Loader2, Check, AlertTriangle, ExternalLink, Sparkles } from "lucide-react"
+import { Loader2, Check, AlertTriangle, ExternalLink, Sparkles, Building2 } from "lucide-react"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
+import { createClient } from "@/lib/supabase/client"
 
 type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard"
 
@@ -69,6 +70,10 @@ export function OfferInitiationFlow({
   const [isLoadingAddress, startAddressLoad] = useTransition()
   const [isLoadingFormSrc, startFormSrcLoad] = useTransition()
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Cross-side routing state — populated when the selected property is a brokerage listing
+  const [isOwnListing, setIsOwnListing] = useState(false)
+  const [listingAgentId, setListingAgentId] = useState<string | null>(null)
 
   // AI Strategy Briefing state
   const [mktConditions, setMktConditions] = useState("balanced")
@@ -152,6 +157,23 @@ export function OfferInitiationFlow({
     setProperty(resolved)
     // Resolve provider — then optionally pre-fetch forms if platform connected
     startFormSrcLoad(async () => {
+      // When property is a brokerage listing, fetch agent_id for dual-agency detection
+      if (resolved.listingId) {
+        const supabase = createClient()
+        const { data: listingRow } = await supabase
+          .from("listings")
+          .select("id, agent_id, seller_contact_id, address, list_price")
+          .eq("id", resolved.listingId)
+          .single()
+        if (listingRow) {
+          setListingAgentId(listingRow.agent_id)
+          setIsOwnListing(listingRow.agent_id === agentUserId)
+        }
+      } else {
+        setListingAgentId(null)
+        setIsOwnListing(false)
+      }
+
       const src = await resolveFormSource(contactId, brokerageId)
       setFormSrc(src)
       // If connected to a transaction platform, pre-load available forms
@@ -801,6 +823,32 @@ export function OfferInitiationFlow({
         {flowStep === "form_source" && (
           <div className="space-y-3">
             <p className="text-sm font-medium">Form Source</p>
+
+            {/* Cross-side banner — only when property is a brokerage listing */}
+            {property?.listingId && (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+                <div className="flex items-start gap-3">
+                  <Building2 className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold text-blue-900">
+                      {isOwnListing
+                        ? "Dual Agency — Your Own Listing"
+                        : "Brokerage Listing Detected"}
+                    </p>
+                    <p className="text-sm text-blue-700 mt-1">
+                      {isOwnListing
+                        ? "This property is listed by you. Both the buyer and seller are your clients. Disclose dual agency to all parties before proceeding."
+                        : "This offer will be submitted to the listing agent within your brokerage. The seller will receive a notification in their portal."}
+                    </p>
+                    {isOwnListing && (
+                      <p className="text-xs text-blue-600 mt-1 font-medium">
+                        Dual agency disclosure required by your brokerage and state law.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
             {isLoadingFormSrc ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />

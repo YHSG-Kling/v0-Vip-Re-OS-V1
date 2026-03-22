@@ -58,7 +58,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
       id, property_address, offer_price, status, esign_status,
       esign_sent_at, form_source, esign_provider, strategy_recommendation_id,
       created_at, submitted_at, closing_date, financing_type,
-      earnest_money, contingencies
+      earnest_money, contingencies, listing_id
     `)
     .eq("contact_id", buyerId)
     .eq("brokerage_id", contact.brokerage_id)

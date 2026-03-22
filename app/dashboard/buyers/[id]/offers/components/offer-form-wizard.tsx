@@ -8,6 +8,7 @@ import {
 } from "@/app/actions/buyer-offers"
 import { runCompleteOfferWorkflow } from "@/app/actions/ai-offer-creation"
 import { Loader2, Sparkles, Check } from "lucide-react"
+import { createClient } from "@/lib/supabase/client"
 
 interface OfferFormWizardProps {
   contactId:    string
@@ -184,6 +185,60 @@ export function OfferFormWizard({
     setStep(STEPS[idx - 1])
   }
 
+  // Notify the listing side when an offer arrives via buyer flow on a brokerage listing.
+  // Uses notes (JSON) because activities has no metadata column.
+  async function notifyListingSide(offerId: string) {
+    if (!listingId) return
+    try {
+      const supabase = createClient()
+      const { data: listingRow } = await supabase
+        .from("listings")
+        .select("seller_contact_id, agent_id, address")
+        .eq("id", listingId)
+        .single()
+      if (!listingRow) return
+
+      const baseNotes = JSON.stringify({
+        offer_id:   offerId,
+        listing_id: listingId,
+        buyer_id:   contactId,
+        source:     "buyer_offer_flow",
+      })
+
+      if (listingRow.agent_id) {
+        await supabase.from("activities").insert({
+          agent_id:      listingRow.agent_id,
+          brokerage_id:  brokerageId,
+          activity_type: "offer_received_on_listing",
+          title:         `New offer received on ${listingRow.address}`,
+          description:   `${contactName} submitted an offer${listingRow.agent_id === agentUserId ? " (dual agency)" : " via another agent"}. Review in the listing offer manager.`,
+          status:        "pending",
+          priority:      "high",
+          notes:         baseNotes,
+        }).then(() => {}).catch(() => {})
+      }
+
+      if (listingRow.seller_contact_id) {
+        await supabase.from("activities").insert({
+          contact_id:    listingRow.seller_contact_id,
+          brokerage_id:  brokerageId,
+          activity_type: "portal_offer_notification",
+          title:         "You have a new offer on your property",
+          description:   `An offer has been submitted on ${listingRow.address}. Your agent will review and present it to you.`,
+          status:        "pending",
+          priority:      "high",
+          notes:         JSON.stringify({
+            offer_id:      offerId,
+            listing_id:    listingId,
+            notify_portal: true,
+          }),
+        }).then(() => {}).catch(() => {})
+      }
+    } catch {
+      // Non-fatal — offer is already created; notification failure must not block the user.
+    }
+  }
+
   function submitOffer() {
     setSubmitError(null)
     startTrans(async () => {
@@ -191,6 +246,8 @@ export function OfferFormWizard({
       if (result.success && result.offerId) {
         setCreatedOfferId(result.offerId)
         setStep("Review") // stay on review but show eSign panel
+        // Cross-side notification when offer lands on a brokerage listing
+        await notifyListingSide(result.offerId)
       } else {
         setSubmitError(result.error ?? "Failed to create offer")
       }
@@ -227,7 +284,11 @@ export function OfferFormWizard({
       })
       if (result.success) {
         setWorkflowResult(result)
-        if (result.offerId) setCreatedOfferId(result.offerId)
+        if (result.offerId) {
+          setCreatedOfferId(result.offerId)
+          // Cross-side notification when offer lands on a brokerage listing
+          await notifyListingSide(result.offerId)
+        }
       } else {
         setWorkflowError(result.error ?? "Workflow failed — try manually submitting the offer.")
       }
