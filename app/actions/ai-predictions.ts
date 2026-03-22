@@ -1365,7 +1365,8 @@ async function getStateAppraisalGuidelines(state: string) {
   return guidelines[state] || guidelines.TX
 }
 
-export async function generateAICMA(data: {
+// DEPRECATED: use generateAICMA from ./ai-cma instead — this version saves to a non-existent table and is not used.
+async function _legacyGenerateAICMA(data: {
   propertyAddress: string
   leadId: string
   purpose: "listing" | "buyer_offer" | "seller_consultation"
@@ -1572,24 +1573,34 @@ export async function massGenerateCMAs(agentId: string) {
 
     for (const property of propertyOwnership) {
       try {
-        const cma = await generateAICMA({
+        // Use the canonical generateAICMA from ai-cma.ts which saves to cma_reports
+        const { generateAICMA: generateRealCMA } = await import("./ai-cma")
+
+        const cma = await generateRealCMA({
+          agentId,
+          contactId: lead.id,
           propertyAddress: property.property_address,
-          leadId: lead.id,
-          purpose: "seller_consultation",
-          state: lead.state || "TX",
+          propertyCity: lead.city || "",
+          propertyState: lead.state || "TX",
+          propertyZip: lead.zip || "",
+          propertyType: "single_family",
+          bedrooms: property.bedrooms ?? 0,
+          bathrooms: property.bathrooms ?? 0,
+          squareFeet: property.sqft ?? 0,
+          listingType: "seller",
         })
 
-        const equityGain =
-          (cma.cma?.valuationConclusion?.estimatedValue || 0) - (property.estimated_value || 0)
+        const estimatedValue = cma.success ? cma.pricingStrategy?.recommendedListPrice ?? 0 : 0
+        const equityGain = estimatedValue - (property.estimated_value || 0)
 
         cmaResults.push({
           leadId: lead.id,
           leadName: `${lead.first_name} ${lead.last_name}`,
           propertyAddress: property.property_address,
           currentValue: property.estimated_value,
-          newCMAValue: cma.cma?.valuationConclusion?.estimatedValue,
+          newCMAValue: estimatedValue,
           equityGain,
-          cmaId: cma.cmaId,
+          cmaId: cma.success ? cma.id : null,
         })
       } catch (error) {
         console.error(`[v0] Failed to generate CMA for ${property.property_address}:`, error)

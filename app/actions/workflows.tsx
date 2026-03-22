@@ -338,37 +338,50 @@ export async function triggerCMAPackage(
   sqft: string,
   upgrades: any[],
   brokerageId?: string,
+  agentId?: string,
+  state?: string,
 ) {
   try {
-    console.log("[Workflow] Generating CMA Package")
+    console.log("[Workflow] Generating CMA Package via ai-cma.ts")
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt: `Generate a Comparative Market Analysis for:
-      
-Address: ${address}
-Beds: ${beds}
-Baths: ${baths}
-Square Feet: ${sqft}
-Upgrades: ${upgrades.join(", ")}
+    // Resolve agentId if not supplied — look up from contact's agent
+    let resolvedAgentId = agentId ?? ""
+    if (!resolvedAgentId && leadId) {
+      const { data: contact } = await supabaseService.supabase
+        .from("contacts")
+        .select("agent_id")
+        .eq("id", leadId)
+        .maybeSingle()
+      resolvedAgentId = contact?.agent_id ?? ""
+    }
 
-Return a JSON object with: {suggestedPrice, priceRange: {low, high}, marketCondition, daysOnMarket, comparables: [{address, price, beds, baths, sqft}]}`,
+    if (!resolvedAgentId) {
+      throw new Error("agentId required for CMA generation")
+    }
+
+    const { generateAICMA } = await import("./ai-cma")
+
+    const result = await generateAICMA({
+      agentId: resolvedAgentId,
+      contactId: leadId ?? undefined,
+      propertyAddress: address,
+      propertyCity: "",
+      propertyState: state || "TX",
+      propertyZip: "",
+      propertyType: "single_family",
+      bedrooms: Number(beds) || 0,
+      bathrooms: Number(baths) || 0,
+      squareFeet: Number(sqft) || 0,
+      features: upgrades?.length ? upgrades.map(String) : undefined,
+      listingType: "seller",
     })
+
+    if (!result.success) {
+      throw new Error((result as any).error ?? "CMA generation failed")
+    }
 
     if (brokerageId) {
       await incrementUsage(brokerageId, "llm_calls", 1)
-    }
-
-    let analysis
-    try {
-      analysis = JSON.parse(text)
-    } catch {
-      analysis = {
-        suggestedPrice: 750000,
-        priceRange: { low: 725000, high: 775000 },
-        marketCondition: "balanced",
-        daysOnMarket: 30,
-      }
     }
 
     if (leadId) {
@@ -376,14 +389,21 @@ Return a JSON object with: {suggestedPrice, priceRange: {low, high}, marketCondi
         contact_id: leadId,
         interaction_type: "cma_generated",
         interaction_date: new Date().toISOString(),
-        notes: `CMA generated for ${address}: $${analysis.suggestedPrice}`,
+        notes: `CMA generated for ${address}: $${result.pricingStrategy?.recommendedListPrice?.toLocaleString() ?? "N/A"}`,
         outcome: "completed",
       })
     }
 
     return {
       success: true,
-      ...analysis,
+      cmaId: result.id,
+      suggestedPrice: result.pricingStrategy?.recommendedListPrice ?? 0,
+      priceRange: {
+        low: result.pricingStrategy?.priceRangeLow ?? 0,
+        high: result.pricingStrategy?.priceRangeHigh ?? 0,
+      },
+      marketCondition: result.marketTrends?.marketType ?? "balanced",
+      comparables: result.comparables ?? [],
     }
   } catch (error: any) {
     console.error("[Workflow] CMA generation failed:", error)

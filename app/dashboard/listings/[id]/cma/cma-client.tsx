@@ -22,6 +22,10 @@ interface Listing {
   list_price: number | null
   agent_id: string | null
   brokerage_id: string | null
+  property_type?: string | null
+  bedrooms?: number | null
+  bathrooms?: number | null
+  square_footage?: number | null
 }
 
 interface Props {
