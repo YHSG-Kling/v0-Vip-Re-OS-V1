@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import {
-  Plus,
   FileText,
   DollarSign,
   Clock,
@@ -14,9 +13,8 @@ import {
   ArrowRight,
   Calendar,
   TrendingUp,
-  BarChart3,
-  Sparkles,
 } from "lucide-react"
+import { TransactionCommandStrip } from "./components/transaction-command-strip"
 
 export const dynamic = "force-dynamic"
 
@@ -80,33 +78,7 @@ export default async function TransactionsPage() {
   return (
     <div className="space-y-6">
       {/* Command Strip */}
-      <div className="flex items-center gap-2 px-6 py-3 border-b border-border bg-muted/30">
-        <Link href="/dashboard/transactions/new">
-          <Button size="sm" className="gap-2">
-            <Plus className="h-4 w-4" />
-            New Transaction
-          </Button>
-        </Link>
-        <Link href="/dashboard/transactions/timeline">
-          <Button variant="outline" size="sm" className="gap-2">
-            <Calendar className="h-4 w-4" />
-            Timeline View
-          </Button>
-        </Link>
-        <Link href="/dashboard/transactions/reports">
-          <Button variant="outline" size="sm" className="gap-2">
-            <BarChart3 className="h-4 w-4" />
-            Reports
-          </Button>
-        </Link>
-        <div className="flex-1" />
-        <Link href="/dashboard/transactions/health">
-          <Button variant="ghost" size="sm" className="gap-2 text-primary">
-            <Sparkles className="h-4 w-4" />
-            Deal Health AI
-          </Button>
-        </Link>
-      </div>
+      <TransactionCommandStrip />
 
       <div className="px-6 space-y-6">
         {/* Page Header */}
@@ -272,13 +244,7 @@ export default async function TransactionsPage() {
                     <tr>
                       <td colSpan={7} className="px-4 py-8 text-center">
                         <FileText className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
-                        <p className="text-muted-foreground mb-4">No transactions found. Start a new transaction to track your deals.</p>
-                        <Link href="/dashboard/transactions/new">
-                          <Button>
-                            <Plus className="h-4 w-4 mr-2" />
-                            New Transaction
-                          </Button>
-                        </Link>
+                        <p className="text-muted-foreground mb-4">No transactions found. Use the New Transaction button above to track your deals.</p>
                       </td>
                     </tr>
                   )}
