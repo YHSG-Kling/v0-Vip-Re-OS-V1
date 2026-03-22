@@ -3,8 +3,9 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
+import type { OptOutChannel } from "@/lib/ai-isa/opt-out-utils"
 
-export type OptOutChannel = "email" | "sms" | "phone" | "direct_mail" | "all"
+export type { OptOutChannel }
 
 export interface OptOutParams {
   entityType: "contact" | "lead"
@@ -154,51 +155,4 @@ export async function processOptOut(params: OptOutParams): Promise<{
   return { success: true, channelsSuppressed, globalDNC }
 }
 
-// ── Pure helper — no DB call, no async ──────────────────────────────────────
 
-export function detectOptOutIntent(text: string): {
-  isOptOut: boolean
-  channel: OptOutChannel
-  confidence: "high" | "medium"
-} {
-  const lower = text.toLowerCase().trim()
-
-  // TCPA-standard single-word commands — highest confidence
-  if (/^(stop|stopall|unsubscribe|cancel|end|quit|optout)$/i.test(lower)) {
-    return { isOptOut: true, channel: "all", confidence: "high" }
-  }
-
-  // High-confidence global phrases
-  const globalPhrases = [
-    "do not contact me",
-    "do not call me",
-    "remove me from your list",
-    "stop all messages",
-    "unsubscribe from all",
-    "take me off your list",
-    "stop contacting me",
-    "please stop",
-    "leave me alone",
-    "i do not want to be contacted",
-    "do not reach out",
-  ]
-  if (globalPhrases.some((p) => lower.includes(p))) {
-    return { isOptOut: true, channel: "all", confidence: "high" }
-  }
-
-  // Channel-specific patterns
-  if (/stop.*email|no.*email|unsubscribe.*email|email.*stop/i.test(lower)) {
-    return { isOptOut: true, channel: "email", confidence: "medium" }
-  }
-  if (/stop.*text|stop.*sms|no.*text|no.*sms|stop.*message/i.test(lower)) {
-    return { isOptOut: true, channel: "sms", confidence: "high" }
-  }
-  if (/stop.*call|no.*call|do not call|don't call/i.test(lower)) {
-    return { isOptOut: true, channel: "phone", confidence: "high" }
-  }
-  if (/stop.*mail|no.*mail|remove.*mail/i.test(lower)) {
-    return { isOptOut: true, channel: "direct_mail", confidence: "medium" }
-  }
-
-  return { isOptOut: false, channel: "all", confidence: "high" }
-}

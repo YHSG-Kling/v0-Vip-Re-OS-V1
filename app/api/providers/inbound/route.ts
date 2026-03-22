@@ -8,7 +8,8 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { normalizeInbound } from "@/lib/providers/inbound-router"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel"
-import { processOptOut, detectOptOutIntent } from "@/app/actions/ai-isa/process-opt-out"
+import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
+import { detectOptOutIntent } from "@/lib/ai-isa/opt-out-utils"
 
 export const dynamic = "force-dynamic"
 
