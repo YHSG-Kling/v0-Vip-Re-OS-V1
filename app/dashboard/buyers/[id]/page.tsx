@@ -36,7 +36,7 @@ export default async function BuyerDetailPage({ params }: PageProps) {
   const brokerageId = contact.brokerage_id ?? ""
 
   // Parallel loads
-  const [journeyResult, financialResult, partnersResult, draftsResult, interestsResult, profileResult, collaborativeSearchResult, toursResult] =
+  const [journeyResult, financialResult, partnersResult, draftsResult, interestsResult, profileResult, collaborativeSearchResult, toursResult, dualAgencyResult] =
     await Promise.all([
       getBuyerJourney({ contactId: buyerId, userId: user.id, source: "agent_dashboard" }),
       loadFinancialProfile({ contactId: buyerId }),
@@ -63,7 +63,19 @@ export default async function BuyerDetailPage({ params }: PageProps) {
       getCollaborativeSearches(buyerId),
       // Tours
       getBuyerTours(buyerId),
+      // Dual agency: saved properties that are brokerage listings owned by this agent
+      supabase
+        .from("saved_properties")
+        .select("listing_id, listings!inner(address, agent_id)")
+        .eq("contact_id", buyerId)
+        .not("listing_id", "is", null)
+        .limit(10),
     ])
+
+  // Filter saved brokerage listings to only those owned by this agent
+  const dualAgencyListings = (dualAgencyResult.data ?? [])
+    .filter((sp: any) => sp.listings?.agent_id === user.id)
+    .map((sp: any) => ({ listing_id: sp.listing_id as string, address: sp.listings?.address as string }))
 
   const agentProfile = profileResult.data
   const agentName = agentProfile?.full_name
@@ -100,6 +112,7 @@ export default async function BuyerDetailPage({ params }: PageProps) {
         consensus={consensus}
         tours={tours}
         nextTour={nextTour}
+        dualAgencyListings={dualAgencyListings}
       />
     </div>
   )

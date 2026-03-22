@@ -15,7 +15,7 @@ import { TourPipelineStepper }                from "@/app/components/shared/Tour
 import { createTourPlan }                     from "@/app/actions/tour-planner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button }                             from "@/components/ui/button"
-import { Users, Calendar }                    from "lucide-react"
+import { Users, Calendar, AlertTriangle }      from "lucide-react"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
 
@@ -111,12 +111,14 @@ interface BuyerOverviewClientProps {
   consensus:     any | null
   tours:         any[]
   nextTour:      any | null
+  dualAgencyListings: Array<{ listing_id: string; address: string }> | null
 }
 
 export function BuyerOverviewClient({
   buyerId, contact, journey, profile, partners, drafts,
   propertyInterests, brokerageId, agentUserId, agentName,
   collaborativeSearches, activeSearch, consensus, tours, nextTour,
+  dualAgencyListings,
 }: BuyerOverviewClientProps) {
   const [activeTab, setActiveTab]   = useState<Tab>("Overview")
   const [gateModal, setGateModal]   = useState<GateModalProps | null>(null)
@@ -271,6 +273,38 @@ export function BuyerOverviewClient({
                 tourCount={tours.length}
                 buyerStage={contact.buyer_stage}
               />
+
+              {/* Dual Agency Opportunity Alert */}
+              {dualAgencyListings && dualAgencyListings.length > 0 && (
+                <Card className="border-amber-200 bg-amber-50">
+                  <CardContent className="p-4">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+                      <div>
+                        <p className="text-sm font-semibold text-amber-900">
+                          Dual Agency Opportunity — Disclosure Required
+                        </p>
+                        <p className="text-sm text-amber-700 mt-1">
+                          This buyer has saved {dualAgencyListings.length} of your listing{dualAgencyListings.length > 1 ? "s" : ""}.
+                          If they make an offer, you represent both buyer and seller.
+                          Verify your state&apos;s dual agency disclosure requirements.
+                        </p>
+                        <div className="mt-2 space-y-1">
+                          {dualAgencyListings.map(sp => (
+                            <Link
+                              key={sp.listing_id}
+                              href={`/dashboard/listings/${sp.listing_id}`}
+                              className="text-xs text-amber-600 hover:underline block"
+                            >
+                              {sp.address}
+                            </Link>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Collaborative Search Intelligence */}
               {activeSearch && (
