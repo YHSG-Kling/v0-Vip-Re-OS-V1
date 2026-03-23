@@ -50,6 +50,8 @@ import {
   PenLine,
   Brain,
   TrendingDown,
+  Landmark,
+  ExternalLink,
 } from "lucide-react"
 import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
 import { predictDealCloseProbability } from "@/app/actions/ai-predictions"
@@ -1150,6 +1152,10 @@ export function TransactionDetailClient({
                 <DollarSign className="h-3 w-3 mr-1" />
                 Commissions
               </TabsTrigger>
+              <TabsTrigger value="partners" className="text-xs">
+                <Landmark className="h-3 w-3 mr-1" />
+                Partners
+              </TabsTrigger>
             </TabsList>
 
             {/* Milestones Tab */}
@@ -2003,6 +2009,191 @@ export function TransactionDetailClient({
                 </CardContent>
               </Card>
             </TabsContent>
+
+          {/* Partners Tab */}
+          <TabsContent value="partners" className="mt-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+              {/* Lender Workspace Card */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Building2 className="h-4 w-4 text-muted-foreground" />
+                    Lender Workspace
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {lenderInfo ? (
+                    <>
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">{lenderInfo.lender_name ?? "—"}</p>
+                        {lenderInfo.loan_officer_name && (
+                          <p className="text-xs text-muted-foreground">{lenderInfo.loan_officer_name}</p>
+                        )}
+                        {lenderInfo.loan_officer_email && (
+                          <p className="text-xs text-muted-foreground">{lenderInfo.loan_officer_email}</p>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                        {lenderInfo.loan_type && (
+                          <>
+                            <span className="text-muted-foreground">Loan Type</span>
+                            <span className="font-medium">{lenderInfo.loan_type}</span>
+                          </>
+                        )}
+                        {lenderInfo.underwriting_status && (
+                          <>
+                            <span className="text-muted-foreground">Underwriting</span>
+                            <Badge variant="outline" className="w-fit text-[10px] px-1.5 py-0">
+                              {lenderInfo.underwriting_status.replace(/_/g, " ")}
+                            </Badge>
+                          </>
+                        )}
+                        {lenderInfo.clear_to_close_date && (
+                          <>
+                            <span className="text-muted-foreground">CTC Date</span>
+                            <span className="font-medium">
+                              {new Date(lenderInfo.clear_to_close_date).toLocaleDateString()}
+                            </span>
+                          </>
+                        )}
+                        {lenderInfo.loan_amount && (
+                          <>
+                            <span className="text-muted-foreground">Loan Amount</span>
+                            <span className="font-medium">${lenderInfo.loan_amount.toLocaleString()}</span>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No lender assigned.</p>
+                  )}
+                  <div className="pt-1">
+                    <Link href={`/portal/lender/${transaction.id}`} target="_blank">
+                      <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                        <ExternalLink className="h-3 w-3" />
+                        Open Lender Portal
+                      </Button>
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Title & Escrow Workspace Card */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Home className="h-4 w-4 text-muted-foreground" />
+                    Title & Escrow Workspace
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {titleEscrow ? (
+                    <>
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">{titleEscrow.title_company_name ?? "—"}</p>
+                        {titleEscrow.title_officer_name && (
+                          <p className="text-xs text-muted-foreground">{titleEscrow.title_officer_name}</p>
+                        )}
+                        {titleEscrow.title_officer_email && (
+                          <p className="text-xs text-muted-foreground">{titleEscrow.title_officer_email}</p>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                        {titleEscrow.escrow_number && (
+                          <>
+                            <span className="text-muted-foreground">Escrow #</span>
+                            <span className="font-medium">{titleEscrow.escrow_number}</span>
+                          </>
+                        )}
+                        {titleEscrow.closing_scheduled_date && (
+                          <>
+                            <span className="text-muted-foreground">Closing</span>
+                            <span className="font-medium">
+                              {new Date(titleEscrow.closing_scheduled_date).toLocaleDateString()}
+                            </span>
+                          </>
+                        )}
+                        {titleEscrow.title_issues && (
+                          <>
+                            <span className="text-muted-foreground">Issues</span>
+                            <Badge variant="destructive" className="w-fit text-[10px] px-1.5 py-0">
+                              {titleEscrow.title_issues}
+                            </Badge>
+                          </>
+                        )}
+                        {titleEscrow.earnest_money_amount && (
+                          <>
+                            <span className="text-muted-foreground">Earnest $</span>
+                            <span className="font-medium">${titleEscrow.earnest_money_amount.toLocaleString()}</span>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No title/escrow info assigned.</p>
+                  )}
+                  <div className="pt-1">
+                    <Link href={`/portal/title/${transaction.id}`} target="_blank">
+                      <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                        <ExternalLink className="h-3 w-3" />
+                        Open Title Portal
+                      </Button>
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Vendor Workspace Card */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Wrench className="h-4 w-4 text-muted-foreground" />
+                    Vendor Workspace
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {vendorServices.length > 0 ? (
+                    <div className="space-y-2">
+                      {vendorServices.slice(0, 4).map((v) => (
+                        <div key={v.id} className="flex items-center justify-between">
+                          <div>
+                            <p className="text-xs font-medium">{v.vendor_name}</p>
+                            <p className="text-[10px] text-muted-foreground capitalize">
+                              {v.service_type.replace(/_/g, " ")}
+                            </p>
+                          </div>
+                          <Badge
+                            variant={v.status === "completed" ? "default" : v.status === "scheduled" ? "secondary" : "outline"}
+                            className="text-[10px] px-1.5 py-0 capitalize"
+                          >
+                            {v.status.replace(/_/g, " ")}
+                          </Badge>
+                        </div>
+                      ))}
+                      {vendorServices.length > 4 && (
+                        <p className="text-[10px] text-muted-foreground">
+                          +{vendorServices.length - 4} more
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No vendor services assigned.</p>
+                  )}
+                  <div className="pt-1">
+                    <Link href="/vendor/dashboard">
+                      <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                        <ExternalLink className="h-3 w-3" />
+                        View Vendor Dashboard
+                      </Button>
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+
+            </div>
+          </TabsContent>
+
           </Tabs>
         </div>
       </div>
