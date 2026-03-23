@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { useParams } from "next/navigation"
 import { loadClientDashboard } from "@/app/actions/transactions"
+import { createClient } from "@/lib/supabase/client"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -31,6 +32,7 @@ import {
 } from "lucide-react"
 import { ClientFeedbackWidget } from "./client-feedback-widget"
 import { cn } from "@/lib/utils"
+import { format } from "date-fns"
 
 interface DashboardData {
   persona: string
@@ -137,6 +139,12 @@ export default function TransactionDashboard() {
   const transactionId = params.transactionId as string
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [transparencyUpdates, setTransparencyUpdates] = useState<Array<{
+    id: string
+    message: string | null
+    update_type: string | null
+    created_at: string
+  }>>([])
 
   useEffect(() => {
     async function loadData() {
@@ -151,6 +159,20 @@ export default function TransactionDashboard() {
     }
     loadData()
   }, [transactionId, contactId])
+
+  useEffect(() => {
+    const supabase = createClient()
+    supabase
+      .from("transparency_updates")
+      .select("id, message, update_type, created_at")
+      .eq("transaction_id", transactionId)
+      .eq("is_visible_to_client", true)
+      .order("created_at", { ascending: false })
+      .limit(5)
+      .then(({ data: rows }) => {
+        if (rows) setTransparencyUpdates(rows)
+      })
+  }, [transactionId])
 
   if (loading) {
     return (
@@ -390,6 +412,26 @@ export default function TransactionDashboard() {
                 <Button className="w-full" variant="default">
                   Watch Video Guide
                 </Button>
+              </Card>
+            )}
+
+            {/* Important Delay Notices from agent */}
+            {transparencyUpdates.length > 0 && (
+              <Card className="p-6 border-amber-200 bg-amber-50 dark:bg-amber-950/20">
+                <h2 className="text-xl font-semibold mb-4">Important Updates</h2>
+                <div className="space-y-2">
+                  {transparencyUpdates.map((u) => (
+                    <div
+                      key={u.id}
+                      className="rounded-lg bg-amber-100 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 p-3"
+                    >
+                      <p className="text-sm text-amber-800 dark:text-amber-200">{u.message}</p>
+                      <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                        {format(new Date(u.created_at), "MMM d, h:mm a")}
+                      </p>
+                    </div>
+                  ))}
+                </div>
               </Card>
             )}
 

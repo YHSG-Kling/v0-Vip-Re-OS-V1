@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -55,6 +55,14 @@ import {
 } from "lucide-react"
 import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
 import { predictDealCloseProbability } from "@/app/actions/ai-predictions"
+import {
+  logTransactionDelay,
+  getTransactionDelays,
+} from "@/app/actions/transaction-transparency"
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Slider } from "@/components/ui/slider"
+import { Switch } from "@/components/ui/switch"
+import { toast } from "sonner"
 import { Progress } from "@/components/ui/progress"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
@@ -417,6 +425,23 @@ export function TransactionDetailClient({
   // Contract review state
   const [contractReview, setContractReview] = useState<any>(null)
   const [reviewLoading, setReviewLoading] = useState(false)
+
+  // Delay tracking state
+  const [delays, setDelays] = useState<any>(null)
+  const [transparencyUpdates, setTransparencyUpdates] = useState<any[]>([])
+  const [delaySheetOpen, setDelaySheetOpen] = useState(false)
+  const [selectedDelayTypes, setSelectedDelayTypes] = useState<string[]>([])
+  const [delayReasonText, setDelayReasonText] = useState("")
+  const [impactDays, setImpactDays] = useState(5)
+  const [notifyClient, setNotifyClient] = useState(false)
+  const [isLoggingDelay, setIsLoggingDelay] = useState(false)
+
+  useEffect(() => {
+    getTransactionDelays(transaction.id).then(({ delays: d, updates: u }) => {
+      setDelays(d)
+      setTransparencyUpdates(u)
+    })
+  }, [transaction.id])
   const [docChecklist, setDocChecklist] = useState<any[]>([])
   const [checklistLoading, setChecklistLoading] = useState(false)
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set())
@@ -1076,6 +1101,64 @@ export function TransactionDetailClient({
                 propertyAddress={transaction.property_address}
               />
             )}
+
+            {/* Closing Timeline Status */}
+            <Card className={delays?.delays?.length > 0 ? "border-amber-300 bg-amber-50 dark:bg-amber-950/20" : "border-green-200 bg-green-50 dark:bg-green-950/20"}>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Clock className="h-4 w-4" />
+                    Closing Timeline Status
+                  </CardTitle>
+                  <Button size="sm" variant="outline" onClick={() => setDelaySheetOpen(true)}>
+                    {delays?.delays?.length > 0 ? "Update Delay" : "Log Delay"}
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {delays?.delays?.length > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                      {delays.impact_on_closing} day(s) impact on closing
+                    </p>
+                    {delays.delays.map((d: string, i: number) => (
+                      <p key={i} className="text-xs text-amber-700 dark:text-amber-300">{d}</p>
+                    ))}
+                    {!delays.communicated_to_client ? (
+                      <Button
+                        size="sm"
+                        className="mt-2 bg-amber-600 hover:bg-amber-700 text-white"
+                        disabled={isLoggingDelay}
+                        onClick={async () => {
+                          setIsLoggingDelay(true)
+                          const res = await logTransactionDelay({
+                            transactionId: transaction.id,
+                            delays: delays.delays,
+                            reasons: delays.reason_for_delays,
+                            impactDays: delays.impact_on_closing,
+                            notifyClient: true,
+                          })
+                          setIsLoggingDelay(false)
+                          if (res.success) {
+                            toast.success("Client notified of delay")
+                            setDelays({ ...delays, communicated_to_client: true })
+                          } else {
+                            toast.error(res.error ?? "Failed to notify client")
+                          }
+                        }}
+                      >
+                        {isLoggingDelay ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Notify Client Now
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-green-600 dark:text-green-400">Client has been notified</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-green-700 dark:text-green-300">On track — no delays recorded</p>
+                )}
+              </CardContent>
+            </Card>
 
             {/* Recent Timeline */}
             <Card>
@@ -2323,6 +2406,132 @@ export function TransactionDetailClient({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Log Delay Sheet */}
+      <Sheet open={delaySheetOpen} onOpenChange={(open) => {
+        if (!open) {
+          setSelectedDelayTypes([])
+          setDelayReasonText("")
+          setImpactDays(5)
+          setNotifyClient(false)
+        }
+        setDelaySheetOpen(open)
+      }}>
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>Log Closing Delay</SheetTitle>
+            <SheetDescription>
+              Record delay types, reason, and estimated impact on the closing date.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="space-y-5 py-4">
+            {/* Delay type checkboxes */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Delay Types</Label>
+              {[
+                "Inspection issues",
+                "Financing/appraisal",
+                "Title issues",
+                "Repair negotiations",
+                "Buyer contingency",
+                "Document delays",
+                "Scheduling conflict",
+                "Other",
+              ].map((type) => (
+                <label key={type} className="flex items-center gap-2 cursor-pointer text-sm py-1">
+                  <input
+                    type="checkbox"
+                    className="rounded"
+                    checked={selectedDelayTypes.includes(type)}
+                    onChange={(e) =>
+                      setSelectedDelayTypes((prev) =>
+                        e.target.checked ? [...prev, type] : prev.filter((t) => t !== type),
+                      )
+                    }
+                  />
+                  {type}
+                </label>
+              ))}
+            </div>
+
+            {/* Reason textarea */}
+            <div className="space-y-1.5">
+              <Label htmlFor="delayReason" className="text-sm font-medium">
+                Reason / Notes
+              </Label>
+              <Textarea
+                id="delayReason"
+                placeholder="Describe the reason for the delay..."
+                rows={3}
+                value={delayReasonText}
+                onChange={(e) => setDelayReasonText(e.target.value)}
+              />
+            </div>
+
+            {/* Impact days slider */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium">Impact on Closing</Label>
+                <span className="text-sm font-semibold tabular-nums">{impactDays} day{impactDays !== 1 ? "s" : ""}</span>
+              </div>
+              <Slider
+                min={1}
+                max={30}
+                step={1}
+                value={[impactDays]}
+                onValueChange={([v]) => setImpactDays(v)}
+                className="w-full"
+              />
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>1 day</span>
+                <span>30 days</span>
+              </div>
+            </div>
+
+            {/* Notify client toggle */}
+            <div className="flex items-center justify-between rounded-lg border border-border p-3">
+              <div className="space-y-0.5">
+                <Label className="text-sm font-medium">Notify client immediately</Label>
+                <p className="text-xs text-muted-foreground">
+                  Sends a transparency update to the client portal
+                </p>
+              </div>
+              <Switch checked={notifyClient} onCheckedChange={setNotifyClient} />
+            </div>
+          </div>
+
+          <SheetFooter>
+            <Button variant="outline" onClick={() => setDelaySheetOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={isLoggingDelay || selectedDelayTypes.length === 0}
+              onClick={async () => {
+                setIsLoggingDelay(true)
+                const res = await logTransactionDelay({
+                  transactionId: transaction.id,
+                  delays: selectedDelayTypes,
+                  reasons: delayReasonText ? [delayReasonText] : selectedDelayTypes,
+                  impactDays,
+                  notifyClient,
+                })
+                setIsLoggingDelay(false)
+                if (res.success) {
+                  toast.success("Delay logged")
+                  setDelays(res.delay)
+                  setDelaySheetOpen(false)
+                } else {
+                  toast.error(res.error ?? "Failed to log delay")
+                }
+              }}
+            >
+              {isLoggingDelay ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Log Delay
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }
