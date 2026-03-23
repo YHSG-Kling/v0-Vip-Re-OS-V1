@@ -33,6 +33,7 @@ import { generateListingPresentation, generateBrochureContent, generateSellerNet
 import { matchBuyersForListing } from "@/app/actions/property-buyer-matching"
 import { generateAICMA } from "@/app/actions/ai-cma"
 import { getAIPriceAdjustmentRecommendation } from "@/app/actions/ai-cma"
+import { evaluateListingPresentationReadiness } from "@/app/actions/seller-decision-governance"
 import { useToast } from "@/hooks/use-toast"
 
 interface WorkbenchRailProps {
@@ -92,6 +93,11 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
   const [advisorLoading, setAdvisorLoading] = useState(false)
   const [advisorResult, setAdvisorResult] = useState<any>(null)
   const daysOnMarket = listing.days_on_market ?? 0
+
+  // AI Presentation Readiness state
+  const [presentationReadinessLoading, setPresentationReadinessLoading] = useState(false)
+  const [presentationReadinessResult, setPresentationReadinessResult] = useState<any>(null)
+  const [presentationReadinessOpen, setPresentationReadinessOpen] = useState(false)
 
   function handleMatchBuyers() {
     startMatchTransition(async () => {
@@ -217,6 +223,46 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
               <FileText className="h-3 w-3" />
             )}
             {brochureGenerated ? "Brochure Ready" : "Brochure"}
+          </Button>
+
+          <Button
+            size="sm"
+            variant={
+              presentationReadinessResult?.data?.presentationReady
+                ? "secondary"
+                : presentationReadinessResult && !presentationReadinessResult?.data?.presentationReady
+                ? "outline"
+                : "outline"
+            }
+            className={`text-xs gap-1.5 justify-start col-span-2 ${
+              presentationReadinessResult?.data?.presentationReady
+                ? "text-green-800 border-green-300 bg-green-50 hover:bg-green-100"
+                : ""
+            }`}
+            onClick={async () => {
+              setPresentationReadinessOpen((o) => !o)
+              if (!presentationReadinessResult) {
+                setPresentationReadinessLoading(true)
+                try {
+                  const res = await evaluateListingPresentationReadiness(listingId)
+                  setPresentationReadinessResult(res)
+                } catch {
+                  toast({ title: "Presentation readiness check failed", variant: "destructive" })
+                } finally {
+                  setPresentationReadinessLoading(false)
+                }
+              }
+            }}
+            disabled={presentationReadinessLoading}
+          >
+            {presentationReadinessLoading ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : presentationReadinessResult?.data?.presentationReady ? (
+              <CheckCircle2 className="h-3 w-3 text-green-600" />
+            ) : (
+              <Sparkles className="h-3 w-3" />
+            )}
+            AI: Is Presentation Ready?
           </Button>
 
           <Link href={`/dashboard/listings/${listingId}/media`}>
@@ -406,6 +452,78 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, listing }: 
             )}
           </div>
         )}
+        {/* AI Presentation Readiness result panel */}
+        {presentationReadinessOpen && presentationReadinessResult && (
+          <div className="border-t pt-3 space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">Presentation Readiness</p>
+            {!presentationReadinessResult.success ? (
+              <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                {presentationReadinessResult.error ?? "No presentation data found. Generate a presentation first."}
+              </div>
+            ) : (
+              <div className={`rounded-md border p-3 space-y-2 ${
+                presentationReadinessResult.data?.presentationReady
+                  ? "bg-green-50 border-green-200"
+                  : "bg-amber-50 border-amber-200"
+              }`}>
+                <div className="flex items-center gap-2">
+                  {presentationReadinessResult.data?.presentationReady ? (
+                    <CheckCircle2 className="h-4 w-4 text-green-600 shrink-0" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+                  )}
+                  <p className={`text-xs font-semibold ${
+                    presentationReadinessResult.data?.presentationReady
+                      ? "text-green-900"
+                      : "text-amber-900"
+                  }`}>
+                    {presentationReadinessResult.data?.presentationReady
+                      ? "Ready for seller meeting"
+                      : "Not yet ready for seller meeting"}
+                  </p>
+                </div>
+                {presentationReadinessResult.data?.warnings?.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-muted-foreground">Fix these items first:</p>
+                    <ul className="space-y-0.5">
+                      {presentationReadinessResult.data.warnings.map((w: string, i: number) => (
+                        <li key={i} className="text-xs text-amber-800 flex items-start gap-1">
+                          <span className="shrink-0 mt-0.5">&#9888;</span>
+                          {w}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="flex gap-1.5 pt-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 text-xs px-2"
+                    onClick={async () => {
+                      setPresentationReadinessResult(null)
+                      setPresentationReadinessLoading(true)
+                      try {
+                        const res = await evaluateListingPresentationReadiness(listingId)
+                        setPresentationReadinessResult(res)
+                      } catch {
+                        toast({ title: "Re-check failed", variant: "destructive" })
+                      } finally {
+                        setPresentationReadinessLoading(false)
+                      }
+                    }}
+                    disabled={presentationReadinessLoading}
+                  >
+                    <RefreshCw className="h-3 w-3 mr-1" />
+                    Re-check
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* AI CMA inline panel */}
         {cmaOpen && (
           <div className="border-t pt-3 space-y-3">

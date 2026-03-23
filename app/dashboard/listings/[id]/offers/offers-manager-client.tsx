@@ -5,7 +5,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Upload, Sparkles, Link, RefreshCw, Loader2, Target, AlertCircle, Wrench, TrendingDown } from "lucide-react"
+import { Textarea } from "@/components/ui/textarea"
+import { Upload, Sparkles, Link, RefreshCw, Loader2, Target, AlertCircle, Wrench, TrendingDown, CheckCircle2, ShieldAlert, RotateCcw } from "lucide-react"
+import {
+  evaluateSellerDecisionReadiness,
+  validateSellerDecisionReversal,
+  logSellerDecisionTransition,
+} from "@/app/actions/seller-decision-governance"
 import { OfferUploadZone } from "./components/offer-upload-zone"
 import { OfferComparisonMatrix } from "./components/offer-comparison-matrix"
 import { OfferCard } from "./components/offer-card"
@@ -124,6 +130,19 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
   const [counterOfferStrategyLoading, setCounterOfferStrategyLoading] = useState(false)
   const [counterOfferStrategyError, setCounterOfferStrategyError] = useState<string | null>(null)
 
+  // Seller readiness gate — runs before acceptOffer
+  const [evalOfferId, setEvalOfferId] = useState<string | null>(null)
+  const [decisionEval, setDecisionEval] = useState<any>(null)
+  const [evalLoading, setEvalLoading] = useState(false)
+  const [overrideReason, setOverrideReason] = useState("")
+  const [showOverrideInput, setShowOverrideInput] = useState(false)
+
+  // Decision reversal validation
+  const [reversalOffer, setReversalOffer] = useState<Offer | null>(null)
+  const [reversalReason, setReversalReason] = useState("")
+  const [reversalResult, setReversalResult] = useState<any>(null)
+  const [reversalLoading, setReversalLoading] = useState(false)
+
   const selectedOffer = selectedOfferId ? offers.find(o => o.id === selectedOfferId) ?? null : null
 
   const activeOffers = offers.filter((o) => o.status !== "rejected")
@@ -177,6 +196,77 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
         toast({ title: "Accept failed", description: result.error, variant: "destructive" })
       }
     })
+  }
+
+  // Seller readiness gate — intercepts Accept button, runs AI eval first
+  async function handleAcceptGate(offerId: string) {
+    // If this offer is already evaluated and passed, proceed directly
+    if (evalOfferId === offerId && decisionEval?.success && decisionEval?.data?.isReady) {
+      handleProceedAccept(offerId, false, "")
+      return
+    }
+    setEvalOfferId(offerId)
+    setDecisionEval(null)
+    setShowOverrideInput(false)
+    setOverrideReason("")
+    setEvalLoading(true)
+    const result = await evaluateSellerDecisionReadiness({
+      listingId: listing.id,
+      targetState: "SELLER_DECISION_READY" as any,
+    })
+    setDecisionEval(result)
+    setEvalLoading(false)
+  }
+
+  // Called after readiness check passes (or override confirmed)
+  function handleProceedAccept(offerId: string, isOverride: boolean, reason: string) {
+    startTransition(async () => {
+      await logSellerDecisionTransition({
+        listing_id: listing.id,
+        to_state: "SELLER_DECISION_READY" as any,
+        authority_role: "agent",
+        override_flag: isOverride,
+        override_reason: isOverride ? reason : undefined,
+        metadata: { offerId, action: "accept_offer" },
+      })
+    })
+    handleAccept(offerId)
+    setEvalOfferId(null)
+    setDecisionEval(null)
+    setShowOverrideInput(false)
+    setOverrideReason("")
+  }
+
+  // Validates whether a seller decision reversal is appropriate
+  async function handleValidateReversal() {
+    if (!reversalOffer) return
+    setReversalLoading(true)
+    setReversalResult(null)
+    const result = await validateSellerDecisionReversal({
+      listingId: listing.id,
+      currentDecisionState: "SELLER_DECISION_READY" as any,
+      currentListingStage: listing.status ?? "active",
+    })
+    setReversalResult(result)
+    setReversalLoading(false)
+  }
+
+  // Commits the reversal and logs the audit trail
+  async function handleProceedReversal(isOverride: boolean) {
+    if (!reversalOffer) return
+    await logSellerDecisionTransition({
+      listing_id: listing.id,
+      from_state: "SELLER_DECISION_READY" as any,
+      to_state: "SELLER_DECISION_READY" as any,
+      authority_role: "agent",
+      override_flag: isOverride,
+      override_reason: reversalReason || undefined,
+      metadata: { offerId: reversalOffer.id, action: "decision_reversal", reason: reversalReason },
+    })
+    toast({ title: "Decision reversal logged to audit trail" })
+    setReversalOffer(null)
+    setReversalReason("")
+    setReversalResult(null)
   }
 
   function handleReject(offerId: string) {
@@ -363,7 +453,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     listPrice={listing.list_price ?? 0}
                     canApprove={canApprove}
                     isPending={isPending}
-                    onAccept={() => handleAccept(offer.id)}
+                    onAccept={() => handleAcceptGate(offer.id)}
                     onReject={() => handleReject(offer.id)}
                     onCounter={() => setCounterTarget(offer)}
                   />
@@ -421,6 +511,227 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                         )}
                         Counter Strategy
                       </Button>
+                    </div>
+                  )}
+
+                  {/* Change Decision — reversal validation for accepted/countered offers */}
+                  {(offer.status === "accepted" || offer.status === "countered") && (
+                    <div className="flex items-center gap-2 px-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-xs text-muted-foreground h-7 gap-1"
+                        onClick={() => {
+                          setReversalOffer(reversalOffer?.id === offer.id ? null : offer)
+                          setReversalResult(null)
+                          setReversalReason("")
+                        }}
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                        Change Decision
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Reversal validation panel */}
+                  {reversalOffer?.id === offer.id && (
+                    <div className="mx-1 rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                      <p className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
+                        <ShieldAlert className="h-3.5 w-3.5" />
+                        Decision Reversal Validation
+                      </p>
+                      <p className="text-xs text-amber-800">
+                        AI will evaluate whether reversing this decision is appropriate given the current listing stage and legal constraints.
+                      </p>
+                      <Textarea
+                        className="text-xs min-h-[60px] resize-none"
+                        placeholder="Why are you changing this decision? (recorded in audit trail)"
+                        value={reversalReason}
+                        onChange={(e) => setReversalReason(e.target.value)}
+                      />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-xs h-7 gap-1 border-amber-300 text-amber-900 hover:bg-amber-100"
+                        onClick={handleValidateReversal}
+                        disabled={reversalLoading}
+                      >
+                        {reversalLoading ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-3 w-3" />
+                        )}
+                        AI Validate Reversal
+                      </Button>
+                      {reversalResult?.success && (
+                        <div className={`rounded-md border p-2.5 space-y-2 ${
+                          reversalResult.data?.allowed
+                            ? "bg-green-50 border-green-200"
+                            : "bg-red-50 border-red-200"
+                        }`}>
+                          <p className={`text-xs font-medium flex items-center gap-1.5 ${
+                            reversalResult.data?.allowed ? "text-green-800" : "text-red-800"
+                          }`}>
+                            {reversalResult.data?.allowed ? (
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                            ) : (
+                              <AlertCircle className="h-3.5 w-3.5" />
+                            )}
+                            {reversalResult.data?.allowed
+                              ? "Reversal is appropriate"
+                              : "Reversal not recommended"}
+                          </p>
+                          {reversalResult.data?.reason && (
+                            <p className="text-xs text-muted-foreground">{reversalResult.data.reason}</p>
+                          )}
+                          <div className="flex gap-2 pt-1">
+                            {reversalResult.data?.allowed && (
+                              <Button
+                                size="sm"
+                                className="text-xs h-7"
+                                onClick={() => handleProceedReversal(false)}
+                              >
+                                Proceed with Reversal
+                              </Button>
+                            )}
+                            {!reversalResult.data?.allowed && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-7 border-red-300 text-red-800"
+                                onClick={() => handleProceedReversal(true)}
+                              >
+                                Override & Proceed Anyway
+                              </Button>
+                            )}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-xs h-7"
+                              onClick={() => { setReversalOffer(null); setReversalResult(null); setReversalReason("") }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                      {reversalResult && !reversalResult.success && (
+                        <p className="text-xs text-red-600">{reversalResult.error ?? "Validation failed"}</p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Seller Readiness Gate — shown inline when this offer's Accept was clicked */}
+                  {evalOfferId === offer.id && (
+                    <div className="mx-1">
+                      {evalLoading && (
+                        <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                          Running seller readiness evaluation...
+                        </div>
+                      )}
+                      {decisionEval?.success && decisionEval.data?.isReady && (
+                        <div className="rounded-lg border border-green-200 bg-green-50 p-3 space-y-2">
+                          <p className="text-xs font-semibold text-green-900 flex items-center gap-1.5">
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                            Seller is ready to accept
+                          </p>
+                          {decisionEval.data.warnings?.length > 0 && (
+                            <ul className="space-y-0.5">
+                              {decisionEval.data.warnings.map((w: string, i: number) => (
+                                <li key={i} className="text-xs text-green-700">{w}</li>
+                              ))}
+                            </ul>
+                          )}
+                          <div className="flex gap-2 pt-1">
+                            <Button
+                              size="sm"
+                              className="text-xs h-7 bg-green-700 hover:bg-green-800 text-white"
+                              onClick={() => handleProceedAccept(offer.id, false, "")}
+                              disabled={isPending}
+                            >
+                              Proceed with Acceptance
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-xs h-7"
+                              onClick={() => { setEvalOfferId(null); setDecisionEval(null) }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                      {decisionEval?.success && !decisionEval.data?.isReady && (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2">
+                          <p className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
+                            <AlertCircle className="h-3.5 w-3.5" />
+                            Review before proceeding
+                          </p>
+                          {decisionEval.data.blockers?.length > 0 && (
+                            <ul className="space-y-0.5">
+                              {decisionEval.data.blockers.map((b: string, i: number) => (
+                                <li key={i} className="text-xs text-amber-800 flex items-start gap-1">
+                                  <span className="shrink-0 mt-0.5">&#9888;</span>
+                                  {b}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {decisionEval.data.warnings?.length > 0 && (
+                            <ul className="space-y-0.5">
+                              {decisionEval.data.warnings.map((w: string, i: number) => (
+                                <li key={i} className="text-xs text-amber-700 flex items-start gap-1">
+                                  <span className="shrink-0 mt-0.5">&#128161;</span>
+                                  {w}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          <div className="flex gap-2 pt-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-xs h-7"
+                              onClick={() => setShowOverrideInput((v) => !v)}
+                            >
+                              Override & Accept Anyway
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="text-xs h-7"
+                              onClick={() => { setEvalOfferId(null); setDecisionEval(null); setShowOverrideInput(false) }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                          {showOverrideInput && (
+                            <div className="space-y-2 pt-1 border-t border-amber-200">
+                              <Textarea
+                                className="text-xs min-h-[60px] resize-none"
+                                placeholder="Override reason (required for audit trail)"
+                                value={overrideReason}
+                                onChange={(e) => setOverrideReason(e.target.value)}
+                              />
+                              <Button
+                                size="sm"
+                                className="text-xs h-7 w-full"
+                                disabled={!overrideReason.trim() || isPending}
+                                onClick={() => handleProceedAccept(offer.id, true, overrideReason)}
+                              >
+                                Confirm Override & Accept
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {decisionEval && !decisionEval.success && (
+                        <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md p-2">
+                          {decisionEval.error ?? "Readiness evaluation failed"}
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>
