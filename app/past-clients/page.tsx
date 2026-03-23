@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -21,6 +22,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
 import {
   Heart,
@@ -141,6 +143,7 @@ function getTouchpointIcon(type: string) {
 
 export default function LifetimeCustomersPage() {
   const [isPending, startTransition] = useTransition()
+  const router = useRouter()
 
   // Tab state
   const [activeTab, setActiveTab] = useState("feed")
@@ -188,6 +191,9 @@ export default function LifetimeCustomersPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkSending, setBulkSending] = useState(false)
   const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
+
+  // Reach All sheet state
+  const [reachAllOpen, setReachAllOpen] = useState(false)
 
   function toggleSelect(id: string) {
     setSelectedIds((prev) => {
@@ -1074,9 +1080,93 @@ export default function LifetimeCustomersPage() {
                     <CardTitle className="text-base">Portal Access</CardTitle>
                     <CardDescription>{clients.length} clients with portal access</CardDescription>
                   </div>
-                  <Button variant="outline" onClick={() => toast.info("Bulk reach feature coming soon")}>
+                  <Button variant="outline" onClick={() => setReachAllOpen(true)}>
                     Reach All
                   </Button>
+
+                  {/* Reach All Dialog — creates real drafts in ai_message_drafts */}
+                  <Dialog open={reachAllOpen} onOpenChange={setReachAllOpen}>
+                    <DialogContent className="max-w-md">
+                      <DialogHeader>
+                        <DialogTitle>Send Market Update to All Past Clients</DialogTitle>
+                      </DialogHeader>
+                      <div className="space-y-3 text-sm text-muted-foreground">
+                        <p>This will save drafts in your inbox for review before sending.</p>
+                        <p>
+                          Creating drafts for{" "}
+                          <span className="font-semibold text-foreground">{clients.length}</span> contacts
+                        </p>
+                        <div className="rounded-lg border bg-muted/40 px-4 py-3 text-foreground">
+                          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">Subject preview</p>
+                          <p>Market Update from your agent</p>
+                        </div>
+                        <div className="rounded-lg border bg-muted/40 px-4 py-3 text-foreground">
+                          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">Body preview</p>
+                          <p className="text-xs leading-relaxed">Hi [First Name], here&apos;s what&apos;s happening in your market...</p>
+                        </div>
+                      </div>
+                      <DialogFooter className="mt-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => setReachAllOpen(false)}
+                          disabled={bulkSending}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          disabled={bulkSending || clients.length === 0}
+                          onClick={async () => {
+                            setBulkSending(true)
+                            try {
+                              const supabase = createClient()
+                              const { data: { user } } = await supabase.auth.getUser()
+                              if (!user) { toast.error("Not authenticated"); return }
+
+                              const { data: userRow } = await supabase
+                                .from("users")
+                                .select("brokerage_id, first_name, last_name")
+                                .eq("id", user.id)
+                                .single()
+
+                              const agentName = userRow
+                                ? `${userRow.first_name ?? ""} ${userRow.last_name ?? ""}`.trim()
+                                : "your agent"
+
+                              const inserts = clients
+                                .filter((c) => c.email)
+                                .map((c) => ({
+                                  agent_user_id: user.id,
+                                  brokerage_id: userRow?.brokerage_id ?? null,
+                                  contact_id: c.id,
+                                  channel: "email",
+                                  draft_subject: `Market Update from ${agentName}`,
+                                  draft_body: `Hi ${c.first_name}, here's what's happening in your market...`,
+                                  status: "pending",
+                                  trigger_event: "bulk_past_client_reach",
+                                }))
+
+                              const { error } = await supabase.from("ai_message_drafts").insert(inserts)
+                              if (error) throw error
+
+                              toast.success(`${inserts.length} drafts created — review in Communications`)
+                              setReachAllOpen(false)
+                              router.push("/dashboard/communications/inbox")
+                            } catch (err: any) {
+                              toast.error(err.message || "Failed to create drafts")
+                            } finally {
+                              setBulkSending(false)
+                            }
+                          }}
+                        >
+                          {bulkSending ? (
+                            <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Creating drafts...</>
+                          ) : (
+                            "Create Drafts"
+                          )}
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">

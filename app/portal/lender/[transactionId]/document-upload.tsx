@@ -9,6 +9,7 @@ import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Upload, FileText, CheckCircle2, AlertCircle, X, Download } from "lucide-react"
 import { uploadLenderDocument } from "@/app/actions/lender-portal"
+import { createClient } from "@/lib/supabase/client"
 
 interface Document {
   id: string
@@ -63,21 +64,33 @@ export function LenderDocumentUpload({
       setUploadProgress(0)
 
       try {
-        // Simulate upload progress
         const progressInterval = setInterval(() => {
           setUploadProgress((prev) => Math.min(prev + 10, 90))
         }, 100)
 
-        // In a real app, you'd upload to Blob storage first
-        // For now, we'll use a placeholder URL
-        const fileUrl = `/uploads/${transactionId}/${file.name}`
+        // Upload to Supabase Storage — real path, never a local placeholder
+        const supabase = createClient()
+        const filePath = `transactions/${transactionId}/lender/${Date.now()}_${file.name}`
+        const { error: uploadErr } = await supabase.storage
+          .from("transaction-documents")
+          .upload(filePath, file, { upsert: false, contentType: file.type })
+
+        if (uploadErr) {
+          setError(`Upload failed: ${uploadErr.message}`)
+          clearInterval(progressInterval)
+          return
+        }
+
+        const { data: { publicUrl } } = supabase.storage
+          .from("transaction-documents")
+          .getPublicUrl(filePath)
 
         await uploadLenderDocument({
           transactionId,
           lenderId,
           documentType: selectedType,
           fileName: file.name,
-          fileUrl,
+          fileUrl: publicUrl,
         })
 
         clearInterval(progressInterval)

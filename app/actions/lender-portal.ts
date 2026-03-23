@@ -117,16 +117,16 @@ export async function uploadLenderDocument(data: {
 
   if (!lender) throw new Error("Lender not found")
 
-  // Insert document
+  // Insert document — storage_url and doc_label match the transaction_documents schema
   const { data: document, error } = await supabase
     .from("transaction_documents")
     .insert({
       transaction_id: data.transactionId,
-      document_type: data.documentType,
-      file_name: data.fileName,
-      file_url: data.fileUrl,
+      doc_type: data.documentType,
+      doc_label: data.fileName,
+      storage_url: data.fileUrl,
       uploaded_by: user.id,
-      uploaded_by_type: "lender",
+      status: "pending_review",
     })
     .select()
     .single()
