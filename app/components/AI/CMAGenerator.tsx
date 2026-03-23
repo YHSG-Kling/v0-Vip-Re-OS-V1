@@ -23,6 +23,7 @@ import {
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
 import { generateAICMA } from "@/app/actions/ai-cma"
 import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 
 interface CMAPackageInputs {
   address: string
@@ -138,7 +139,7 @@ const SmartCMA: React.FC = () => {
       setStep(4)
     } catch (error) {
       console.error(error)
-      alert("CMA generation failed. Please try again.")
+      toast.error("CMA generation failed — try again")
       setStep(2)
     }
   }

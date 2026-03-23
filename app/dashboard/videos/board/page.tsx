@@ -37,6 +37,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -298,7 +299,7 @@ export default function VideoKanbanBoard() {
       await loadVideos()
     } catch (error: any) {
       console.error("Error publishing video:", error)
-      alert(error.message || "Failed to publish video")
+      toast.error(error.message || "Failed to publish video")
     } finally {
       setPublishing(false)
     }

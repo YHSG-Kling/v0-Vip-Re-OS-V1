@@ -3,6 +3,7 @@
 import { useEffect, useState, useTransition } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { seedTerritoriesFromServiceArea, setFarmTerritoryMode } from "@/lib/territory/metrics-aggregator"
+import { toast } from "sonner"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -168,7 +169,7 @@ export default function FarmIntelligencePage() {
         .eq("brokerage_id", brokerageId)
         .eq("name", newName)
         .maybeSingle()
-      if (dup) { alert("A territory with this name already exists."); return }
+      if (dup) { toast.error("A territory with this name already exists"); return }
 
       await supabase.from("farm_territories").insert({
         brokerage_id: brokerageId,

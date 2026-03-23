@@ -26,6 +26,7 @@ import {
 import { generateAIJSON } from "@/lib/ai"
 import { executeWorkflow } from "../../app/actions/workflows"
 import { supabaseService } from "../../services/supabaseService"
+import { toast } from "sonner"
 
 interface CommandBarProps {
   onNavigate: (view: string) => void
@@ -350,7 +351,7 @@ Return JSON with this structure:
                       className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl hover:bg-indigo-700 transition-all active:scale-95"
                       onClick={() => {
                         setIsOpen(false)
-                        alert(`Success: ${aiResponse.target} protocol triggered.`)
+                        toast.success(`${aiResponse.target} protocol triggered`)
                       }}
                     >
                       Authorize

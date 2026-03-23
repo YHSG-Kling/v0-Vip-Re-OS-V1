@@ -26,6 +26,7 @@ import {
 import { cn } from "@/lib/utils"
 import { generateVideoScript } from "@/app/actions/video-generation"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
+import { toast } from "sonner"
 
 export default function VideoAssistantPage() {
   const router = useRouter()
@@ -130,9 +131,7 @@ export default function VideoAssistantPage() {
   }
 
   async function handleGenerateVideo(scriptId: string, script: string, useAvatar: boolean) {
-    alert(
-      "Video generation will be available once HeyGen is configured by your administrator. The video_content_queue table needs to be created first.",
-    )
+    toast.info("HeyGen must be configured by your administrator before video generation is available")
     return
   }
 

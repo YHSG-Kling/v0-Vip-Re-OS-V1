@@ -341,7 +341,7 @@ export default function BusinessCardsPage() {
 
               <button
                 className="text-xs text-muted-foreground underline underline-offset-2"
-                onClick={() => alert("Thank you for your feedback. The extraction data has been flagged for review.")}
+                onClick={() => toast({ title: "Feedback received", description: "Extraction data flagged for review." })}
               >
                 Report extraction error
               </button>

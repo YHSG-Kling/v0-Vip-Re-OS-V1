@@ -203,7 +203,7 @@ export function VoiceCloneClient({
       setIsRecording(true)
     } catch (error) {
       console.error("Error starting recording:", error)
-      alert("Could not access microphone. Please check permissions.")
+      toast.error("Could not access microphone — check permissions")
     }
   }
 
