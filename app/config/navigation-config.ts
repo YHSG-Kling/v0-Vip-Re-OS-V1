@@ -79,8 +79,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         children: [
           { id: 'referrals', label: 'My Referrals', href: '/referrals' },
           { id: 'referral-pipeline', label: 'Referral Pipeline', href: '/referrals/pipeline' },
-          { id: 'referral-partners', label: 'Referral Partners', href: '/referral-partners' },
-          { id: 'agent-referrals', label: 'Agent Referrals', href: '/dashboard/agent/referrals' },
+          { id: 'referral-partners', label: 'Referral Partners', href: '/dashboard/agent/referrals' },
         ],
       },
       { id: 'past-clients', label: 'Past Clients', href: '/past-clients', icon: 'Heart' },
@@ -644,7 +643,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         children: [
           { id: 'referrals', label: 'My Referrals', href: '/referrals' },
           { id: 'referral-pipeline', label: 'Referral Pipeline', href: '/referrals/pipeline' },
-          { id: 'referral-partners', label: 'Referral Partners', href: '/referral-partners' },
+          { id: 'referral-partners', label: 'Referral Partners', href: '/dashboard/agent/referrals' },
         ],
       },
       { id: 'past-clients', label: 'Past Clients', href: '/past-clients', icon: 'Heart' },

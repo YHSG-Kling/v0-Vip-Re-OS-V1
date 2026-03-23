@@ -257,7 +257,7 @@ export default async function ReferralsPage({
             <p className="text-sm text-muted-foreground">View and manage all referrals</p>
           </Card>
         </Link>
-        <Link href="/referral-partners">
+        <Link href="/dashboard/agent/referrals">
           <Card className="p-6 hover:shadow-lg transition-shadow cursor-pointer">
             <h3 className="font-semibold mb-2">Referral Partners</h3>
             <p className="text-sm text-muted-foreground">Manage your partner network</p>

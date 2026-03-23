@@ -205,7 +205,7 @@ export async function createReferralPartner(params: {
 
   if (error) throw error
 
-  revalidatePath("/referral-partners")
+  revalidatePath("/dashboard/agent/referrals")
   return data
 }
 
