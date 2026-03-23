@@ -9,6 +9,7 @@ import { BuyerCoachingCard }                  from "./components/buyer-coaching-
 import { ConversationCoachingPanel }          from "./components/conversation-coaching-panel"
 import BuyerInsightsPanel                     from "./components/buyer-insights-panel"
 import { FatiguePanel }                       from "./components/fatigue-panel"
+import { BuyerEngagementHealthCard }          from "./components/buyer-engagement-health-card"
 import { BuyerLifecyclePanel }               from "./components/buyer-lifecycle-panel"
 import { FatigueWidget }                      from "./components/fatigue-widget"
 import { isTourAllowed, isOfferAllowed }      from "@/lib/buyer-lifecycle/gating-helpers"
@@ -390,6 +391,9 @@ export function BuyerOverviewClient({
                 </CardContent>
               </Card>
             </div>
+
+            {/* Buyer Engagement Health — System 5.8 fatigue signal surfaced in Overview */}
+            <BuyerEngagementHealthCard buyerId={buyerId} brokerageId={brokerageId} />
 
             {/* 1. Financial Verification Panel */}
             <div id="financial-verification-panel">

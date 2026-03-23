@@ -144,6 +144,55 @@ export async function getReinvigorationSuggestions(
   }
 }
 
+// ─── GET HIGH FATIGUE BUYERS (watch / warning / critical) ─────────────────────
+
+export async function getHighFatigueBuyers(brokerageId: string) {
+  const supabase = createServiceClient()
+
+  const { data: scores, error } = await supabase
+    .from("buyer_fatigue_scores")
+    .select("*")
+    .eq("brokerage_id", brokerageId)
+    .in("risk_level", ["moderate", "high", "critical"])
+    .order("fatigue_score", { ascending: false })
+
+  if (error) return { success: false as const, error: error.message }
+
+  const contactIds = (scores || []).map(s => s.contact_id).filter(Boolean)
+  if (contactIds.length === 0) return { success: true as const, data: [] }
+
+  const { data: contacts } = await supabase
+    .from("contacts")
+    .select("id, first_name, last_name, agent_id, buyer_stage, deleted_at")
+    .in("id", contactIds)
+    .is("deleted_at", null)
+
+  const contactMap = new Map((contacts || []).map(c => [c.id, c]))
+
+  const enriched = (scores || [])
+    .filter(s => contactMap.has(s.contact_id))
+    .map(s => ({ ...s, contacts: contactMap.get(s.contact_id) ?? null }))
+
+  return { success: true as const, data: enriched }
+}
+
+// ─── GET ACTIVE BROKERAGE-WIDE FATIGUE ALERTS ─────────────────────────────────
+
+export async function getBrokerageFatigueAlerts(brokerageId: string) {
+  const supabase = createServiceClient()
+
+  const { data, error } = await supabase
+    .from("fatigue_alerts")
+    .select("*")
+    .eq("brokerage_id", brokerageId)
+    .eq("dismissed", false)
+    .order("created_at", { ascending: false })
+    .limit(50)
+
+  if (error) return { success: false as const, error: error.message }
+  return { success: true as const, data: data ?? [] }
+}
+
 // ─── BROKERAGE FATIGUE DASHBOARD DATA ────────────────────────────────────────
 
 export async function getBrokerageFatigueData(brokerageId: string) {

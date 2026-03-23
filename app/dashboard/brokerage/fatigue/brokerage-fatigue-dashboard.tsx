@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import Link                         from "next/link"
-import { dismissFatigueAlert }      from "@/app/actions/fatigue"
+import { dismissFatigueAlert }      from "@/app/actions/buyer-fatigue"
 
 type RiskLevel = "fresh" | "watch" | "warning" | "critical"
 
