@@ -249,12 +249,6 @@ async function fetchComparableProperties(
   // ── 3. No API configured — return empty, amber banner shows in UI ────────
   return []
 }
-      distance: 0.5, // Would calculate actual distance
-      adjustedValue: (listing.sold_price || listing.list_price) + totalAdjustment,
-      adjustments,
-    }
-  })
-}
 
 /**
  * Calculate property adjustments between subject and comparable
