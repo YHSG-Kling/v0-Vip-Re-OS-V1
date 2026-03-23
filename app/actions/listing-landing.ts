@@ -2,6 +2,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import Anthropic from "@anthropic-ai/sdk"
+
+const anthropic = new Anthropic()
 
 // ============================================================================
 // Types
@@ -194,11 +197,80 @@ export async function getNeighborhoodData(listingId: string): Promise<Neighborho
     .limit(1)
     .single()
 
-  if (error || !data) {
-    return null
+  if (!error && data) {
+    return data
   }
 
-  return data
+  // No stored report — ask AI to reason about the neighborhood from the listing's address
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("address, city, state, zip")
+    .eq("id", listingId)
+    .single()
+
+  if (!listing) return null
+
+  try {
+    const msg = await anthropic.messages.create({
+      model: "claude-opus-4-20250514",
+      max_tokens: 600,
+      messages: [
+        {
+          role: "user",
+          content: `You are a real estate data assistant. Based on the property location below, provide a realistic neighborhood summary. Return ONLY valid JSON — no markdown, no explanation.
+
+Property: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
+
+Return this exact JSON structure:
+{
+  "neighborhood_name": string,
+  "school_ratings": [{ "school_name": string, "rating": number, "level": "elementary"|"middle"|"high", "distance": number }],
+  "walk_score": number (0-100),
+  "transit_score": number (0-100),
+  "crime_index": number (1-10, lower is safer),
+  "ai_summary": string (2-3 sentences about the neighborhood for a buyer),
+  "data_source": "AI-estimated"
+}`,
+        },
+      ],
+    })
+
+    const raw = msg.content[0].type === "text" ? msg.content[0].text.trim() : ""
+    const parsed = JSON.parse(raw)
+
+    // Cache the AI result so subsequent loads are instant
+    await supabase.from("neighborhood_reports").upsert(
+      {
+        listing_id: listingId,
+        neighborhood_name: parsed.neighborhood_name,
+        zip_code: listing.zip,
+        city: listing.city,
+        state: listing.state,
+        school_ratings: parsed.school_ratings,
+        walk_score: parsed.walk_score,
+        transit_score: parsed.transit_score,
+        crime_index: parsed.crime_index,
+        ai_summary: parsed.ai_summary,
+        data_source: "AI-estimated",
+        generated_at: new Date().toISOString(),
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      },
+      { onConflict: "listing_id" }
+    )
+
+    return {
+      neighborhood_name: parsed.neighborhood_name,
+      school_ratings: parsed.school_ratings,
+      walk_score: parsed.walk_score,
+      transit_score: parsed.transit_score,
+      crime_index: parsed.crime_index,
+      ai_summary: parsed.ai_summary,
+      generated_at: new Date().toISOString(),
+    }
+  } catch (err) {
+    console.error("[v0] getNeighborhoodData AI fallback error:", err)
+    return null
+  }
 }
 
 export async function getSimilarListings(listingId: string, zip: string, brokerageId?: string) {
