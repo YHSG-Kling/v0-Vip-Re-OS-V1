@@ -267,10 +267,10 @@ async function generateNeighborhoodInsights(propertyData: Record<string, any>): 
   // Mock neighborhood data - in production, integrate with APIs like WalkScore, local data, etc.
   return {
     walkability: {
-      walkScore: propertyData.walk_score || 72,
-      bikeScore: propertyData.bike_score || 65,
-      transitScore: propertyData.transit_score || 55,
-      description: "Very Walkable - Most errands can be accomplished on foot",
+      walkScore: propertyData.walk_score || null,
+      bikeScore: propertyData.bike_score || null,
+      transitScore: propertyData.transit_score || null,
+      description: null,
     },
     safety: {
       crimeIndex: 3.2, // Out of 10, lower is safer
@@ -384,15 +384,11 @@ function estimatePublicTransit(propertyData: Record<string, any>): string {
 }
 
 function estimateWalkScore(propertyData: Record<string, any>): number {
-  return Math.floor(Math.random() * 30) + 50 // 50-80 range
+  return 0 // 0 = no real data available; wire WALKSCORE_API_KEY for live scores
 }
 
 function estimateCommuteTime(from: string, to: string, mode: string, isPeak: boolean): number {
-  // Mock calculation - in production use Google Maps API
-  const baseTime = Math.floor(Math.random() * 20) + 15 // 15-35 min base
-  if (isPeak) return Math.round(baseTime * 1.4)
-  if (mode === "transit") return Math.round(baseTime * 1.6)
-  return baseTime
+  return 0 // 0 = no real data available; wire Google Maps API for live commute times
 }
 
 function calculateMortgage(principal: number, annualRate: number, years: number): number {

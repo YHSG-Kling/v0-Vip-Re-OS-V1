@@ -178,8 +178,8 @@ async function fetchComparableProperties(
     .limit(10)
 
   if (!listings || listings.length === 0) {
-    // Generate synthetic comparables based on market data
-    return generateSyntheticComparables(params)
+    // No real comps found — return empty with data quality signal, never synthesize
+    return []
   }
 
   // Calculate adjustments for each comparable
@@ -272,38 +272,6 @@ function calculatePropertyAdjustments(
   }
 
   return adjustments
-}
-
-/**
- * Generate synthetic comparables when no real data available
- */
-function generateSyntheticComparables(params: CMAParams): ComparableProperty[] {
-  const basePrice = params.squareFeet * 250 // Baseline $250/sqft
-  const comparables: ComparableProperty[] = []
-
-  for (let i = 0; i < 5; i++) {
-    const variance = 0.9 + Math.random() * 0.2 // 90-110% of base
-    const sqFtVariance = 0.85 + Math.random() * 0.3
-    const sqFt = Math.round(params.squareFeet * sqFtVariance)
-    const price = Math.round(basePrice * variance)
-
-    comparables.push({
-      address: `${100 + i * 10} Comparable St, ${params.propertyCity}`,
-      listPrice: price,
-      soldPrice: Math.round(price * 0.97),
-      daysOnMarket: Math.round(20 + Math.random() * 40),
-      squareFeet: sqFt,
-      pricePerSqFt: price / sqFt,
-      bedrooms: params.bedrooms + (Math.random() > 0.5 ? 0 : (Math.random() > 0.5 ? 1 : -1)),
-      bathrooms: params.bathrooms,
-      yearBuilt: (params.yearBuilt || 2000) + Math.round((Math.random() - 0.5) * 10),
-      distance: 0.5 + Math.random() * 2,
-      adjustedValue: price,
-      adjustments: [],
-    })
-  }
-
-  return comparables
 }
 
 /**

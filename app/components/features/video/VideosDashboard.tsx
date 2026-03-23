@@ -117,7 +117,13 @@ export function VideosDashboard() {
         },
       ])
 
-      setWeeklyViews(Math.floor(Math.random() * 500) + 100)
+      // Real views from video_performance_tracking — no synthetic data
+      const { data: perf } = await supabase
+        .from("video_performance_tracking")
+        .select("total_views")
+        .eq("brokerage_id", user?.id ?? "")
+      const totalViews = (perf ?? []).reduce((s: number, p: { total_views?: number }) => s + (p.total_views ?? 0), 0)
+      setWeeklyViews(totalViews > 0 ? Math.round(totalViews / 4) : 0)
     } catch (error) {
       console.error("Error loading video dashboard:", error)
       // Set demo data
@@ -215,8 +221,14 @@ export function VideosDashboard() {
             <span className="text-sm">Views this week</span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-lg font-semibold">{weeklyViews}</span>
-            <TrendingUp className="h-4 w-4 text-green-500" />
+            {weeklyViews > 0 ? (
+              <>
+                <span className="text-lg font-semibold">{weeklyViews}</span>
+                <TrendingUp className="h-4 w-4 text-green-500" />
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground">No performance data yet</span>
+            )}
           </div>
         </div>
 

@@ -246,6 +246,11 @@ export function CMAReportTab({ listing, data }: Props) {
       )}
 
       {/* Comparables table */}
+      {comparables.length === 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Comp data insufficient for this search. Manual MLS review recommended.
+        </div>
+      )}
       <Card>
         <CardHeader className="py-3 px-4">
           <CardTitle className="text-sm font-medium text-foreground">

@@ -421,6 +421,13 @@ const SmartCMA: React.FC = () => {
                       </div>
                     </section>
 
+                    {/* Insufficient comps warning — shown when no real MLS data was found */}
+                    {(!packageResult.comparables || packageResult.comparables.length === 0) && (
+                      <section className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm text-amber-800">
+                        Comp data insufficient for this search. Manual MLS review recommended.
+                      </section>
+                    )}
+
                     {/* Real comparables from ai-cma.ts */}
                     {packageResult.comparables?.length > 0 && (
                       <section>
