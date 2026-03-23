@@ -907,8 +907,112 @@ export async function calculateCommissions(transactionId: string) {
       (comm: { id: string; rate_percentage?: number; flat_amount?: number; split_percentage?: number }) => {
         let amount = comm.flat_amount || 0
         if (comm.rate_percentage) {
-          // TODO: Commission Engine 8.0 — route through calculateCommission()
-          amount = 0
+          // Commission Engine 8.0 — real distribution routing
+          const grossCommission = (transaction.estimated_commission ?? 0)
+
+          // Load agent commission profile
+          const { data: profile } = await supabase
+            .from("agent_commission_profiles")
+            .select("split_percent, transaction_fee_value, structure_type, royalty_percent")
+            .eq("agent_id", transaction.agent_id)
+            .eq("is_active", true)
+            .maybeSingle()
+
+          // Load cap tracking
+          const { data: capData } = await supabase
+            .from("agent_cap_tracking")
+            .select("cap_paid_to_date, cap_amount, is_capped")
+            .eq("agent_id", transaction.agent_id)
+            .maybeSingle()
+
+          const effectiveSplit = capData?.is_capped ? 100 : (profile?.split_percent ?? comm.split_percentage ?? 70)
+          const brokerageFee = capData?.is_capped ? 0 : grossCommission * ((100 - effectiveSplit) / 100)
+          const transactionFee = profile?.transaction_fee_value ?? 0
+          const agentNet = grossCommission - brokerageFee - transactionFee
+
+          // Build distributions
+          const distributions: Record<string, unknown>[] = []
+          distributions.push({
+            transaction_id: transaction.id,
+            brokerage_id: transaction.brokerage_id,
+            agent_id: transaction.agent_id,
+            distribution_type: "agent",
+            calculation_type: "percent",
+            calculation_value: effectiveSplit,
+            calculated_amount: agentNet,
+            source_of_funds: "brokerage",
+            cap_applied: capData?.is_capped ?? false,
+            status: "pending",
+          })
+          if (brokerageFee > 0) {
+            distributions.push({
+              transaction_id: transaction.id,
+              brokerage_id: transaction.brokerage_id,
+              distribution_type: "brokerage",
+              calculation_type: "percent",
+              calculation_value: 100 - effectiveSplit,
+              calculated_amount: brokerageFee,
+              source_of_funds: "brokerage",
+              cap_applied: false,
+              status: "pending",
+            })
+          }
+          if (transactionFee > 0) {
+            distributions.push({
+              transaction_id: transaction.id,
+              brokerage_id: transaction.brokerage_id,
+              agent_id: transaction.agent_id,
+              distribution_type: "fee",
+              calculation_type: "flat",
+              calculation_value: transactionFee,
+              calculated_amount: transactionFee,
+              source_of_funds: "agent",
+              status: "pending",
+            })
+          }
+
+          // Insert distributions (skip if already exist for this transaction)
+          const { data: existing } = await supabase
+            .from("commission_distributions")
+            .select("id")
+            .eq("transaction_id", transaction.id)
+            .limit(1)
+
+          if (!existing || existing.length === 0) {
+            await supabase.from("commission_distributions").insert(distributions).catch(() => {})
+          }
+
+          // Update cap tracking
+          if (!capData?.is_capped && brokerageFee > 0) {
+            const newPaid = (capData?.cap_paid_to_date ?? 0) + brokerageFee
+            const nowCapped = newPaid >= (capData?.cap_amount ?? 999999)
+            await supabase
+              .from("agent_cap_tracking")
+              .update({ cap_paid_to_date: newPaid, is_capped: nowCapped })
+              .eq("agent_id", transaction.agent_id)
+              .catch(() => {})
+          }
+
+          // Upsert agent_earnings (increment into YTD row)
+          await supabase
+            .from("agent_earnings")
+            .upsert(
+              {
+                agent_id: transaction.agent_id,
+                brokerage_id: transaction.brokerage_id,
+                period_type: "ytd",
+                period_label: `${new Date().getFullYear()}`,
+                gross_commission: grossCommission,
+                agent_net: agentNet,
+                brokerage_net: brokerageFee,
+                total_fees: transactionFee,
+                transaction_count: 1,
+              },
+              { onConflict: "agent_id,period_type,period_label" },
+            )
+            .catch(() => {})
+
+          amount = agentNet
         }
         if (comm.split_percentage) amount = amount * (comm.split_percentage / 100)
         return { id: comm.id, calculated_amount: amount }

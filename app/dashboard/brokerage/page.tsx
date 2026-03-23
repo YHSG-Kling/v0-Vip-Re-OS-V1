@@ -88,6 +88,7 @@ export default async function BrokerageDashboard({
     transactionsResult,
     providerStatusResult,
     unassignedLeadsResult,
+    pendingDistributionsResult,
   ] = await Promise.all([
     getBrokerageDashboard(brokerageId),
     forecastBrokerageRevenue(brokerageId, 3),
@@ -142,9 +143,29 @@ export default async function BrokerageDashboard({
       .eq("brokerage_id", brokerageId)
       .is("assigned_agent_id", null)
       .eq("is_active", true),
+    // Pending brokerage commission distributions
+    supabase
+      .from("commission_distributions")
+      .select("id, calculated_amount, status, created_at, transaction_id")
+      .eq("brokerage_id", brokerageId)
+      .eq("distribution_type", "brokerage")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(20),
   ])
 
   const { agents, activeTransactions, complianceRate, totalGCI, pendingCommissions } = dashboard
+
+  const pendingDistributions = pendingDistributionsResult.data ?? []
+  const totalPendingBrokerageCommission = pendingDistributions.reduce(
+    (sum: number, d: { calculated_amount: number | null }) => sum + (d.calculated_amount ?? 0),
+    0,
+  )
+  const now = new Date()
+  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const expectedThisMonth = pendingDistributions.filter((d: { created_at: string }) => {
+    return new Date(d.created_at) >= thisMonthStart
+  }).reduce((sum: number, d: { calculated_amount: number | null }) => sum + (d.calculated_amount ?? 0), 0)
 
   // Process fatigue data
   const fatigueBuyers = (fatigueResult.success ? fatigueResult.buyers : []) || []
@@ -431,6 +452,60 @@ export default async function BrokerageDashboard({
                 <div className="text-orange-700">
                   <span className="font-bold">{licenseStatus.expiringLicenses.length}</span> Expiring within 60 days
                 </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Pending Commission Receivables */}
+      {pendingDistributions.length > 0 && (
+        <Card className="border-amber-200">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <DollarSign className="h-5 w-5 text-amber-600" />
+                Pending Commission Receivables
+              </CardTitle>
+              <div className="flex items-center gap-4 text-sm text-right">
+                <div>
+                  <p className="text-xs text-muted-foreground">Total Pending</p>
+                  <p className="font-bold text-amber-700">
+                    {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(totalPendingBrokerageCommission)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Expected This Month</p>
+                  <p className="font-bold text-green-700">
+                    {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(expectedThisMonth)}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-1">
+              {pendingDistributions.slice(0, 8).map((d: { id: string; transaction_id: string; calculated_amount: number | null; created_at: string }) => (
+                <div key={d.id} className="flex items-center justify-between py-1.5 border-b border-border/50 last:border-0">
+                  <Link
+                    href={`/dashboard/transactions/${d.transaction_id}/cda`}
+                    className="text-sm text-foreground underline-offset-2 hover:underline"
+                  >
+                    View CDA
+                  </Link>
+                  <div className="flex items-center gap-4 text-sm">
+                    <span className="text-muted-foreground">{new Date(d.created_at).toLocaleDateString()}</span>
+                    <span className="font-medium">
+                      {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(d.calculated_amount ?? 0)}
+                    </span>
+                    <Badge variant="secondary" className="text-xs">Pending</Badge>
+                  </div>
+                </div>
+              ))}
+              {pendingDistributions.length > 8 && (
+                <p className="text-xs text-muted-foreground text-center pt-1">
+                  +{pendingDistributions.length - 8} more pending
+                </p>
               )}
             </div>
           </CardContent>
