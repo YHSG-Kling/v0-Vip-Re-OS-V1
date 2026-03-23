@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { generateVideoFromScript } from "@/app/actions/video-generation"
 import { getAgentSettings } from "@/app/actions/agent-settings"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { toast } from "sonner"
 
 interface VideoGenerationButtonsProps {
   script: string
@@ -59,7 +60,7 @@ export function VideoGenerationButtons({
 
   const handleGenerate = async (type: "avatar" | "voice") => {
     if (!script || !script.trim()) {
-      alert("Please provide script content before generating video")
+      toast.error("Script content required")
       return
     }
 

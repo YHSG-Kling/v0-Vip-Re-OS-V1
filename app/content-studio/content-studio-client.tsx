@@ -50,6 +50,7 @@ import { getAgentSettings } from "@/app/actions/agent-settings"
 import { cn } from "@/lib/utils" // Added for styling
 import { Checkbox } from "@/components/ui/checkbox"
 import { useRouter } from "next/navigation" // Added for client-side navigation
+import { toast } from "sonner"
 
 interface ContentStudioClientProps {
   userId?: string
@@ -221,11 +222,11 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       const count = bulkContentPeriod === "week" ? 7 : bulkContentPeriod === "month" ? 30 : 365
       const result = await generateContentIdeas(`bulk-${bulkContentPeriod}`, userId, userRole)
       if (result.success) {
-        alert(`✅ Generated ${count} pieces of content! Check your Social Planner to schedule.`)
+        toast.success(`Generated ${count} pieces of content`)
         loadData()
       }
     } catch (error) {
-      alert("Failed to generate bulk content")
+      toast.error("Content generation failed")
     } finally {
       setIsBulkGenerating(false)
     }
@@ -242,11 +243,11 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
           content: content.text || content.title,
         })
       }
-      alert(`✅ Content pushed to ${channels.join(", ")}!`)
+      toast.success(`Pushed to ${channels.join(", ")}`)
       setSelectedOmniChannel([])
       loadData()
     } catch (error) {
-      alert("Failed to push content")
+      toast.error("Push failed")
     } finally {
       setIsProcessing(null)
     }
@@ -272,11 +273,11 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
 
   async function handleCreateNewsletter() {
     if (!userId) {
-      alert("Unable to create newsletter: user not authenticated.")
+      toast.error("Sign in required")
       return
     }
     if (!brokerageId) {
-      alert("Brokerage profile is still loading. Please wait a moment and try again.")
+      toast.info("Loading brokerage profile...")
       return
     }
     setIsProcessing("create-newsletter")
@@ -302,12 +303,12 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
           body: contentResult.content ?? "",
           topic,
         })
-        alert("Newsletter drafted! Review and copy the content below.")
+        toast.success("Newsletter drafted — check Social Planner")
       } else {
-        alert(`Newsletter generation failed: ${contentResult?.error ?? "Unknown error"}`)
+        toast.error(contentResult?.error ?? "Generation failed")
       }
     } catch {
-      alert("Newsletter generation failed. Please try again.")
+      toast.error("Newsletter generation failed")
     } finally {
       setIsCreatingNewsletter(false)
       setIsProcessing(null)
@@ -316,11 +317,11 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
 
   async function handleCreateMail() {
     if (!userId) {
-      alert("Unable to create campaign: user not authenticated.")
+      toast.error("Sign in required")
       return
     }
     if (!brokerageId) {
-      alert("Brokerage profile is still loading. Please wait a moment and try again.")
+      toast.info("Loading brokerage profile...")
       return
     }
     setIsProcessing("create-mail")
@@ -334,15 +335,15 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
         createdBy: userId,
       })
       if (result?.success) {
-        alert("Direct mail campaign created!")
+        toast.success("Campaign created")
         setIsCreatingMail(false)
         setNewMail({ title: "", mailType: "postcard", templateId: "listing_announce", contentHeadline: "", contentBody: "", contentCta: "", status: "draft" })
         loadData()
       } else {
-        alert(`Failed to create campaign: ${result?.error ?? "Unknown error"}`)
+        toast.error(result?.error ?? "Campaign failed")
       }
     } catch {
-      alert("Failed to create campaign. Please try again.")
+      toast.error("Campaign creation failed")
     } finally {
       setIsProcessing(null)
     }
@@ -384,14 +385,14 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
         })
         if (dbError) throw dbError
         setUploadProgress(100)
-        alert(`${file.name} uploaded successfully.`)
+        toast.success(`${file.name} uploaded`)
         setNewVideoTitle("")
         loadData()
       } else {
         throw new Error("Failed to get public URL")
       }
     } catch (err: any) {
-      alert(`Upload failed: ${err?.message ?? "Unknown error"}`)
+      toast.error(`Upload failed: ${err?.message ?? "Unknown error"}`)
     } finally {
       setIsUploading(false)
       setUploadProgress(0)
@@ -413,14 +414,14 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       })
 
       if (result.success) {
-        alert(`✅ Video generation started! Check your dashboard for progress.`)
+        toast.success("Video generation queued")
         loadData()
       } else {
-        alert(`❌ Failed: ${result.error}`)
+        toast.error(result.error)
       }
     } catch (error) {
       console.error("[v0] Video generation error:", error)
-      alert("Failed to generate video")
+      toast.error("Video generation failed")
     } finally {
       setGeneratingVideo(null)
     }

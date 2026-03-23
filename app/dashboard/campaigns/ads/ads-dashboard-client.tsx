@@ -62,6 +62,7 @@ import {
 } from "lucide-react"
 import { predictPerformanceAction } from "@/app/actions/content-prediction"
 import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
+import { toast } from "sonner"
 import {
   createAdCampaign,
   generateAdCreative,
@@ -313,7 +314,7 @@ export function AdsDashboardClient({
       })
       router.refresh()
     } else {
-      alert(result.error || "Failed to create campaign")
+      toast.error(result.error || "Operation failed")
     }
 
     setIsLoading(false)
@@ -336,7 +337,7 @@ export function AdsDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to generate creatives")
+      toast.error(result.error || "Operation failed")
     }
 
     setIsGeneratingCreatives(false)
@@ -349,7 +350,7 @@ export function AdsDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to approve creative")
+      toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
   }
@@ -360,7 +361,7 @@ export function AdsDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to reject creative")
+      toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
   }
@@ -371,7 +372,7 @@ export function AdsDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to launch campaign")
+      toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
   }
@@ -382,7 +383,7 @@ export function AdsDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to approve campaign")
+      toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
   }
@@ -390,7 +391,7 @@ export function AdsDashboardClient({
   // Audience handlers
   const handleCreateAudience = async () => {
     if (!newAudience.consentBasis.trim()) {
-      alert("Consent basis is REQUIRED for legal compliance. Please provide a valid consent basis.")
+      toast.error("Consent basis required for legal compliance")
       return
     }
 
@@ -424,7 +425,7 @@ export function AdsDashboardClient({
       })
       router.refresh()
     } else {
-      alert(result.error || "Failed to create audience")
+      toast.error(result.error || "Operation failed")
     }
 
     setIsLoading(false)
@@ -436,7 +437,7 @@ export function AdsDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to sync audience")
+      toast.error(result.error || "Operation failed")
     }
     setIsSyncing(null)
   }
@@ -447,7 +448,7 @@ export function AdsDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to approve audience")
+      toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
   }
