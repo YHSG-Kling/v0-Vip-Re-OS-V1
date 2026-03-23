@@ -9,6 +9,8 @@ import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft } from "@/app/actions/portal-messages"
 import { generateCopilotPlan } from "@/app/actions/workflows"
+import { getBuyerInsights } from "@/app/actions/buyer-insights"
+import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -120,6 +122,8 @@ export default function CRMPage() {
   const [conversationIntelligence, setConversationIntelligence] = useState<any>(null)
   // Lead conversion probability — keyed by contact.id, High/Medium only per acceptance criteria
   const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
+  const [buyerInsights, setBuyerInsights] = useState<any>(null)
+  const [fatigueData, setFatigueData] = useState<any>(null)
   const [referralGenerating, setReferralGenerating] = useState(false)
   const [noteSaving, setNoteSaving] = useState(false)
 
@@ -184,6 +188,8 @@ export default function CRMPage() {
 
       setDetailLoading(true)
       setIsaHandoffContext(null)
+      setBuyerInsights(null)
+      setFatigueData(null)
       try {
         // Parallel data loads
         const [contactResult, churnResult, autopilotResult, followUpResult, convIntelResult] =
@@ -197,6 +203,18 @@ export default function CRMPage() {
 
         if (contactResult?.success && contactResult.contact) {
           setSelectedContact(contactResult.contact)
+
+          // Non-blocking buyer intelligence load — only for buyer/renter contacts
+          const ct = contactResult.contact.contact_type?.toLowerCase() ?? ""
+          if (ct === "buyer" || ct === "renter" || !!contactResult.contact.buyer_stage) {
+            Promise.all([
+              getBuyerInsights(contactId).catch(() => null),
+              getBuyerFatigueScore(contactId).catch(() => null),
+            ]).then(([insights, fatigue]) => {
+              setBuyerInsights(insights ?? null)
+              setFatigueData(fatigue ?? null)
+            })
+          }
         }
 
         // Fetch ISA qualification data — non-blocking
@@ -506,6 +524,61 @@ export default function CRMPage() {
                           <span>{conversationIntelligence.objections[0]}</span>
                         </div>
                       )}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Buyer Intelligence — visible only for buyer/renter contacts */}
+                {isBuyerContact && (buyerInsights || fatigueData) && (
+                  <Card className="border-blue-200">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">Buyer Intelligence</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {fatigueData && (
+                        <div className={
+                          fatigueData.risk_level === "critical" ? "rounded p-2 text-sm bg-red-50 text-red-800" :
+                          fatigueData.risk_level === "high" ? "rounded p-2 text-sm bg-orange-50 text-orange-800" :
+                          fatigueData.risk_level === "moderate" ? "rounded p-2 text-sm bg-amber-50 text-amber-800" :
+                          "rounded p-2 text-sm bg-green-50 text-green-800"
+                        }>
+                          <p className="font-medium capitalize">{fatigueData.risk_level} Fatigue Risk</p>
+                          <p className="text-xs mt-0.5">
+                            Score: {fatigueData.fatigue_score}/100 &middot;{" "}
+                            {fatigueData.days_searching} days searching &middot;{" "}
+                            {fatigueData.total_showings} showings
+                          </p>
+                        </div>
+                      )}
+
+                      {buyerInsights?.prediction && (
+                        <div className="space-y-1 text-xs">
+                          {buyerInsights.prediction.predicted_ready_to_offer && (
+                            <p className="text-green-700 font-medium">Ready to make an offer</p>
+                          )}
+                          {buyerInsights.prediction.predicted_next_action && (
+                            <p className="text-blue-700">
+                              Next predicted action: {buyerInsights.prediction.predicted_next_action}
+                            </p>
+                          )}
+                          {buyerInsights.prediction.engagement_velocity && (
+                            <p className="text-muted-foreground capitalize">
+                              Engagement: {buyerInsights.prediction.engagement_velocity}
+                            </p>
+                          )}
+                          {buyerInsights.prediction.confidence && (
+                            <p className="text-muted-foreground">
+                              Confidence: {Math.round(buyerInsights.prediction.confidence * 100)}%
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      <Button size="sm" variant="outline" className="w-full" asChild>
+                        <Link href={`/dashboard/buyers/${selectedContactId}`}>
+                          Full Buyer Profile
+                        </Link>
+                      </Button>
                     </CardContent>
                   </Card>
                 )}
