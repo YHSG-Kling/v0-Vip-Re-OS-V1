@@ -167,6 +167,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Intelligence',
         icon: 'Brain',
         children: [
+          { id: 'intelligence-center', label: 'Intelligence Center', href: '/dashboard/brokerage/intelligence' },
           { id: 'deal-health', label: 'Deal Health', href: '/dashboard/brokerage/deal-health' },
           { id: 'fatigue', label: 'Agent Fatigue', href: '/dashboard/brokerage/fatigue' },
           { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap' },
@@ -328,6 +329,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Intelligence Suite',
         icon: 'Brain',
         children: [
+          { id: 'intelligence-center', label: 'Intelligence Center', href: '/dashboard/brokerage/intelligence' },
           { id: 'deal-health', label: 'Deal Health', href: '/dashboard/brokerage/deal-health' },
           { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap' },
           { id: 'patterns', label: 'Behavioral Patterns', href: '/dashboard/patterns' },

@@ -8,6 +8,7 @@ import { getHighFatigueBuyers, getBrokerageFatigueAlerts } from "@/app/actions/b
 import { getSystemProviderStatus } from "@/app/actions/settings/provider-settings-actions"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import Link from "next/link"
 import {
   Building2,
   Users,
@@ -17,6 +18,8 @@ import {
   Shield,
   FileText,
   Activity,
+  Brain,
+  ArrowRight,
 } from "lucide-react"
 import { BrokerageAgentList } from "@/components/brokerage/agent-list"
 import { BrokerageRevenueChart } from "@/components/brokerage/revenue-chart"
@@ -433,6 +436,24 @@ export default async function BrokerageDashboard({
           </CardContent>
         </Card>
       )}
+
+      {/* Intelligence Center CTA */}
+      <Link href="/dashboard/brokerage/intelligence">
+        <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
+          <CardContent className="py-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Brain className="h-5 w-5 text-foreground shrink-0" />
+              <div>
+                <p className="text-sm font-semibold">Intelligence Center</p>
+                <p className="text-xs text-muted-foreground">
+                  See your full operational picture — system health, farm, deals, market & more
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+          </CardContent>
+        </Card>
+      </Link>
 
       {/* Key Metrics Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
