@@ -58,7 +58,6 @@ import { LeadStatusBadge } from "@/app/components/leads/LeadStatusBadge"
 import {
   getLeadsAdmin,
   enrichLead,
-  convertLeadToContact as convertLeadToContactLegacy,
   rejectLead,
 } from "@/app/actions/lead-management"
 import { convertLeadToContact, listUnassignedLeads } from "@/app/actions/lead-lifecycle"
@@ -89,6 +88,7 @@ import { GhostRecoveryQueue } from "@/app/leads/components/GhostRecoveryQueue"
 import type { Lead, LeadScore, LeadIntent, LeadStatus, LeadSource } from "@/app/types/lead-management"
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 
 export default function LeadsPage() {
   const router = useRouter()
@@ -376,15 +376,6 @@ export default function LeadsPage() {
     setActionLoading(null)
   }
 
-  const handleConvert = async (leadId: string) => {
-    setActionLoading(leadId)
-    const result = await convertLeadToContactLegacy(leadId)
-    if (result.success) {
-      fetchLeads()
-    }
-    setActionLoading(null)
-  }
-
   const handleConvertToContact = async (lead: Lead) => {
     if (!agentId || !brokerageId) return
     setConvertingId(lead.id)
@@ -398,6 +389,10 @@ export default function LeadsPage() {
         }
         fetchLeads()
         setConvertConfirmLead(null)
+        const toastMsg = (result as any).portalInviteCreated
+          ? `${lead.first_name} converted — portal invite ready`
+          : `${lead.first_name} converted — add email to send portal`
+        toast.success(toastMsg)
         router.push(contactId ? `/crm?contact=${contactId}` : "/crm")
       }
     } catch {
@@ -1517,7 +1512,7 @@ export default function LeadsPage() {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => handleConvert(lead.id)}
+                                onClick={() => handleConvertToContact(lead)}
                                 disabled={actionLoading === lead.id || lead.status === "converted"}
                               >
                                 <UserPlus className="h-4 w-4" />

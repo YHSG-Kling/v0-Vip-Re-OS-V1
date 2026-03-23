@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 import Anthropic from "@anthropic-ai/sdk"
+import { createPortalInviteForContact } from "./portal-invites"
 
 // ============================================================================
 // Types
@@ -158,6 +159,27 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         return { success: false, error: "Failed to create contact" }
       }
       contactId = newContact.id
+
+      // Non-blocking portal invite with magic link for new home-value contacts.
+      // Resolve users.id from the resolved agent row if available.
+      if (resolvedAgentId) {
+        supabase
+          .from("agents")
+          .select("user_id")
+          .eq("id", resolvedAgentId)
+          .maybeSingle()
+          .then(({ data: agentRow }) => {
+            if (agentRow?.user_id) {
+              createPortalInviteForContact({
+                contactId: newContact.id,
+                brokerageId: resolvedBrokerageId!,
+                invitedByUserId: agentRow.user_id,
+                sendMagicLink: true,
+              }).catch(() => {})
+            }
+          })
+          .catch(() => {})
+      }
     } else {
       contactId = existingContact.id
     }
