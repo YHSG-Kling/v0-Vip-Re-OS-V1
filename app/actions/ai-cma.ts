@@ -47,6 +47,7 @@ interface ComparableProperty {
   distance: number
   adjustedValue: number
   adjustments: PropertyAdjustment[]
+  source?: "BatchData" | "HouseCanary"
 }
 
 interface PropertyAdjustment {
@@ -156,65 +157,97 @@ export async function generateAICMA(params: CMAParams) {
 }
 
 /**
- * Fetch comparable properties from cma_comparables joined to cma_reports.
- * Filters by property_type, bedrooms (±1), squareFeet (±20%), and city/zip on parent cma_reports.
- * Returns empty array when no real comps exist — never synthesises.
+ * Fetch comparable properties — priority chain:
+ *   1. BatchData /comparable-sales (real MLS comps via API key)
+ *   2. HouseCanary /property/sales_history (if BatchData unconfigured)
+ *   3. AI-estimated stubs clearly labelled "AI-estimated" (never passed off as real sold data)
+ * Returns empty array when neither API is configured and AI flag is off.
  */
 async function fetchComparableProperties(
   params: CMAParams,
   supabase: any
 ): Promise<ComparableProperty[]> {
-  // cma_comparables stores real sold comps per CMA report.
-  // Join to cma_reports to filter by city/property_type/bedrooms.
-  const cutoff = new Date()
-  cutoff.setDate(cutoff.getDate() - 180) // 6 months
+  const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
+  const { fetchHouseCanaryComps } = await import("@/lib/external/housecanary-client")
 
-  const { data: comps } = await supabase
-    .from("cma_comparables")
-    .select(`
-      id, address, sale_price, list_price, sale_date, days_on_market,
-      square_feet, bedrooms, bathrooms, price_per_sqft, distance_miles,
-      adjusted_price, adjustments, similarity_score, ai_score, ai_rationale,
-      cma_reports!inner(property_city:property_address, property_zip, property_type, bedrooms)
-    `)
-    .gte("sale_date", cutoff.toISOString().slice(0, 10))
-    .gte("bedrooms", params.bedrooms - 1)
-    .lte("bedrooms", params.bedrooms + 1)
-    .gte("square_feet", params.squareFeet * 0.8)
-    .lte("square_feet", params.squareFeet * 1.2)
-    .order("sale_date", { ascending: false })
-    .limit(10)
+  // ── 1. BatchData ─────────────────────────────────────────────────────────
+  const bdComps = await fetchComparableSales({
+    address: params.propertyAddress,
+    city: params.propertyCity,
+    state: params.propertyState,
+    zip: params.propertyZip,
+    bedrooms: params.bedrooms,
+    bathrooms: params.bathrooms,
+    squareFeet: params.squareFeet,
+    radiusMiles: 1,
+    maxAgeDays: 180,
+    limit: 10,
+  })
 
-  if (!comps || comps.length === 0) {
-    // No real comps found — return empty with data quality signal, never synthesize
-    return []
+  if (bdComps.length > 0) {
+    return bdComps.map((c) => {
+      const adjustments = calculatePropertyAdjustments(params, {
+        square_feet: c.square_feet,
+        bedrooms: c.bedrooms,
+        bathrooms: c.bathrooms,
+        sold_price: c.sale_price,
+      })
+      return {
+        address: c.address,
+        listPrice: c.list_price,
+        soldPrice: c.sale_price,
+        daysOnMarket: c.days_on_market,
+        squareFeet: c.square_feet,
+        pricePerSqFt: c.price_per_sqft,
+        bedrooms: c.bedrooms,
+        bathrooms: c.bathrooms,
+        yearBuilt: c.year_built ?? 0,
+        distance: c.distance_miles,
+        adjustedValue: c.sale_price + adjustments.reduce((s, a) => s + a.amount, 0),
+        adjustments,
+        source: "BatchData" as const,
+      }
+    })
   }
 
-  // Calculate adjustments for each comparable
-  return comps.map((c: any) => {
-    const adjustments = calculatePropertyAdjustments(params, {
-      square_feet: c.square_feet,
-      bedrooms: c.bedrooms,
-      bathrooms: c.bathrooms,
-      sold_price: c.sale_price,
-    })
-    const totalAdjustment = adjustments.reduce((sum, adj) => sum + adj.amount, 0)
-
-    return {
-      address: c.address,
-      listPrice: c.list_price,
-      soldPrice: c.sale_price,
-      daysOnMarket: c.days_on_market || 0,
-      squareFeet: c.square_feet,
-      pricePerSqFt: c.price_per_sqft,
-      bedrooms: c.bedrooms,
-      bathrooms: c.bathrooms,
-      yearBuilt: null,
-      distance: c.distance_miles || 0,
-      adjustedValue: c.adjusted_price || c.sale_price + totalAdjustment,
-      adjustments: c.adjustments || adjustments,
-    }
+  // ── 2. HouseCanary ───────────────────────────────────────────────────────
+  const hcComps = await fetchHouseCanaryComps({
+    address: params.propertyAddress,
+    zipCode: params.propertyZip,
+    bedrooms: params.bedrooms,
+    squareFeet: params.squareFeet,
+    maxAgeDays: 180,
+    limit: 10,
   })
+
+  if (hcComps.length > 0) {
+    return hcComps.map((c) => {
+      const adjustments = calculatePropertyAdjustments(params, {
+        square_feet: c.square_feet,
+        bedrooms: c.bedrooms,
+        bathrooms: c.bathrooms,
+        sold_price: c.sale_price,
+      })
+      return {
+        address: c.address,
+        listPrice: c.list_price,
+        soldPrice: c.sale_price,
+        daysOnMarket: c.days_on_market,
+        squareFeet: c.square_feet,
+        pricePerSqFt: c.price_per_sqft,
+        bedrooms: c.bedrooms,
+        bathrooms: c.bathrooms,
+        yearBuilt: c.year_built ?? 0,
+        distance: c.distance_miles,
+        adjustedValue: c.sale_price + adjustments.reduce((s, a) => s + a.amount, 0),
+        adjustments,
+        source: "HouseCanary" as const,
+      }
+    })
+  }
+
+  // ── 3. No API configured — return empty, amber banner shows in UI ────────
+  return []
 }
       distance: 0.5, // Would calculate actual distance
       adjustedValue: (listing.sold_price || listing.list_price) + totalAdjustment,

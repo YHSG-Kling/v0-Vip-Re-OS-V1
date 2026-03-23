@@ -127,6 +127,87 @@ export async function enrichPropertyWithBatchData(address: string): Promise<{
   }
 }
 
+// ─── Comparable Sales (for CMA) ──────────────────────────────────────────────
+export interface BatchDataComp {
+  address: string
+  city: string
+  state: string
+  zip: string
+  bedrooms: number
+  bathrooms: number
+  square_feet: number
+  sale_price: number
+  list_price: number
+  sale_date: string
+  days_on_market: number
+  price_per_sqft: number
+  distance_miles: number
+  year_built: number | null
+}
+
+export async function fetchComparableSales(params: {
+  address: string
+  city: string
+  state: string
+  zip?: string
+  bedrooms: number
+  bathrooms: number
+  squareFeet: number
+  radiusMiles?: number
+  maxAgeDays?: number
+  limit?: number
+}): Promise<BatchDataComp[]> {
+  if (!process.env.BATCHDATA_API_KEY) return []
+
+  try {
+    const response = await fetch(`${BATCHDATA_API_URL}/comparable-sales`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${BATCHDATA_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        address: params.address,
+        city: params.city,
+        state: params.state,
+        zip: params.zip,
+        bedrooms: params.bedrooms,
+        bathrooms: params.bathrooms,
+        square_feet: params.squareFeet,
+        radius_miles: params.radiusMiles ?? 1,
+        max_age_days: params.maxAgeDays ?? 180,
+        limit: params.limit ?? 10,
+      }),
+    })
+
+    if (!response.ok) {
+      console.error(`[BatchData] Comparable sales error: ${response.status} ${response.statusText}`)
+      return []
+    }
+
+    const data = await response.json()
+    return (data.comparables ?? data.results ?? []).map((c: any) => ({
+      address: c.address ?? '',
+      city: c.city ?? params.city,
+      state: c.state ?? params.state,
+      zip: c.zip ?? params.zip ?? '',
+      bedrooms: c.bedrooms ?? 0,
+      bathrooms: c.bathrooms ?? 0,
+      square_feet: c.square_feet ?? c.sqft ?? 0,
+      sale_price: c.sale_price ?? c.sold_price ?? 0,
+      list_price: c.list_price ?? c.sale_price ?? 0,
+      sale_date: c.sale_date ?? c.sold_date ?? '',
+      days_on_market: c.days_on_market ?? c.dom ?? 0,
+      price_per_sqft: c.price_per_sqft ?? (c.sale_price && c.square_feet ? Math.round(c.sale_price / c.square_feet) : 0),
+      distance_miles: c.distance_miles ?? c.distance ?? 0,
+      year_built: c.year_built ?? null,
+    }))
+  } catch (error) {
+    console.error('[BatchData] Comparable sales fetch error:', error)
+    return []
+  }
+}
+
 // ─── Market Stats (for Market Insight Generator) ─────────────────────────────
 export interface BatchDataMarketStats {
   median_sale_price: number
