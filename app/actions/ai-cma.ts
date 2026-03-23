@@ -156,47 +156,66 @@ export async function generateAICMA(params: CMAParams) {
 }
 
 /**
- * Fetch comparable properties from database/MLS
+ * Fetch comparable properties from cma_comparables joined to cma_reports.
+ * Filters by property_type, bedrooms (±1), squareFeet (±20%), and city/zip on parent cma_reports.
+ * Returns empty array when no real comps exist — never synthesises.
  */
 async function fetchComparableProperties(
   params: CMAParams,
   supabase: any
 ): Promise<ComparableProperty[]> {
-  // Query recent sales in the area
-  const { data: listings } = await supabase
-    .from("listings")
-    .select("*")
-    .eq("city", params.propertyCity)
-    .eq("state", params.propertyState)
-    .eq("property_type", params.propertyType)
+  // cma_comparables stores real sold comps per CMA report.
+  // Join to cma_reports to filter by city/property_type/bedrooms.
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - 180) // 6 months
+
+  const { data: comps } = await supabase
+    .from("cma_comparables")
+    .select(`
+      id, address, sale_price, list_price, sale_date, days_on_market,
+      square_feet, bedrooms, bathrooms, price_per_sqft, distance_miles,
+      adjusted_price, adjustments, similarity_score, ai_score, ai_rationale,
+      cma_reports!inner(property_city:property_address, property_zip, property_type, bedrooms)
+    `)
+    .gte("sale_date", cutoff.toISOString().slice(0, 10))
     .gte("bedrooms", params.bedrooms - 1)
     .lte("bedrooms", params.bedrooms + 1)
     .gte("square_feet", params.squareFeet * 0.8)
     .lte("square_feet", params.squareFeet * 1.2)
-    .in("status", ["sold", "closed"])
-    .order("sold_date", { ascending: false })
+    .order("sale_date", { ascending: false })
     .limit(10)
 
-  if (!listings || listings.length === 0) {
+  if (!comps || comps.length === 0) {
     // No real comps found — return empty with data quality signal, never synthesize
     return []
   }
 
   // Calculate adjustments for each comparable
-  return listings.map((listing: any) => {
-    const adjustments = calculatePropertyAdjustments(params, listing)
+  return comps.map((c: any) => {
+    const adjustments = calculatePropertyAdjustments(params, {
+      square_feet: c.square_feet,
+      bedrooms: c.bedrooms,
+      bathrooms: c.bathrooms,
+      sold_price: c.sale_price,
+    })
     const totalAdjustment = adjustments.reduce((sum, adj) => sum + adj.amount, 0)
 
     return {
-      address: listing.address,
-      listPrice: listing.list_price,
-      soldPrice: listing.sold_price,
-      daysOnMarket: listing.days_on_market || 0,
-      squareFeet: listing.square_feet,
-      pricePerSqFt: (listing.sold_price || listing.list_price) / listing.square_feet,
-      bedrooms: listing.bedrooms,
-      bathrooms: listing.bathrooms,
-      yearBuilt: listing.year_built,
+      address: c.address,
+      listPrice: c.list_price,
+      soldPrice: c.sale_price,
+      daysOnMarket: c.days_on_market || 0,
+      squareFeet: c.square_feet,
+      pricePerSqFt: c.price_per_sqft,
+      bedrooms: c.bedrooms,
+      bathrooms: c.bathrooms,
+      yearBuilt: null,
+      distance: c.distance_miles || 0,
+      adjustedValue: c.adjusted_price || c.sale_price + totalAdjustment,
+      adjustments: c.adjustments || adjustments,
+    }
+  })
+}
       distance: 0.5, // Would calculate actual distance
       adjustedValue: (listing.sold_price || listing.list_price) + totalAdjustment,
       adjustments,

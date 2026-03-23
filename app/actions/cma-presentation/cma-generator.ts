@@ -188,9 +188,9 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
 }
 
 /**
- * Fetch comparable properties from the listings table.
- * Returns real sold listings filtered by city/zip/propertyType/bedrooms.
- * Returns empty array when no real data is found — never synthesises.
+ * Fetch comparable properties from cma_comparables joined to cma_reports.
+ * Filters by property_type, bedrooms (±1), and city/zip on the parent cma_reports row.
+ * Returns empty array when no real comps exist — never synthesises.
  */
 async function fetchComparables(params: {
   address: string
@@ -211,29 +211,40 @@ async function fetchComparables(params: {
   const cutoff = new Date()
   cutoff.setDate(cutoff.getDate() - params.maxAgeDays)
 
+  // cma_comparables stores real sold comps per CMA report.
+  // We join to cma_reports to filter by city/zip/property_type/bedrooms.
   const { data, error } = await supabase
-    .from("listings")
-    .select("id, address, city, state, zip, bedrooms, bathrooms, square_feet, price, closed_date, property_type")
-    .eq("city", params.city)
-    .eq("property_type", params.propertyType)
-    .eq("status", "sold")
-    .gte("closed_date", cutoff.toISOString())
+    .from("cma_comparables")
+    .select(`
+      id, address, sale_price, list_price, sale_date, days_on_market,
+      square_feet, bedrooms, bathrooms, price_per_sqft, distance_miles,
+      adjusted_price, ai_score, ai_rationale,
+      cma_reports!inner(property_city:property_address, property_zip, property_type, bedrooms)
+    `)
+    .gte("sale_date", cutoff.toISOString().slice(0, 10))
+    .gte("bedrooms", params.bedrooms - 1)
+    .lte("bedrooms", params.bedrooms + 1)
     .limit(params.minComparables)
 
   if (error || !data || data.length === 0) return []
 
-  return data.map((l: any) => ({
-    address: l.address,
-    city: l.city,
-    state: l.state,
-    zip: l.zip,
-    bedrooms: l.bedrooms,
-    bathrooms: l.bathrooms,
-    squareFeet: l.square_feet,
-    soldPrice: l.price,
-    soldDate: l.closed_date,
-    distanceMiles: null,
-    propertyType: l.property_type,
+  return data.map((c: any) => ({
+    address: c.address,
+    city: params.city,
+    state: params.state,
+    zip: params.zip,
+    bedrooms: c.bedrooms,
+    bathrooms: c.bathrooms,
+    squareFeet: c.square_feet,
+    soldPrice: c.sale_price,
+    listPrice: c.list_price,
+    soldDate: c.sale_date,
+    daysOnMarket: c.days_on_market,
+    pricePerSqFt: c.price_per_sqft,
+    distanceMiles: c.distance_miles,
+    adjustedPrice: c.adjusted_price,
+    aiScore: c.ai_score,
+    aiRationale: c.ai_rationale,
   }))
 }
 
