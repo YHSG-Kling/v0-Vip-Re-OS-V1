@@ -1,6 +1,7 @@
 "use server"
 
 import { supabaseService } from "@/services/supabaseService"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
 import { sendTwilioSMS, sendSendGridEmail } from "./external-services"
 import { incrementUsage } from "@/lib/usage"
@@ -421,35 +422,58 @@ export async function triggerCMAPackage(
 
 export async function grantPortalAccess(email: string, role: string, dealId: string, name: string) {
   try {
-    console.log("[Workflow] Granting portal access")
+    const supabase = createServiceClient()
 
-    await supabaseService.createRecord("portal_users", {
-      email,
-      name,
-      role,
-      transaction_id: dealId,
-      access_level: role === "client" ? "limited" : "full",
-      status: "active",
-      invited_at: new Date().toISOString(),
-    })
+    const { data: tx } = await supabase
+      .from('transactions')
+      .select('id, buyer_contact_id, seller_contact_id, brokerage_id, agent_id')
+      .eq('id', dealId)
+      .maybeSingle()
 
-    await supabaseService.createRecord("transaction_events", {
-      transaction_id: dealId,
-      event_type: "portal_access_granted",
-      description: `Portal access granted to ${name} (${role})`,
-      created_at: new Date().toISOString(),
-    })
+    if (!tx) return { success: false, error: 'Transaction not found' }
 
-    return {
-      success: true,
-      message: `Portal access granted to ${name}`,
+    const contactId = role === 'seller' ? tx.seller_contact_id : tx.buyer_contact_id
+
+    if (contactId) {
+      // Resolve users.id from agent row
+      let invitedByUserId = tx.agent_id
+      if (tx.agent_id) {
+        const { data: ag } = await supabase
+          .from('agents')
+          .select('user_id')
+          .eq('id', tx.agent_id)
+          .maybeSingle()
+        invitedByUserId = ag?.user_id ?? tx.agent_id
+      }
+
+      const { createPortalInviteForContact } = await import('./portal-invites')
+      await createPortalInviteForContact({
+        contactId,
+        brokerageId: tx.brokerage_id,
+        invitedByUserId,
+        sendMagicLink: true,
+      }).catch(() => {})
     }
+
+    await supabase.from('activities').insert({
+      contact_id: contactId ?? null,
+      activity_type: 'portal_access_granted',
+      title: 'Portal Access Granted',
+      description: `Portal access granted to ${name} (${role})`,
+      brokerage_id: tx.brokerage_id,
+    }).catch(() => {})
+
+    await supabase.from('portal_access_logs').insert({
+      contact_id: contactId ?? null,
+      brokerage_id: tx.brokerage_id,
+      action: 'access_granted',
+      metadata: { role, name, transaction_id: dealId },
+    }).catch(() => {})
+
+    return { success: true, message: `Portal access granted to ${name}` }
   } catch (error: any) {
     console.error("[Workflow] Grant portal access failed:", error)
-    return {
-      success: false,
-      error: error.message,
-    }
+    return { success: false, error: error.message }
   }
 }
 
