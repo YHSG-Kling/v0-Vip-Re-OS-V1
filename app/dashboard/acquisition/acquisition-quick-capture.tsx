@@ -57,9 +57,9 @@ export function AcquisitionQuickCapture() {
         last_name: lastName.trim(),
         email: email.trim(),
         phone: phone.trim(),
-        source,
+        lead_source: source,
         status: "active",
-      })
+      } as any)
       if (result.success && result.contact) {
         setCreatedContactId(result.contact.id)
         toast({ title: "Contact added", description: `${firstName} ${lastName}`.trim() })

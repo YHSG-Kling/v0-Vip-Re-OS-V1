@@ -146,9 +146,9 @@ export function AcquisitionOpenHouseCard({
               {createdEventId ? (
                 <div className="flex flex-col gap-2">
                   <p className="text-sm font-medium text-foreground">Open house created.</p>
-                  <Link href={`/open-house/${createdEventId}/signin`}>
+                  <Link href={`/dashboard/listings/${selectedListingId}/open-house`}>
                     <Button size="sm" className="w-full gap-2">
-                      Open Sign-In Page
+                      Open Sign-In Kiosk
                       <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                     </Button>
                   </Link>
@@ -247,6 +247,13 @@ export function AcquisitionOpenHouseCard({
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </Button>
           </Link>
+          {selectedListingId && (
+            <Link href={`/dashboard/listings/${selectedListingId}/open-house`}>
+              <Button className="w-full" size="sm" variant="outline">
+                Open Sign-In Kiosk
+              </Button>
+            </Link>
+          )}
         </div>
       </CardContent>
     </Card>
