@@ -52,7 +52,11 @@ import {
   TrendingDown,
   Landmark,
   ExternalLink,
+  Plus,
 } from "lucide-react"
+import { format } from "date-fns"
+import { createClient } from "@/lib/supabase/client"
+import { DepositTrackerDialog } from "@/app/dashboard/financials/agent/components/deposit-tracker-dialog"
 import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
 import { predictDealCloseProbability } from "@/app/actions/ai-predictions"
 import {
@@ -442,6 +446,32 @@ export function TransactionDetailClient({
       setTransparencyUpdates(u)
     })
   }, [transaction.id])
+
+  // Deposits state
+  const [deposits, setDeposits] = useState<Array<{
+    id: string
+    deposit_type: string
+    amount: number
+    received_date: string
+    due_date: string | null
+    escrow_company: string | null
+    check_number: string | null
+    status: string
+    delivered_to_escrow_at: string | null
+    notes: string | null
+  }>>([])
+
+  useEffect(() => {
+    const supabase = createClient()
+    supabase
+      .from("deposits")
+      .select("id, deposit_type, amount, received_date, due_date, escrow_company, check_number, status, delivered_to_escrow_at, notes")
+      .eq("transaction_id", transaction.id)
+      .order("received_date", { ascending: false })
+      .then(({ data }) => {
+        if (data) setDeposits(data)
+      })
+  }, [transaction.id])
   const [docChecklist, setDocChecklist] = useState<any[]>([])
   const [checklistLoading, setChecklistLoading] = useState(false)
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set())
@@ -455,7 +485,7 @@ export function TransactionDetailClient({
   const missingContractDate = !transaction.contract_date
   const missingCompliance = !transaction.compliance_passed_at
 
-  // ─── HANDLERS ────────────────────────────────────────────────────────────────
+  // ──�� HANDLERS ────────────────────────────────────────────────────────────────
 
   async function handleAdvanceClick(stage: TransactionStage) {
     setTargetStage(stage)
@@ -1213,6 +1243,13 @@ export function TransactionDetailClient({
                 <Home className="h-3 w-3 mr-1" />
                 Title & Escrow
               </TabsTrigger>
+              <TabsTrigger value="deposits" className="text-xs">
+                <Landmark className="h-3 w-3 mr-1" />
+                Deposits
+                {deposits.some(d => d.status === "received" && d.due_date && new Date(d.due_date) < new Date()) && (
+                  <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-red-500" />
+                )}
+              </TabsTrigger>
               <TabsTrigger value="inspection" className="text-xs">
                 <Shield className="h-3 w-3 mr-1" />
                 Inspection
@@ -1448,6 +1485,123 @@ export function TransactionDetailClient({
                       </Alert>
                     )}
                   </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* Deposits Tab */}
+            <TabsContent value="deposits" className="mt-4">
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Landmark className="h-4 w-4" />
+                      Deposits & Earnest Money
+                    </CardTitle>
+                    <DepositTrackerDialog
+                      agentId={transaction.agent_id}
+                      transactionId={transaction.id}
+                      propertyAddress={transaction.property_address}
+                      trigger={
+                        <Button size="sm" variant="outline">
+                          <Plus className="h-3 w-3 mr-1" /> Record Deposit
+                        </Button>
+                      }
+                    />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {deposits.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No deposits recorded yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {deposits.map((dep) => {
+                        const isOverdue =
+                          dep.status === "received" &&
+                          dep.due_date != null &&
+                          new Date(dep.due_date) < new Date()
+                        return (
+                          <div
+                            key={dep.id}
+                            className={cn(
+                              "flex items-center justify-between rounded border p-3 gap-3",
+                              isOverdue && "border-red-300 bg-red-50"
+                            )}
+                          >
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline" className="capitalize">
+                                  {dep.deposit_type.replace(/_/g, " ")}
+                                </Badge>
+                                <span className="text-sm font-medium">
+                                  ${dep.amount?.toLocaleString()}
+                                </span>
+                                <Badge
+                                  className={cn(
+                                    "text-xs",
+                                    dep.status === "delivered"
+                                      ? "bg-green-100 text-green-800 border-green-200"
+                                      : dep.status === "received"
+                                      ? "bg-blue-100 text-blue-800 border-blue-200"
+                                      : dep.status === "forfeited"
+                                      ? "bg-red-100 text-red-800 border-red-200"
+                                      : "bg-gray-100 text-gray-800 border-gray-200"
+                                  )}
+                                >
+                                  {dep.status}
+                                </Badge>
+                                {isOverdue && (
+                                  <Badge variant="destructive" className="text-xs">
+                                    OVERDUE
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                Received: {format(new Date(dep.received_date), "MMM d, yyyy")}
+                                {dep.due_date &&
+                                  ` · Due to escrow: ${format(new Date(dep.due_date), "MMM d, yyyy")}`}
+                                {dep.escrow_company && ` · ${dep.escrow_company}`}
+                                {dep.check_number && ` · Check #${dep.check_number}`}
+                              </p>
+                              {dep.delivered_to_escrow_at && (
+                                <p className="text-xs text-green-600">
+                                  Delivered {format(new Date(dep.delivered_to_escrow_at), "MMM d, yyyy h:mm a")}
+                                </p>
+                              )}
+                            </div>
+                            {dep.status === "received" && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={async () => {
+                                  const supabase = createClient()
+                                  const now = new Date().toISOString()
+                                  const { error } = await supabase
+                                    .from("deposits")
+                                    .update({ status: "delivered", delivered_to_escrow_at: now })
+                                    .eq("id", dep.id)
+                                  if (!error) {
+                                    setDeposits((prev) =>
+                                      prev.map((d) =>
+                                        d.id === dep.id
+                                          ? { ...d, status: "delivered", delivered_to_escrow_at: now }
+                                          : d
+                                      )
+                                    )
+                                    toast.success("Deposit marked as delivered to escrow")
+                                  } else {
+                                    toast.error("Failed to update deposit")
+                                  }
+                                }}
+                              >
+                                Mark Delivered
+                              </Button>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </TabsContent>

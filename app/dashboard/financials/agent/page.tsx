@@ -27,7 +27,7 @@ import {
 } from "../components/os"
 import { getProviderConnectionStatus } from "@/app/actions/accounting-sync"
 import { AgentFinancialsClient } from "./agent-financials-client"
-import { DepositTrackerDialog } from "./components/deposit-tracker-dialog"
+
 
 export const dynamic = "force-dynamic"
 
@@ -454,11 +454,12 @@ export default async function AgentFinancialsPage() {
                         <Badge variant="secondary" className="text-xs">
                           {deal.transactions?.stage || "In Progress"}
                         </Badge>
-                        <DepositTrackerDialog
-                          agentId={agentId}
-                          transactionId={deal.transaction_id}
-                          propertyAddress={deal.transactions?.property_address}
-                        />
+                        <a
+                          href={`/dashboard/transactions/${deal.transaction_id}#deposits`}
+                          className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                        >
+                          View Deposits
+                        </a>
                       </div>
                     </div>
                     <p className="font-semibold text-amber-600 ml-3 shrink-0">
