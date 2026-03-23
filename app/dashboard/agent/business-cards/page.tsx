@@ -325,7 +325,7 @@ export default function BusinessCardsPage() {
 
               {result.contactId && (
                 <a
-                  href={`/contacts/${result.contactId}`}
+                  href={`/crm?contact=${result.contactId}`}
                   className="inline-flex items-center gap-1 text-sm text-primary underline underline-offset-2"
                 >
                   View contact record
@@ -415,7 +415,7 @@ export default function BusinessCardsPage() {
                       <td className="px-4 py-3">
                         {s.contact_id ? (
                           <a
-                            href={`/contacts/${s.contact_id}`}
+                            href={`/crm?contact=${s.contact_id}`}
                             className="text-primary underline underline-offset-2"
                           >
                             View
@@ -560,7 +560,7 @@ export default function BusinessCardsPage() {
                   <button
                     onClick={() => {
                       dismissSheet()
-                      router.push(`/contacts/${postScanContact.id}`)
+                      router.push(`/crm?contact=${postScanContact.id}`)
                     }}
                     className="w-full flex items-center justify-between rounded-xl border border-foreground/10 bg-muted/40 px-4 py-3 text-left hover:bg-muted/70 transition-colors"
                   >
