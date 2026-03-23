@@ -21,6 +21,7 @@ import {
 import { ListingAgreementStatusCard } from "./components/listing-agreement-status-card"
 import { DecisionHistoryPanel } from "./components/decision-history-panel"
 import { ComingSoonCommandCard } from "./components/coming-soon-command-card"
+import { ListingPacketPanel } from "./components/listing-packet-panel"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -289,6 +290,15 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
         )}
 
         <DecisionHistoryPanel listingId={listingId} />
+
+        <div className="mb-6">
+          <ListingPacketPanel
+            listingId={listingId}
+            agentId={user.id}
+            brokerageId={userRow.brokerage_id}
+            listing={listing}
+          />
+        </div>
 
         <SellerCoachingCard
           listingId={listingId}
