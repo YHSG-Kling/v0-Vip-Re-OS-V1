@@ -109,7 +109,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         children: [
           { id: 'business-cards', label: 'Business Cards', href: '/dashboard/agent/business-cards' },
           { id: 'qr-codes', label: 'QR Codes', href: '/dashboard/agent/qr-codes' },
-          { id: 'home-value', label: 'Home Value Tool', href: '/home-value' },
+          { id: 'home-value', label: 'Home Value Tool', href: '/dashboard/tools/home-value' },
         ],
       },
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell' },

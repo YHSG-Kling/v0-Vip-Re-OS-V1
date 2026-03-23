@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { getPageConfig } from "@/app/actions/home-value"
 import { HomeValuePageBuilderClient } from "./HomeValuePageBuilderClient"
 
@@ -35,23 +36,40 @@ export default async function HomeValuePageBuilderPage() {
     )
   }
 
-  // Resolve agent slug from valuation_requests or contacts — used for the embed URL.
-  // We store the slug in ref_agent_slug on valuation_requests. The canonical
-  // slug is the agent's user id (always available) so we use that as the fallback.
   const agentSlug = agentRow.user_id
+  const service = createServiceClient()
 
-  // Load existing config
-  const existingConfig = await getPageConfig(agentRow.id)
+  // Load config + requests in parallel
+  const [existingConfig, requestsResult] = await Promise.all([
+    getPageConfig(agentRow.id),
+    service
+      .from("valuation_requests")
+      .select(
+        `id, property_address, bedrooms, bathrooms, square_feet, condition,
+         qualification_data, utm_source, submitted_at, contact_id,
+         contacts(first_name, last_name, email)`
+      )
+      .eq("brokerage_id", agentRow.brokerage_id)
+      .order("submitted_at", { ascending: false })
+      .limit(30),
+  ])
+
+  const allRequests = requestsResult.data ?? []
+  const newRequests = allRequests.filter((r) => !r.contact_id)
+  const convertedRequests = allRequests.filter((r) => r.contact_id)
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? ""
 
   return (
     <HomeValuePageBuilderClient
       agentId={agentRow.id}
+      userId={user.id}
       brokerageId={agentRow.brokerage_id}
       agentSlug={agentSlug}
       baseUrl={baseUrl}
       initialConfig={existingConfig}
+      newRequests={newRequests}
+      convertedRequests={convertedRequests}
     />
   )
 }

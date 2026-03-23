@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import Anthropic from "@anthropic-ai/sdk"
 import { createPortalInviteForContact } from "./portal-invites"
@@ -55,6 +56,84 @@ interface AIValuationResponse {
     sale_date: string
     distance_miles: number
   }>
+}
+
+// ============================================================================
+// convertValuationRequestToContact
+// ============================================================================
+
+export async function convertValuationRequestToContact(params: {
+  requestId: string
+  brokerageId: string
+  agentId: string
+  userId: string // users.id for portal invite
+}): Promise<{ success: boolean; contactId?: string; error?: string }> {
+  const service = createServiceClient()
+
+  try {
+    // 1. Load valuation request
+    const { data: request, error: requestError } = await service
+      .from("valuation_requests")
+      .select("*")
+      .eq("id", params.requestId)
+      .maybeSingle()
+
+    if (requestError || !request) {
+      return { success: false, error: "Request not found" }
+    }
+
+    if (request.contact_id) {
+      return { success: false, error: "Already converted" }
+    }
+
+    // 2. Extract name from qualification_data if available, else use address prefix
+    const qualData = (request.qualification_data as any) ?? {}
+    const firstName = qualData.firstName ?? "Home"
+    const lastName = qualData.lastName ?? "Seller"
+    const email = qualData.email ?? `seller-${request.id.slice(0, 8)}@pending.local`
+    const phone = qualData.phone ?? null
+    const phoneDigits = phone ? phone.replace(/\D/g, "") : null
+
+    // 3. Create contact
+    const { data: newContact, error: contactError } = await service
+      .from("contacts")
+      .insert({
+        first_name: firstName,
+        last_name: lastName,
+        email,
+        phone,
+        phone_digits: phoneDigits,
+        contact_type: "seller",
+        source: "home_value",
+        agent_id: params.agentId,
+        brokerage_id: params.brokerageId,
+      })
+      .select("id")
+      .single()
+
+    if (contactError || !newContact) {
+      return { success: false, error: "Failed to create contact" }
+    }
+
+    // 4. Link request to contact
+    await service
+      .from("valuation_requests")
+      .update({ contact_id: newContact.id, agent_id: params.agentId })
+      .eq("id", params.requestId)
+
+    // 5. Send portal invite
+    await createPortalInviteForContact({
+      contactId: newContact.id,
+      brokerageId: params.brokerageId,
+      invitedByUserId: params.userId,
+      sendMagicLink: true,
+    }).catch(() => {})
+
+    return { success: true, contactId: newContact.id }
+  } catch (error: any) {
+    console.error("[convertValuationRequestToContact] Error:", error)
+    return { success: false, error: error.message ?? "Unexpected error" }
+  }
 }
 
 // ============================================================================

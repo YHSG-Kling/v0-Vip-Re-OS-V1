@@ -1,8 +1,10 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { savePageConfig, type HomeValuePageConfig, type WorkingHourSlot } from "@/app/actions/home-value"
+import { format } from "date-fns"
+import { savePageConfig, convertValuationRequestToContact, type HomeValuePageConfig, type WorkingHourSlot } from "@/app/actions/home-value"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -10,8 +12,9 @@ import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
+import { Card, CardContent } from "@/components/ui/card"
 import { useToast } from "@/hooks/use-toast"
-import { Copy, Check, ExternalLink, Save, Globe, Clock, ClipboardList, Palette } from "lucide-react"
+import { Copy, Check, ExternalLink, Save, Globe, Clock, ClipboardList, Palette, Inbox } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -101,22 +104,40 @@ function defaultConfig(agentId: string, brokerageId: string): HomeValuePageConfi
   }
 }
 
+interface ValuationRequest {
+  id: string
+  property_address: string | null
+  bedrooms: number | null
+  bathrooms: number | null
+  square_feet: number | null
+  condition: string | null
+  qualification_data: Record<string, string> | null
+  utm_source: string | null
+  submitted_at: string | null
+  contact_id: string | null
+  contacts: { first_name: string | null; last_name: string | null; email: string | null } | null
+}
+
 interface Props {
   agentId: string
+  userId: string
   brokerageId: string
   agentSlug: string
   baseUrl: string
   initialConfig: HomeValuePageConfig | null
+  newRequests: ValuationRequest[]
+  convertedRequests: ValuationRequest[]
 }
-
-type Tab = "branding" | "questions" | "hours" | "embed"
 
 export function HomeValuePageBuilderClient({
   agentId,
+  userId,
   brokerageId,
   agentSlug,
   baseUrl,
   initialConfig,
+  newRequests,
+  convertedRequests,
 }: Props) {
   const router = useRouter()
   const { toast } = useToast()
@@ -126,6 +147,7 @@ export function HomeValuePageBuilderClient({
   const [activeTab, setActiveTab] = useState<Tab>("branding")
   const [isPending, startTransition] = useTransition()
   const [copied, setCopied] = useState(false)
+  const [convertingId, setConvertingId] = useState<string | null>(null)
 
   const pageUrl = `${baseUrl}/home-value?agent=${agentSlug}&brokerage=${brokerageId}`
   const embedSnippet = `<iframe
@@ -145,6 +167,26 @@ export function HomeValuePageBuilderClient({
 
   function set<K extends keyof HomeValuePageConfig>(key: K, value: HomeValuePageConfig[K]) {
     setConfig((prev) => ({ ...prev, [key]: value }))
+  }
+
+  async function handleConvert(requestId: string) {
+    setConvertingId(requestId)
+    try {
+      const res = await convertValuationRequestToContact({
+        requestId,
+        brokerageId,
+        agentId,
+        userId,
+      })
+      if (res.success) {
+        toast({ title: "Contact created — portal invite sent" })
+        router.refresh()
+      } else {
+        toast({ title: "Convert failed", description: res.error, variant: "destructive" })
+      }
+    } finally {
+      setConvertingId(null)
+    }
   }
 
   function handleSave() {
@@ -186,11 +228,17 @@ export function HomeValuePageBuilderClient({
     }))
   }
 
-  const TABS: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
+  const TABS: Array<{ id: Tab; label: string; icon: React.ReactNode; badge?: number }> = [
     { id: "branding", label: "Branding", icon: <Palette className="h-4 w-4" /> },
     { id: "questions", label: "Questions", icon: <ClipboardList className="h-4 w-4" /> },
     { id: "hours", label: "Hours", icon: <Clock className="h-4 w-4" /> },
     { id: "embed", label: "Publish", icon: <Globe className="h-4 w-4" /> },
+    {
+      id: "requests",
+      label: "Requests",
+      icon: <Inbox className="h-4 w-4" />,
+      badge: newRequests.length > 0 ? newRequests.length : undefined,
+    },
   ]
 
   const activeQCount = QUESTION_FIELDS.filter(
@@ -240,6 +288,11 @@ export function HomeValuePageBuilderClient({
               >
                 {t.icon}
                 {t.label}
+                {t.badge != null && (
+                  <span className="ml-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-orange-500 px-1 text-[10px] font-semibold text-white">
+                    {t.badge}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -586,6 +639,115 @@ export function HomeValuePageBuilderClient({
                   </div>
                 </section>
               </>
+            )}
+
+            {/* ── Requests tab ── */}
+            {activeTab === "requests" && (
+              <div className="space-y-6">
+                {/* New requests */}
+                <section className="space-y-3">
+                  <h2 className="text-sm font-semibold text-foreground uppercase tracking-wide">
+                    New Requests ({newRequests.length})
+                  </h2>
+                  {newRequests.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No new requests yet.</p>
+                  ) : (
+                    newRequests.map((req) => {
+                      const qual = (req.qualification_data as any) ?? {}
+                      return (
+                        <Card key={req.id} className="border-orange-200">
+                          <CardContent className="p-4 space-y-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="space-y-0.5 min-w-0">
+                                <p className="font-medium text-sm leading-snug truncate">
+                                  {req.property_address ?? "Unknown address"}
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  {[req.bedrooms && `${req.bedrooms}bd`, req.bathrooms && `${req.bathrooms}ba`, req.square_feet && `${req.square_feet.toLocaleString()} sqft`, req.condition].filter(Boolean).join(" · ")}
+                                </p>
+                                <div className="space-y-0.5 pt-1">
+                                  {qual.sellTimeline && (
+                                    <p className="text-xs text-muted-foreground">Timeline: {qual.sellTimeline}</p>
+                                  )}
+                                  {qual.motivation && (
+                                    <p className="text-xs text-muted-foreground">Motivation: {qual.motivation}</p>
+                                  )}
+                                  {qual.hasAgent === "no" && (
+                                    <p className="text-xs text-green-700 font-medium">No agent yet</p>
+                                  )}
+                                  {req.utm_source && (
+                                    <p className="text-xs text-muted-foreground">Source: {req.utm_source}</p>
+                                  )}
+                                </div>
+                              </div>
+                              {req.submitted_at && (
+                                <span className="text-xs text-muted-foreground shrink-0">
+                                  {format(new Date(req.submitted_at), "MMM d, h:mm a")}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                disabled={convertingId === req.id}
+                                onClick={() => handleConvert(req.id)}
+                              >
+                                {convertingId === req.id ? "Converting..." : "Convert to Contact"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  router.push(
+                                    `/dashboard/calendar?new=true&title=${encodeURIComponent(`Consultation for ${req.property_address ?? "property"}`)}`,
+                                  )
+                                }
+                              >
+                                Schedule Consultation
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      )
+                    })
+                  )}
+                </section>
+
+                <Separator />
+
+                {/* Converted */}
+                <section className="space-y-3">
+                  <h2 className="text-sm font-semibold text-foreground uppercase tracking-wide">
+                    Converted ({convertedRequests.length})
+                  </h2>
+                  {convertedRequests.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No converted requests yet.</p>
+                  ) : (
+                    <div className="divide-y divide-border rounded-md border border-border">
+                      {convertedRequests.map((req) => {
+                        const c = req.contacts
+                        return (
+                          <div key={req.id} className="flex items-center justify-between px-3 py-2.5 gap-2">
+                            <div className="min-w-0 space-y-0.5">
+                              <p className="text-sm font-medium truncate">
+                                {req.property_address ?? "Unknown address"}
+                              </p>
+                              <p className="text-xs text-muted-foreground">
+                                {c ? `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.email : ""}
+                              </p>
+                            </div>
+                            <Link href={`/crm?contactId=${req.contact_id}`}>
+                              <Button size="sm" variant="outline">
+                                View in CRM
+                              </Button>
+                            </Link>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </section>
+              </div>
             )}
           </div>
         </div>
