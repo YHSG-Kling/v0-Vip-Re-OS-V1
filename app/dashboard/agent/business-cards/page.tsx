@@ -3,9 +3,10 @@
 import { useState, useRef, useCallback, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { uploadBusinessCard, getRecentScans } from "@/app/actions/business-card/business-card-actions"
-import { createPartner } from "@/app/actions/referrals/referral-actions"
+import { createPartner, createReferral } from "@/app/actions/referrals/referral-actions"
 import { enrollContactInSequence, listCampaignSequences } from "@/app/actions/campaign-sequences"
 import { createClient } from "@/lib/supabase/client"
+import { useToast } from "@/hooks/use-toast"
 
 type PostScanContact = {
   id: string
@@ -54,6 +55,7 @@ function ConfidenceBadge({ score }: { score: number }) {
 
 export default function BusinessCardsPage() {
   const router = useRouter()
+  const { toast } = useToast()
   const [scanning, setScanning] = useState(false)
   const [result, setResult] = useState<ScanResult | null>(null)
   const [scans, setScans] = useState<ScanRow[]>([])
@@ -167,15 +169,31 @@ export default function BusinessCardsPage() {
     if (!postScanContact) return
     setReferralSubmitting(true)
     try {
-      await createPartner({
+      // Step 1: create the partner record, get back its id
+      const partnerResult = await createPartner({
         partnerName: postScanContact.name,
         partnerType: referralPartnerType,
         agreementType: "referral_fee",
       })
+
+      // Step 2: log the referral, linking the scanned contact as the referred person
+      // createPartner returns { id } — that id is the referral_partners row UUID
+      const [firstName, ...rest] = postScanContact.name.trim().split(" ")
+      await createReferral({
+        partnerId: partnerResult.id,
+        referralSource: "business_card_scan",
+        referredPerson: {
+          firstName: firstName ?? undefined,
+          lastName: rest.join(" ") || undefined,
+          email: postScanContact.email || undefined,
+        },
+      })
+
       setReferralDone(true)
+      toast({ title: "Referral partner added! Check your referral pipeline." })
       setTimeout(dismissSheet, 1200)
     } catch {
-      // surface nothing — user stays in form to retry
+      toast({ title: "Failed to create referral partner. Please try again.", variant: "destructive" })
     } finally {
       setReferralSubmitting(false)
     }
@@ -197,11 +215,14 @@ export default function BusinessCardsPage() {
     if (!postScanContact || !selectedSequenceId) return
     setSequenceSubmitting(true)
     try {
-      await enrollContactInSequence({ sequenceId: selectedSequenceId, contactId: postScanContact.id })
+      const result = await enrollContactInSequence({ sequenceId: selectedSequenceId, contactId: postScanContact.id })
+      if (result.error) throw new Error(result.error)
+      const sequenceName = sequences.find((s) => s.id === selectedSequenceId)?.name ?? "sequence"
       setSequenceDone(true)
+      toast({ title: `Added to "${sequenceName}" sequence` })
       setTimeout(dismissSheet, 1200)
     } catch {
-      // stay open for retry
+      toast({ title: "Failed to enroll in sequence. Please try again.", variant: "destructive" })
     } finally {
       setSequenceSubmitting(false)
     }
