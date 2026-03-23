@@ -1,9 +1,25 @@
 "use client"
 
-import { useState, useRef, useCallback } from "react"
+import { useState, useRef, useCallback, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { uploadBusinessCard, getRecentScans } from "@/app/actions/business-card/business-card-actions"
+import { createPartner } from "@/app/actions/referrals/referral-actions"
+import { enrollContactInSequence, listCampaignSequences } from "@/app/actions/campaign-sequences"
 import { createClient } from "@/lib/supabase/client"
-import { useEffect } from "react"
+
+type PostScanContact = {
+  id: string
+  name: string
+  email: string
+  company: string
+  title: string
+}
+
+type CampaignSequence = {
+  id: string
+  name: string
+  is_active: boolean
+}
 
 type ScanRow = {
   id: string
@@ -37,6 +53,7 @@ function ConfidenceBadge({ score }: { score: number }) {
 }
 
 export default function BusinessCardsPage() {
+  const router = useRouter()
   const [scanning, setScanning] = useState(false)
   const [result, setResult] = useState<ScanResult | null>(null)
   const [scans, setScans] = useState<ScanRow[]>([])
@@ -45,6 +62,25 @@ export default function BusinessCardsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [agentId, setAgentId] = useState<string | null>(null)
   const [brokerageId, setBrokerageId] = useState<string | null>(null)
+
+  // Post-scan sheet state
+  const [postScanContact, setPostScanContact] = useState<PostScanContact | null>(null)
+  const [showNextSteps, setShowNextSteps] = useState(false)
+
+  // Option 1 — Referral partner form state
+  const [showReferralForm, setShowReferralForm] = useState(false)
+  const [referralPartnerType, setReferralPartnerType] = useState<"agent_to_agent" | "vendor" | "lender" | "title" | "other">("agent_to_agent")
+  const [referralNotes, setReferralNotes] = useState("")
+  const [referralSubmitting, setReferralSubmitting] = useState(false)
+  const [referralDone, setReferralDone] = useState(false)
+
+  // Option 3 — Sequence enrollment state
+  const [showSequencePanel, setShowSequencePanel] = useState(false)
+  const [sequences, setSequences] = useState<CampaignSequence[]>([])
+  const [sequencesLoading, setSequencesLoading] = useState(false)
+  const [selectedSequenceId, setSelectedSequenceId] = useState("")
+  const [sequenceSubmitting, setSequenceSubmitting] = useState(false)
+  const [sequenceDone, setSequenceDone] = useState(false)
 
   useEffect(() => {
     const supabase = createClient()
@@ -91,15 +127,85 @@ export default function BusinessCardsPage() {
 
       // Find extracted data from history
       const newScan = history.find((s) => s.id === res.scanId)
+      const extracted = newScan?.extracted_data ?? {}
       setResult({
         ...res,
-        extracted: newScan?.extracted_data,
+        extracted,
         confidence: newScan?.confidence_score,
       })
+
+      // Trigger post-scan sheet only on viable scans that produced a contact
+      if (res.viable && res.contactId) {
+        const name = [extracted.first_name, extracted.last_name].filter(Boolean).join(" ")
+        setPostScanContact({
+          id: res.contactId,
+          name,
+          email: extracted.email ?? "",
+          company: extracted.company ?? "",
+          title: extracted.title ?? "",
+        })
+        setShowNextSteps(true)
+        setShowReferralForm(false)
+        setShowSequencePanel(false)
+        setReferralDone(false)
+        setSequenceDone(false)
+        setReferralNotes("")
+        setSelectedSequenceId("")
+      }
     } finally {
       setScanning(false)
     }
   }, [agentId, brokerageId])
+
+  const dismissSheet = () => {
+    setShowNextSteps(false)
+    setShowReferralForm(false)
+    setShowSequencePanel(false)
+  }
+
+  const handleCreatePartner = async () => {
+    if (!postScanContact) return
+    setReferralSubmitting(true)
+    try {
+      await createPartner({
+        partnerName: postScanContact.name,
+        partnerType: referralPartnerType,
+        agreementType: "referral_fee",
+      })
+      setReferralDone(true)
+      setTimeout(dismissSheet, 1200)
+    } catch {
+      // surface nothing — user stays in form to retry
+    } finally {
+      setReferralSubmitting(false)
+    }
+  }
+
+  const handleOpenSequencePanel = async () => {
+    if (!brokerageId) return
+    setShowSequencePanel(true)
+    setSequencesLoading(true)
+    try {
+      const { sequences: seqs } = await listCampaignSequences(brokerageId)
+      setSequences(seqs.filter((s) => s.is_active))
+    } finally {
+      setSequencesLoading(false)
+    }
+  }
+
+  const handleEnrollSequence = async () => {
+    if (!postScanContact || !selectedSequenceId) return
+    setSequenceSubmitting(true)
+    try {
+      await enrollContactInSequence({ sequenceId: selectedSequenceId, contactId: postScanContact.id })
+      setSequenceDone(true)
+      setTimeout(dismissSheet, 1200)
+    } catch {
+      // stay open for retry
+    } finally {
+      setSequenceSubmitting(false)
+    }
+  }
 
   const handleFile = (file: File) => {
     if (!file.type.startsWith("image/")) return
@@ -305,6 +411,213 @@ export default function BusinessCardsPage() {
           </div>
         )}
       </section>
+      {/* Post-scan next steps sheet */}
+      {showNextSteps && postScanContact && (
+        <>
+          {/* Backdrop */}
+          <div
+            className="fixed inset-0 z-40 bg-black/40"
+            onClick={dismissSheet}
+            aria-hidden="true"
+          />
+
+          {/* Sheet */}
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Contact created — next steps"
+            className="fixed inset-x-0 bottom-0 z-50 rounded-t-2xl border-t border-border bg-background p-6 shadow-2xl"
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between mb-4">
+              <div>
+                <div className="flex items-center gap-2 mb-0.5">
+                  <svg className="w-4 h-4 text-green-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span className="text-base font-semibold text-foreground">Contact Created</span>
+                </div>
+                {postScanContact.name && (
+                  <p className="text-sm text-muted-foreground leading-snug">
+                    {postScanContact.name}
+                    {postScanContact.title && postScanContact.company
+                      ? ` · ${postScanContact.title} at ${postScanContact.company}`
+                      : postScanContact.company
+                      ? ` · ${postScanContact.company}`
+                      : postScanContact.title
+                      ? ` · ${postScanContact.title}`
+                      : ""}
+                  </p>
+                )}
+              </div>
+              <button
+                onClick={dismissSheet}
+                className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-3">What would you like to do?</p>
+
+            <div className="space-y-3">
+
+              {/* Option 1 — Add as Referral Partner */}
+              {!showReferralForm && !showSequencePanel && (
+                <button
+                  onClick={() => setShowReferralForm(true)}
+                  className="w-full flex items-center justify-between rounded-xl border border-foreground/10 bg-muted/40 px-4 py-3 text-left hover:bg-muted/70 transition-colors"
+                >
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">Add as Referral Partner</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">Create a partner relationship in your referral pipeline</p>
+                  </div>
+                  <svg className="w-4 h-4 text-muted-foreground shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              )}
+
+              {/* Referral partner inline form */}
+              {showReferralForm && (
+                <div className="rounded-xl border border-foreground/10 bg-muted/40 px-4 py-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
+                    {postScanContact.name && <p><span className="font-medium text-foreground">Name:</span> {postScanContact.name}</p>}
+                    {postScanContact.email && <p><span className="font-medium text-foreground">Email:</span> {postScanContact.email}</p>}
+                    {postScanContact.company && <p><span className="font-medium text-foreground">Company:</span> {postScanContact.company}</p>}
+                    {postScanContact.title && <p><span className="font-medium text-foreground">Title:</span> {postScanContact.title}</p>}
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-foreground mb-1">Partnership Type</label>
+                    <select
+                      value={referralPartnerType}
+                      onChange={(e) => setReferralPartnerType(e.target.value as typeof referralPartnerType)}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="agent_to_agent">Agent to Agent</option>
+                      <option value="vendor">Vendor</option>
+                      <option value="lender">Lender</option>
+                      <option value="title">Title</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-foreground mb-1">Notes (optional)</label>
+                    <textarea
+                      value={referralNotes}
+                      onChange={(e) => setReferralNotes(e.target.value)}
+                      rows={2}
+                      placeholder="Met at open house, strong referral network..."
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setShowReferralForm(false)}
+                      className="flex-1 rounded-lg border border-border py-2 text-sm text-muted-foreground hover:bg-muted transition-colors"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={handleCreatePartner}
+                      disabled={referralSubmitting || referralDone}
+                      className="flex-1 rounded-lg bg-foreground py-2 text-sm font-medium text-background hover:opacity-90 disabled:opacity-60 transition-opacity"
+                    >
+                      {referralDone ? "Partner added!" : referralSubmitting ? "Adding..." : "Create Referral Partner"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Options 2, 3, 4 — only when no sub-form open */}
+              {!showReferralForm && !showSequencePanel && (
+                <>
+                  {/* Option 2 — Open Contact Record */}
+                  <button
+                    onClick={() => {
+                      dismissSheet()
+                      router.push(`/contacts/${postScanContact.id}`)
+                    }}
+                    className="w-full flex items-center justify-between rounded-xl border border-foreground/10 bg-muted/40 px-4 py-3 text-left hover:bg-muted/70 transition-colors"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-foreground">Open Contact Record</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">View and edit the full contact in CRM</p>
+                    </div>
+                    <svg className="w-4 h-4 text-muted-foreground shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </button>
+
+                  {/* Option 3 — Add to Nurture Sequence */}
+                  <button
+                    onClick={handleOpenSequencePanel}
+                    className="w-full flex items-center justify-between rounded-xl border border-foreground/10 bg-muted/40 px-4 py-3 text-left hover:bg-muted/70 transition-colors"
+                  >
+                    <div>
+                      <p className="text-sm font-medium text-foreground">Add to Nurture Sequence</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">Enroll in an automated follow-up sequence</p>
+                    </div>
+                    <svg className="w-4 h-4 text-muted-foreground shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+
+                  {/* Option 4 — Just Keep Scanning */}
+                  <button
+                    onClick={dismissSheet}
+                    className="w-full rounded-xl border border-border px-4 py-3 text-sm text-muted-foreground hover:bg-muted transition-colors"
+                  >
+                    Just Keep Scanning
+                  </button>
+                </>
+              )}
+
+              {/* Sequence panel */}
+              {showSequencePanel && (
+                <div className="rounded-xl border border-foreground/10 bg-muted/40 px-4 py-4 space-y-3">
+                  <p className="text-sm font-medium text-foreground">Choose a Sequence</p>
+                  {sequencesLoading ? (
+                    <p className="text-xs text-muted-foreground">Loading sequences...</p>
+                  ) : sequences.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No active sequences found. Create one in Campaigns first.</p>
+                  ) : (
+                    <select
+                      value={selectedSequenceId}
+                      onChange={(e) => setSelectedSequenceId(e.target.value)}
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                    >
+                      <option value="">Select a sequence...</option>
+                      {sequences.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setShowSequencePanel(false)}
+                      className="flex-1 rounded-lg border border-border py-2 text-sm text-muted-foreground hover:bg-muted transition-colors"
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={handleEnrollSequence}
+                      disabled={!selectedSequenceId || sequenceSubmitting || sequenceDone}
+                      className="flex-1 rounded-lg bg-foreground py-2 text-sm font-medium text-background hover:opacity-90 disabled:opacity-60 transition-opacity"
+                    >
+                      {sequenceDone ? "Enrolled!" : sequenceSubmitting ? "Enrolling..." : "Add to Sequence"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+            </div>
+          </div>
+        </>
+      )}
     </main>
   )
 }
