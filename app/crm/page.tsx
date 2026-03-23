@@ -8,12 +8,15 @@ import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientCh
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft } from "@/app/actions/portal-messages"
+import { generateCopilotPlan } from "@/app/actions/workflows"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Switch } from "@/components/ui/switch"
 import {
   Users,
   Search,
@@ -28,8 +31,11 @@ import {
   MessageSquare,
   TrendingUp,
   AlertTriangle,
+  Sparkles,
 } from "lucide-react"
 import Link from "next/link"
+import { format } from "date-fns"
+import { toast } from "sonner"
 
 // Import all 10 Contact OS components
 import {
@@ -116,6 +122,11 @@ export default function CRMPage() {
   const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
   const [referralGenerating, setReferralGenerating] = useState(false)
   const [noteSaving, setNoteSaving] = useState(false)
+
+  // AI Copilot Plan state
+  const [copilotPlan, setCopilotPlan] = useState<any>(null)
+  const [loadingPlan, setLoadingPlan] = useState(false)
+  const [generatingPlan, setGeneratingPlan] = useState(false)
   const [isaHandoffContext, setIsaHandoffContext] = useState<{
     qualificationScore?: number
     qualificationResult?: string
@@ -233,6 +244,29 @@ export default function CRMPage() {
       loadContactDetail(selectedContactId)
     }
   }, [selectedContactId, agentId, loadContactDetail])
+
+  // Fetch active copilot plan when a contact is selected
+  useEffect(() => {
+    if (!selectedContactId) {
+      setCopilotPlan(null)
+      return
+    }
+    setLoadingPlan(true)
+    const supabase = createClient()
+    supabase
+      .from("copilot_plans")
+      .select("id, plan_name, status, next_action, next_action_date, updated_at")
+      .eq("contact_id", selectedContactId)
+      .eq("status", "active")
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => {
+        setCopilotPlan(data ?? null)
+        setLoadingPlan(false)
+      })
+      .catch(() => setLoadingPlan(false))
+  }, [selectedContactId])
 
   useEffect(() => {
     const q = search.toLowerCase()
@@ -489,6 +523,152 @@ export default function CRMPage() {
                   createdAt={selectedContact.created_at}
                   isaHandoffContext={isaHandoffContext}
                 />
+
+                {/* AI Copilot Plan */}
+                <Card className="border-indigo-200">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Brain className="h-4 w-4 text-indigo-600" />
+                      AI Copilot Plan
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {loadingPlan ? (
+                      <Skeleton className="h-16 w-full" />
+                    ) : copilotPlan ? (
+                      <div className="space-y-3">
+                        <div className="rounded-lg bg-indigo-50 border border-indigo-200 p-3">
+                          <p className="text-xs font-semibold text-indigo-700 mb-1">Next Action</p>
+                          <p className="text-sm text-indigo-900">{copilotPlan.next_action}</p>
+                          {copilotPlan.next_action_date && (
+                            <p className="text-xs text-indigo-600 mt-1">
+                              Due: {format(new Date(copilotPlan.next_action_date), "EEE, MMM d")}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={generatingPlan}
+                            onClick={async () => {
+                              const supabase = createClient()
+                              await supabase
+                                .from("copilot_plans")
+                                .update({ status: "completed", updated_at: new Date().toISOString() })
+                                .eq("id", copilotPlan.id)
+                              toast.success("Action marked done — generating next plan...")
+                              setGeneratingPlan(true)
+                              const result = await generateCopilotPlan(selectedContactId, agentId ?? "")
+                              if (result.success) { setCopilotPlan(result.plan ?? null) }
+                              else { toast.error("Failed to generate next plan") }
+                              setGeneratingPlan(false)
+                            }}
+                          >
+                            Done
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={async () => {
+                              const supabase = createClient()
+                              const newDate = new Date(copilotPlan.next_action_date || new Date())
+                              newDate.setDate(newDate.getDate() + 3)
+                              await supabase
+                                .from("copilot_plans")
+                                .update({ next_action_date: newDate.toISOString().split("T")[0] })
+                                .eq("id", copilotPlan.id)
+                              toast.success("Snoozed 3 days")
+                              setCopilotPlan({ ...copilotPlan, next_action_date: newDate.toISOString().split("T")[0] })
+                            }}
+                          >
+                            Snooze 3d
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={generatingPlan}
+                            onClick={async () => {
+                              setGeneratingPlan(true)
+                              const result = await generateCopilotPlan(selectedContactId, agentId ?? "")
+                              if (result.success) { setCopilotPlan(result.plan ?? null); toast.success("Plan updated") }
+                              else { toast.error("Failed to generate plan") }
+                              setGeneratingPlan(false)
+                            }}
+                          >
+                            {generatingPlan ? <Loader2 className="h-3 w-3 animate-spin" /> : "Refresh"}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <p className="text-sm text-muted-foreground">No active plan for this contact</p>
+                        <Button
+                          size="sm"
+                          disabled={generatingPlan}
+                          onClick={async () => {
+                            setGeneratingPlan(true)
+                            const result = await generateCopilotPlan(selectedContactId, agentId ?? "")
+                            if (result.success) {
+                              setCopilotPlan(result.plan ?? null)
+                              toast.success("7-day plan created")
+                            } else {
+                              toast.error("Failed to generate plan")
+                            }
+                            setGeneratingPlan(false)
+                          }}
+                        >
+                          {generatingPlan ? (
+                            <><Loader2 className="h-4 w-4 animate-spin mr-2" />Generating...</>
+                          ) : (
+                            <><Sparkles className="h-4 w-4 mr-2" />Generate 7-Day Plan</>
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* AI-ISA stale contact takeover */}
+                {(() => {
+                  const daysSince = selectedContact.last_contact_date
+                    ? Math.floor((Date.now() - new Date(selectedContact.last_contact_date).getTime()) / (1000 * 60 * 60 * 24))
+                    : null
+                  if (daysSince == null || daysSince <= 14) return null
+                  const currentPlan = autopilotPlans.find((p: any) => p.contact_id === selectedContactId || p.lead_id === selectedContactId)
+                  return (
+                    <Card className="border-orange-200 bg-orange-50">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm flex items-center gap-2 text-orange-800">
+                          <AlertTriangle className="h-4 w-4 text-orange-500" />
+                          AI-ISA Available
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        <p className="text-sm text-orange-700">
+                          This contact has not been touched in {daysSince} day{daysSince !== 1 ? "s" : ""}.
+                        </p>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-orange-800">Enable AI-ISA Follow-up</span>
+                          <Switch
+                            checked={!!currentPlan}
+                            disabled={isPending}
+                            onCheckedChange={(checked) => {
+                              if (checked) {
+                                handleEnableAutopilot("moderate")
+                              } else if (currentPlan) {
+                                handleToggleAutopilot(currentPlan.id, true)
+                              }
+                            }}
+                          />
+                        </div>
+                        {currentPlan && (
+                          <p className="text-xs text-orange-600">AI-ISA is active on this contact</p>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )
+                })()}
 
                 {/* Buyer Match Panel - only for buyer contacts */}
                 {isBuyerContact && (
