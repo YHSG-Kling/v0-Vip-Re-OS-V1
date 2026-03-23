@@ -344,6 +344,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'FileText' },
       { id: 'team-financials', label: 'Team Financials', href: '/dashboard/financials/team', icon: 'DollarSign' },
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'Shield' },
+      { id: 'brand-compliance', label: 'Brand & Compliance', href: '/dashboard/admin/brand', icon: 'Shield' },
       { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
       { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics', icon: 'Video' },
       { id: 'sla-monitor', label: 'SLA Monitor', href: '/dashboard/admin/sla-monitor', icon: 'Clock' },
