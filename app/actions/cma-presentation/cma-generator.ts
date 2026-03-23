@@ -188,8 +188,9 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
 }
 
 /**
- * Fetch comparable properties (simulated)
- * In production, this would integrate with MLS/IDX API
+ * Fetch comparable properties from the listings table.
+ * Returns real sold listings filtered by city/zip/propertyType/bedrooms.
+ * Returns empty array when no real data is found — never synthesises.
  */
 async function fetchComparables(params: {
   address: string
@@ -204,30 +205,36 @@ async function fetchComparables(params: {
   maxAgeDays: number
   minComparables: number
 }) {
-  // Simulated comparables - in production, call MLS/IDX
-  const mockComparables = []
-  const baseDate = new Date()
-  
-  for (let i = 0; i < params.minComparables; i++) {
-    const soldDaysAgo = Math.floor(Math.random() * params.maxAgeDays)
-    const soldDate = new Date(baseDate.getTime() - soldDaysAgo * 24 * 60 * 60 * 1000)
-    
-    mockComparables.push({
-      address: `${1000 + i} Comparable St`,
-      city: params.city,
-      state: params.state,
-      zip: params.zip,
-      bedrooms: params.bedrooms,
-      bathrooms: params.bathrooms,
-      squareFeet: params.squareFeet + (Math.random() * 500 - 250),
-      soldPrice: Math.floor(params.squareFeet * (150 + Math.random() * 50)),
-      soldDate: soldDate.toISOString(),
-      distanceMiles: Math.random() * params.radiusMiles,
-      propertyType: params.propertyType
-    })
-  }
-  
-  return mockComparables
+  const { createClient } = await import("@/lib/supabase/server")
+  const supabase = await createClient()
+
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - params.maxAgeDays)
+
+  const { data, error } = await supabase
+    .from("listings")
+    .select("id, address, city, state, zip, bedrooms, bathrooms, square_feet, price, closed_date, property_type")
+    .eq("city", params.city)
+    .eq("property_type", params.propertyType)
+    .eq("status", "sold")
+    .gte("closed_date", cutoff.toISOString())
+    .limit(params.minComparables)
+
+  if (error || !data || data.length === 0) return []
+
+  return data.map((l: any) => ({
+    address: l.address,
+    city: l.city,
+    state: l.state,
+    zip: l.zip,
+    bedrooms: l.bedrooms,
+    bathrooms: l.bathrooms,
+    squareFeet: l.square_feet,
+    soldPrice: l.price,
+    soldDate: l.closed_date,
+    distanceMiles: null,
+    propertyType: l.property_type,
+  }))
 }
 
 /**
