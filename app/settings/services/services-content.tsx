@@ -129,42 +129,34 @@ export default function ServicesSettingsContent({
         </Card>
       </TabsContent>
 
-      {/* TAB 3: My AI Assistants */}
+      {/* TAB 3: My AI Assistants — driven by real active agent templates */}
       <TabsContent value="assistants">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle>Active AI Assistants</CardTitle>
-                <CardDescription>Your personal AI assistants currently running</CardDescription>
+                <CardDescription>AI agent templates currently enabled for your account</CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <AssistantInstanceCard
-              name="Daily Copilot"
-              template="AI Copilot"
-              status="active"
-              last_run="2 minutes ago"
-              tasks_generated={12}
-              accuracy_rate={94}
-            />
-            <AssistantInstanceCard
-              name="Content Assistant"
-              template="Content Creator"
-              status="active"
-              last_run="5 minutes ago"
-              tasks_generated={8}
-              accuracy_rate={97}
-            />
-            <AssistantInstanceCard
-              name="Lead Response Bot"
-              template="Lead Qualifier"
-              status="active"
-              last_run="Just now"
-              tasks_generated={24}
-              accuracy_rate={89}
-            />
+            {agents.filter((a) => !!a.active).length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">
+                No active AI assistants. Enable an agent template in the AI Agent Templates tab.
+              </p>
+            ) : (
+              agents
+                .filter((a) => !!a.active)
+                .map((agent) => (
+                  <AssistantInstanceCard
+                    key={agent.id}
+                    name={agent.agent_name}
+                    template={agent.agent_type}
+                    status="active"
+                  />
+                ))
+            )}
           </CardContent>
         </Card>
       </TabsContent>
@@ -519,54 +511,34 @@ function AssistantInstanceCard({
   name,
   template,
   status,
-  last_run,
-  tasks_generated,
-  accuracy_rate,
-}: any) {
+}: {
+  name: string
+  template: string
+  status: "active" | "paused"
+}) {
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="text-lg">{name}</CardTitle>
-            <CardDescription>Based on {template}</CardDescription>
+            <CardDescription>Type: {template?.replace(/_/g, " ")}</CardDescription>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant={status === "active" ? "default" : "secondary"}>
-              {status === "active" ? (
-                <>
-                  <Play className="mr-1 h-3 w-3" />
-                  Active
-                </>
-              ) : (
-                <>
-                  <Pause className="mr-1 h-3 w-3" />
-                  Paused
-                </>
-              )}
-            </Badge>
-            <Button variant="ghost" size="sm">
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </div>
+          <Badge variant={status === "active" ? "default" : "secondary"}>
+            {status === "active" ? (
+              <>
+                <Play className="mr-1 h-3 w-3" />
+                Active
+              </>
+            ) : (
+              <>
+                <Pause className="mr-1 h-3 w-3" />
+                Paused
+              </>
+            )}
+          </Badge>
         </div>
       </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-3 gap-4 text-sm">
-          <div>
-            <p className="text-muted-foreground">Last Run</p>
-            <p className="font-medium">{last_run}</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Tasks Generated</p>
-            <p className="font-medium">{tasks_generated}</p>
-          </div>
-          <div>
-            <p className="text-muted-foreground">Accuracy</p>
-            <p className="font-medium">{accuracy_rate}%</p>
-          </div>
-        </div>
-      </CardContent>
     </Card>
   )
 }

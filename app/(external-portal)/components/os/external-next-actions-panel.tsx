@@ -30,7 +30,7 @@ interface ExternalNextActionsPanelProps {
   partnerType: "vendor" | "lender" | "title"
   partnerId: string
   actions: NextAction[]
-  onCompleteAction?: (actionId: string) => Promise<{ success: boolean; error?: string }>
+  onCompleteAction: (actionId: string) => Promise<{ success: boolean; error?: string }>
 }
 
 export function ExternalNextActionsPanel({
@@ -71,7 +71,7 @@ export function ExternalNextActionsPanel({
 
   const handleAction = async (action: NextAction) => {
     if (!onCompleteAction) {
-      toast.info("Action handler not configured")
+      toast.error("This action is not available at this time.")
       return
     }
 

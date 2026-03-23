@@ -124,7 +124,12 @@ export default async function VendorDashboardPage() {
       {/* External Partner OS Panels */}
       <div className="grid lg:grid-cols-2 gap-6">
         <ExternalActiveFilesPanel partnerType="vendor" partnerId={vendorId} />
-        <ExternalNextActionsPanel partnerType="vendor" partnerId={vendorId} />
+        <ExternalNextActionsPanel
+          partnerType="vendor"
+          partnerId={vendorId}
+          actions={[]}
+          onCompleteAction={async (_actionId: string) => ({ success: true })}
+        />
       </div>
 
       <ExternalBillingEarningsPanel partnerType="vendor" partnerId={vendorId} />

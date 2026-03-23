@@ -33,7 +33,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
           { id: 'content-studio', label: 'Content Studio', href: '/content-studio' },
-          { id: 'social-planner', label: 'Social Planner', href: '/social-planner' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },

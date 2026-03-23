@@ -70,6 +70,7 @@ export async function updateVendorJobStatus(data: {
   return job
 }
 
+
 export async function addVendorJobNote(data: {
   jobId: string
   vendorId: string
