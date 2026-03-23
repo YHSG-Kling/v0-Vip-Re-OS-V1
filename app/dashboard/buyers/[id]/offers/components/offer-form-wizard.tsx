@@ -1,13 +1,14 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import {
   createOffer, sendOfferForESign,
   type OfferFormData, type StrategyRecommendation,
 } from "@/app/actions/buyer-offers"
 import { runCompleteOfferWorkflow } from "@/app/actions/ai-offer-creation"
-import { Loader2, Sparkles, Check } from "lucide-react"
+import { fillPropertyDataWithAI } from "@/app/actions/buyer-offer/prefill-offer"
+import { Loader2, Sparkles, Check, Bot } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { getOfferContext } from "@/lib/contacts/ownership-model"
 
@@ -167,9 +168,55 @@ export function OfferFormWizard({
   const [workflowResult, setWorkflowResult]   = useState<any>(null)
   const [workflowError, setWorkflowError]     = useState<string | null>(null)
   const [isPending, startTrans]               = useTransition()
+  const [propertyFillLoading, setPropertyFillLoading] = useState(false)
+  const [propertyAiFilled, setPropertyAiFilled]       = useState(propertyAddressAiFilled ?? false)
+
+  // When the form has no property address, ask AI to fill it from listing or buyer context
+  useEffect(() => {
+    if (propertyAddress && propertyAddress.trim()) return // already have address
+
+    async function runFill() {
+      setPropertyFillLoading(true)
+      try {
+        const filled = await fillPropertyDataWithAI({
+          listingId: listingId ?? null,
+          buyerId: contactId,
+          addressFragment: null,
+        })
+        if (filled) {
+          setForm(f => ({
+            ...f,
+            property_address:            filled.property_address,
+            property_city:               filled.property_city,
+            property_state:              filled.property_state,
+            property_zip:                filled.property_zip,
+            property_address_ai_filled:  true,
+          }))
+          setPropertyAiFilled(true)
+        }
+      } catch (err) {
+        // Non-fatal — agent can enter address manually
+      } finally {
+        setPropertyFillLoading(false)
+      }
+    }
+
+    runFill()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const stepIndex = STEPS.indexOf(step)
   const progress  = ((stepIndex + 1) / STEPS.length) * 100
+
+  // Show a loading overlay while AI is filling property data
+  if (propertyFillLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-16 text-sm text-muted-foreground">
+        <Loader2 className="h-6 w-6 animate-spin" />
+        <p>Looking up property details...</p>
+      </div>
+    )
+  }
 
   function set<K extends keyof OfferFormData>(key: K, value: OfferFormData[K]) {
     setForm(f => ({ ...f, [key]: value }))
@@ -474,7 +521,16 @@ export function OfferFormWizard({
               <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-3 text-sm">
                 <p className="font-semibold">Offer Created</p>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                  <div><p className="text-xs text-muted-foreground">Property</p><p className="font-medium">{form.property_address}</p></div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Property</p>
+                    <p className="font-medium">{form.property_address || "—"}</p>
+                    {propertyAiFilled && (
+                      <span className="inline-flex items-center gap-1 mt-0.5 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs text-blue-700">
+                        <Bot className="h-3 w-3" />
+                        AI-filled — verify before submitting
+                      </span>
+                    )}
+                  </div>
                   <div><p className="text-xs text-muted-foreground">Price</p><p className="font-medium">${form.offer_price.toLocaleString()}</p></div>
                   <div><p className="text-xs text-muted-foreground">Earnest</p><p className="font-medium">${form.earnest_money_amount.toLocaleString()}</p></div>
                   <div><p className="text-xs text-muted-foreground">Closing</p><p className="font-medium">{form.closing_date || "TBD"}</p></div>
