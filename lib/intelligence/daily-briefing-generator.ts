@@ -15,6 +15,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
+import { anthropic } from "@ai-sdk/anthropic"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -241,7 +242,6 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
   }
 
   try {
-    const { anthropic } = await import("@ai-sdk/anthropic")
     const result = await generateText({
       model: anthropic(AI_MODEL),
       system: systemPrompt,
@@ -298,16 +298,39 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
     active_transactions_summary: transactions.slice(0, 5),
   }
 
-  const { data: upsertedBriefing, error: upsertError } = await supabase
+  // Try to update the existing briefing for today first, then insert if none exists.
+  // This avoids relying on a named unique constraint for upsert conflict resolution.
+  const { data: existingForUpsert } = await supabase
     .from("ai_daily_briefings")
-    .upsert(briefingData, {
-      onConflict: "agent_id,briefing_date",
-    })
-    .select()
-    .single()
+    .select("id")
+    .eq("agent_id", agentId)
+    .eq("briefing_date", today)
+    .maybeSingle()
+
+  let upsertedBriefing: any
+  let upsertError: any
+
+  if (existingForUpsert?.id) {
+    const { data, error } = await supabase
+      .from("ai_daily_briefings")
+      .update(briefingData)
+      .eq("id", existingForUpsert.id)
+      .select()
+      .single()
+    upsertedBriefing = data
+    upsertError = error
+  } else {
+    const { data, error } = await supabase
+      .from("ai_daily_briefings")
+      .insert(briefingData)
+      .select()
+      .single()
+    upsertedBriefing = data
+    upsertError = error
+  }
 
   if (upsertError) {
-    console.error("[DailyBriefing] Upsert failed:", upsertError)
+    console.error("[DailyBriefing] Save failed:", upsertError)
     throw new Error(`Failed to save briefing: ${upsertError.message}`)
   }
 
