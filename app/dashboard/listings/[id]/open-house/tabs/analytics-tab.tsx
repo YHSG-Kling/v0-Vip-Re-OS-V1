@@ -1,10 +1,11 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Users, Mail, Flame, Star, TrendingUp, BarChart3, Loader2, CheckCircle2, Send } from "lucide-react"
+import { Users, Mail, Flame, Star, TrendingUp, BarChart3, Loader2, CheckCircle2, Send, MessageSquare } from "lucide-react"
 import { getOpenHouseAnalytics } from "@/app/actions/seller-open-house"
 import {
   generatePerformanceInsights,
@@ -12,6 +13,7 @@ import {
   getOpenHouseVisitors,
 } from "@/app/actions/open-house-automation"
 import { useToast } from "@/hooks/use-toast"
+import { createClient } from "@/lib/supabase/client"
 
 interface Props {
   listingId: string
@@ -24,6 +26,7 @@ export function AnalyticsTab({ listingId }: Props) {
   const [generatingInsights, setGeneratingInsights] = useState(false)
   const [feedbackSent, setFeedbackSent] = useState<Set<string>>(new Set())
   const [eventAttendees, setEventAttendees] = useState<any[]>([])
+  const [feedbackData, setFeedbackData] = useState<any[]>([])
   const { toast } = useToast()
 
   useEffect(() => {
@@ -33,13 +36,20 @@ export function AnalyticsTab({ listingId }: Props) {
     })
   }, [listingId])
 
-  // When analytics loads, fetch attendees for the first completed event
+  // When analytics loads, fetch attendees + feedback for the first completed event
   useEffect(() => {
     if (!analytics?.events) return
     const completedEvent = analytics.events.find((e: any) => e.status === "completed")
     if (!completedEvent?.id) return
     getOpenHouseVisitors(completedEvent.id)
       .then((res) => setEventAttendees(res?.visitors ?? []))
+      .catch(() => null)
+    const supabase = createClient()
+    supabase
+      .from("open_house_feedback")
+      .select("rating, price_opinion, liked_most, concerns, interested_in_offer, has_own_agent, contact_id")
+      .eq("event_id", completedEvent.id)
+      .then(({ data }) => setFeedbackData(data ?? []))
       .catch(() => null)
   }, [analytics])
 
@@ -307,6 +317,154 @@ export function AnalyticsTab({ listingId }: Props) {
           </div>
         </CardContent>
       </Card>
+
+      {/* ── Visitor Feedback ── */}
+      {completedEventId && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-2">
+              <MessageSquare className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Visitor Feedback</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {feedbackData.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No feedback yet — send feedback requests to attendees above.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-6">
+                {/* Summary row */}
+                {(() => {
+                  const avgRating = feedbackData.reduce((s, f) => s + (f.rating ?? 0), 0) / feedbackData.length
+                  const offerCount = feedbackData.filter((f) => f.interested_in_offer).length
+                  const agentCount = feedbackData.filter((f) => f.has_own_agent).length
+                  const opinionCounts: Record<string, number> = {}
+                  feedbackData.forEach((f) => {
+                    if (f.price_opinion) opinionCounts[f.price_opinion] = (opinionCounts[f.price_opinion] ?? 0) + 1
+                  })
+                  const topOpinion = Object.entries(opinionCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+                  const opinionLabel: Record<string, string> = {
+                    too_high: "Too High",
+                    priced_right: "Priced Right",
+                    good_value: "Good Value",
+                  }
+                  return (
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      <div className="flex flex-col gap-1 rounded-md border border-border p-3">
+                        <span className="text-xs text-muted-foreground">Avg Rating</span>
+                        <span className="text-xl font-bold">{avgRating.toFixed(1)} / 5</span>
+                      </div>
+                      <div className="flex flex-col gap-1 rounded-md border border-border p-3">
+                        <span className="text-xs text-muted-foreground">Offer Interest</span>
+                        <span className="text-xl font-bold">
+                          {offerCount}/{feedbackData.length}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-1 rounded-md border border-border p-3">
+                        <span className="text-xs text-muted-foreground">Has Own Agent</span>
+                        <span className="text-xl font-bold">{agentCount}</span>
+                      </div>
+                      <div className="flex flex-col gap-1 rounded-md border border-border p-3">
+                        <span className="text-xs text-muted-foreground">Price Opinion</span>
+                        {topOpinion ? (
+                          <Badge
+                            variant="outline"
+                            className={`w-fit text-xs mt-0.5 ${
+                              topOpinion === "too_high"
+                                ? "border-red-200 text-red-700 bg-red-50"
+                                : topOpinion === "good_value"
+                                  ? "border-green-200 text-green-700 bg-green-50"
+                                  : "border-blue-200 text-blue-700 bg-blue-50"
+                            }`}
+                          >
+                            {opinionLabel[topOpinion] ?? topOpinion}
+                          </Badge>
+                        ) : (
+                          <span className="text-sm text-muted-foreground">—</span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* Hot prospects */}
+                {(() => {
+                  const hotProspects = feedbackData.filter((f) => f.interested_in_offer && f.contact_id)
+                  if (!hotProspects.length) return null
+                  return (
+                    <div className="rounded-md border border-amber-200 bg-amber-50 p-4 flex flex-col gap-2">
+                      <p className="text-sm font-medium text-amber-900">
+                        {hotProspects.length} visitor{hotProspects.length !== 1 ? "s" : ""} want to make an offer
+                      </p>
+                      <div className="flex flex-col gap-1">
+                        {hotProspects.map((f, i) => (
+                          <Link
+                            key={i}
+                            href={`/crm?contactId=${f.contact_id}`}
+                            className="text-xs text-amber-800 underline underline-offset-2 hover:text-amber-900"
+                          >
+                            View contact {f.contact_id.slice(0, 8)}...
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* Feedback list */}
+                <div className="flex flex-col gap-2">
+                  <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Recent Responses
+                  </span>
+                  {feedbackData.slice(0, 8).map((f, i) => (
+                    <div key={i} className="rounded-md border border-border p-3 flex flex-col gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-0.5">
+                          {[1, 2, 3, 4, 5].map((n) => (
+                            <Star
+                              key={n}
+                              className={`h-3.5 w-3.5 ${n <= (f.rating ?? 0) ? "text-amber-400 fill-amber-400" : "text-muted-foreground/30"}`}
+                            />
+                          ))}
+                        </div>
+                        {f.price_opinion && (
+                          <Badge
+                            variant="outline"
+                            className={`text-[10px] px-1.5 py-0 ${
+                              f.price_opinion === "too_high"
+                                ? "border-red-200 text-red-700"
+                                : f.price_opinion === "good_value"
+                                  ? "border-green-200 text-green-700"
+                                  : "border-blue-200 text-blue-700"
+                            }`}
+                          >
+                            {f.price_opinion === "too_high"
+                              ? "Too High"
+                              : f.price_opinion === "good_value"
+                                ? "Good Value"
+                                : "Priced Right"}
+                          </Badge>
+                        )}
+                      </div>
+                      {f.liked_most && (
+                        <p className="text-xs text-green-700 bg-green-50 rounded px-2 py-1 leading-relaxed">
+                          Liked: {f.liked_most}
+                        </p>
+                      )}
+                      {f.concerns && (
+                        <p className="text-xs text-amber-700 bg-amber-50 rounded px-2 py-1 leading-relaxed">
+                          Concerns: {f.concerns}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Per-event comparison */}
       {events.length > 1 && (

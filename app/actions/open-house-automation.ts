@@ -1036,18 +1036,18 @@ export async function submitFeedback(params: {
       })
       .eq("id", params.attendeeId)
 
-    // Store detailed feedback
-    await supabase.from("open_house_feedback_responses").insert({
+    // Store detailed feedback in the correct table with correct column names
+    await supabase.from("open_house_feedback").insert({
       attendee_id: params.attendeeId,
       event_id: attendee.event_id,
-      overall_rating: params.overallRating,
-      what_liked_most: params.whatLikedMost,
-      concerns: params.concerns,
-      pricing_feedback: params.pricingFeedback,
-      would_make_offer: params.wouldMakeOffer,
-      preferred_follow_up: params.preferredFollowUp,
-      additional_comments: params.additionalComments,
-      submitted_at: new Date().toISOString(),
+      contact_id: attendee.contact_id ?? null,
+      brokerage_id: attendee.brokerage_id ?? null,
+      rating: params.overallRating,
+      price_opinion: params.pricingFeedback ?? null,
+      liked_most: params.whatLikedMost ?? null,
+      concerns: params.concerns ?? null,
+      interested_in_offer: params.wouldMakeOffer === "yes",
+      has_own_agent: attendee.working_with_agent ?? false,
     })
 
     // Update lead score based on feedback
