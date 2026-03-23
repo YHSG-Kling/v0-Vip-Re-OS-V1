@@ -34,7 +34,7 @@ import { matchBuyersForListing } from "@/app/actions/property-buyer-matching"
 import { generateAICMA } from "@/app/actions/ai-cma"
 import { getAIPriceAdjustmentRecommendation } from "@/app/actions/ai-cma"
 import { evaluateListingPresentationReadiness } from "@/app/actions/seller-decision-governance"
-import { calculateSellerNet, saveCalculatorResult } from "@/app/actions/calculators"
+import { calculateSellerNet } from "@/app/actions/calculators"
 import { useToast } from "@/hooks/use-toast"
 
 interface WorkbenchRailProps {
@@ -143,14 +143,6 @@ export function ListingWorkbenchRail({ listingId, agentId, sellerId, brokerageId
         })
         setNetSheetResult({ _type: "detailed", ...res })
         toast({ title: "Net sheet calculated" })
-        if (sellerId) {
-          await saveCalculatorResult({
-            leadId: sellerId,
-            calculatorType: "seller_net",
-            inputs: { homeValue, mortgageBalance, repairs: repairsAmt, concessions: concessionsAmt },
-            results: res,
-          })
-        }
       } else {
         const res = await generateSellerNetSheet({
           agentId,

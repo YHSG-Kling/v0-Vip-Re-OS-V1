@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -14,8 +14,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Loader2, Truck, Calculator, Clock, ChevronDown, ChevronUp } from "lucide-react"
-import { estimateMovingCosts } from "@/app/actions/calculators"
-import { toast } from "sonner"
+import { estimateMovingCosts, saveCalculatorResult } from "@/app/actions/calculators"
+import { useToast } from "@/hooks/use-toast"
 
 type HomeSize = "studio" | "1br" | "2br" | "3br" | "4br+" | "house"
 
@@ -48,7 +48,7 @@ interface PortalFinancialToolsProps {
 }
 
 export function PortalFinancialTools({ contactId, calcHistory }: PortalFinancialToolsProps) {
-  const [isPending, startTransition] = useTransition()
+  const { toast } = useToast()
 
   // Moving cost estimator state
   const [movingResult, setMovingResult] = useState<any>(null)
@@ -82,10 +82,18 @@ export function PortalFinancialTools({ contactId, calcHistory }: PortalFinancial
       })
       if (res.success) {
         setMovingResult(res)
-        toast.success("Moving cost estimate ready")
+        toast({ title: "Moving cost estimate ready" })
+        // contactId is the truth — passed as leadId because the action param name predates
+        // the portal contact model, but the underlying column accepts any UUID identity
+        await saveCalculatorResult({
+          leadId: contactId,
+          calculatorType: "moving_cost",
+          inputs: { currentCity, currentState, newCity, newState, homeSize, distanceMiles, moveDate },
+          results: res,
+        })
       }
     } catch {
-      toast.error("Estimate failed — please try again")
+      toast({ title: "Estimate failed — please try again", variant: "destructive" })
     } finally {
       setMovingLoading(false)
     }
