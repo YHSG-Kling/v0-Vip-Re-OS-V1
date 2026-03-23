@@ -33,6 +33,7 @@ import {
   Mail,
   MessageSquare,
   Calendar,
+  CalendarPlus,
   Home,
   User,
   Clock,
@@ -45,11 +46,14 @@ import {
   Users,
   RefreshCw,
   Zap,
+  BrainCircuit,
+  CheckCircle2,
 } from "lucide-react"
 import {
   getPastClients,
   logTouchpoint,
   sendMarketUpdate,
+  scheduleTouchpoint,
   getTouchpointTimeline,
   getUpcomingAnniversaries,
   getAISuggestedTouchpoint,
@@ -165,6 +169,21 @@ export default function LifetimeCustomersPage() {
   const [touchpointType, setTouchpointType] = useState("call")
   const [touchpointNotes, setTouchpointNotes] = useState("")
 
+  // Schedule touchpoint dialog
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false)
+  const [scheduleContactId, setScheduleContactId] = useState<string | null>(null)
+  const [scheduleContactName, setScheduleContactName] = useState("")
+  const [scheduleDate, setScheduleDate] = useState("")
+  const [scheduleType, setScheduleType] = useState("call")
+  const [scheduleNotes, setScheduleNotes] = useState("")
+
+  // AI suggested touchpoints per contact
+  const [aiSuggestions, setAiSuggestions] = useState<Record<string, any>>({})
+  const [aiSuggestionLoading, setAiSuggestionLoading] = useState<string | null>(null)
+
+  // Track which contact opened the touchpoint draft dialog (for market update send)
+  const [touchpointContactId, setTouchpointContactId] = useState<string | null>(null)
+
   // Sphere intelligence state
   const [sphereScores, setSphereScores] = useState<any>(null)
   const [sphereSegments, setSphereSegments] = useState<any>(null)
@@ -254,6 +273,7 @@ export default function LifetimeCustomersPage() {
   }
 
   async function handleGenerateTouchpoint(contactId: string, type: 'anniversary' | 'birthday' | 'check_in' | 'market_update' | 'holiday' | 'referral_ask', title?: string) {
+    setTouchpointContactId(contactId)
     startTransition(async () => {
       const result = await generateTouchpoint({ contactId, touchpointType: type })
       if (result.success && result.message) {
@@ -273,6 +293,54 @@ export default function LifetimeCustomersPage() {
         setTouchpointDialogOpen(true)
       }
     })
+  }
+
+  async function handleScheduleTouchpoint() {
+    if (!scheduleContactId || !scheduleDate) return
+    const result = await scheduleTouchpoint({
+      contactId: scheduleContactId,
+      touchpointType: scheduleType,
+      scheduledFor: new Date(scheduleDate).toISOString(),
+      notes: scheduleNotes || undefined,
+    })
+    if (result.success) {
+      toast.success(`Touchpoint scheduled for ${new Date(scheduleDate).toLocaleDateString()}`)
+      setScheduleDialogOpen(false)
+      setScheduleDate("")
+      setScheduleNotes("")
+      setScheduleContactId(null)
+    } else {
+      toast.error("Failed to schedule touchpoint")
+    }
+  }
+
+  async function handleSendMarketUpdate(contactId: string, firstName: string) {
+    startTransition(async () => {
+      // Generate a market update draft then immediately send it to the portal
+      const draftResult = await generateTouchpoint({ contactId, touchpointType: "market_update" })
+      if (draftResult.success && draftResult.message) {
+        const sendResult = await sendMarketUpdate({ contactId, messageBody: draftResult.message })
+        if (sendResult.success) {
+          toast.success(`Market update sent to ${firstName}`)
+        } else {
+          toast.error("Failed to send market update")
+        }
+      } else {
+        toast.error("Failed to generate market update")
+      }
+    })
+  }
+
+  async function handleGetAISuggestion(contactId: string) {
+    setAiSuggestionLoading(contactId)
+    try {
+      const result = await getAISuggestedTouchpoint(contactId)
+      if (result.success && result.suggestion) {
+        setAiSuggestions((prev) => ({ ...prev, [contactId]: result.suggestion }))
+      }
+    } finally {
+      setAiSuggestionLoading(null)
+    }
   }
 
   async function handleScoreSphere() {
@@ -523,6 +591,75 @@ export default function LifetimeCustomersPage() {
                             </Button>
                           </div>
                         </div>
+
+                        {/* Second row: AI suggest + Schedule + Market Update */}
+                        <div className="flex items-center gap-2 mt-2 pt-2 border-t border-muted" onClick={(e) => e.stopPropagation()}>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-xs gap-1 text-muted-foreground"
+                            onClick={() => handleGetAISuggestion(client.id)}
+                            disabled={aiSuggestionLoading === client.id}
+                          >
+                            {aiSuggestionLoading === client.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <BrainCircuit className="w-3 h-3" />
+                            )}
+                            AI Suggest
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-xs gap-1 text-muted-foreground"
+                            onClick={() => {
+                              setScheduleContactId(client.id)
+                              setScheduleContactName(`${client.first_name} ${client.last_name}`)
+                              setScheduleDialogOpen(true)
+                            }}
+                          >
+                            <CalendarPlus className="w-3 h-3" />
+                            Schedule
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 text-xs gap-1 text-muted-foreground"
+                            onClick={() => handleSendMarketUpdate(client.id, client.first_name)}
+                            disabled={isPending}
+                          >
+                            <TrendingUp className="w-3 h-3" />
+                            Market Update
+                          </Button>
+                        </div>
+
+                        {/* Inline AI suggestion panel */}
+                        {aiSuggestions[client.id] && (
+                          <div className="mt-2 p-2.5 bg-purple-50 rounded-md border border-purple-100" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <CheckCircle2 className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                              <p className="text-xs font-medium text-purple-800 capitalize">
+                                AI Recommends: {String(aiSuggestions[client.id].type || "").replace(/_/g, " ")}
+                              </p>
+                            </div>
+                            <p className="text-xs text-purple-700">{aiSuggestions[client.id].reason}</p>
+                            {aiSuggestions[client.id].type && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="mt-2 h-6 text-xs gap-1 border-purple-200 text-purple-800 hover:bg-purple-100"
+                                onClick={() => handleGenerateTouchpoint(
+                                  client.id,
+                                  aiSuggestions[client.id].type as any,
+                                  "AI Suggested Touch"
+                                )}
+                              >
+                                <Send className="w-3 h-3" />
+                                Generate & Schedule
+                              </Button>
+                            )}
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   )
@@ -908,12 +1045,82 @@ export default function LifetimeCustomersPage() {
                 className="resize-none"
               />
             </div>
-            <DialogFooter>
+            <DialogFooter className="flex-wrap gap-2">
               <Button variant="outline" onClick={() => copyToClipboard(touchpointDraft || "")}>
                 <Copy className="w-4 h-4 mr-2" />
                 Copy
               </Button>
-              <Button onClick={() => setTouchpointDialogOpen(false)}>Close</Button>
+              {touchpointDialogTitle.toLowerCase().includes("market update") && touchpointContactId && (
+                <Button
+                  variant="default"
+                  onClick={async () => {
+                    if (!touchpointContactId || !touchpointDraft) return
+                    const clientName = clients.find(c => c.id === touchpointContactId)?.first_name || "client"
+                    const sendResult = await sendMarketUpdate({ contactId: touchpointContactId, messageBody: touchpointDraft })
+                    if (sendResult.success) {
+                      toast.success(`Market update sent to ${clientName}`)
+                      setTouchpointDialogOpen(false)
+                    } else {
+                      toast.error("Failed to send market update")
+                    }
+                  }}
+                  disabled={isPending}
+                >
+                  <Send className="w-4 h-4 mr-2" />
+                  Send to Portal
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => setTouchpointDialogOpen(false)}>Close</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Schedule Touchpoint Dialog */}
+        <Dialog open={scheduleDialogOpen} onOpenChange={setScheduleDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Schedule Next Touchpoint{scheduleContactName ? ` — ${scheduleContactName}` : ""}</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <Select value={scheduleType} onValueChange={setScheduleType}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Touchpoint Type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="call">Phone Call</SelectItem>
+                  <SelectItem value="email">Email</SelectItem>
+                  <SelectItem value="text">Text Message</SelectItem>
+                  <SelectItem value="meeting">In-Person Meeting</SelectItem>
+                  <SelectItem value="market_update">Market Update</SelectItem>
+                  <SelectItem value="check_in">Check In</SelectItem>
+                  <SelectItem value="anniversary">Anniversary</SelectItem>
+                </SelectContent>
+              </Select>
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Scheduled Date</label>
+                <input
+                  type="date"
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  value={scheduleDate}
+                  min={new Date().toISOString().split("T")[0]}
+                  onChange={(e) => setScheduleDate(e.target.value)}
+                />
+              </div>
+              <Textarea
+                placeholder="Notes (optional)"
+                value={scheduleNotes}
+                onChange={(e) => setScheduleNotes(e.target.value)}
+                rows={2}
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setScheduleDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleScheduleTouchpoint} disabled={!scheduleDate}>
+                <CalendarPlus className="w-4 h-4 mr-2" />
+                Schedule Touchpoint
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
