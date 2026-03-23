@@ -10,6 +10,10 @@ import { Calendar, ChevronRight, Clock, Sparkles, AlertTriangle } from "lucide-r
 import Link from "next/link"
 import { generateWeeklyPlan } from "@/app/actions/ai-calendar-management"
 
+// Stable singleton — createClient() inside a component body creates a new object
+// on every render, which breaks useEffect dependency comparisons.
+const supabase = createClient()
+
 interface ThisWeekPreviewProps {
   agentId: string
 }
@@ -51,7 +55,7 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
 }
 
 export function ThisWeekPreview({ agentId }: ThisWeekPreviewProps) {
-  const supabase = createClient()
+
   const [isPending, startTransition] = useTransition()
   const [weeklyPlan, setWeeklyPlan] = useState<WeeklyPlan | null>(null)
   const [upcomingEvents, setUpcomingEvents] = useState<DayEvent[]>([])
@@ -93,7 +97,7 @@ export function ThisWeekPreview({ agentId }: ThisWeekPreviewProps) {
       setLoading(false)
     }
     loadWeekData()
-  }, [supabase, agentId])
+  }, [agentId])
 
   const handleGeneratePlan = () => {
     const weekStart = new Date()

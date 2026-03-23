@@ -124,6 +124,7 @@ export default function AgentDashboard() {
           agentRow?.id
             ? getMarketAlerts({ agentId: agentRow.id }).catch(() => null)
             : Promise.resolve(null),
+          getMotivatedSellers({ min_score: 60 }).catch(() => null),
         ])
 
         // 7. Unpack results
@@ -185,10 +186,10 @@ export default function AgentDashboard() {
           }
         }
 
-        // Motivated sellers — loaded separately to not block main data
-        getMotivatedSellers({ min_score: 60 })
-          .then((r) => setMotivatedSellers(r?.sellers ?? []))
-          .catch(() => null)
+        if (results[10].status === 'fulfilled' && results[10].value) {
+          const sellersResult = results[10].value as any
+          setMotivatedSellers(sellersResult?.sellers ?? [])
+        }
 
       } catch (error) {
         console.error("[v0] Error loading agent dashboard:", error)
