@@ -27,6 +27,7 @@ import {
 } from "../components/os"
 import { getProviderConnectionStatus } from "@/app/actions/accounting-sync"
 import { AgentFinancialsClient } from "./agent-financials-client"
+import { DepositTrackerDialog } from "./components/deposit-tracker-dialog"
 
 export const dynamic = "force-dynamic"
 
@@ -57,6 +58,9 @@ export default async function AgentFinancialsPage() {
     monthlyTrend,
     ytdTransactionCount,
     syncStatus,
+    currentBilling,
+    existingBudget,
+    pipelineTransactions,
   ] = await Promise.all([
     // Agent profile for cap info
     supabase
@@ -173,6 +177,39 @@ export default async function AgentFinancialsPage() {
 
     // Accounting sync status
     getProviderConnectionStatus(brokerageId).catch(() => null),
+
+    // Current period billing (latest record for this month)
+    supabase
+      .from("agent_billing")
+      .select("*")
+      .eq("agent_id", agentId)
+      .gte("billing_period_start", new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split("T")[0])
+      .order("billing_period_start", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then((r) => r.data),
+
+    // Existing budget for current year
+    supabase
+      .from("budgets")
+      .select("id, income_goal, budget_data")
+      .eq("agent_id", agentId)
+      .eq("year", currentYear)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then((r) => r.data),
+
+    // Active pipeline transactions for commission calculator
+    supabase
+      .from("transactions")
+      .select("id, property_address, purchase_price, commission_percentage, estimated_commission, deal_name")
+      .eq("agent_id", agentId)
+      .not("status", "eq", "closed")
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .limit(20)
+      .then((r) => r.data || []),
   ])
 
   // Process earnings history to include property address
@@ -309,6 +346,9 @@ export default async function AgentFinancialsPage() {
         ytdTransactionCount={ytdTransactionCount}
         expenses={formattedExpenses}
         syncStatus={syncStatus}
+        currentBilling={currentBilling ?? null}
+        existingBudget={existingBudget ?? null}
+        pipelineTransactions={(pipelineTransactions as any[]) ?? []}
       >
         {/* Financial Command Strip */}
         <FinancialCommandStrip
@@ -406,15 +446,22 @@ export default async function AgentFinancialsPage() {
                     key={deal.id}
                     className="flex items-center justify-between p-3 bg-muted/50 rounded-lg"
                   >
-                    <div>
-                      <p className="font-medium text-sm">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">
                         {deal.transactions?.property_address || "Pending Deal"}
                       </p>
-                      <Badge variant="secondary" className="text-xs mt-1">
-                        {deal.transactions?.stage || "In Progress"}
-                      </Badge>
+                      <div className="flex items-center gap-2 mt-1">
+                        <Badge variant="secondary" className="text-xs">
+                          {deal.transactions?.stage || "In Progress"}
+                        </Badge>
+                        <DepositTrackerDialog
+                          agentId={agentId}
+                          transactionId={deal.transaction_id}
+                          propertyAddress={deal.transactions?.property_address}
+                        />
+                      </div>
                     </div>
-                    <p className="font-semibold text-amber-600">
+                    <p className="font-semibold text-amber-600 ml-3 shrink-0">
                       ${deal.total_commission?.toLocaleString() || 0}
                     </p>
                   </div>

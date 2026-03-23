@@ -2,7 +2,7 @@
 
 import { useState, ReactNode } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { DollarSign, Calculator } from "lucide-react"
+import { DollarSign, Calculator, Wrench } from "lucide-react"
 import {
   TaxReadinessPanel,
   TaxSetasidePanel,
@@ -10,6 +10,9 @@ import {
   BusinessPlanningPanel,
   PlanningAiSummaryPanel,
 } from "../components/planning"
+import { BillingSummaryCard } from "./components/billing-summary-card"
+import { CommissionCalculatorCard } from "./components/commission-calculator-card"
+import { BudgetPlannerCard } from "./components/budget-planner-card"
 
 interface SyncStatus {
   connected: boolean
@@ -26,6 +29,15 @@ interface Expense {
   date: string
 }
 
+interface PipelineTransaction {
+  id: string
+  property_address: string | null
+  purchase_price: number | null
+  commission_percentage: number | null
+  estimated_commission: number | null
+  deal_name: string | null
+}
+
 interface AgentFinancialsClientProps {
   agentId: string
   brokerageId: string
@@ -34,6 +46,9 @@ interface AgentFinancialsClientProps {
   ytdTransactionCount: number
   expenses: Expense[]
   syncStatus: SyncStatus | null
+  currentBilling: any | null
+  existingBudget: any | null
+  pipelineTransactions: PipelineTransaction[]
   children: ReactNode // The existing earnings content
 }
 
@@ -45,6 +60,9 @@ export function AgentFinancialsClient({
   ytdTransactionCount,
   expenses,
   syncStatus,
+  currentBilling,
+  existingBudget,
+  pipelineTransactions,
   children,
 }: AgentFinancialsClientProps) {
   const [setAsidePercent, setSetAsidePercent] = useState(25)
@@ -68,6 +86,10 @@ export function AgentFinancialsClient({
         <TabsTrigger value="planning" className="gap-2">
           <Calculator className="h-4 w-4" />
           Planning & Tax
+        </TabsTrigger>
+        <TabsTrigger value="finance-tools" className="gap-2">
+          <Wrench className="h-4 w-4" />
+          Finance Tools
         </TabsTrigger>
       </TabsList>
 
@@ -112,6 +134,28 @@ export function AgentFinancialsClient({
           ytdExpenses={ytdExpenses}
           estimatedTaxLiability={estimatedTaxLiability}
           syncStatus={syncStatus}
+        />
+      </TabsContent>
+
+      <TabsContent value="finance-tools" className="space-y-6">
+        {/* Row 1: Billing Summary + Commission Calculator */}
+        <div className="grid gap-6 lg:grid-cols-2">
+          <BillingSummaryCard
+            agentId={agentId}
+            brokerageId={brokerageId}
+            initialBilling={currentBilling}
+          />
+          <CommissionCalculatorCard
+            agentId={agentId}
+            pendingTransactions={pipelineTransactions}
+          />
+        </div>
+
+        {/* Row 2: Budget Planner (full width) */}
+        <BudgetPlannerCard
+          agentId={agentId}
+          initialBudget={existingBudget}
+          ytdGCI={ytdGCI}
         />
       </TabsContent>
     </Tabs>
