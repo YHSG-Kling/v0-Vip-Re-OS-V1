@@ -64,6 +64,7 @@ import { BarChart3, Sparkles } from "lucide-react"
 import { SocialAiComposer } from "@/app/components/ai-copilot/social-ai-composer"
 import { SocialCalendarAiPlanner } from "@/app/components/ai-copilot/social-calendar-ai-planner"
 import { getPublishedPostUrl } from "@/lib/social/get-published-post-url"
+import { toast } from "sonner"
 
 // Platform icons and colors
 const PLATFORM_CONFIG: Record<
@@ -207,7 +208,7 @@ export function SocialDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to share post")
+      toast.error(result.error || "Share failed")
     }
     setIsLoading(false)
   }
@@ -239,7 +240,7 @@ export function SocialDashboardClient({
   // Handle create post
   const handleCreatePost = async () => {
     if (!newPost.platform || !newPost.content || !newPost.scheduledFor || !newPost.socialAccountId) {
-      alert("Please fill in all required fields")
+      toast.error("Fill in all required fields")
       return
     }
 
@@ -269,7 +270,7 @@ export function SocialDashboardClient({
         mediaUrls: [],
       })
     } else {
-      alert(result.error || "Failed to create post")
+      toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
   }

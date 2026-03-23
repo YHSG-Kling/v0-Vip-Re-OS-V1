@@ -73,6 +73,7 @@ import {
 } from "@/lib/repurpose/actions"
 import { OUTPUT_FORMAT_CONFIG } from "@/lib/repurpose/types"
 import type { SourceType, OutputFormat } from "@/lib/repurpose/types"
+import { toast } from "sonner"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -216,7 +217,7 @@ export function RepurposeDashboardClient({
 
   const handleCreatePipeline = async () => {
     if (!newPipeline.pipelineName || newPipeline.outputFormats.length === 0) {
-      alert("Please provide a name and select at least one output format")
+      toast.error("Provide a name and at least one output format")
       return
     }
 
@@ -241,7 +242,7 @@ export function RepurposeDashboardClient({
       })
       router.refresh()
     } else {
-      alert(result.error || "Failed to create pipeline")
+      toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
   }
@@ -252,7 +253,7 @@ export function RepurposeDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to toggle pipeline")
+      toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
   }
@@ -265,14 +266,14 @@ export function RepurposeDashboardClient({
     if (result.success) {
       router.refresh()
     } else {
-      alert(result.error || "Failed to delete pipeline")
+      toast.error(result.error || "Operation failed")
     }
     setIsLoading(false)
   }
 
   const handleExecutePipeline = async () => {
     if (!selectedPipeline || !selectedSource) {
-      alert("Please select a pipeline and source content")
+      toast.error("Select a pipeline and source content")
       return
     }
 
@@ -717,7 +718,7 @@ export function RepurposeDashboardClient({
           </Card>
         </TabsContent>
 
-        {/* ═══════════════════════════════════════════════════════════════════ */}
+        {/* ══════════════════════════════════════════════════════════���════════ */}
         {/* HISTORY TAB */}
         {/* ═══════════════════════════════════════════════════════════════════ */}
         <TabsContent value="history">

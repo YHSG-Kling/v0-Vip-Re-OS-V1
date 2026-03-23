@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { MapPin, Clock, Filter, Home, DollarSign, Mail, Phone, RefreshCw, AlertTriangle } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 
 interface MotivatedSellerLead {
   id: string
@@ -175,7 +176,7 @@ export default function MotivatedSellersMap() {
 
   const assignLeadToAgent = async (contactId: string | null, agentId: string) => {
     if (!contactId) {
-      alert("This seller is not linked to a contact yet. Create a contact first to assign.")
+      toast.error("No contact linked — create a contact first")
       return
     }
 
@@ -186,11 +187,11 @@ export default function MotivatedSellersMap() {
 
       if (error) throw error
 
-      alert("Seller assigned successfully!")
+      toast.success("Seller assigned")
       loadSellers()
     } catch (error) {
       console.error("[v0] Error assigning seller:", error)
-      alert("Failed to assign seller")
+      toast.error("Failed to assign seller")
     } finally {
       setAssigningLead(null)
     }

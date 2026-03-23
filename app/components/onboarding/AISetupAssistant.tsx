@@ -9,6 +9,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Badge } from '@/components/ui/badge'
 import { ChevronUp, Send, AlertCircle } from 'lucide-react'
 import { saveAssistantChat, escapeAssistant } from '@/app/actions/onboarding/assistant'
+import { toast } from 'sonner'
 
 interface AISetupAssistantProps {
   agentOnboardingId: string
@@ -59,10 +60,10 @@ export function AISetupAssistant({
       setEscalateReason('')
       setOpen(false)
       // Trigger refresh of support tickets or show confirmation
-      alert('Support request submitted. An admin will contact you within 24 hours.')
+      toast.success('Support request submitted — admin will respond within 24 hours')
     } catch (error) {
       console.error('[v0] Escalation failed:', error)
-      alert('Failed to escalate. Please try again.')
+      toast.error('Escalation failed — try again')
       setEscalating(false)
     }
   }

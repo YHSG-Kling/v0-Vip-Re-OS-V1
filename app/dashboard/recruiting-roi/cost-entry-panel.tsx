@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Plus } from "lucide-react"
 import { addRecruitingCost } from "@/app/actions/recruiting-roi"
 import { useTransition } from "react"
+import { toast } from "sonner"
 
 interface Props {
   brokerageId: string
@@ -24,7 +25,7 @@ export function CostEntryPanel({ brokerageId }: Props) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!formData.amount || !formData.recruit_name) {
-      alert("Please fill in required fields")
+      toast.error("Fill in required fields")
       return
     }
 
@@ -40,10 +41,10 @@ export function CostEntryPanel({ brokerageId }: Props) {
 
         setFormData({ cost_type: "training", amount: "", recruit_name: "", notes: "" })
         setIsOpen(false)
-        alert("Cost added successfully")
+        toast.success("Cost added")
       } catch (error) {
         console.error("Error adding cost:", error)
-        alert("Failed to add cost")
+        toast.error("Failed to add cost")
       }
     })
   }

@@ -7,6 +7,7 @@ import type { AIToolName } from "../../types"
 import { workflowService } from "../../services/workflowService"
 import { supabaseService } from "../../services/supabaseService"
 import { useAuth } from "@/lib/auth/client"
+import { toast } from "sonner"
 
 interface AIToolModalProps {
   tool: {
@@ -45,7 +46,7 @@ export const AIToolModal: React.FC<AIToolModalProps> = ({ tool, onClose, context
 
       setOutput(result.output || "")
     } catch (e) {
-      alert("AI Engine encountered a bottleneck. Please try again.")
+      toast.error("AI Engine error — try again")
     } finally {
       setIsGenerating(false)
     }
@@ -65,7 +66,7 @@ export const AIToolModal: React.FC<AIToolModalProps> = ({ tool, onClose, context
       content: output,
       tags: [tone, tool.toolName],
     })
-    alert("Synthesized result saved to your Vault.")
+    toast.success("Saved to Vault")
   }
 
   return (

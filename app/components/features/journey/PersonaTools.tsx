@@ -19,6 +19,7 @@ import {
 } from "lucide-react"
 import { supabaseService } from "../services/supabaseService"
 import type { PersonaType, JourneyStage, JourneyTool } from "../types"
+import { toast } from "sonner"
 
 interface PersonaToolsProps {
   userId: string
@@ -181,7 +182,7 @@ const CalculatorTool: React.FC<{ config: any; tool: JourneyTool }> = ({ config }
       setResult(resultValue)
     } catch (error) {
       console.error("Calculation error:", error)
-      alert("Error calculating result. Please check your inputs.")
+      toast.error("Calculation error — check your inputs")
     }
   }
 

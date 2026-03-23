@@ -21,6 +21,7 @@ import {
   MessageCircle,
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 
 interface ExternalBehaviorLead {
   id: string
@@ -326,7 +327,7 @@ export default function BehavioralInsights() {
 
   const assignLeadToAgent = async (contactId: string | null | undefined, agentId: string) => {
     if (!contactId) {
-      alert("Cannot assign - no contact linked. Create a contact first.")
+      toast.error("No contact linked — create a contact first")
       return
     }
 
@@ -337,11 +338,11 @@ export default function BehavioralInsights() {
 
       if (error) throw error
 
-      alert("Lead assigned successfully!")
+      toast.success("Lead assigned")
       loadAllScrapedData()
     } catch (error) {
       console.error("[v0] Error assigning lead:", error)
-      alert("Failed to assign lead")
+      toast.error("Failed to assign lead")
     } finally {
       setAssigningLead(null)
     }

@@ -77,7 +77,7 @@ export function VideoGenerationButtons({
       const settings = await getAgentSettings(userId || "")
 
       if (!settings?.avatarId || !settings?.voiceId) {
-        alert("HeyGen video settings not configured. Please set up in Admin → Agent Roster.")
+        toast.error("HeyGen not configured — see Admin")
         return
       }
 
@@ -92,14 +92,14 @@ export function VideoGenerationButtons({
       })
 
       if (result.success) {
-        alert(`${type === "avatar" ? "Avatar video" : "Voice-only video"} queued successfully!`)
+        toast.success("Video queued for generation")
         onSuccess?.()
       } else {
-        alert(`Failed to generate video: ${result.error}`)
+        toast.error(result.error)
       }
     } catch (error) {
       console.error("[v0] Video generation error:", error)
-      alert("Failed to generate video. Please try again.")
+      toast.error("Video generation failed")
     } finally {
       setGenerating(null)
       setTimeout(() => {
