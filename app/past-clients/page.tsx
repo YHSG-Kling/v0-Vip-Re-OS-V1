@@ -184,6 +184,53 @@ export default function LifetimeCustomersPage() {
   // Track which contact opened the touchpoint draft dialog (for market update send)
   const [touchpointContactId, setTouchpointContactId] = useState<string | null>(null)
 
+  // Bulk selection state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkSending, setBulkSending] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null)
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll() {
+    if (selectedIds.size === filteredClients.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(filteredClients.map((c) => c.id)))
+    }
+  }
+
+  async function handleBulkMarketUpdate() {
+    const targets = filteredClients.filter((c) => selectedIds.has(c.id))
+    if (targets.length === 0) return
+    setBulkSending(true)
+    setBulkProgress({ done: 0, total: targets.length })
+    let done = 0
+    for (const client of targets) {
+      try {
+        const draftResult = await generateTouchpoint({ contactId: client.id, touchpointType: "market_update" })
+        if (draftResult.success && draftResult.message) {
+          await sendMarketUpdate({ contactId: client.id, messageBody: draftResult.message })
+        }
+      } catch {
+        // continue — don't abort bulk on single failure
+      }
+      done++
+      setBulkProgress({ done, total: targets.length })
+      toast.success(`Sending to ${done}/${targets.length}...`)
+    }
+    toast.success(`Market updates sent to ${done} contacts`)
+    setBulkSending(false)
+    setBulkProgress(null)
+    setSelectedIds(new Set())
+  }
+
   // Sphere intelligence state
   const [sphereScores, setSphereScores] = useState<any>(null)
   const [sphereSegments, setSphereSegments] = useState<any>(null)
@@ -520,6 +567,16 @@ export default function LifetimeCustomersPage() {
 
             {/* Filter Bar */}
             <div className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                aria-label="Select all clients"
+                checked={filteredClients.length > 0 && selectedIds.size === filteredClients.length}
+                ref={(el) => {
+                  if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < filteredClients.length
+                }}
+                onChange={toggleSelectAll}
+                className="h-4 w-4 rounded border-border accent-foreground cursor-pointer"
+              />
               <Select value={engagementFilter} onValueChange={setEngagementFilter}>
                 <SelectTrigger className="w-36">
                   <SelectValue placeholder="Engagement" />
@@ -533,6 +590,41 @@ export default function LifetimeCustomersPage() {
               </Select>
               <span className="text-sm text-muted-foreground">{filteredClients.length} clients</span>
             </div>
+
+            {/* Bulk action bar */}
+            {selectedIds.size > 0 && (
+              <div className="flex items-center gap-3 p-3 rounded-lg border border-foreground/10 bg-muted/40">
+                <span className="text-sm font-medium">{selectedIds.size} selected</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5"
+                  onClick={handleBulkMarketUpdate}
+                  disabled={bulkSending}
+                >
+                  {bulkSending ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      {bulkProgress ? `Sending ${bulkProgress.done}/${bulkProgress.total}...` : "Sending..."}
+                    </>
+                  ) : (
+                    <>
+                      <TrendingUp className="w-3.5 h-3.5" />
+                      Send Market Update to Selected ({selectedIds.size})
+                    </>
+                  )}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-muted-foreground"
+                  onClick={() => setSelectedIds(new Set())}
+                  disabled={bulkSending}
+                >
+                  Clear
+                </Button>
+              </div>
+            )}
 
             {/* Client List */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -553,6 +645,14 @@ export default function LifetimeCustomersPage() {
                     >
                       <CardContent className="p-4">
                         <div className="flex items-start justify-between gap-4">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${client.first_name} ${client.last_name}`}
+                            checked={selectedIds.has(client.id)}
+                            onChange={() => toggleSelect(client.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="mt-1 h-4 w-4 rounded border-border accent-foreground cursor-pointer shrink-0"
+                          />
                           <div className="flex items-start gap-3 flex-1 min-w-0">
                             <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
                               <User className="w-5 h-5 text-slate-500" />
@@ -648,14 +748,26 @@ export default function LifetimeCustomersPage() {
                                 size="sm"
                                 variant="outline"
                                 className="mt-2 h-6 text-xs gap-1 border-purple-200 text-purple-800 hover:bg-purple-100"
-                                onClick={() => handleGenerateTouchpoint(
-                                  client.id,
-                                  aiSuggestions[client.id].type as any,
-                                  "AI Suggested Touch"
-                                )}
+                                onClick={() => {
+                                  const suggestionType = aiSuggestions[client.id].type as string
+                                  // Pre-fill the schedule dialog with the AI-suggested type
+                                  // Map newsletter to check_in since it's not a scheduled_touchpoints type
+                                  const mappedType = ["call","email","text","meeting","market_update","check_in","anniversary"].includes(suggestionType)
+                                    ? suggestionType
+                                    : "check_in"
+                                  setScheduleType(mappedType)
+                                  // Default to 7 days from today as suggested date
+                                  const suggested = new Date()
+                                  suggested.setDate(suggested.getDate() + 7)
+                                  setScheduleDate(suggested.toISOString().split("T")[0])
+                                  setScheduleNotes(aiSuggestions[client.id].reason ?? "")
+                                  setScheduleContactId(client.id)
+                                  setScheduleContactName(`${client.first_name} ${client.last_name}`)
+                                  setScheduleDialogOpen(true)
+                                }}
                               >
-                                <Send className="w-3 h-3" />
-                                Generate & Schedule
+                                <CalendarPlus className="w-3 h-3" />
+                                Schedule It
                               </Button>
                             )}
                           </div>
