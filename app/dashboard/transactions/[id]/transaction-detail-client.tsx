@@ -53,6 +53,10 @@ import {
   Landmark,
   ExternalLink,
   Plus,
+  ShieldCheck,
+  Bell,
+  Share2,
+  ChevronRight,
 } from "lucide-react"
 import { format } from "date-fns"
 import { createClient } from "@/lib/supabase/client"
@@ -74,6 +78,12 @@ import { DocumentSignaturePanel } from "@/app/components/shared/DocumentSignatur
 import { isSignableDocType } from "@/lib/documents/signable-doc-types"
 import { AssignTCPanel } from "./assign-tc-panel"
 import { AssignLenderPanel } from "./assign-lender-panel"
+import {
+  analyzeTransactionDocument,
+  generateTransactionDocumentReminders,
+  checkTransactionDisclosures,
+  shareDocumentAnalysisWithClient,
+} from "@/app/actions/ai-transaction-documents"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -141,6 +151,8 @@ interface TransactionDetailClientProps {
     uploaded_at: string
     notes: string | null
     rejection_reason: string | null
+    extracted_data: Record<string, unknown> | null
+    classification_confidence: number | null
   }>
   documentCountsByStatus: Record<string, number>
   // Uses actual Supabase deal_health_scores table columns
@@ -476,6 +488,21 @@ export function TransactionDetailClient({
   const [checklistLoading, setChecklistLoading] = useState(false)
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set())
 
+  // AI Document Intelligence state
+  const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null)
+  const [docAnalysisResults, setDocAnalysisResults] = useState<Record<string, Record<string, unknown>>>({})
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
+  const [disclosureResult, setDisclosureResult] = useState<{
+    complianceScore?: number
+    missingDisclosures?: string[]
+    issues?: string[]
+    recommendations?: string[]
+  } | null>(null)
+  const [disclosureLoading, setDisclosureLoading] = useState(false)
+  const [remindersLoading, setRemindersLoading] = useState(false)
+  const [remindersCreated, setRemindersCreated] = useState<number | null>(null)
+  const [sharingDocId, setSharingDocId] = useState<string | null>(null)
+
   const currentStage = transaction.stage as TransactionStage
   const allowedNextStages = STAGE_TRANSITIONS[currentStage] || []
   const canAdvance = allowedNextStages.length > 0 && currentStage !== "CLOSED" && currentStage !== "LOST"
@@ -544,6 +571,106 @@ export function TransactionDetailClient({
         router.refresh()
       }
     })
+  }
+
+  // ─── AI DOCUMENT INTELLIGENCE HANDLERS ──────────────────────────────────────
+
+  async function handleAnalyzeDocument(docId: string) {
+    setAnalyzingDocId(docId)
+    try {
+      const result = await analyzeTransactionDocument({
+        documentId: docId,
+        transactionId: transaction.id,
+        brokerageId,
+        agentId: transaction.agent_id,
+      })
+      if (result.success && result.extracted) {
+        setDocAnalysisResults((prev) => ({ ...prev, [docId]: result.extracted! }))
+        setExpandedDocId(docId)
+        toast.success("Document analyzed")
+      } else {
+        toast.error(result.error ?? "Analysis failed")
+      }
+    } finally {
+      setAnalyzingDocId(null)
+    }
+  }
+
+  async function handleCheckDisclosures() {
+    setDisclosureLoading(true)
+    try {
+      const result = await checkTransactionDisclosures({
+        transactionId: transaction.id,
+        brokerageId,
+        agentId: transaction.agent_id,
+        state: transaction.property_state ?? "CA",
+      })
+      if (result.success) {
+        setDisclosureResult(result)
+        toast.success("Disclosure check complete")
+      } else {
+        toast.error(result.error ?? "Disclosure check failed")
+      }
+    } finally {
+      setDisclosureLoading(false)
+    }
+  }
+
+  async function handleGenerateReminders() {
+    setRemindersLoading(true)
+    try {
+      const result = await generateTransactionDocumentReminders({
+        transactionId: transaction.id,
+        brokerageId,
+        agentId: transaction.agent_id,
+      })
+      if (result.success) {
+        setRemindersCreated(result.remindersCreated ?? 0)
+        toast.success(`${result.remindersCreated} reminder task(s) created`)
+        router.refresh()
+      } else {
+        toast.error(result.error ?? "Failed to generate reminders")
+      }
+    } finally {
+      setRemindersLoading(false)
+    }
+  }
+
+  async function handleShareWithClient(docId: string, docLabel: string, analysis: Record<string, unknown>) {
+    if (!transaction.contact_id) {
+      toast.error("No contact linked to this transaction")
+      return
+    }
+    setSharingDocId(docId)
+    try {
+      const analysisText = [
+        analysis.summary ? `Summary: ${analysis.summary}` : null,
+        Array.isArray(analysis.redFlags) && analysis.redFlags.length > 0
+          ? `Items to note: ${(analysis.redFlags as string[]).join(", ")}`
+          : null,
+        Array.isArray(analysis.recommendedActions) && analysis.recommendedActions.length > 0
+          ? `Next steps: ${(analysis.recommendedActions as string[]).join(", ")}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+
+      const result = await shareDocumentAnalysisWithClient({
+        transactionId: transaction.id,
+        contactId: transaction.contact_id,
+        brokerageId,
+        agentId: transaction.agent_id,
+        documentLabel: docLabel,
+        analysisText,
+      })
+      if (result.success) {
+        toast.success("Analysis shared with client via portal")
+      } else {
+        toast.error(result.error ?? "Failed to share")
+      }
+    } finally {
+      setSharingDocId(null)
+    }
   }
 
   // ─── INSPECTION HANDLERS ─────────────────────────────────────────────────────
@@ -701,7 +828,7 @@ export function TransactionDetailClient({
     finally { setChecklistLoading(false) }
   }
 
-  // ─── RENDER ──────────────────────────────���───────────────────────────────────
+  // ─── RENDER ──────────────────────────────���────────────────────────────────��──
 
   return (
     <div className="min-h-screen bg-background">
@@ -1967,56 +2094,289 @@ export function TransactionDetailClient({
             </TabsContent>
 
             {/* Documents Tab */}
-            <TabsContent value="documents" className="mt-4">
+            <TabsContent value="documents" className="mt-4 space-y-3">
+              {/* Transaction-level AI actions */}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCheckDisclosures}
+                  disabled={disclosureLoading}
+                  className="text-xs gap-1.5"
+                >
+                  {disclosureLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                  )}
+                  Check Disclosures
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleGenerateReminders}
+                  disabled={remindersLoading}
+                  className="text-xs gap-1.5"
+                >
+                  {remindersLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Bell className="h-3.5 w-3.5" />
+                  )}
+                  Generate Reminders
+                </Button>
+                {remindersCreated !== null && (
+                  <Badge variant="secondary" className="text-xs">
+                    {remindersCreated} reminder task{remindersCreated !== 1 ? "s" : ""} created
+                  </Badge>
+                )}
+              </div>
+
+              {/* Disclosure check result */}
+              {disclosureResult && (
+                <Card className="border-blue-200 bg-blue-50/40">
+                  <CardContent className="p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="h-4 w-4 text-blue-600" />
+                        <span className="text-sm font-semibold text-blue-900">Disclosure Compliance</span>
+                      </div>
+                      <Badge
+                        className={cn(
+                          "text-xs",
+                          (disclosureResult.complianceScore ?? 0) >= 80
+                            ? "bg-green-100 text-green-800"
+                            : (disclosureResult.complianceScore ?? 0) >= 50
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-red-100 text-red-800"
+                        )}
+                      >
+                        Score: {disclosureResult.complianceScore ?? 0}/100
+                      </Badge>
+                    </div>
+                    {(disclosureResult.missingDisclosures?.length ?? 0) > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-red-700 mb-1">Missing disclosures:</p>
+                        <ul className="list-disc list-inside space-y-0.5">
+                          {disclosureResult.missingDisclosures!.map((item, i) => (
+                            <li key={i} className="text-xs text-red-600">{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {(disclosureResult.recommendations?.length ?? 0) > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-blue-800 mb-1">Recommendations:</p>
+                        <ul className="list-disc list-inside space-y-0.5">
+                          {disclosureResult.recommendations!.map((r, i) => (
+                            <li key={i} className="text-xs text-blue-700">{r}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
               <Card>
                 <CardContent className="pt-4">
                   {documents.length > 0 ? (
-                    <div className="space-y-2">
+                    <div className="space-y-3">
                       {documents.map((d) => {
                         const signable = isSignableDocType(d.doc_type)
                         const sig = contractSignatures[d.doc_type] ?? null
+                        const hasAnalysis = !!(d.extracted_data && Object.keys(d.extracted_data).length > 0)
+                        const pendingAnalysis = docAnalysisResults[d.id]
+                        const analysisData = pendingAnalysis ?? (hasAnalysis ? d.extracted_data! : null)
+                        const isAnalyzed = !!analysisData
+                        const isExpanded = expandedDocId === d.id
+                        const confidence = d.classification_confidence
+                          ? Math.round(d.classification_confidence * 100)
+                          : null
+
                         return (
-                          <div key={d.id} className="py-2 border-b last:border-0 space-y-2">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <p className="text-sm font-medium">{d.doc_label ?? d.doc_type}</p>
-                                <p className="text-xs text-muted-foreground">{d.doc_type.replace(/_/g, " ")}</p>
+                          <div key={d.id} className="border rounded-lg overflow-hidden">
+                            {/* Document header row */}
+                            <div className="flex items-center justify-between px-4 py-3 bg-muted/30">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium truncate">{d.doc_label ?? d.doc_type}</p>
+                                  <p className="text-xs text-muted-foreground capitalize">
+                                    {d.doc_type.replace(/_/g, " ")}
+                                    {confidence !== null && (
+                                      <span className="ml-2 text-blue-600">{confidence}% confidence</span>
+                                    )}
+                                  </p>
+                                </div>
                               </div>
-                              <Badge
-                                variant={
-                                  d.status === "approved"
-                                    ? "default"
-                                    : d.status === "pending_signature"
-                                    ? "secondary"
-                                    : d.status === "rejected"
-                                    ? "destructive"
-                                    : "secondary"
-                                }
-                              >
-                                {d.status.replace(/_/g, " ")}
-                              </Badge>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Badge
+                                  variant={
+                                    d.status === "approved"
+                                      ? "default"
+                                      : d.status === "rejected"
+                                      ? "destructive"
+                                      : "secondary"
+                                  }
+                                  className="text-xs"
+                                >
+                                  {d.status.replace(/_/g, " ")}
+                                </Badge>
+                                {isAnalyzed ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-xs h-7 gap-1 text-blue-700"
+                                    onClick={() => setExpandedDocId(isExpanded ? null : d.id)}
+                                  >
+                                    <Brain className="h-3.5 w-3.5" />
+                                    {isExpanded ? "Hide" : "View Analysis"}
+                                    <ChevronRight
+                                      className={cn(
+                                        "h-3 w-3 transition-transform",
+                                        isExpanded && "rotate-90"
+                                      )}
+                                    />
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-xs h-7 gap-1"
+                                    onClick={() => handleAnalyzeDocument(d.id)}
+                                    disabled={analyzingDocId === d.id}
+                                  >
+                                    {analyzingDocId === d.id ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <Sparkles className="h-3.5 w-3.5" />
+                                    )}
+                                    AI Analyze
+                                  </Button>
+                                )}
+                              </div>
                             </div>
+
+                            {/* Inline AI analysis panel */}
+                            {isExpanded && isAnalyzed && analysisData && (
+                              <div className="border-t bg-blue-50/30 px-4 py-3 space-y-3">
+                                {/* Summary */}
+                                {typeof analysisData.summary === "string" && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-foreground mb-1">Summary</p>
+                                    <p className="text-xs text-muted-foreground leading-relaxed">
+                                      {analysisData.summary}
+                                    </p>
+                                  </div>
+                                )}
+
+                                {/* Key Terms (contracts) */}
+                                {Array.isArray(analysisData.keyTerms) && analysisData.keyTerms.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-foreground mb-1">Key Terms</p>
+                                    <div className="grid grid-cols-1 gap-1">
+                                      {(analysisData.keyTerms as Array<{ term: string; value: string; importance: string }>)
+                                        .slice(0, 6)
+                                        .map((kt, i) => (
+                                          <div key={i} className="flex justify-between text-xs">
+                                            <span className="text-muted-foreground">{kt.term}</span>
+                                            <span className="font-medium text-foreground">{kt.value}</span>
+                                          </div>
+                                        ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Red Flags */}
+                                {Array.isArray(analysisData.redFlags) && analysisData.redFlags.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-destructive mb-1">Red Flags</p>
+                                    <ul className="list-disc list-inside space-y-0.5">
+                                      {(analysisData.redFlags as string[]).map((flag, i) => (
+                                        <li key={i} className="text-xs text-destructive">{flag}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* Deadlines */}
+                                {Array.isArray(analysisData.deadlines) && analysisData.deadlines.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-foreground mb-1">Deadlines</p>
+                                    <div className="space-y-1">
+                                      {(analysisData.deadlines as Array<{ description: string; date: string }>).map((dl, i) => (
+                                        <div key={i} className="flex justify-between text-xs">
+                                          <span className="text-muted-foreground">{dl.description}</span>
+                                          <span className="font-medium text-amber-700">{dl.date}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Recommended Actions */}
+                                {Array.isArray(analysisData.recommendedActions) && analysisData.recommendedActions.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-foreground mb-1">Recommended Actions</p>
+                                    <ul className="list-disc list-inside space-y-0.5">
+                                      {(analysisData.recommendedActions as string[]).map((a, i) => (
+                                        <li key={i} className="text-xs text-muted-foreground">{a}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* Share with client */}
+                                {transaction.contact_id && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-xs h-7 gap-1 w-full"
+                                    onClick={() =>
+                                      handleShareWithClient(
+                                        d.id,
+                                        d.doc_label ?? d.doc_type,
+                                        analysisData
+                                      )
+                                    }
+                                    disabled={sharingDocId === d.id}
+                                  >
+                                    {sharingDocId === d.id ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <Share2 className="h-3.5 w-3.5" />
+                                    )}
+                                    Share with Client via Portal
+                                  </Button>
+                                )}
+                              </div>
+                            )}
+
+                            {/* E-sign panel */}
                             {signable && (
-                              <DocumentSignaturePanel
-                                transactionId={transaction.id}
-                                documentId={d.id}
-                                docType={d.doc_type}
-                                docLabel={d.doc_label}
-                                userId={userId}
-                                brokerageId={brokerageId}
-                                connectedProvider={connectedEsignProvider ?? null}
-                                existingSignatureId={sig?.id ?? null}
-                                esignStatus={sig?.esign_status ?? null}
-                                providerName={sig?.provider_name ?? null}
-                                sentAt={sig?.sent_at ?? null}
-                                agentSignedAt={sig?.agent_signed_at ?? null}
-                                fullySignedAt={sig?.fully_signed_at ?? null}
-                                defaultSigners={
-                                  contactEmail
-                                    ? [{ name: contactName ?? "Contact", email: contactEmail, role: "signer" }]
-                                    : []
-                                }
-                              />
+                              <div className="border-t px-4 py-3">
+                                <DocumentSignaturePanel
+                                  transactionId={transaction.id}
+                                  documentId={d.id}
+                                  docType={d.doc_type}
+                                  docLabel={d.doc_label}
+                                  userId={userId}
+                                  brokerageId={brokerageId}
+                                  connectedProvider={connectedEsignProvider ?? null}
+                                  existingSignatureId={sig?.id ?? null}
+                                  esignStatus={sig?.esign_status ?? null}
+                                  providerName={sig?.provider_name ?? null}
+                                  sentAt={sig?.sent_at ?? null}
+                                  agentSignedAt={sig?.agent_signed_at ?? null}
+                                  fullySignedAt={sig?.fully_signed_at ?? null}
+                                  defaultSigners={
+                                    contactEmail
+                                      ? [{ name: contactName ?? "Contact", email: contactEmail, role: "signer" }]
+                                      : []
+                                  }
+                                />
+                              </div>
                             )}
                           </div>
                         )
