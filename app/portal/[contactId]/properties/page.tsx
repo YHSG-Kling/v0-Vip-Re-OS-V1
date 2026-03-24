@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import PersonaPropertiesDashboard from "@/app/components/portal/PersonaPropertiesDashboard"
 import { getPersonaConfig } from "@/lib/portal"
-import { getRecommendedProperties } from "@/app/actions/ai-client-portal"
+import { determinePortalView } from "@/lib/kernel/portal"
 
 export default async function PropertiesPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -66,9 +66,105 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
         .limit(6)
     : { data: [] }
 
-  // Fetch AI-recommended properties based on contact preferences
-  const recommendedResult = await getRecommendedProperties({ contactId, limit: 6 }).catch(() => ({ success: false, properties: [] }))
-  const recommendedProperties = recommendedResult.properties ?? []
+  // Determine portal view via kernel gate — buyer vs seller vs lifetime
+  const portalView = await determinePortalView(supabase, contactId)
+
+  // BUYER PATH: Surface the buyer's own smart searches (property_alerts) and
+  // inferred preferences (property_preferences). Buyers own their searches —
+  // they do NOT browse brokerage listings directly.
+  let buyerSmartSearches: Array<{
+    id: string
+    alert_name: string | null
+    bedrooms_min: number | null
+    bathrooms_min: number | null
+    min_price: number | null
+    max_price: number | null
+    zip_codes: string[] | null
+    cities: string[] | null
+    property_types: string[] | null
+    frequency: string | null
+    is_active: boolean
+    last_run_at: string | null
+    last_match_count: number | null
+  }> = []
+
+  let buyerInferredPrefs: {
+    inferred_min_price: number | null
+    inferred_max_price: number | null
+    inferred_beds_min: number | null
+    inferred_baths_min: number | null
+    inferred_cities: string[] | null
+    inferred_zip_codes: string[] | null
+    inferred_property_types: string[] | null
+    inferred_must_have_features: string[] | null
+    confidence_score: number | null
+  } | null = null
+
+  // SELLER PATH: Resolve brokerage-represented listing for this seller contact
+  let sellerListing: {
+    id: string
+    address: string | null
+    city: string | null
+    state: string | null
+    zip: string | null
+    list_price: number | null
+    bedrooms: number | null
+    bathrooms: number | null
+    sqft: number | null
+    lifecycle_stage: string | null
+    status: string | null
+    showing_count: number | null
+    mls_number: string | null
+    listing_date: string | null
+  } | null = null
+
+  if (portalView === "buyer") {
+    // Fetch all active smart searches (property_alerts) for this buyer
+    const { data: alerts } = await supabase
+      .from("property_alerts")
+      .select(
+        "id, alert_name, bedrooms_min, bathrooms_min, min_price, max_price, zip_codes, cities, property_types, frequency, is_active, last_run_at, last_match_count"
+      )
+      .eq("contact_id", contactId)
+      .order("created_at", { ascending: false })
+      .limit(10)
+
+    buyerSmartSearches = alerts ?? []
+
+    // Fetch AI-inferred preferences from buyer behavior signals
+    const { data: prefs } = await supabase
+      .from("property_preferences")
+      .select(
+        "inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, inferred_cities, inferred_zip_codes, inferred_property_types, inferred_must_have_features, confidence_score"
+      )
+      .eq("contact_id", contactId)
+      .order("last_calculated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    buyerInferredPrefs = prefs ?? null
+  }
+
+  if (portalView === "seller" || contact.contact_type === "seller") {
+    // Resolve brokerage-represented listing for this seller
+    const { data: listing } = await supabase
+      .from("listings")
+      .select(
+        "id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, lifecycle_stage, status, showing_count, mls_number, listing_date"
+      )
+      .eq("seller_contact_id", contactId)
+      .in("status", ["active", "pending", "coming_soon", "under_contract"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    sellerListing = listing ?? null
+  }
+
+  // recommendedProperties kept as empty array — buyers use smart searches,
+  // sellers use their own listing. The listings table is not surfaced directly
+  // to buyers in the portal per kernel OS specification.
+  const recommendedProperties: never[] = []
 
   // Parse custom_fields
   const customFields = typeof contact.custom_fields === "string" 
@@ -89,6 +185,10 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       contactId={contactId}
       comingSoonListings={comingSoonAlertResults || []}
       recommendedProperties={recommendedProperties}
+      portalView={portalView}
+      buyerSmartSearches={buyerSmartSearches}
+      buyerInferredPrefs={buyerInferredPrefs}
+      sellerListing={sellerListing}
     />
   )
 }
