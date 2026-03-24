@@ -22,6 +22,7 @@
  *          repurposed_content_log, qr_codes
  */
 
+import { generateText } from "ai"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
@@ -706,8 +707,54 @@ export async function generateCampaignContent(params: {
     .eq("id", params.campaignId)
     .single()
 
-  // Generate content using AI (placeholder - integrate with AI SDK)
-  const generatedContent = `[AI Generated Content for ${campaign?.campaign_name ?? "campaign"}]: ${params.prompt}`
+  // Load brand voice profile for this brokerage
+  const { data: aiIdentity } = await supabase
+    .from("brand_voice_profile")
+    .select("tone, formality_level, key_brand_messages, prohibited_words, preferred_words, mission_statement, custom_instructions")
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  const systemPrompt = [
+    `You are ${aiIdentity?.tone ? `a ${aiIdentity.tone}` : "a professional"} real estate marketing AI.`,
+    aiIdentity?.formality_level === "formal"
+      ? "Use formal, professional language."
+      : aiIdentity?.formality_level === "casual"
+      ? "Use approachable, conversational language."
+      : "Use semi-formal, warm language.",
+    aiIdentity?.key_brand_messages?.length
+      ? `Brand pillars: ${aiIdentity.key_brand_messages.join(", ")}.`
+      : "",
+    aiIdentity?.prohibited_words?.length
+      ? `Never use these words or phrases: ${aiIdentity.prohibited_words.join(", ")}.`
+      : "",
+    aiIdentity?.preferred_words?.length
+      ? `Prefer these words and phrases: ${aiIdentity.preferred_words.join(", ")}.`
+      : "",
+    aiIdentity?.mission_statement
+      ? `Brand mission: ${aiIdentity.mission_statement}`
+      : "",
+    aiIdentity?.custom_instructions ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+
+  const listing = (campaign as any)?.listing
+  const contentPrompt = [
+    `Campaign: ${campaign?.campaign_name ?? "real estate campaign"}`,
+    `Type: ${params.contentType.replace(/_/g, " ")} (${campaign?.campaign_type ?? "general"})`,
+    listing ? `Property: ${listing.address}, ${listing.city}` : "",
+    `Task: ${params.prompt}`,
+    `Requirements: Write compelling ${params.contentType.replace(/_/g, " ")} content. Be specific, local, and emotionally resonant. Include a clear call to action.`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+
+  const { text: generatedContent } = await generateText({
+    model: "openai/gpt-4o-mini",
+    system: systemPrompt,
+    prompt: contentPrompt,
+    maxTokens: 800,
+  })
 
   // Apply brand voice check
   const brandVoiceResult = await applyBrandVoice({
