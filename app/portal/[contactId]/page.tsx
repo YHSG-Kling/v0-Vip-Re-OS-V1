@@ -443,6 +443,55 @@ export default async function PortalHomePage({
           </div>
         )}
 
+        {/* Agent Contact Card */}
+        {agentInfo && (
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Your Agent</p>
+              <div className="flex items-center gap-4">
+                <Avatar className="h-14 w-14 shrink-0">
+                  <AvatarImage src={agentInfo.profile_image_url ?? undefined} alt={agentInfo.full_name ?? "Agent"} />
+                  <AvatarFallback className="bg-primary/10 text-primary text-lg font-semibold">
+                    {agentInfo.full_name ? agentInfo.full_name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase() : "AG"}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-foreground truncate">{agentInfo.full_name || "Your Agent"}</p>
+                  {agentInfo.email && (
+                    <p className="text-xs text-muted-foreground truncate">{agentInfo.email}</p>
+                  )}
+                  {agentInfo.phone_mobile && (
+                    <p className="text-xs text-muted-foreground">{agentInfo.phone_mobile}</p>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2 mt-4">
+                <Link href={`/portal/${contactId}/messages`} className="flex-1">
+                  <Button size="sm" className="w-full gap-1.5 text-xs">
+                    <MessageSquare className="h-4 w-4" />
+                    Send Message
+                  </Button>
+                </Link>
+                {agentInfo.phone_mobile ? (
+                  <a href={`tel:${agentInfo.phone_mobile}`} className="flex-1">
+                    <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                      <Calendar className="h-4 w-4" />
+                      Schedule Call
+                    </Button>
+                  </a>
+                ) : (
+                  <Link href={`/portal/${contactId}/messages`} className="flex-1">
+                    <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                      <Calendar className="h-4 w-4" />
+                      Schedule Call
+                    </Button>
+                  </Link>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* My Team */}
         <DealTeamCard contactId={contactId} agentId={contact.agent_id} />
 

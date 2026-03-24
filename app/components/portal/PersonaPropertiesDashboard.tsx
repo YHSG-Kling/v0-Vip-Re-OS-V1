@@ -47,6 +47,18 @@ interface PersonaPropertiesDashboardProps {
     lifecycle_stage?: string | null
     zip?: string | null
   }>
+  recommendedProperties?: Array<{
+    id: string
+    address: string | null
+    city: string | null
+    state: string | null
+    zip: string | null
+    list_price: number | null
+    bedrooms: number | null
+    bathrooms: number | null
+    sqft: number | null
+    status: string | null
+  }>
 }
 
 // Persona-specific tab configurations
@@ -224,6 +236,7 @@ export default function PersonaPropertiesDashboard({
   propertyInterests,
   contactId,
   comingSoonListings = [],
+  recommendedProperties = [],
 }: PersonaPropertiesDashboardProps) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
@@ -910,6 +923,73 @@ export default function PersonaPropertiesDashboard({
 
         {/* Smart Matches Tab - Most Personas */}
         <TabsContent value="matches" className="space-y-6">
+
+          {/* AI Picks for You — server-rendered recommended properties */}
+          {recommendedProperties.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="h-5 w-5 text-blue-600" />
+                <h2 className="font-semibold text-base">AI Picks for You</h2>
+                <Badge className="bg-blue-100 text-blue-700 text-xs border-0">
+                  {recommendedProperties.length} matched
+                </Badge>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {recommendedProperties.map((prop) => (
+                  <Card key={prop.id} className="overflow-hidden border-blue-200 hover:shadow-md transition-shadow">
+                    <div className="aspect-video bg-slate-100 flex items-center justify-center">
+                      <Home className="h-8 w-8 text-slate-400" />
+                    </div>
+                    <CardContent className="p-4 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm font-semibold leading-snug line-clamp-2">
+                          {prop.address || "Address not available"}
+                        </p>
+                        <Badge className="bg-blue-100 text-blue-700 text-xs border-0 shrink-0">
+                          AI Match
+                        </Badge>
+                      </div>
+                      {(prop.city || prop.state) && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-1">
+                          <MapPin className="h-3 w-3" />
+                          {[prop.city, prop.state].filter(Boolean).join(", ")}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+                        {prop.list_price && (
+                          <span className="font-semibold text-foreground text-sm">
+                            ${prop.list_price.toLocaleString()}
+                          </span>
+                        )}
+                        {prop.bedrooms && (
+                          <span className="flex items-center gap-1">
+                            <Bed className="h-3 w-3" />
+                            {prop.bedrooms} bd
+                          </span>
+                        )}
+                        {prop.bathrooms && (
+                          <span className="flex items-center gap-1">
+                            <Bath className="h-3 w-3" />
+                            {prop.bathrooms} ba
+                          </span>
+                        )}
+                        {prop.sqft && (
+                          <span className="flex items-center gap-1">
+                            <Square className="h-3 w-3" />
+                            {prop.sqft.toLocaleString()} sqft
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-blue-700 font-medium">
+                        Matched to your search criteria
+                      </p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* AI Recommendation Banner */}
           <Card className="bg-gradient-to-r from-blue-50 to-purple-50 border-blue-200">
             <CardContent className="p-4">

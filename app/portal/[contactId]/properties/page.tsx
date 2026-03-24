@@ -1,7 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import PersonaPropertiesDashboard from "@/components/portal/PersonaPropertiesDashboard"
+import PersonaPropertiesDashboard from "@/app/components/portal/PersonaPropertiesDashboard"
 import { getPersonaConfig } from "@/lib/portal"
+import { getRecommendedProperties } from "@/app/actions/ai-client-portal"
 
 export default async function PropertiesPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -65,6 +66,10 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
         .limit(6)
     : { data: [] }
 
+  // Fetch AI-recommended properties based on contact preferences
+  const recommendedResult = await getRecommendedProperties({ contactId, limit: 6 }).catch(() => ({ success: false, properties: [] }))
+  const recommendedProperties = recommendedResult.properties ?? []
+
   // Parse custom_fields
   const customFields = typeof contact.custom_fields === "string" 
     ? JSON.parse(contact.custom_fields || "{}") 
@@ -83,6 +88,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
       propertyInterests={propertyInterests || []}
       contactId={contactId}
       comingSoonListings={comingSoonAlertResults || []}
+      recommendedProperties={recommendedProperties}
     />
   )
 }
