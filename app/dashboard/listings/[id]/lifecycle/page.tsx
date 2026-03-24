@@ -22,6 +22,9 @@ import { ListingAgreementStatusCard } from "./components/listing-agreement-statu
 import { DecisionHistoryPanel } from "./components/decision-history-panel"
 import { ComingSoonCommandCard } from "./components/coming-soon-command-card"
 import { ListingPacketPanel } from "./components/listing-packet-panel"
+import { CheckCircle } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import Link from "next/link"
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -45,7 +48,7 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // Load listing — auth scope: agent=own, team_lead=team, broker/admin=any
   let listingQuery = supabase
     .from("listings")
-    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, assigned_agent_id, brokerage_id, list_price")
+    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, assigned_agent_id, brokerage_id, list_price, seller_contact_id")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
@@ -55,6 +58,16 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
 
   const { data: listing } = await listingQuery.single()
   if (!listing) notFound()
+
+  // Fetch seller contact (needed for closed celebration card)
+  const sellerContact = listing.seller_contact_id
+    ? await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, contact_type")
+        .eq("id", listing.seller_contact_id)
+        .maybeSingle()
+        .then(r => r.data)
+    : null
 
   // Load lifecycle events for completed stages + timeline
   const { data: lifecycleEvents } = await supabase
@@ -210,6 +223,34 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
             Stage: <span className="font-medium text-foreground">{currentStageDef?.label ?? currentStage}</span>
           </p>
         </div>
+
+        {/* Closed: Seller-to-Lifetime Celebration Card */}
+        {currentStage === "CLOSED" && (
+          <div className="rounded-lg border border-green-300 bg-green-50 p-4 mb-6">
+            <div className="flex items-center gap-2 mb-1">
+              <CheckCircle className="h-5 w-5 text-green-600 shrink-0" />
+              <p className="font-semibold text-green-900">Listing Closed!</p>
+            </div>
+            <p className="text-sm text-green-700">
+              {sellerContact?.first_name
+                ? `${sellerContact.first_name} has been converted to a lifetime customer.`
+                : "The seller has been converted to a lifetime customer."}{" "}
+              Post-close touchpoints scheduled (3-day, 30-day, 6-month).
+            </p>
+            <div className="flex gap-2 mt-3 flex-wrap">
+              {sellerContact?.id && (
+                <Button size="sm" asChild>
+                  <Link href={`/crm?contactId=${sellerContact.id}`}>
+                    View in CRM as Lifetime
+                  </Link>
+                </Button>
+              )}
+              <Button size="sm" variant="outline" asChild>
+                <Link href="/past-clients">Past Clients Dashboard</Link>
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Launch State Strip */}
         <div className="mb-6">

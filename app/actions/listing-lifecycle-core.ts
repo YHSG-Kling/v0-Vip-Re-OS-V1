@@ -234,7 +234,12 @@ export async function executeListingTransition(params: {
       })
     }
   }
-  
+
+  // ── CLOSED: Convert seller to lifetime customer ───────────────────────────
+  if (params.targetStage === "CLOSED") {
+    await handleSellerToLifetimeTransition(supabase, params.listingId, listing.agent_id, listing.brokerage_id)
+  }
+
   return {
     success: true,
     transition: {
@@ -243,6 +248,95 @@ export async function executeListingTransition(params: {
       timestamp: new Date().toISOString(),
       enabledSystemGates: targetDef?.enablesSystemGates || [],
     },
+  }
+}
+
+// ============================================
+// INTERNAL: SELLER → LIFETIME CUSTOMER
+// ============================================
+
+async function handleSellerToLifetimeTransition(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+  agentId: string,
+  brokerageId: string,
+) {
+  // Fetch listing with seller contact and address
+  const { data: listingWithContact } = await supabase
+    .from("listings")
+    .select("seller_contact_id, address, city, state")
+    .eq("id", listingId)
+    .maybeSingle()
+
+  if (!listingWithContact?.seller_contact_id) return
+
+  const { seller_contact_id: contactId, address, city, state } = listingWithContact
+  const propertyAddress = [address, city, state].filter(Boolean).join(", ")
+  const now = new Date().toISOString()
+  const closedDate = new Date().toLocaleDateString()
+
+  // 1. Convert contact to lifetime customer
+  await supabase
+    .from("contacts")
+    .update({
+      contact_type: "lifetime",
+      contact_persona: "past_seller",
+      status: "past_client",
+      notes: `Converted to lifetime customer on ${closedDate} after closing at ${propertyAddress}`,
+      updated_at: now,
+    })
+    .eq("id", contactId)
+
+  // 2. Trigger post-close touchpoint sequence (3-day, 30-day, 6-month)
+  const closingDate = new Date()
+  const touchpoints = [
+    { type: "post_close_3_day",   daysAfter: 3,   channel: "video" },
+    { type: "post_close_30_day",  daysAfter: 30,  channel: "sms"   },
+    { type: "post_close_6_month", daysAfter: 180, channel: "email" },
+  ].map(({ type, daysAfter, channel }) => {
+    const d = new Date(closingDate)
+    d.setDate(d.getDate() + daysAfter)
+    return {
+      contact_id: contactId,
+      agent_id: agentId,
+      brokerage_id: brokerageId,
+      touchpoint_type: type,
+      channel,
+      scheduled_date: d.toISOString().split("T")[0],
+      related_transaction_id: null,
+      status: "scheduled",
+    }
+  })
+
+  await supabase.from("past_client_touchpoints").insert(touchpoints).then(() => {})
+
+  // 3. Send portal message (body column per schema)
+  await supabase
+    .from("client_portal_messages")
+    .insert({
+      contact_id: contactId,
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      body: `Congratulations on your successful closing! Your portal is now updated to reflect your homeowner status. We look forward to being your lifetime real estate resource.`,
+      direction: "outbound",
+    })
+    .then(() => {})
+
+  // 4. Increment agent gamification points (agents table has gamification_points column)
+  if (agentId) {
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("id, gamification_points")
+      .eq("id", agentId)
+      .maybeSingle()
+
+    if (agentRow) {
+      await supabase
+        .from("agents")
+        .update({ gamification_points: (agentRow.gamification_points ?? 0) + 50 })
+        .eq("id", agentId)
+        .then(() => {})
+    }
   }
 }
 
