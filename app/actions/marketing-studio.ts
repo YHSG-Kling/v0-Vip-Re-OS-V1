@@ -22,7 +22,7 @@
  *          repurposed_content_log, qr_codes
  */
 
-import { generateText } from "ai"
+import { generateAIResponse } from "@/lib/ai/models"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
@@ -749,12 +749,41 @@ export async function generateCampaignContent(params: {
     .filter(Boolean)
     .join("\n")
 
-  const { text: generatedContent } = await generateText({
-    model: "openai/gpt-4o-mini",
+  // Map contentType to AI_TASK_ROUTING feature key so governance cascade
+  // (resolveAIModel → tier caps → brokerage overrides) picks the right model.
+  // Per routing table: all content generation tasks resolve to claude-sonnet
+  // (Anthropic) with gpt-4o as fallback — no hardcoding required.
+  const featureMap: Record<typeof params.contentType, string> = {
+    social_caption: "social_post_generation",
+    email_subject:  "email_generation",
+    email_body:     "email_generation",
+    ad_copy:        "direct_mail_copy",
+  }
+  const feature = featureMap[params.contentType] ?? "social_post_generation"
+
+  const aiResponse = await generateAIResponse({
     system: systemPrompt,
     prompt: contentPrompt,
     maxTokens: 800,
+    metadata: {
+      userId,
+      brokerageId,
+      agentId: agentId ?? null,
+      feature,
+    },
+    compliance: {
+      requiresFairHousingCheck: true,
+      requiresThemFirstCheck: true,
+      requiresTCPACheck: false,
+      userId,
+      brokerageId,
+      contentType:
+        params.contentType === "email_body" || params.contentType === "email_subject"
+          ? "email"
+          : "social",
+    },
   })
+  const generatedContent = aiResponse.text
 
   // Apply brand voice check
   const brandVoiceResult = await applyBrandVoice({
