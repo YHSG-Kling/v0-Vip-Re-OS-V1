@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
 import { KernelEvent } from '@/lib/kernel/events'
+import { persistContactConsent } from '@/lib/kernel/compliance/require-contact-consent'
 
 export const dynamic = 'force-dynamic'
 

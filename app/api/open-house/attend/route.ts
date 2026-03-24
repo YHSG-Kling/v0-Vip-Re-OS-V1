@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
+import { persistContactConsent } from "@/lib/kernel/compliance/require-contact-consent"
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,6 +15,9 @@ export async function POST(req: NextRequest) {
       phone,
       workingWithAgent,
       hearAboutUs,
+      tcpaConsent,
+      tcpaConsentText,
+      tcpaConsentSource,
     }: {
       eventId: string
       firstName: string
@@ -22,11 +26,21 @@ export async function POST(req: NextRequest) {
       phone?: string
       workingWithAgent: boolean
       hearAboutUs?: string
+      tcpaConsent?: boolean
+      tcpaConsentText?: string
+      tcpaConsentSource?: string
     } = body
 
     if (!eventId || !firstName || !lastName || !email) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
     }
+
+    if (!tcpaConsent) {
+      return NextResponse.json({ error: "TCPA consent is required" }, { status: 400 })
+    }
+
+    const ip        = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null
+    const userAgent = req.headers.get("user-agent") ?? null
 
     const supabase = createServiceClient()
 
@@ -64,6 +78,7 @@ export async function POST(req: NextRequest) {
         })
         .eq("id", contactId)
     } else {
+      const now = new Date().toISOString()
       const { data: newContact, error: contactErr } = await supabase
         .from("contacts")
         .insert({
@@ -75,7 +90,12 @@ export async function POST(req: NextRequest) {
           phone: phone ?? null,
           source: "open_house",
           status: "new",
-          tcpa_consent: false,
+          tcpa_consent: true,
+          tcpa_consent_at: now,
+          tcpa_consent_date: now,
+          tcpa_consent_text: tcpaConsentText ?? null,
+          tcpa_consent_source: tcpaConsentSource ?? "/open-house/sign-in",
+          tcpa_consent_ip: ip,
           isa_reengage_allowed: false,
         })
         .select("id")
@@ -85,6 +105,18 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "Failed to create contact" }, { status: 500 })
       }
       contactId = newContact.id
+
+      // Persist consent audit event
+      await persistContactConsent({
+        brokerageId: event.brokerage_id,
+        agentId: event.agent_id,
+        contactId,
+        consentText: tcpaConsentText ?? "Consent given at open house sign-in",
+        consentSource: tcpaConsentSource ?? "/open-house/sign-in",
+        consented: true,
+        ipAddress: ip,
+        userAgent: userAgent,
+      }).catch(() => {})
     }
 
     // 2. INSERT open_house_attendees
