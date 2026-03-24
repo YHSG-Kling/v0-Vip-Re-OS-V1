@@ -229,11 +229,13 @@ export async function recordSellerDecision(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: activityType,
+    title:         `Seller decision: ${decision}`,
+    description:   reason ?? `Seller decision: ${decision}`,
+    notes:         JSON.stringify({ listing_id: listingId, decision, reason: reason ?? null }),
     status:        "completed",
-    metadata:      { decision, reason },
+    entity_type:   "contact",
   })
 
   return { success: true, decision }
@@ -255,13 +257,14 @@ export async function initiateListingAgreement(params: {
   const supabase = await createClient()
   const { listingId, userId, brokerageId } = params
 
-  // Gate: Requires seller.decision.accepted
+  // Gate: Requires seller.decision.accepted — check lifecycle_events (activities has no listing_id)
   const { data: decisionEvent } = await supabase
-    .from("activities")
+    .from("lifecycle_events")
     .select("id")
-    .eq("listing_id", listingId)
-    .eq("activity_type", "seller.decision.accepted")
-    .single()
+    .eq("entity_id", listingId)
+    .eq("event_type", "seller.decision.accepted")
+    .limit(1)
+    .maybeSingle()
 
   if (!decisionEvent) {
     return { success: false, error: "Seller decision not accepted" }
@@ -290,10 +293,13 @@ export async function initiateListingAgreement(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.listing_agreement.initiated",
+    title:         "Listing agreement initiated",
+    description:   `Listing agreement process initiated for listing ${listingId}`,
+    notes:         JSON.stringify({ listing_id: listingId }),
     status:        "in_progress",
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -551,11 +557,13 @@ export async function recordPreListingRepair(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.repair.required.pre_listing",
+    title:         `Pre-listing repair required: ${repairType}`,
+    description,
+    notes:         JSON.stringify({ listing_id: listingId, repair_type: repairType, vendor_id: vendorId ?? null }),
     status:        "in_progress",
-    metadata:      { repair_type: repairType, description, vendor_id: vendorId },
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -598,11 +606,12 @@ export async function markRepairCompleted(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.repair.completed.pre_listing",
+    title:         "Pre-listing repair completed",
+    notes:         JSON.stringify({ listing_id: listingId, repair_id: repairId }),
     status:        "completed",
-    metadata:      { repair_id: repairId },
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -622,12 +631,14 @@ export async function markRepairFailed(params: {
   const { listingId, repairId, reason, userId, brokerageId } = params
 
   const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
+    brokerage_id:  brokerageId,
+    agent_id:      userId,
     activity_type: "seller.repair.failed.pre_listing",
-    status: "failed",
-    metadata: { repair_id: repairId, reason },
+    title:         "Pre-listing repair failed",
+    description:   reason,
+    notes:         JSON.stringify({ listing_id: listingId, repair_id: repairId, reason }),
+    status:        "completed",
+    entity_type:   "contact",
   })
 
   if (error) {
@@ -668,12 +679,14 @@ export async function scheduleMediaCapture(params: {
   const { listingId, scheduledDate, vendorId, userId, brokerageId } = params
 
   const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
+    brokerage_id:  brokerageId,
+    agent_id:      userId,
     activity_type: "seller.media.scheduled",
-    status: "scheduled",
-    metadata: { scheduled_date: scheduledDate, vendor_id: vendorId },
+    title:         `Media capture scheduled: ${scheduledDate}`,
+    description:   `Media capture session scheduled`,
+    notes:         JSON.stringify({ listing_id: listingId, scheduled_date: scheduledDate, vendor_id: vendorId ?? null }),
+    status:        "pending",
+    entity_type:   "contact",
   })
 
   if (error) {
@@ -737,11 +750,13 @@ export async function markMediaCaptured(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.media.captured",
+    title:         `Media captured: ${photoCount} photos${hasVideo ? ", video" : ""}`,
+    description:   `${photoCount} photos captured${hasVideo ? " with video" : ""}`,
+    notes:         JSON.stringify({ listing_id: listingId, photo_count: photoCount, has_video: hasVideo }),
     status:        "completed",
-    metadata:      { photo_count: photoCount, has_video: hasVideo },
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -790,11 +805,13 @@ export async function approveMedia(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.media.approved",
+    title:         "Media approved",
+    description:   `Media approved by ${role}`,
+    notes:         JSON.stringify({ listing_id: listingId, approved_by_role: role }),
     status:        "completed",
-    metadata:      { approved_by_role: role },
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -811,13 +828,14 @@ export async function prepareComingSoonAssets(params: {
   const supabase = await createClient()
   const { listingId, userId, brokerageId } = params
 
-  // Gate: Requires media approved
+  // Gate: Requires media approved — check lifecycle_events (activities has no listing_id)
   const { data: mediaEvent } = await supabase
-    .from("activities")
+    .from("lifecycle_events")
     .select("id")
-    .eq("listing_id", listingId)
-    .eq("activity_type", "seller.media.approved")
-    .single()
+    .eq("entity_id", listingId)
+    .eq("event_type", KernelEvent.LISTING_STAGE_CHANGED)
+    .limit(1)
+    .maybeSingle()
 
   if (!mediaEvent) {
     return { success: false, error: "Media not approved" }
@@ -848,11 +866,13 @@ export async function prepareComingSoonAssets(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.coming_soon.assets_prepared",
+    title:         "Coming soon assets prepared (without address)",
+    description:   "Coming soon marketing assets prepared, address withheld per compliance",
+    notes:         JSON.stringify({ listing_id: listingId, includes_address: false }),
     status:        "completed",
-    metadata:      { includes_address: false },
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -901,11 +921,13 @@ export async function activateComingSoon(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.coming_soon.activated",
+    title:         "Coming soon marketing activated",
+    description:   `Coming soon activated by ${role}`,
+    notes:         JSON.stringify({ listing_id: listingId, activated_by_role: role }),
     status:        "completed",
-    metadata:      { activated_by_role: role },
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -922,12 +944,12 @@ export async function markMLSReady(params: {
   const supabase = await createClient()
   const { listingId, userId, brokerageId } = params
 
-  // Gate: Requires media approved + coming soon activated
+  // Gate: Requires media approved + coming soon activated — check lifecycle_events
   const { data: gates } = await supabase
-    .from("activities")
-    .select("activity_type")
-    .eq("listing_id", listingId)
-    .in("activity_type", ["seller.media.approved", "seller.coming_soon.activated"])
+    .from("lifecycle_events")
+    .select("event_type")
+    .eq("entity_id", listingId)
+    .in("event_type", [KernelEvent.LISTING_STAGE_CHANGED, KernelEvent.COMING_SOON_SENT])
 
   if (!gates || gates.length < 2) {
     return { success: false, error: "Media not approved or coming soon not activated" }
@@ -958,10 +980,13 @@ export async function markMLSReady(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.mls.ready",
+    title:         "Listing MLS ready",
+    description:   "Listing cleared all gates and is ready for MLS submission",
+    notes:         JSON.stringify({ listing_id: listingId }),
     status:        "completed",
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -983,13 +1008,14 @@ export async function approveOpenHouseMarketing(params: {
   const supabase = await createClient()
   const { listingId, userId, brokerageId, role } = params
 
-  // Gate: Requires MLS ready
+  // Gate: Requires MLS ready — check lifecycle_events (activities has no listing_id)
   const { data: mlsReady } = await supabase
-    .from("activities")
+    .from("lifecycle_events")
     .select("id")
-    .eq("listing_id", listingId)
-    .eq("activity_type", "seller.mls.ready")
-    .single()
+    .eq("entity_id", listingId)
+    .eq("event_type", KernelEvent.LISTING_STAGE_CHANGED)
+    .limit(1)
+    .maybeSingle()
 
   if (!mlsReady) {
     return { success: false, error: "Listing not MLS ready" }
@@ -1026,11 +1052,13 @@ export async function approveOpenHouseMarketing(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.open_house_marketing.approved",
+    title:         "Open house marketing approved",
+    description:   `Open house marketing approved by ${role}`,
+    notes:         JSON.stringify({ listing_id: listingId, approved_by_role: role }),
     status:        "completed",
-    metadata:      { approved_by_role: role },
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -1047,24 +1075,28 @@ export async function submitToMLSAdmin(params: {
   const supabase = await createClient()
   const { listingId, userId, brokerageId } = params
 
-  // Gate: Requires open house marketing approved
+  // Gate: Requires open house marketing approved — check lifecycle_events
   const { data: openHouseApproved } = await supabase
-    .from("activities")
+    .from("lifecycle_events")
     .select("id")
-    .eq("listing_id", listingId)
-    .eq("activity_type", "seller.open_house_marketing.approved")
-    .single()
+    .eq("entity_id", listingId)
+    .eq("event_type", KernelEvent.OPEN_HOUSE_MARKETING_STARTED)
+    .limit(1)
+    .maybeSingle()
 
   if (!openHouseApproved) {
     return { success: false, error: "Open house marketing not approved" }
   }
 
   const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
+    brokerage_id:  brokerageId,
+    agent_id:      userId,
     activity_type: "seller.mls.submitted_to_admin",
-    status: "pending",
+    title:         "Listing submitted to MLS admin",
+    description:   "Listing submitted to admin for MLS entry",
+    notes:         JSON.stringify({ listing_id: listingId }),
+    status:        "pending",
+    entity_type:   "contact",
   })
 
   if (error) {
@@ -1135,11 +1167,13 @@ export async function activateMLS(params: {
   // CRM human task record for MLS activation (activities correct)
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.mls.activated",
+    title:         `Listing activated on MLS: ${mlsNumber}`,
+    description:   `Listing published to MLS with number ${mlsNumber}`,
+    notes:         JSON.stringify({ listing_id: listingId, mls_number: mlsNumber }),
     status:        "completed",
-    metadata:      { mls_number: mlsNumber },
+    entity_type:   "contact",
   })
 
   // Sub-event within MLS_ACTIVE stage — no stage change → lifecycle_events
@@ -1192,11 +1226,14 @@ export async function scheduleOpenHouse(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.open_house.scheduled",
-    status:        "scheduled",
-    metadata:      { event_date: eventDate },
+    title:         `Open house scheduled: ${eventDate}`,
+    description:   `Open house event scheduled for ${eventDate}`,
+    notes:         JSON.stringify({ listing_id: listingId, event_date: eventDate }),
+    status:        "pending",
+    entity_type:   "contact",
+    scheduled_at:  eventDate,
   })
 
   return { success: true }
@@ -1239,11 +1276,13 @@ export async function markOpenHouseCompleted(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.open_house.completed",
+    title:         `Open house completed: ${attendeeCount} attendees`,
+    description:   `Open house completed with ${attendeeCount} attendees`,
+    notes:         JSON.stringify({ listing_id: listingId, attendee_count: attendeeCount }),
     status:        "completed",
-    metadata:      { attendee_count: attendeeCount },
+    entity_type:   "contact",
   })
 
   return { success: true }
@@ -1263,12 +1302,14 @@ export async function recordShowingCompleted(params: {
   const { listingId, showingId, feedback, userId, brokerageId } = params
 
   const { error } = await supabase.from("activities").insert({
-    brokerage_id: brokerageId,
-    listing_id: listingId,
-    user_id: userId,
+    brokerage_id:  brokerageId,
+    agent_id:      userId,
     activity_type: "seller.showing.completed",
-    status: "completed",
-    metadata: { showing_id: showingId, feedback },
+    title:         "Showing completed",
+    description:   feedback ?? "Showing completed",
+    notes:         JSON.stringify({ listing_id: listingId, showing_id: showingId, feedback: feedback ?? null }),
+    status:        "completed",
+    entity_type:   "contact",
   })
 
   if (error) {
@@ -1334,11 +1375,13 @@ export async function markUnderContract(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.under_contract",
+    title:         "Listing under contract",
+    description:   "Listing moved to under contract — handed off to transaction system",
+    notes:         JSON.stringify({ listing_id: listingId, terminal: true, handoff_to: "transaction_system" }),
     status:        "completed",
-    metadata:      { terminal: true, handoff_to: "transaction_system" },
+    entity_type:   "contact",
   })
 
   return { success: true, terminal: true }
@@ -1390,11 +1433,13 @@ export async function cancelListing(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.listing.cancelled",
+    title:         "Listing cancelled",
+    description:   reason,
+    notes:         JSON.stringify({ listing_id: listingId, reason, terminal: true }),
     status:        "completed",
-    metadata:      { reason, terminal: true },
+    entity_type:   "contact",
   })
 
   return { success: true, terminal: true }
@@ -1436,11 +1481,13 @@ export async function markListingExpired(params: {
 
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.listing.expired",
+    title:         "Listing expired",
+    description:   "Listing expired without a contract",
+    notes:         JSON.stringify({ listing_id: listingId, terminal: true }),
     status:        "completed",
-    metadata:      { terminal: true },
+    entity_type:   "contact",
   })
 
   return { success: true, terminal: true }
