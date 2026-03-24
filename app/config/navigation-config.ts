@@ -32,6 +32,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'content-studio', label: 'Content Studio', href: '/content-studio' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
@@ -194,6 +195,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Content & Marketing',
         icon: 'Palette',
         children: [
+          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
