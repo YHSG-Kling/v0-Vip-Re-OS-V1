@@ -5,6 +5,8 @@ import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById } from "@/app/actions/contacts"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence, getPredictiveLeadScore } from "@/app/actions/ai-predictions"
+import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
+import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft } from "@/app/actions/portal-messages"
@@ -92,7 +94,7 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 export default function CRMPage() {
-  const { user, loading: authLoading } = useAuth()
+  const { user, role, loading: authLoading } = useAuth()
   const searchParams = useSearchParams()
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -126,6 +128,11 @@ export default function CRMPage() {
   const [fatigueData, setFatigueData] = useState<any>(null)
   const [referralGenerating, setReferralGenerating] = useState(false)
   const [noteSaving, setNoteSaving] = useState(false)
+
+  // AI Priority Insights state
+  const [contactInsights, setContactInsights] = useState<ContactInsight[]>([])
+  const [loadingInsights, setLoadingInsights] = useState(false)
+  const [draftingFor, setDraftingFor] = useState<string | null>(null)
 
   // AI Copilot Plan state
   const [copilotPlan, setCopilotPlan] = useState<any>(null)
@@ -256,6 +263,16 @@ export default function CRMPage() {
       loadContacts()
     }
   }, [authLoading, user, loadContacts])
+
+  useEffect(() => {
+    if (!authLoading && user?.id) {
+      setLoadingInsights(true)
+      generateContactInsights(user.id, role)
+        .then((insights) => setContactInsights(insights.slice(0, 5)))
+        .catch(() => {/* non-blocking */})
+        .finally(() => setLoadingInsights(false))
+    }
+  }, [authLoading, user?.id, role])
 
   useEffect(() => {
     if (selectedContactId && agentId) {
@@ -822,6 +839,104 @@ export default function CRMPage() {
           className="pl-10"
         />
       </div>
+
+      {/* AI Priority Contacts Strip */}
+      {(loadingInsights || contactInsights.length > 0) && (
+        <section className="border rounded-lg p-4 bg-card">
+          <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            AI Priority Contacts Today
+            {loadingInsights && <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />}
+          </h2>
+          <div className="flex gap-3 overflow-x-auto pb-1">
+            {contactInsights.map((insight) => {
+              // Resolve display name from contacts list if available
+              const matchedContact = contacts.find((c) => c.id === insight.contactId)
+              const displayName = matchedContact
+                ? `${matchedContact.first_name} ${matchedContact.last_name}`
+                : insight.contactId.slice(0, 8)
+
+              return (
+                <div
+                  key={insight.contactId}
+                  className="min-w-[220px] rounded-lg border bg-background p-3 flex-shrink-0 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold truncate text-foreground">{displayName}</p>
+                    <Badge
+                      className={
+                        insight.priority === "high"
+                          ? "bg-red-100 text-red-700 text-xs shrink-0"
+                          : insight.priority === "medium"
+                          ? "bg-amber-100 text-amber-700 text-xs shrink-0"
+                          : "bg-muted text-muted-foreground text-xs shrink-0"
+                      }
+                    >
+                      {insight.priority}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground line-clamp-2">{insight.reason}</p>
+                  <p className="text-xs font-medium text-primary">{insight.suggestion}</p>
+                  <div className="flex gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-xs h-7 flex-1"
+                      onClick={() => handleSelectContact(insight.contactId)}
+                    >
+                      Open
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="text-xs h-7 flex-1"
+                      disabled={draftingFor === insight.contactId}
+                      onClick={async () => {
+                        if (!user?.id) return
+                        setDraftingFor(insight.contactId)
+                        try {
+                          const body = await draftSmartEmail(insight.contactId, insight.reason)
+                          if (!body) return
+                          const supabase = createClient()
+                          // Resolve brokerage_id from user metadata or users table
+                          const { data: userData } = await supabase
+                            .from("users")
+                            .select("brokerage_id")
+                            .eq("id", user.id)
+                            .single()
+                          await supabase.from("ai_message_drafts").insert({
+                            agent_user_id: user.id,
+                            brokerage_id: userData?.brokerage_id ?? null,
+                            contact_id: insight.contactId,
+                            channel: "email",
+                            draft_body: body,
+                            draft_subject: `Follow up — ${displayName}`,
+                            status: "pending",
+                            trigger_event: "ai_priority_insight",
+                          })
+                          toast.success(`Draft created for ${displayName} — review in Communications`)
+                        } catch {
+                          toast.error("Failed to create draft")
+                        } finally {
+                          setDraftingFor(null)
+                        }
+                      }}
+                    >
+                      {draftingFor === insight.contactId ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        "Draft Email"
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              )
+            })}
+            {contactInsights.length === 0 && !loadingInsights && (
+              <p className="text-sm text-muted-foreground py-2">No priority contacts today</p>
+            )}
+          </div>
+        </section>
+      )}
 
       {/* Error state */}
       {error && (
