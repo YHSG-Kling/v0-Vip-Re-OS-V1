@@ -1,6 +1,6 @@
 "use server"
 
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 
 export async function generateComingSoonContent(params: {

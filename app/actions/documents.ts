@@ -3,7 +3,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { put, del } from "@vercel/blob"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { handleError } from "@/lib/errors"
 

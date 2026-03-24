@@ -506,6 +506,82 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
 }
 
 /**
+ * generateTextRouted
+ * ─────────────────────────────────────────────────────────────
+ * Drop-in replacement for the raw AI SDK `generateText` that routes
+ * every call through AI_TASK_ROUTING → resolveAIModel instead of
+ * accepting a hardcoded model string.
+ *
+ * Usage — change the import, keep the call site exactly the same:
+ *   import { generateTextRouted as generateText } from "@/lib/ai/models"
+ *
+ * The `model` field is accepted for backwards-compat but is IGNORED —
+ * the routing table governs which model actually runs.
+ * The optional `feature` key selects the routing row (defaults to "unspecified"
+ * → claude-sonnet, which is the Anthropic default for all content tasks).
+ */
+export interface RoutedTextRequest {
+  /** Ignored — routing table governs model selection */
+  model?: string
+  prompt?: string
+  system?: string
+  maxTokens?: number
+  temperature?: number
+  messages?: Array<{ role: 'user' | 'assistant'; content: string }>
+  /**
+   * Feature key from AI_TASK_ROUTING.
+   * Defaults to "unspecified" → claude-sonnet + gpt-4o fallback.
+   * @example "email_generation" | "social_post_generation" | "lead_analysis"
+   */
+  feature?: string
+  /** Optional — used only for usage logging, not routing */
+  userId?: string
+  brokerageId?: string
+  agentId?: string
+}
+
+export async function generateTextRouted(
+  request: RoutedTextRequest
+): Promise<{ text: string }> {
+  const feature = request.feature ?? 'unspecified'
+  const { model: routedModel, fallback } = selectModelForTask(feature)
+
+  // Apply kernel governance: tier caps, team overrides, brokerage overrides
+  const resolvedModel = await resolveAIModel(routedModel, {
+    brokerageId: request.brokerageId,
+    userId: request.userId,
+  })
+
+  const config = MODEL_CONFIG[resolvedModel] ?? MODEL_CONFIG['claude-sonnet']
+  const modelString = `${config.provider}/${config.modelId}`
+
+  try {
+    const result = await generateText({
+      model: modelString as any,
+      prompt: request.prompt,
+      system: request.system,
+      maxTokens: request.maxTokens,
+      temperature: request.temperature,
+      messages: request.messages as any,
+    })
+    return { text: result.text }
+  } catch {
+    // Automatic fallback to secondary model
+    const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
+    const fallbackString = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
+    const result = await generateText({
+      model: fallbackString as any,
+      prompt: request.prompt,
+      system: request.system,
+      maxTokens: request.maxTokens,
+      temperature: request.temperature,
+      messages: request.messages as any,
+    })
+    return { text: result.text }
+  }
+}
+
+/**
  * Generate simple text response without compliance checks
  */
 export async function generateSimpleText(

@@ -9,7 +9,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // ─── Property Data AI Fill ────────────────────────────────────────────────────
 

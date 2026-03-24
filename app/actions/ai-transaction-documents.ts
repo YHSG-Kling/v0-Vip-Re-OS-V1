@@ -1,6 +1,6 @@
 "use server"
 
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"

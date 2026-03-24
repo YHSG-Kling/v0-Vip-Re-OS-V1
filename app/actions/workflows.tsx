@@ -2,7 +2,7 @@
 
 import { supabaseService } from "@/services/supabaseService"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { sendTwilioSMS, sendSendGridEmail } from "./external-services"
 import { incrementUsage } from "@/lib/usage"
 import { triggerCreditIntake as triggerCreditIntakeOriginal, triggerCreditReferral as triggerCreditReferralOriginal, triggerLenderReferral as triggerLenderReferralOriginal } from "./creditWorkflows"

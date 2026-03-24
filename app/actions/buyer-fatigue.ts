@@ -3,7 +3,7 @@
 import { createServiceClient }      from "@/lib/supabase/service"
 import { createClient }              from "@/lib/supabase/server"
 import { calculateFatigue }          from "@/lib/fatigue/fatigue-calculator"
-import { generateText }              from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // ─── GET FATIGUE SCORE FOR ONE BUYER ─────────────────────────────────────────
 

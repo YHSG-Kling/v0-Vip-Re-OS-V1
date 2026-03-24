@@ -7,7 +7,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import {
   checkCertificationEligibility as checkCertEligibilityEngine,
   awardCertification as awardCertEngine,

@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
 import { revalidatePath } from "next/cache"
 import { getDefaultCommissionStructure, getOfferExpirationHours } from "@/lib/brokerage"

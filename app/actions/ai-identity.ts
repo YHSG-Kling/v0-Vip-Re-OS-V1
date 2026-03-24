@@ -143,11 +143,11 @@ export async function generateIdentityPreview(input: {
   formalityLevel: string
 }): Promise<{ success: boolean; preview?: string; error?: string }> {
   try {
-    const { generateText } = await import("ai")
+    const { generateTextRouted } = await import("@/lib/ai/models")
     const prompt = `Generate a short (2-3 sentence) greeting from ${input.assistantName}, a ${input.personaLabel} for a real estate brokerage. Tone: ${input.tone}. Formality style: ${input.formalityLevel.replace("_", "-")}. Write only the greeting text, nothing else.`
 
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+    const { text } = await generateTextRouted({
+      feature: "ai_isa_response",
       prompt,
       maxTokens: 120,
     })

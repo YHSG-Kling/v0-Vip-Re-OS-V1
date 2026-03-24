@@ -1,7 +1,7 @@
 "use server"
 
 import { createServerClient } from "@/lib/supabase/server"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // =====================================================
 // EVENT HANDLERS - Called by orchestrator

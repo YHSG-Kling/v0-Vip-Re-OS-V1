@@ -13,7 +13,7 @@
  *   7. Qualification signal evaluation
  */
 
-import { generateText } from 'ai'
+import { generateTextRouted as generateText } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
 import { shouldStopAutoResponding } from '@/lib/ai-isa/conversation-handler'
 import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa'

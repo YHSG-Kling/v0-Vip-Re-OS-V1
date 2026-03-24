@@ -1,7 +1,7 @@
 "use server"
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 export interface ContactInsight {
   contactId: string

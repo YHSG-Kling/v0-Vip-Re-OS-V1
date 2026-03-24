@@ -2,7 +2,7 @@
 
 import { createServerClient, createClient } from "@/lib/supabase/server"
 import { logMilestoneOverdue } from "@/lib/events"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
 
 // =====================================================

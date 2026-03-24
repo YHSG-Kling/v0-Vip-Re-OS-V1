@@ -12,7 +12,7 @@ import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 

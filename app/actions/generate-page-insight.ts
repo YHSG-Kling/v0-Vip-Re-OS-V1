@@ -1,6 +1,6 @@
 "use server"
 
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 /**
  * Generic AI insight generator for page-level context.
