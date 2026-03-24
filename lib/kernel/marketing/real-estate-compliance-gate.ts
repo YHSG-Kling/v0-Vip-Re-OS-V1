@@ -70,6 +70,23 @@ const WARNING_PATTERNS: { pattern: RegExp; message: string }[] = [
   },
 ]
 
+// ── SOLICITATION PROHIBITION — Do Not Contact / opt-out language ──────────────
+// These patterns indicate content that may be directed at contacts who have
+// opted out of solicitation (state DNC lists, NAR Code of Ethics Art. 16)
+const SOLICITATION_BLOCKERS: RegExp[] = [
+  /\b(listed with|currently listed with|already (working with|have) an agent)\b/i,
+  /\b(your current agent|your listing agent|your realtor)\b.{0,40}\b(switch|change|replace|instead|better)\b/i,
+  /\bnot happy with your (agent|realtor|broker)\b/i,
+]
+
+const SOLICITATION_WARNINGS: { pattern: RegExp; message: string }[] = [
+  {
+    pattern: /\b(thinking of (selling|buying)|considering (a move|selling|buying))\b/i,
+    message:
+      'Content appears to target prospects who may already be represented — confirm no active-agency conflict before publishing.',
+  },
+]
+
 // ── MLS REMARKS RESTRICTIONS ─────────────────────────────────────────────────
 const MLS_BLOCKERS: RegExp[] = [
   /\b(call for price|price upon request|contact agent for price)\b/i,   // most MLS boards forbid omitting price
@@ -217,7 +234,24 @@ export async function realEstateComplianceGate(params: GateParams): Promise<Comp
     }
   }
 
-  // ── 6. General warnings for all types ────────────────────────────────────
+  // ── 6. Solicitation prohibition (all outward-facing types) ───────────────
+  if (contentType !== 'listing_remarks' && contentType !== 'comment_reply') {
+    for (const pattern of SOLICITATION_BLOCKERS) {
+      if (pattern.test(content)) {
+        blockers.push(
+          'Solicitation prohibition: content appears to target prospects who may already be represented by another agent. This violates NAR Code of Ethics Article 16 and most state license laws. Remove before publishing.'
+        )
+        break
+      }
+    }
+    for (const sw of SOLICITATION_WARNINGS) {
+      if (sw.pattern.test(content)) {
+        warnings.push(sw.message)
+      }
+    }
+  }
+
+  // ── 7. General warnings for all types ────────────────────────────────────
   for (const w of WARNING_PATTERNS) {
     if (w.pattern.test(content)) {
       warnings.push(w.message)

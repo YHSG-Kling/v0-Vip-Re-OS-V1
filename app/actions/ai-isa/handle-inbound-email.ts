@@ -18,6 +18,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { shouldStopAutoResponding } from '@/lib/ai-isa/conversation-handler'
 import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa'
 import { dispatchEmail } from '@/lib/providers/dispatch'
+import { assembleEmail } from '@/lib/kernel/communications/assemble-email'
 import { evaluateOutbound } from '@/lib/kernel'
 import { checkMaxTouches } from '@/lib/ai-isa/isa-outreach-logger'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
@@ -185,14 +186,23 @@ export async function processInboundEmail(params: {
     created_at: new Date().toISOString(),
   })
 
-  // ── Send reply via kernel dispatch ───────────────────────��────────────────
+  // ── Send reply via kernel dispatch ───────────────────────��───────���────────
+  const assembled = await assembleEmail({
+    bodyHtml: `<p>${replyBody.replace(/\n/g, '<br>')}</p>`,
+    bodyText: replyBody,
+    userId: lead.agent_id ?? '',
+    brokerageId: lead.brokerage_id,
+    contactId: params.leadId,
+    channelPurpose: 'conversation',
+  })
+
   const sendResult = await dispatchEmail({
     brokerageId: lead.brokerage_id,
     to: lead.email,
     from: '',
     subject: params.subject.startsWith('Re:') ? params.subject : `Re: ${params.subject}`,
-    html: `<p>${replyBody.replace(/\n/g, '<br>')}</p>`,
-    text: replyBody,
+    html: assembled.html,
+    text: assembled.text,
     metadata: { leadId: params.leadId, source: 'ai_isa_reply' },
   })
 

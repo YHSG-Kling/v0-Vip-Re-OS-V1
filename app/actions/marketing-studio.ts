@@ -23,6 +23,7 @@
  */
 
 import { generateAIResponse } from "@/lib/ai/models"
+import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
@@ -416,6 +417,34 @@ export async function approveAsset(assetId: string) {
       success: false,
       error: `Brand compliance failed: ${complianceResult.violations.join(", ")}`,
       violations: complianceResult.violations,
+    }
+  }
+
+  // Also run real-estate compliance gate for ad/social assets
+  const { data: asset } = await supabase
+    .from("marketing_assets")
+    .select("asset_type, content_text")
+    .eq("id", assetId)
+    .maybeSingle()
+
+  if (asset?.content_text) {
+    const contentType =
+      asset.asset_type === "ad" ? "ad" : "social_post"
+    const reGate = await runComplianceGate({
+      content: asset.content_text,
+      brokerageId,
+      authorUserId: userId,
+      contentType,
+    })
+    if (!reGate.passed) {
+      const blockers = reGate.violations
+        .filter((v) => v.severity === "blocker")
+        .map((v) => v.detail)
+      return {
+        success: false,
+        error: `Real-estate compliance failed: ${blockers.join("; ")}`,
+        violations: blockers,
+      }
     }
   }
 

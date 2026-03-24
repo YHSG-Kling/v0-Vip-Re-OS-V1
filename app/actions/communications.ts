@@ -22,6 +22,7 @@ import { getAgentContext } from "@/lib/identity"
 import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
 import { supabaseService } from "@/services/supabaseService"
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
+import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 
 // =====================================================
 // SEND SMS (via kernel dispatch — Twilio or GHL based on provider resolution)
@@ -101,6 +102,8 @@ export async function sendEmail(params: {
   from?: string
   templateId?: string
   attachments?: Array<{ url: string; filename: string }>
+  /** Controls unsubscribe block in assembled email. Default: 'conversation' */
+  channelPurpose?: 'conversation' | 'campaign' | 'update' | 'transactional'
 }) {
   const supabase = await createClient()
 
@@ -129,12 +132,22 @@ export async function sendEmail(params: {
     return { success: false, error: `Email suppressed: ${suppression.reason}`, suppressed: true }
   }
 
+  // Kernel OS email assembly: body → user signature → unsubscribe → legal
+  const assembled = await assembleEmail({
+    bodyHtml: params.html,
+    bodyText: params.text,
+    userId: contact.agent_id ?? "",
+    brokerageId: contact.brokerage_id,
+    contactId: params.contactId,
+    channelPurpose: params.channelPurpose ?? "conversation",
+  })
+
   const result = await dispatchEmail({
     to: contact.email,
     from: params.from ?? "",
     subject: params.subject,
-    html: params.html,
-    text: params.text,
+    html: assembled.html,
+    text: assembled.text,
     brokerageId: contact.brokerage_id,
     agentId: contact.agent_id ?? undefined,
     systemSource: "communications",

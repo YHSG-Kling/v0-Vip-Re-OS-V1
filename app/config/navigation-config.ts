@@ -120,6 +120,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Settings',
         icon: 'Settings',
         children: [
+          { id: 'my-profile', label: 'My Profile', href: '/dashboard/profile' },
           { id: 'settings-general', label: 'General', href: '/dashboard/settings/general' },
           { id: 'settings-calendar', label: 'Calendar Sync', href: '/dashboard/settings/calendar' },
           { id: 'settings-branding', label: 'Branding', href: '/dashboard/settings/branding' },

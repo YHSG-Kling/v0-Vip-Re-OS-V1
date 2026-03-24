@@ -31,6 +31,12 @@ export interface AssembleEmailParams {
 export interface AssembledEmail {
   html: string
   text: string
+  /** Whether a user or brokerage signature was appended */
+  signatureIncluded: boolean
+  /** Whether an unsubscribe block was appended */
+  unsubscribeIncluded: boolean
+  /** Whether legal disclosures were appended */
+  disclosuresIncluded: boolean
 }
 
 /** Strip HTML tags for plain-text fallback */
@@ -41,19 +47,33 @@ function stripHtml(html: string): string {
 export async function assembleEmail(params: AssembleEmailParams): Promise<AssembledEmail> {
   const supabase = createServiceClient()
 
-  // ── Load user signature ───────────────────────────────────────────────────
+  // ── Load signature: user override first, then brokerage fallback ─────────
+  // Kernel OS order: per-user signature > brokerage_brand_settings default
   let signatureHtml = ''
   let signatureText = ''
 
-  const { data: brandSettings } = await supabase
-    .from('brokerage_brand_settings')
-    .select('email_signature_html')
-    .eq('brokerage_id', params.brokerageId)
+  // 1. Try per-user signature (users.email_signature)
+  const { data: userRow } = await supabase
+    .from('users')
+    .select('email_signature')
+    .eq('id', params.userId)
     .maybeSingle()
 
-  if (brandSettings?.email_signature_html) {
-    signatureHtml = brandSettings.email_signature_html
-    signatureText = stripHtml(brandSettings.email_signature_html)
+  if (userRow?.email_signature) {
+    signatureHtml = userRow.email_signature
+    signatureText = stripHtml(userRow.email_signature)
+  } else {
+    // 2. Fall back to brokerage-level signature
+    const { data: brandSettings } = await supabase
+      .from('brokerage_brand_settings')
+      .select('email_signature_html')
+      .eq('brokerage_id', params.brokerageId)
+      .maybeSingle()
+
+    if (brandSettings?.email_signature_html) {
+      signatureHtml = brandSettings.email_signature_html
+      signatureText = stripHtml(brandSettings.email_signature_html)
+    }
   }
 
   // ── Build unsubscribe block ───────────────────────────────────────────────
@@ -104,5 +124,8 @@ export async function assembleEmail(params: AssembleEmailParams): Promise<Assemb
   return {
     html: htmlParts.join('\n\n'),
     text: textParts.join('\n\n'),
+    signatureIncluded: !!signatureHtml,
+    unsubscribeIncluded: needsUnsubscribe && !!params.contactId,
+    disclosuresIncluded: true,
   }
 }
