@@ -1,0 +1,98 @@
+/**
+ * CRM SYNC LAYER
+ * lib/crm/sync.ts
+ *
+ * Single entry point for syncing a contact to the configured CRM provider.
+ * Provider cascade: brokerage_integrations (provider_type = 'crm') → system default (ghl).
+ * Call this in contacts.ts and lead-lifecycle.ts; never call goHighLevelService directly
+ * from feature code outside this module.
+ */
+
+import { createClient } from "@/lib/supabase/server"
+import { syncContactToGHL } from "@/services/goHighLevelService"
+
+export interface CRMContactPayload {
+  firstName: string
+  lastName: string
+  email?: string
+  phone?: string
+  tags?: string[]
+  source?: string
+  brokerageId: string
+  agentId?: string
+}
+
+export interface CRMSyncResult {
+  success: boolean
+  contactId?: string
+  action?: "created" | "updated" | "skipped"
+  providerKey: string
+  error?: string
+  requiresConfiguration?: boolean
+}
+
+/**
+ * Resolves the active CRM provider for a brokerage, then syncs the contact.
+ * Falls through gracefully if no CRM is configured — never throws.
+ */
+export async function syncContactToCRM(
+  payload: CRMContactPayload,
+): Promise<CRMSyncResult> {
+  const { brokerageId } = payload
+
+  // ── Resolve active CRM provider from brokerage_integrations ──────────────────
+  let providerKey = "ghl" // system default
+
+  try {
+    const supabase = await createClient()
+    const { data: integration } = await supabase
+      .from("brokerage_integrations")
+      .select("provider_name, status")
+      .eq("brokerage_id", brokerageId)
+      .eq("provider_type", "crm")
+      .eq("status", "active")
+      .maybeSingle()
+
+    if (integration?.provider_name) {
+      providerKey = integration.provider_name
+    }
+  } catch {
+    // Non-blocking — fall through to system default
+  }
+
+  // ── Dispatch to the resolved provider ────────────────────────────────────────
+  if (providerKey === "ghl") {
+    try {
+      const result = await syncContactToGHL({
+        firstName: payload.firstName,
+        lastName: payload.lastName,
+        email: payload.email,
+        phone: payload.phone,
+        tags: payload.tags ?? [],
+        source: payload.source ?? "kernel",
+      })
+
+      if (result.requiresConfiguration) {
+        // GHL not configured — soft failure, do not block the caller
+        return { success: false, providerKey, requiresConfiguration: true, error: result.error }
+      }
+
+      return {
+        success: result.success,
+        contactId: result.contactId,
+        action: result.action as "created" | "updated" | undefined,
+        providerKey,
+        error: result.error,
+      }
+    } catch (err: any) {
+      return { success: false, providerKey, error: err?.message ?? "GHL sync failed" }
+    }
+  }
+
+  // Future CRM providers (HubSpot, Salesforce, etc.) go here
+  return {
+    success: false,
+    providerKey,
+    error: `CRM provider "${providerKey}" is not yet supported in the sync layer.`,
+  }
+}

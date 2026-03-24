@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
+import { syncContactToCRM } from "@/lib/crm/sync"
 
 export async function getContacts(params?: {
   status?: string
@@ -110,6 +111,18 @@ export async function createContact(contactData: {
       console.error("[v0] Error creating contact:", error)
       return { success: false, error: error.message }
     }
+
+    // Non-blocking CRM sync — do not fail createContact if CRM is not configured
+    void syncContactToCRM({
+      firstName: data.first_name,
+      lastName: data.last_name,
+      email: data.email ?? undefined,
+      phone: data.phone ?? undefined,
+      tags: [data.buyer_seller_status, data.status].filter(Boolean) as string[],
+      source: data.source ?? "kernel",
+      brokerageId: brokerageId ?? data.brokerage_id,
+      agentId: agentId ?? undefined,
+    })
 
     return { success: true, contact: data }
   } catch (error: any) {

@@ -3,12 +3,12 @@
 // =====================================================
 // UNIFIED COMMUNICATIONS SERVICE
 // =====================================================
-// All communications route through Go High Level
-// This ensures contact history is always updated
+// SMS and Email route through the kernel dispatch layer.
+// Provider resolution cascade: user → team → brokerage → superadmin → system default.
+// GHL-specific functions (logCall, notes, workflows, social, calendar) remain
+// wired directly since they are GHL-only features with no provider alternative.
 
 import {
-  sendGHLSMS,
-  sendGHLEmail,
   logGHLCall,
   syncContactToGHL,
   getContactConversationHistory,
@@ -17,11 +17,13 @@ import {
   createGHLSocialPost,
   createGHLCalendarEvent,
 } from "@/services/goHighLevelService"
-import { supabaseService } from "@/services/supabaseService"
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity"
+import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
+import { supabaseService } from "@/services/supabaseService"
 
 // =====================================================
-// SEND SMS (via GHL)
+// SEND SMS (via kernel dispatch — Twilio or GHL based on provider resolution)
 // =====================================================
 
 export async function sendSMS(params: {
@@ -30,52 +32,54 @@ export async function sendSMS(params: {
   templateId?: string
   trackingData?: Record<string, any>
 }) {
-  // Get contact details from Supabase
-  const contact = await supabaseService.getContactById(params.contactId)
+  const supabase = await createClient()
+
+  // Look up contact for phone number and brokerage context
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("first_name, last_name, phone, email, contact_type, status, source, brokerage_id, agent_id")
+    .eq("id", params.contactId)
+    .single()
 
   if (!contact) {
     return { success: false, error: "Contact not found" }
   }
 
-  // Ensure contact is synced to GHL
-  const ghlSync = await syncContactToGHL({
-    firstName: contact.first_name,
-    lastName: contact.last_name,
-    email: contact.email || undefined,
-    phone: contact.phone || undefined,
-    tags: [contact.contact_type, contact.status].filter(Boolean),
-    source: contact.source || "vipos",
-  })
+  if (!contact.phone) {
+    return { success: false, error: "Contact has no phone number" }
+  }
 
-  const ghlContactId = ghlSync.contactId || params.contactId
-
-  // Send SMS via GHL
-  const result = await sendGHLSMS({
-    contactId: ghlContactId,
+  const result = await dispatchSms({
+    to: contact.phone,
     message: params.message,
-    phone: contact.phone || undefined,
+    brokerageId: contact.brokerage_id,
+    agentId: contact.agent_id ?? undefined,
+    systemSource: "communications",
+    leadId: params.contactId,
+    metadata: params.trackingData,
   })
 
-  // Log to Supabase for local tracking
+  // Log to activities for local tracking
   if (result.success) {
-    await supabaseService.logActivity({
+    await supabase.from("activities").insert({
       contact_id: params.contactId,
       activity_type: "sms_sent",
-      description: `SMS sent: ${params.message.substring(0, 50)}...`,
+      description: `SMS sent: ${params.message.substring(0, 50)}`,
+      brokerage_id: contact.brokerage_id,
+      agent_id: contact.agent_id,
       metadata: {
-        ghl_message_id: result.messageId,
-        ghl_contact_id: ghlContactId,
-        mock: result.mock,
+        message_id: result.messageId,
+        provider_key: result.providerKey,
         ...params.trackingData,
       },
     })
   }
 
-  return result
+  return { ...result, providerKey: result.providerKey }
 }
 
 // =====================================================
-// SEND EMAIL (via GHL)
+// SEND EMAIL (via kernel dispatch — SendGrid or GHL based on provider resolution)
 // =====================================================
 
 export async function sendEmail(params: {
@@ -83,49 +87,53 @@ export async function sendEmail(params: {
   subject: string
   html: string
   text?: string
+  from?: string
   templateId?: string
   attachments?: Array<{ url: string; filename: string }>
 }) {
-  const contact = await supabaseService.getContactById(params.contactId)
+  const supabase = await createClient()
+
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("first_name, last_name, email, brokerage_id, agent_id")
+    .eq("id", params.contactId)
+    .single()
 
   if (!contact) {
     return { success: false, error: "Contact not found" }
   }
 
-  // Sync to GHL
-  const ghlSync = await syncContactToGHL({
-    firstName: contact.first_name,
-    lastName: contact.last_name,
-    email: contact.email || undefined,
-    phone: contact.phone || undefined,
-  })
+  if (!contact.email) {
+    return { success: false, error: "Contact has no email address" }
+  }
 
-  const ghlContactId = ghlSync.contactId || params.contactId
-
-  // Send via GHL
-  const result = await sendGHLEmail({
-    contactId: ghlContactId,
+  const result = await dispatchEmail({
+    to: contact.email,
+    from: params.from ?? "",
     subject: params.subject,
     html: params.html,
     text: params.text,
-    attachments: params.attachments,
+    brokerageId: contact.brokerage_id,
+    agentId: contact.agent_id ?? undefined,
+    systemSource: "communications",
+    leadId: params.contactId,
   })
 
-  // Log locally
   if (result.success) {
-    await supabaseService.logActivity({
+    await supabase.from("activities").insert({
       contact_id: params.contactId,
       activity_type: "email_sent",
       description: `Email sent: ${params.subject}`,
+      brokerage_id: contact.brokerage_id,
+      agent_id: contact.agent_id,
       metadata: {
-        ghl_message_id: result.messageId,
-        ghl_contact_id: ghlContactId,
-        mock: result.mock,
+        message_id: result.messageId,
+        provider_key: result.providerKey,
       },
     })
   }
 
-  return result
+  return { ...result, providerKey: result.providerKey }
 }
 
 // =====================================================

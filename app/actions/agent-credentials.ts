@@ -127,6 +127,26 @@ export async function saveServiceCredential(params: {
 
   if (error) throw error
 
+  // When GHL credentials are saved, also register the brokerage-level CRM integration
+  // so the kernel dispatch layer (lib/crm/sync.ts) can resolve GHL as the active CRM.
+  if (params.serviceName === "ghl") {
+    await supabase
+      .from("brokerage_integrations")
+      .upsert(
+        {
+          brokerage_id: brokerageId,
+          provider_type: "crm",
+          provider_name: "ghl",
+          status: "active",
+          metadata: {
+            configured_by: effectiveAgentId,
+            location_id: params.config?.locationId ?? null,
+          },
+        },
+        { onConflict: "brokerage_id,provider_name" },
+      )
+  }
+
   revalidatePath("/settings/integrations")
   return data
 }
