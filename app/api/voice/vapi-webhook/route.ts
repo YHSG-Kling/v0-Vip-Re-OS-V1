@@ -22,7 +22,6 @@ import { generateText } from "ai"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchSms } from "@/lib/providers/dispatch"
 import { dispatchEmail } from "@/lib/providers/dispatch"
-import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 
 export const runtime = "nodejs"
 
@@ -391,26 +390,17 @@ async function schedulePostCallFollowUp(params: {
 
   const emailSent =
     !smsSent && contact.email
-      ? await assembleEmail({
-          bodyHtml: `<p>${followUpMessage.replace(/\n/g, "<br>")}</p>`,
-          bodyText: followUpMessage,
-          userId: agentId ?? '',
+      ? await dispatchEmail({
+          to: contact.email,
+          from: "",
+          subject: "Quick follow-up from your call",
+          html: `<p>${followUpMessage.replace(/\n/g, "<br>")}</p>`,
+          text: followUpMessage,
           brokerageId,
-          contactId,
-          channelPurpose: 'conversation',
-        }).then((assembled) =>
-          dispatchEmail({
-            to: contact.email,
-            from: "",
-            subject: "Quick follow-up from your call",
-            html: assembled.html,
-            text: assembled.text,
-            brokerageId,
-            agentId: agentId ?? undefined,
-            systemSource: "vapi_post_call_followup",
-            leadId: contactId,
-          })
-        ).then((r) => r.success).catch(() => false)
+          agentId: agentId ?? undefined,
+          systemSource: "vapi_post_call_followup",
+          leadId: contactId,
+        }).then((r) => r.success).catch(() => false)
       : false
 
   // Log the follow-up activity
