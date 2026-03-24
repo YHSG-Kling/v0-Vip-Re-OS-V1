@@ -32,19 +32,29 @@ export async function handleOfferResponse(params: HandleOfferResponseParams) {
     return { success: false, error: "Offer not found" }
   }
 
+  // Resolve brokerage_id once for all inserts
+  const { data: agentRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", userId)
+    .maybeSingle()
+  const brokerageId = agentRow?.brokerage_id ?? null
+
   // COMPLIANCE GATE (ABSOLUTE): Must pass before acceptance
   if (response === "accepted") {
     const compliancePassed = await checkCompliancePassed(offerId)
     if (!compliancePassed) {
       // Emit block event
       await supabase.from("activities").insert({
+        brokerage_id: brokerageId,
+        agent_id: userId,
+        contact_id: offer.contact_id,
         activity_type: "buyer.offer.block",
-        user_id: userId,
-        metadata: {
-          offer_id: offerId,
-          reason: "compliance_gate_failed",
-          attempted_action: "accept_offer"
-        }
+        title: "Offer acceptance blocked: compliance gate failed",
+        description: "Cannot accept offer: compliance.passed event not found",
+        notes: JSON.stringify({ offer_id: offerId, reason: "compliance_gate_failed", attempted_action: "accept_offer" }),
+        status: "completed",
+        entity_type: "contact",
       })
 
       return {
@@ -57,58 +67,70 @@ export async function handleOfferResponse(params: HandleOfferResponseParams) {
     // Emit acceptance events
     await supabase.from("activities").insert([
       {
+        brokerage_id: brokerageId,
+        agent_id: userId,
+        contact_id: offer.contact_id,
         activity_type: "buyer.offer.accepted",
-        user_id: userId,
-        metadata: {
-          offer_id: offerId,
-          timestamp: new Date().toISOString()
-        }
+        title: "Offer accepted",
+        description: `Offer ${offerId} accepted`,
+        notes: JSON.stringify({ offer_id: offerId }),
+        status: "completed",
+        entity_type: "contact",
       },
       {
+        brokerage_id: brokerageId,
+        agent_id: userId,
+        contact_id: offer.contact_id,
         activity_type: "buyer.under_contract",
-        user_id: userId,
-        metadata: {
-          buyer_id: offer.contact_id,
-          offer_id: offerId,
-          listing_id: offer.listing_id,
-          transaction_id: offer.transaction_id
-        }
+        title: "Buyer under contract",
+        description: `Buyer moved to under contract status`,
+        notes: JSON.stringify({ buyer_id: offer.contact_id, offer_id: offerId, listing_id: offer.listing_id, transaction_id: offer.transaction_id }),
+        status: "completed",
+        entity_type: "contact",
+        transaction_id: offer.transaction_id ?? null,
       }
     ])
 
     // Emit transaction handoff event
     if (offer.transaction_id) {
       await supabase.from("activities").insert({
+        brokerage_id: brokerageId,
+        agent_id: userId,
+        contact_id: offer.contact_id,
         activity_type: "transaction.lifecycle.initiated",
-        user_id: userId,
-        metadata: {
-          transaction_id: offer.transaction_id,
-          source: "buyer_offer_engine",
-          offer_id: offerId
-        }
+        title: "Transaction lifecycle initiated",
+        description: `Transaction initiated from buyer offer engine`,
+        notes: JSON.stringify({ transaction_id: offer.transaction_id, source: "buyer_offer_engine", offer_id: offerId }),
+        status: "completed",
+        entity_type: "transaction",
+        transaction_id: offer.transaction_id,
       })
     }
   } else if (response === "rejected") {
     // Emit rejection event
     await supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      agent_id: userId,
+      contact_id: offer.contact_id,
       activity_type: "buyer.offer.rejected",
-      user_id: userId,
-      metadata: {
-        offer_id: offerId,
-        reason: rejectionReason,
-        timestamp: new Date().toISOString()
-      }
+      title: "Offer rejected",
+      description: rejectionReason ?? `Offer ${offerId} rejected`,
+      notes: JSON.stringify({ offer_id: offerId, reason: rejectionReason }),
+      status: "completed",
+      entity_type: "contact",
     })
   } else if (response === "countered") {
     // Emit counter event
     await supabase.from("activities").insert({
+      brokerage_id: brokerageId,
+      agent_id: userId,
+      contact_id: offer.contact_id,
       activity_type: "buyer.offer.counter.received",
-      user_id: userId,
-      metadata: {
-        offer_id: offerId,
-        counter_terms: counterTerms,
-        timestamp: new Date().toISOString()
-      }
+      title: "Counter offer received",
+      description: `Counter offer received for offer ${offerId}`,
+      notes: JSON.stringify({ offer_id: offerId, counter_terms: counterTerms }),
+      status: "pending",
+      entity_type: "contact",
     })
   }
 

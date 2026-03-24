@@ -85,11 +85,13 @@ export async function scheduleListingAppointment(params: {
   // Human-readable CRM activity (agent task log — activities is correct here)
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.appointment.scheduled",
+    title:         "Listing appointment scheduled",
+    description:   `Appointment scheduled for ${appointmentDate}`,
+    notes:         JSON.stringify({ appointment_date: appointmentDate }),
     status:        "completed",
-    metadata:      { appointment_date: appointmentDate },
+    entity_type:   "contact",
   })
 
   // Sub-events within APPOINTMENT_SET stage — no stage change → lifecycle_events
@@ -164,10 +166,12 @@ export async function markDripCompleted(params: {
   // CRM human task record — drip sequence completion (activities correct)
   await supabase.from("activities").insert({
     brokerage_id:  brokerageId,
-    listing_id:    listingId,
-    user_id:       userId,
+    agent_id:      userId,
     activity_type: "seller.presentation.drip_completed",
+    title:         "Seller drip sequence completed",
+    description:   "Presentation drip sequence completed",
     status:        "completed",
+    entity_type:   "contact",
   })
 
   // Sub-event within SELLER_DECISION stage — no stage change → lifecycle_events

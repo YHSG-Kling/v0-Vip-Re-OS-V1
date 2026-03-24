@@ -62,16 +62,15 @@ export async function sendSMS(params: {
   // Log to activities for local tracking
   if (result.success) {
     await supabase.from("activities").insert({
-      contact_id: params.contactId,
-      activity_type: "sms_sent",
-      description: `SMS sent: ${params.message.substring(0, 50)}`,
       brokerage_id: contact.brokerage_id,
       agent_id: contact.agent_id,
-      metadata: {
-        message_id: result.messageId,
-        provider_key: result.providerKey,
-        ...params.trackingData,
-      },
+      contact_id: params.contactId,
+      activity_type: "sms_sent",
+      title: `SMS sent to contact`,
+      description: `SMS sent: ${params.message.substring(0, 100)}`,
+      notes: JSON.stringify({ message_id: result.messageId, provider: result.providerKey }),
+      status: "completed",
+      entity_type: "contact",
     })
   }
 
@@ -121,15 +120,15 @@ export async function sendEmail(params: {
 
   if (result.success) {
     await supabase.from("activities").insert({
-      contact_id: params.contactId,
-      activity_type: "email_sent",
-      description: `Email sent: ${params.subject}`,
       brokerage_id: contact.brokerage_id,
       agent_id: contact.agent_id,
-      metadata: {
-        message_id: result.messageId,
-        provider_key: result.providerKey,
-      },
+      contact_id: params.contactId,
+      activity_type: "email_sent",
+      title: `Email sent: ${params.subject}`,
+      description: `Email sent: ${params.subject}`,
+      notes: JSON.stringify({ message_id: result.messageId, provider: result.providerKey }),
+      status: "completed",
+      entity_type: "contact",
     })
   }
 

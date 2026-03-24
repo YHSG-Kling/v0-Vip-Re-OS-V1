@@ -5,12 +5,20 @@ import { revalidatePath } from "next/cache"
 
 // ─── Log Activity ────────────────────────────────────────────────────────────
 export async function logActivity(data: {
+  brokerageId: string
   agentId: string
   contactId?: string
+  transactionId?: string
   activityType: string
   title: string
   description?: string
-  metadata?: Record<string, unknown>
+  notes?: string
+  status?: string
+  priority?: "low" | "medium" | "high"
+  entityType?: string
+  scheduledAt?: string
+  completedAt?: string
+  durationMinutes?: number
 }): Promise<{ success: boolean; activityId?: string; error?: string }> {
   try {
     const supabase = await createClient()
@@ -18,19 +26,26 @@ export async function logActivity(data: {
     const { data: activity, error } = await supabase
       .from("activities")
       .insert({
+        brokerage_id: data.brokerageId,
         agent_id: data.agentId,
-        contact_id: data.contactId,
+        contact_id: data.contactId ?? null,
+        transaction_id: data.transactionId ?? null,
         activity_type: data.activityType,
         title: data.title,
-        description: data.description,
-        metadata: data.metadata || {},
-        created_at: new Date().toISOString(),
+        description: data.description ?? null,
+        notes: data.notes ?? null,
+        status: data.status ?? "pending",
+        priority: data.priority ?? "medium",
+        entity_type: data.entityType ?? (data.transactionId ? "transaction" : "contact"),
+        scheduled_at: data.scheduledAt ?? null,
+        completed_at: data.completedAt ?? null,
+        duration_minutes: data.durationMinutes ?? null,
       })
       .select("id")
       .single()
 
     if (error) {
-      console.error("[logActivity] Error:", error)
+      console.error("[logActivity] Error:", error.message)
       return { success: false, error: error.message }
     }
 

@@ -62,17 +62,20 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
 
     const supabase = await createClient()
 
+    // Resolve brokerage_id from agent
+    const { data: agentCMA } = await supabase.from("users").select("brokerage_id").eq("id", input.agentId).maybeSingle()
+
     // Emit start event
     await supabase.from("activities").insert({
-      type: "seller.cma.started",
-      listing_id: input.listingId,
+      brokerage_id: agentCMA?.brokerage_id ?? null,
+      agent_id: input.agentId,
       contact_id: input.contactId,
-      user_id: input.agentId,
-      metadata: {
-        radius_miles: input.radiusMiles || 2.0,
-        max_age_days: input.maxAgeDays || 90,
-        min_comparables: input.minComparables || 5
-      }
+      activity_type: "seller.cma.started",
+      title: "CMA generation started",
+      description: `CMA started for listing ${input.listingId}`,
+      notes: JSON.stringify({ radius_miles: input.radiusMiles || 2.0, max_age_days: input.maxAgeDays || 90, min_comparables: input.minComparables || 5 }),
+      status: "pending",
+      entity_type: "contact",
     })
 
     // Get listing data
@@ -156,19 +159,15 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
 
     // Emit completion event with quality metadata
     await supabase.from("activities").insert({
-      type: "seller.cma.completed",
-      listing_id: input.listingId,
+      brokerage_id: agentCMA?.brokerage_id ?? null,
+      agent_id: input.agentId,
       contact_id: input.contactId,
-      user_id: input.agentId,
-      metadata: {
-        cma_id: cmaId,
-        comparable_count: comparables.length,
-        oldest_comparable_months: oldestComparableMonths,
-        max_radius_miles: maxRadiusMiles,
-        quality_score: qualityScore,
-        content_preview: cmaContent.substring(0, 500),
-        disclaimer_included: true
-      }
+      activity_type: "seller.cma.completed",
+      title: "CMA generation completed",
+      description: `CMA completed: ${comparables.length} comparables, quality score ${qualityScore}`,
+      notes: JSON.stringify({ cma_id: cmaId, comparable_count: comparables.length, oldest_comparable_months: oldestComparableMonths, max_radius_miles: maxRadiusMiles, quality_score: qualityScore, disclaimer_included: true }),
+      status: "completed",
+      entity_type: "contact",
     })
 
     return {
@@ -371,12 +370,17 @@ async function emitCMAFailed(
   reason: string
 ) {
   const supabase = await createClient()
-  
+  const { data: agentFail } = await supabase.from("users").select("brokerage_id").eq("id", agentId).maybeSingle()
+
   await supabase.from("activities").insert({
-    type: "seller.cma.failed",
-    listing_id: listingId,
+    brokerage_id: agentFail?.brokerage_id ?? null,
+    agent_id: agentId,
     contact_id: contactId,
-    user_id: agentId,
-    metadata: { reason }
+    activity_type: "seller.cma.failed",
+    title: "CMA generation failed",
+    description: reason,
+    notes: JSON.stringify({ listing_id: listingId, reason }),
+    status: "completed",
+    entity_type: "contact",
   })
 }

@@ -53,16 +53,14 @@ export async function logTouchpoint({
   // Record activity with kernel event reference
   await supabase.from("activities").insert({
     brokerage_id: brokerageId,
-    user_id: agentId,
+    agent_id: agentId,
     contact_id: contactId,
     activity_type: "past_client_touchpoint_sent",
+    title: `Past client touchpoint: ${touchpointType}`,
+    description: notes ?? `${touchpointType} sent via ${channel}`,
+    notes: JSON.stringify({ touchpoint_type: touchpointType, channel, kernel_event: KernelEvent.PAST_CLIENT_TOUCHPOINT_SENT }),
     status: "completed",
-    metadata: {
-      touchpoint_type: touchpointType,
-      channel,
-      notes,
-      kernel_event: KernelEvent.PAST_CLIENT_TOUCHPOINT_SENT,
-    },
+    entity_type: "contact",
   }).catch(err => console.error("Error recording activity:", err))
 
   return { success: true, touchpoint: data }
@@ -121,15 +119,14 @@ export async function sendMarketUpdate({
   // Record activity with kernel event reference
   await supabase.from("activities").insert({
     brokerage_id: brokerageId,
-    user_id: agentId,
+    agent_id: agentId,
     contact_id: contactId,
     activity_type: "market_update_sent",
+    title: "Market update sent",
+    description: messageBody.substring(0, 200),
+    notes: JSON.stringify({ message_id: message.id, kernel_event: KernelEvent.MARKET_UPDATE_SENT }),
     status: "completed",
-    metadata: {
-      message_id: message.id,
-      message_preview: messageBody.substring(0, 100),
-      kernel_event: KernelEvent.MARKET_UPDATE_SENT,
-    },
+    entity_type: "contact",
   }).catch(err => console.error("Error recording activity:", err))
 
   return { success: true, message }

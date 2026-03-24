@@ -117,10 +117,15 @@ Provide detailed analysis including document type classification, key informatio
 
     // Log activity (fire-and-forget, never throw on audit failure)
     supabase.from("activities").insert({
+      brokerage_id: document.brokerage_id,
+      agent_id: document.brokerage_id, // best-effort; no agent_id on transaction_documents
       activity_type: "document_action",
-      entity_type: "document",
-      entity_id: documentId,
-      metadata: { action: "analyzed", document_source: "transaction_documents", performed_by_type: "ai" },
+      title: "Document analyzed",
+      description: `AI analysis of document: ${document.doc_label ?? documentId}`,
+      notes: JSON.stringify({ action: "analyzed", document_source: "transaction_documents", performed_by_type: "ai" }),
+      status: "completed",
+      entity_type: "transaction",
+      transaction_id: document.transaction_id ?? null,
     }).catch(() => {})
 
     return { success: true, analysis }
@@ -188,10 +193,15 @@ export async function uploadDocument(
 
   // Log activity (fire-and-forget)
   supabase.from("activities").insert({
+    brokerage_id: document.brokerage_id ?? null,
+    agent_id: document.brokerage_id ?? null, // best-effort; no direct agent_id on client_documents
+    contact_id: contactId ?? null,
     activity_type: "document_action",
-    entity_type: "document",
-    entity_id: document.id,
-    metadata: { action: "uploaded", document_source: "client_documents", performed_by_type: "client", notes: `Uploaded via portal: ${file.name}` },
+    title: `Document uploaded: ${file.name}`,
+    description: `Uploaded via portal: ${file.name}`,
+    notes: JSON.stringify({ action: "uploaded", document_source: "client_documents", performed_by_type: "client" }),
+    status: "completed",
+    entity_type: "contact",
   }).catch(() => {})
 
   // Queue for AI processing (async)
@@ -299,15 +309,15 @@ Use simple language, avoid jargon, and be reassuring.`,
 
     // Log activity (fire-and-forget)
     supabase.from("activities").insert({
+      brokerage_id: docRecord?.brokerage_id ?? null,
+      agent_id: docRecord?.brokerage_id ?? null, // best-effort
+      contact_id: docRecord?.contact_id ?? null,
       activity_type: "document_action",
-      entity_type: "document",
-      entity_id: documentId,
-      metadata: { 
-        action: "analyzed", 
-        document_source: "client_documents", 
-        performed_by_type: "ai",
-        notes: `AI analysis complete: ${classification.document_type} (${Math.round(classification.confidence * 100)}% confidence)`,
-      },
+      title: `Document AI analysis: ${classification.document_type}`,
+      description: `AI analysis complete: ${classification.document_type} (${Math.round(classification.confidence * 100)}% confidence)`,
+      notes: JSON.stringify({ action: "analyzed", document_source: "client_documents", performed_by_type: "ai" }),
+      status: "completed",
+      entity_type: "contact",
     }).catch(() => {})
 
     return { success: true, classification, explanation: explanationResult.text }
@@ -419,10 +429,15 @@ export async function getDocumentWithAnalysis(documentId: string) {
 
   // Log view activity (fire-and-forget)
   supabase.from("activities").insert({
+    brokerage_id: document.brokerage_id ?? null,
+    agent_id: document.brokerage_id ?? null, // best-effort
+    contact_id: document.contact_id ?? null,
     activity_type: "document_action",
-    entity_type: "document",
-    entity_id: documentId,
-    metadata: { action: "viewed", document_source: docSource, performed_by_type: "client" },
+    title: "Document viewed",
+    description: `Document viewed: ${document.doc_label ?? document.document_name ?? documentId}`,
+    notes: JSON.stringify({ action: "viewed", document_source: docSource, performed_by_type: "client" }),
+    status: "completed",
+    entity_type: "contact",
   }).catch(() => {})
 
   return { document, extractionLog, educationalOverlay }

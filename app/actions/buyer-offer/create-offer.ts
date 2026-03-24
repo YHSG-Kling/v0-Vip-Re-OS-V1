@@ -77,8 +77,8 @@ export async function createBuyerOffer(
     .from("activities")
     .select("id")
     .eq("entity_type", "contact")
-    .eq("entity_id", buyerId)
-    .eq("type", "buyer.offer.draft.created")
+    .eq("contact_id", buyerId)
+    .eq("activity_type", "buyer.offer.draft.created")
     .order("created_at", { ascending: false })
 
   if (countError) {
@@ -102,9 +102,8 @@ export async function createBuyerOffer(
         .from("activities")
         .select("id")
         .eq("entity_type", "contact")
-        .eq("entity_id", buyerId)
-        .in("type", terminatingEvents)
-        .eq("metadata->offer_id", offer.id)
+        .eq("contact_id", buyerId)
+        .in("activity_type", terminatingEvents)
         .limit(1)
         .maybeSingle()
 
@@ -129,20 +128,31 @@ export async function createBuyerOffer(
   // Generate offer ID
   const offerId = crypto.randomUUID()
 
+  // Resolve brokerage_id for the agent
+  const { data: agentBrokerage } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", userId)
+    .maybeSingle()
+
   // Emit buyer.offer.draft.created event
   const { error: eventError } = await supabase.from("activities").insert({
-    type: "buyer.offer.draft.created",
-    entity_type: "contact",
-    entity_id: buyerId,
-    user_id: userId,
-    metadata: {
+    brokerage_id: agentBrokerage?.brokerage_id ?? null,
+    agent_id: userId,
+    contact_id: buyerId,
+    activity_type: "buyer.offer.draft.created",
+    title: `Offer draft created: ${propertyAddress}`,
+    description: `Offer draft created for ${propertyAddress}`,
+    notes: JSON.stringify({
       offer_id: offerId,
       property_address: propertyAddress,
       property_mls_id: propertyMlsId || null,
       buyer_offer_count: pendingCount + 1,
       expiration_date: expirationDate.toISOString(),
       status: "draft",
-    },
+    }),
+    status: "pending",
+    entity_type: "contact",
   })
 
   if (eventError) {
@@ -172,10 +182,10 @@ export async function getPendingOfferCount(buyerId: string): Promise<number> {
 
   const { data: offers } = await supabase
     .from("activities")
-    .select("id, metadata")
+    .select("id, notes")
     .eq("entity_type", "contact")
-    .eq("entity_id", buyerId)
-    .eq("type", "buyer.offer.draft.created")
+    .eq("contact_id", buyerId)
+    .eq("activity_type", "buyer.offer.draft.created")
     .order("created_at", { ascending: false })
 
   if (!offers) return 0
@@ -191,16 +201,12 @@ export async function getPendingOfferCount(buyerId: string): Promise<number> {
   let pendingCount = 0
 
   for (const offer of offers) {
-    const metadata = offer.metadata as { offer_id?: string }
-    if (!metadata?.offer_id) continue
-
     const { data: terminatingEvent } = await supabase
       .from("activities")
       .select("id")
       .eq("entity_type", "contact")
-      .eq("entity_id", buyerId)
-      .in("type", terminatingEvents)
-      .eq("metadata->offer_id", metadata.offer_id)
+      .eq("contact_id", buyerId)
+      .in("activity_type", terminatingEvents)
       .limit(1)
       .maybeSingle()
 

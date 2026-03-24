@@ -40,14 +40,13 @@ export async function getOfferLifecycleState(
 
     const supabase = createServiceClient();
 
-    // Get all lifecycle events for this offer
+    // Get all lifecycle events for this offer (keyed by notes JSON containing offer_id)
     const { data: events, error } = await supabase
       .from("activities")
-      .select("event_type, event_metadata, created_at, user_id")
-      .eq("entity_type", "offer")
-      .eq("entity_id", offerId)
-      .in("event_type", [
-        "buyer.offer.draft_created",
+      .select("activity_type, notes, created_at, agent_id")
+      .eq("entity_type", "contact")
+      .in("activity_type", [
+        "buyer.offer.draft.created",
         "buyer.offer.submitted",
         "buyer.offer.accepted",
         "buyer.offer.rejected",
@@ -64,12 +63,16 @@ export async function getOfferLifecycleState(
     }
 
     // Derive current state from events
-    const history = events.map(e => ({
-      state: deriveStateFromEvent(e.event_type),
-      timestamp: e.created_at,
-      actor_id: e.user_id,
-      reason: e.event_metadata?.reason
-    }));
+    const history = events.map(e => {
+      let parsedNotes: Record<string, any> = {}
+      try { parsedNotes = e.notes ? JSON.parse(e.notes) : {} } catch { /* ignore */ }
+      return {
+        state: deriveStateFromEvent(e.activity_type),
+        timestamp: e.created_at,
+        actor_id: e.agent_id,
+        reason: parsedNotes?.reason
+      }
+    });
 
     const currentState = history[history.length - 1];
 
@@ -112,17 +115,16 @@ export async function submitOffer(
 
     // Emit submission event
     const supabase = createServiceClient();
+    const { data: agentUserS } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle();
     const { error } = await supabase.from("activities").insert({
-      entity_type: "offer",
-      entity_id: offerId,
-      activity_type: "offer_submission",
-      event_type: "buyer.offer.submitted",
-      user_id: userId,
-      event_metadata: {
-        previous_state: "DRAFT",
-        new_state: "PENDING",
-        submitted_at: new Date().toISOString()
-      }
+      brokerage_id: agentUserS?.brokerage_id ?? null,
+      agent_id: userId,
+      activity_type: "buyer.offer.submitted",
+      title: `Offer submitted`,
+      description: `Offer ${offerId} submitted`,
+      notes: JSON.stringify({ offer_id: offerId, previous_state: "DRAFT", new_state: "PENDING" }),
+      status: "completed",
+      entity_type: "contact",
     });
 
     if (error) throw error;
@@ -159,18 +161,16 @@ export async function withdrawOffer(
 
     // Emit withdrawal event
     const supabase = createServiceClient();
+    const { data: agentUserW } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle();
     const { error } = await supabase.from("activities").insert({
-      entity_type: "offer",
-      entity_id: offerId,
-      activity_type: "offer_withdrawal",
-      event_type: "buyer.offer.withdrawn",
-      user_id: userId,
-      event_metadata: {
-        previous_state: stateResult.data.current_state,
-        new_state: "WITHDRAWN",
-        reason,
-        withdrawn_at: new Date().toISOString()
-      }
+      brokerage_id: agentUserW?.brokerage_id ?? null,
+      agent_id: userId,
+      activity_type: "buyer.offer.withdrawn",
+      title: `Offer withdrawn`,
+      description: reason,
+      notes: JSON.stringify({ offer_id: offerId, previous_state: stateResult.data.current_state, new_state: "WITHDRAWN", reason }),
+      status: "completed",
+      entity_type: "contact",
     });
 
     if (error) throw error;
@@ -209,20 +209,17 @@ export async function recordSellerResponse(
     // Emit response event
     const supabase = createServiceClient();
     const eventType = `buyer.offer.${response.toLowerCase()}`;
-    
+    const { data: agentUserR } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle();
+
     const { error } = await supabase.from("activities").insert({
-      entity_type: "offer",
-      entity_id: offerId,
-      activity_type: "seller_response",
-      event_type: eventType,
-      user_id: userId,
-      event_metadata: {
-        previous_state: "PENDING",
-        new_state: response,
-        response_type: response,
-        notes,
-        responded_at: new Date().toISOString()
-      }
+      brokerage_id: agentUserR?.brokerage_id ?? null,
+      agent_id: userId,
+      activity_type: eventType,
+      title: `Seller response: ${response}`,
+      description: notes ?? `Seller responded: ${response}`,
+      notes: JSON.stringify({ offer_id: offerId, previous_state: "PENDING", new_state: response, response_type: response }),
+      status: "completed",
+      entity_type: "contact",
     });
 
     if (error) throw error;
@@ -258,18 +255,16 @@ export async function markOfferExpired(
 
     // Emit expiration event
     const supabase = createServiceClient();
+    const { data: sysUserRow } = await supabase.from("users").select("brokerage_id").eq("id", systemUserId).maybeSingle();
     const { error } = await supabase.from("activities").insert({
-      entity_type: "offer",
-      entity_id: offerId,
-      activity_type: "offer_expiration",
-      event_type: "buyer.offer.expired",
-      user_id: systemUserId,
-      event_metadata: {
-        previous_state: "PENDING",
-        new_state: "EXPIRED",
-        expired_at: new Date().toISOString(),
-        expiration_reason: "deadline_passed"
-      }
+      brokerage_id: sysUserRow?.brokerage_id ?? null,
+      agent_id: systemUserId,
+      activity_type: "buyer.offer.expired",
+      title: "Offer expired",
+      description: "Offer expired: deadline passed",
+      notes: JSON.stringify({ offer_id: offerId, previous_state: "PENDING", new_state: "EXPIRED", expiration_reason: "deadline_passed" }),
+      status: "completed",
+      entity_type: "contact",
     });
 
     if (error) throw error;
@@ -281,10 +276,10 @@ export async function markOfferExpired(
   }
 }
 
-// Helper: Derive state from event type
-function deriveStateFromEvent(eventType: string): string {
+// Helper: Derive state from activity_type
+function deriveStateFromEvent(activityType: string): string {
   const mapping: Record<string, string> = {
-    "buyer.offer.draft_created": "DRAFT",
+    "buyer.offer.draft.created": "DRAFT",
     "buyer.offer.submitted": "PENDING",
     "buyer.offer.accepted": "ACCEPTED",
     "buyer.offer.rejected": "REJECTED",
@@ -292,5 +287,5 @@ function deriveStateFromEvent(eventType: string): string {
     "buyer.offer.expired": "EXPIRED",
     "buyer.offer.withdrawn": "WITHDRAWN"
   };
-  return mapping[eventType] || "UNKNOWN";
+  return mapping[activityType] || "UNKNOWN";
 }

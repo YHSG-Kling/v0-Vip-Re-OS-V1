@@ -58,14 +58,23 @@ export async function submitOffer(offerData: {
     .single()
 
   if (listing) {
-    // Agent task (correct location, no changes) — activity_type: offer_received, offer_accepted, offer_rejected, counter_offer_sent
+    // Resolve brokerage_id from agent user record
+    const { data: agentUserRow } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", listing.agent_id)
+      .maybeSingle()
+
     await supabase.from("activities").insert({
-      user_id: listing.agent_id,
+      brokerage_id: agentUserRow?.brokerage_id ?? brokerageId,
+      agent_id: listing.agent_id,
+      contact_id: offerData.contact_id,
       activity_type: "offer_received",
-      entity_type: "offer",
-      entity_id: offer.id,
+      title: `Offer received: $${offerData.offer_price.toLocaleString()}`,
       description: `New offer of $${offerData.offer_price.toLocaleString()} received`,
-      metadata: { priority: "high" },
+      priority: "high",
+      status: "pending",
+      entity_type: "contact",
     })
   }
 
@@ -367,13 +376,22 @@ export async function counterOffer(
 
   // Notify buyer's agent — Agent task (correct location, no changes) — activity_type: offer_countered
   if (offer.buyer.agent_id) {
+    const { data: buyerAgentUser } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", offer.buyer.agent_id)
+      .maybeSingle()
+
     await supabase.from("activities").insert({
-      user_id: offer.buyer.agent_id,
+      brokerage_id: buyerAgentUser?.brokerage_id ?? null,
+      agent_id: offer.buyer.agent_id,
+      contact_id: offer.contact_id ?? null,
       activity_type: "offer_countered",
-      entity_type: "offer",
-      entity_id: offerId,
+      title: `Counter offer: $${counterData.counter_amount?.toLocaleString() ?? "pending"}`,
       description: counterData.message || `Counter offer: $${counterData.counter_amount?.toLocaleString()}`,
-      metadata: { priority: "high" },
+      priority: "high",
+      status: "pending",
+      entity_type: "contact",
     })
   }
 
@@ -425,13 +443,22 @@ export async function acceptOffer(offerId: string, agentId: string) {
 
   // Notify buyer — Agent task (correct location, no changes) — activity_type: offer_accepted
   if (offer.buyer.agent_id) {
+    const { data: buyerAgentUser2 } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", offer.buyer.agent_id)
+      .maybeSingle()
+
     await supabase.from("activities").insert({
-      user_id: offer.buyer.agent_id,
+      brokerage_id: buyerAgentUser2?.brokerage_id ?? null,
+      agent_id: offer.buyer.agent_id,
+      contact_id: offer.contact_id ?? null,
       activity_type: "offer_accepted",
-      entity_type: "offer",
-      entity_id: offerId,
-      description: `🎉 Offer accepted on ${offer.listing.address}!`,
-      metadata: { priority: "high" },
+      title: `Offer accepted: ${offer.listing.address}`,
+      description: `Offer accepted on ${offer.listing.address}`,
+      priority: "high",
+      status: "completed",
+      entity_type: "contact",
     })
   }
 
@@ -460,12 +487,20 @@ export async function rejectOffer(offerId: string, reason?: string) {
 
   // Notify buyer — Agent task (correct location, no changes) — activity_type: offer_rejected
   if (offer?.buyer_id) {
+    const { data: buyerAgentUser3 } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", offer.buyer_id)
+      .maybeSingle()
+
     await supabase.from("activities").insert({
-      user_id: offer.buyer_id,
+      brokerage_id: buyerAgentUser3?.brokerage_id ?? null,
+      agent_id: offer.buyer_id,
       activity_type: "offer_rejected",
-      entity_type: "offer",
-      entity_id: offerId,
-      description: reason || `Offer on ${offer.listing.address} was not accepted`,
+      title: `Offer rejected: ${offer.listing?.address ?? offerId}`,
+      description: reason || `Offer on ${offer.listing?.address} was not accepted`,
+      status: "completed",
+      entity_type: "contact",
     })
   }
 
