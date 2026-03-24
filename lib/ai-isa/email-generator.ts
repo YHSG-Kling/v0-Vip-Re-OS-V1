@@ -16,17 +16,16 @@ export interface LeadEmailContext {
   enrichment_context?: Record<string, any>
   /** Brand voice system block from loadBrandVoicePrompt — injected into email tone/vocabulary */
   brandVoiceBlock?: string
+  /** Assistant name from ai_identity_profiles — used as the email sign-off name */
+  assistantName?: string
+  /** Persona label from ai_identity_profiles — shown in greeting context */
+  personaLabel?: string | null
 }
 
 export async function generatePersonalizedEmail(context: LeadEmailContext) {
-  // Build brand voice opener note for template (non-AI path — static template)
-  // The brandVoiceBlock is used by callers who generate via AI SDK; here we
-  // surface it as a comment in the template so future LLM-based generation picks it up.
-  const brandNote = context.brandVoiceBlock
-    ? `<!-- brand-voice: ${context.brandVoiceBlock} -->`
-    : ''
+  const signingName = context.assistantName ?? 'Your Real Estate Team'
 
-  const emailBody = `Hi ${context.firstName},${brandNote}
+  const emailBody = `Hi ${context.firstName},
 
 I noticed you're exploring ${context.property_interest || 'properties'} in the area${context.timeline ? ` and looking to ${context.timeline}` : ''}. 
 
@@ -36,12 +35,12 @@ ${context.budget_min && context.budget_max ? `Based on your budget range of $${c
 
 [Video will be embedded here]
 
-This isn't about pushing you into anything—it's about making sure you have the right information and support whenever you're ready to take the next step.
+This isn't about pushing you into anything — it's about making sure you have the right information and support whenever you're ready to take the next step.
 
 If you have any questions or just want to talk through your options, feel free to reply to this email. I'm here to help.
 
 Best regards,
-Your Real Estate Team`
+${signingName}${context.personaLabel ? `\n${context.personaLabel}` : ''}`
 
   const subjectLine = context.motivation_type
     ? `About Your ${context.property_interest || 'Property'} Search`
@@ -50,7 +49,7 @@ Your Real Estate Team`
   return {
     subject: subjectLine,
     body: emailBody,
-    fromName: 'Real Estate Support Team',
+    fromName: signingName,
     replyTo: context.email,
   }
 }
