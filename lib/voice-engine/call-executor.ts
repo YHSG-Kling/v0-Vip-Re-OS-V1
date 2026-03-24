@@ -10,6 +10,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { initiateCall } from '@/lib/voice/vapi-client'
 
 export interface CallMetadata {
   contactId: string
@@ -85,49 +86,59 @@ export async function initiateVoiceCall(
       }
     }
 
-    // Credentials are present. The real outbound call API invocation belongs here.
-    // Until the vendor SDK integration is wired, surface an honest error rather than
-    // logging a phantom activity row with a fake vendor ID.
-    // vendorCallId MUST come from the real API response — never manufactured locally.
-    return {
-      success: false,
-      error: `Voice provider "${metadata.vendor}" credentials are configured but the outbound call integration is not yet wired. No call was placed and no activity was logged.`,
-      vendorCallId: undefined,
+    // Initiate the real VAPI call via REST API
+    let vapiResponse: { id: string; status: string; createdAt: string }
+    try {
+      vapiResponse = await initiateCall({
+        phoneNumber,
+        assistantId: process.env.VAPI_ISA_ASSISTANT_ID,
+      })
+    } catch (err: any) {
+      console.error('[v0] [VOICE ENGINE] VAPI initiateCall failed:', err.message)
+      return {
+        success: false,
+        error: `VAPI call failed: ${err.message}`,
+      }
     }
 
-    // Log call initiation as activity
-    const { data: activity, error: activityError } = await supabase
-      .from('activities')
+    const vendorCallId = vapiResponse.id
+
+    // Write call record to voice_calls for full transcript/analysis tracking
+    const { data: voiceCall, error: voiceCallError } = await supabase
+      .from('voice_calls')
       .insert({
-        activity_type: 'voice_call_initiated',
-        title: `Voice Call: ${metadata.callType}`,
-        description: `${metadata.initiatorRole} initiated ${metadata.callType} call`,
-        status: 'in_progress',
-        priority: 'normal',
         contact_id: metadata.contactId,
-        agent_id: metadata.agentId,
-        transaction_id: metadata.transactionId,
-        notes: JSON.stringify({
-          vendor: metadata.vendor,
-          vendorCallId,
-          phoneNumber,
-        }),
-        created_at: new Date().toISOString(),
+        agent_id: metadata.agentId ?? null,
+        brokerage_id: contact.brokerage_id,
+        vapi_call_id: vendorCallId,
+        direction: metadata.callType,
+        call_type: 'isa_ai',
+        status: 'initiated',
+        initiated_by: metadata.initiatorRole,
+        started_at: new Date().toISOString(),
       })
       .select('id')
       .single()
 
-    if (activityError) {
-      console.error('[v0] [VOICE ENGINE] Failed to log call initiation:', activityError)
-      return {
-        success: false,
-        error: 'Failed to log call initiation',
-      }
+    if (voiceCallError) {
+      console.error('[v0] [VOICE ENGINE] Failed to write voice_calls row:', voiceCallError)
+      // Call is live — don't fail, just warn
     }
+
+    // Also write lightweight vapi_voice_calls row for superadmin billing roll-up
+    await supabase.from('vapi_voice_calls').insert({
+      voice_call_id: voiceCall?.id ?? null,
+      brokerage_id: contact.brokerage_id,
+      vapi_call_id: vendorCallId,
+      assistant_id: process.env.VAPI_ISA_ASSISTANT_ID ?? null,
+      agent_id: metadata.agentId ?? null,
+      contact_id: metadata.contactId,
+      ended_reason: null,
+    })
 
     return {
       success: true,
-      callId: activity?.id,
+      callId: voiceCall?.id,
       vendorCallId,
     }
   } catch (error: any) {
