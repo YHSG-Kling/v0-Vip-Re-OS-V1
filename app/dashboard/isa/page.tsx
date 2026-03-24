@@ -43,15 +43,16 @@ import {
   RetrainingSignalsPanel,
 } from './components/qualification-os'
 import { HandoffQueuePanel } from '@/app/dashboard/voice/isa/handoff-queue-panel'
+import { AIISAConsoleClient } from './ai-isa-console-client'
 
 export const dynamic = 'force-dynamic'
 
 export const metadata = {
-  title: 'Qualification OS | VIP Real Estate AI OS',
-  description: 'AI-powered lead qualification command center',
+  title: 'AI-ISA Operations Console | VIP Real Estate AI OS',
+  description: 'Monitor, guide, and escalate AI lead qualification and follow-up',
 }
 
-export default async function QualificationOSPage() {
+export default async function AIISAOperationsConsolePage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
@@ -77,6 +78,87 @@ export default async function QualificationOSPage() {
   const { data: agentRow } = isAgentOnly
     ? await supabase.from('agents').select('id').eq('user_id', user.id).maybeSingle()
     : { data: null }
+
+  // ── NEW: AI-ISA Operations Console queries ────────────────────────────────
+  // Fetch leads currently owned by AI-ISA with qualification + channel truth data
+  const leadsQuery = supabase
+    .from('leads')
+    .select(`
+      id, first_name, last_name, email, phone, source,
+      contact_id, agent_id, call_stop_flag, mailing_address_verified,
+      mailing_address, tcpa_consent, sms_opt_out, phone_opt_out, email_opt_out,
+      direct_mail_opt_out, lifecycle_state, lead_stage, updated_at, created_at,
+      ai_isa_owner, ai_outreach_paused,
+      ai_isa_qualifications!lead_id(
+        id, qualification_score, qualification_result, stage,
+        qualified_at, assigned_at, assigned_to_agent_id, last_outreach_at
+      )
+    `)
+    .eq('brokerage_id', brokerageId)
+    .order('updated_at', { ascending: false })
+    .limit(50)
+
+  if (isAgentOnly && agentRow?.id) {
+    leadsQuery.eq('agent_id', agentRow.id)
+  }
+
+  // Fetch pending AI message drafts in AI-ISA scope
+  const draftsQuery = supabase
+    .from('ai_message_drafts')
+    .select(`
+      id, channel, draft_subject, draft_body, context_summary,
+      confidence_score, status, created_at, contact_id,
+      contacts!contact_id( first_name, last_name )
+    `)
+    .eq('brokerage_id', brokerageId)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false })
+    .limit(20)
+
+  const [leadsResult, draftsResult] = await Promise.all([leadsQuery, draftsQuery])
+
+  const leads = (leadsResult.data ?? []) as any[]
+  const rawDrafts = (draftsResult.data ?? []) as any[]
+
+  // Enrich draft records with contact name
+  const pendingDrafts = rawDrafts.map((d: any) => ({
+    ...d,
+    contact_name: d.contacts
+      ? `${d.contacts.first_name ?? ''} ${d.contacts.last_name ?? ''}`.trim() || null
+      : null,
+  }))
+
+  // Augment leads with call_analyses via voice_calls grouped by contact_id
+  // We fetch voice_calls with analyses for all contacts from this lead set
+  const contactIds = leads.map((l: any) => l.contact_id).filter(Boolean)
+  let callAnalysesByContact: Record<string, any[]> = {}
+
+  if (contactIds.length > 0) {
+    const { data: vcData } = await supabase
+      .from('voice_calls')
+      .select(`
+        contact_id,
+        call_analyses( sentiment, intent_primary, urgency_score, suggested_next_action )
+      `)
+      .in('contact_id', contactIds)
+      .eq('call_type', 'isa_ai')
+      .order('started_at', { ascending: false })
+      .limit(100)
+
+    for (const vc of vcData ?? []) {
+      if (!vc.contact_id || !vc.call_analyses?.length) continue
+      if (!callAnalysesByContact[vc.contact_id]) {
+        callAnalysesByContact[vc.contact_id] = []
+      }
+      callAnalysesByContact[vc.contact_id].push(...vc.call_analyses)
+    }
+  }
+
+  // Merge call_analyses into lead records
+  const records = leads.map((lead: any) => ({
+    ...lead,
+    call_analyses: lead.contact_id ? (callAnalysesByContact[lead.contact_id] ?? []) : [],
+  }))
 
   // Fetch all data in parallel
   const [campaignResult, qualResult, ghostResult, engagementResult, handoffResult, voiceCallsResult] = await Promise.all([
@@ -256,18 +338,18 @@ export default async function QualificationOSPage() {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Section 1 — Page Identity */}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Radio className="w-6 h-6 text-indigo-600" />
-            Qualification OS
+            <Brain className="w-6 h-6 text-indigo-600" />
+            AI-ISA Operations Console
           </h1>
-          <p className="text-muted-foreground text-sm">
-            AI-powered lead qualification command center - autonomous first owner of all raw leads
+          <p className="text-muted-foreground text-sm mt-0.5">
+            Monitor, guide, and escalate AI lead qualification and follow-up
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <Link href="/dashboard/voice/isa">
             <Button variant="outline" size="sm">
               <Phone className="w-4 h-4 mr-2" />
@@ -282,6 +364,14 @@ export default async function QualificationOSPage() {
           </Link>
         </div>
       </div>
+
+      {/* AI-ISA Operations Console — Sections 2-9 */}
+      <AIISAConsoleClient
+        records={records}
+        pendingDrafts={pendingDrafts}
+        userId={user.id}
+        brokerageId={brokerageId}
+      />
 
       {/* VAPI configuration warning — shown only when AI calling is not set up */}
       {!vapiConfigured && (

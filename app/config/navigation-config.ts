@@ -274,7 +274,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
 
   isa: {
     sidebarItems: [
-      { id: 'dashboard', label: 'ISA Dashboard', href: '/dashboard/isa', icon: 'LayoutGrid' },
+      { id: 'dashboard', label: 'AI-ISA Console', href: '/dashboard/isa', icon: 'LayoutGrid' },
       { id: 'calling', label: 'Calling Queue', href: '/dashboard/isa/calling', icon: 'Phone', badge: { count: 12, color: 'red' } },
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Zap' },
       { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach', icon: 'Send' },
