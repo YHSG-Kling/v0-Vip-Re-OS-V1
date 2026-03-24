@@ -55,17 +55,45 @@ export async function initiateVoiceCall(
       }
     }
 
-    // Voice infrastructure: In production, integrate with Twilio/Bland AI/Retell AI here
-    // For now, we stub the vendor call and log metadata
-    const vendorCallId = `stub_call_${Date.now()}`
+    // Guard: require real vendor credentials before attempting the call.
+    // The vendor field in metadata drives which API key is checked.
+    const isVapi = metadata.vendor === 'vapi' || metadata.vendor === 'vapi_isa'
+    const isTwilio = metadata.vendor === 'twilio'
 
-    console.log('[v0] [VOICE ENGINE] Initiating call:', {
-      contactId: metadata.contactId,
-      initiatorRole: metadata.initiatorRole,
-      callType: metadata.callType,
-      vendor: metadata.vendor,
-      phone: phoneNumber,
-    })
+    if (isVapi && (!process.env.VAPI_API_KEY || !process.env.VAPI_ISA_ASSISTANT_ID)) {
+      return {
+        success: false,
+        error: 'Voice provider not configured — call was not placed. Configure VAPI in Admin → Integrations.',
+        vendorCallId: undefined,
+      }
+    }
+
+    if (isTwilio && (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN)) {
+      return {
+        success: false,
+        error: 'Voice provider not configured — call was not placed. Configure Twilio in Admin → Integrations.',
+        vendorCallId: undefined,
+      }
+    }
+
+    if (!isVapi && !isTwilio) {
+      // Unknown vendor — refuse to stub; surface the gap immediately
+      return {
+        success: false,
+        error: `Voice provider "${metadata.vendor}" is not supported or not configured. No call was placed.`,
+        vendorCallId: undefined,
+      }
+    }
+
+    // Credentials are present. The real outbound call API invocation belongs here.
+    // Until the vendor SDK integration is wired, surface an honest error rather than
+    // logging a phantom activity row with a fake vendor ID.
+    // vendorCallId MUST come from the real API response — never manufactured locally.
+    return {
+      success: false,
+      error: `Voice provider "${metadata.vendor}" credentials are configured but the outbound call integration is not yet wired. No call was placed and no activity was logged.`,
+      vendorCallId: undefined,
+    }
 
     // Log call initiation as activity
     const { data: activity, error: activityError } = await supabase

@@ -23,7 +23,9 @@ import {
   Users,
   MessageSquare,
   UserCheck,
+  AlertTriangle,
 } from 'lucide-react'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import Link from 'next/link'
 import {
   QualificationRadar,
@@ -100,6 +102,9 @@ export default async function QualificationOSPage() {
   const handoffQueue = (handoffResult?.data || []) as any[]
 
   const activeCampaigns = campaigns.filter((c: any) => c.status === 'active')
+
+  // Server-side VAPI config check — no client env leak required
+  const vapiConfigured = !!(process.env.VAPI_ISA_ASSISTANT_ID && process.env.VAPI_API_KEY)
 
   // Calculate Qualification Radar metrics from real data
   const totalContacted = qualOutcomes.outcomes?.length || 0
@@ -230,6 +235,20 @@ export default async function QualificationOSPage() {
           </Link>
         </div>
       </div>
+
+      {/* VAPI configuration warning — shown only when AI calling is not set up */}
+      {!vapiConfigured && (
+        <Alert variant="destructive" className="border-amber-300 bg-amber-50 text-amber-900 [&>svg]:text-amber-600">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>AI Calling Not Configured</AlertTitle>
+          <AlertDescription>
+            VAPI is not configured. AI outbound calls will not execute.{' '}
+            <Link href="/admin/integrations" className="underline font-medium ml-1">
+              Configure in Admin Integrations →
+            </Link>
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Qualification Radar - Full Width */}
       <QualificationRadar {...radarMetrics} />
