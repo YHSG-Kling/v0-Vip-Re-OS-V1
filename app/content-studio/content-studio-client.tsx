@@ -374,9 +374,15 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       const publicUrl = urlData?.publicUrl
 
       if (publicUrl) {
+        if (!brokerageId) {
+          toast.error("Brokerage not loaded yet — please wait and try again")
+          setIsUploading(false)
+          setUploadProgress(0)
+          return
+        }
         const { error: dbError } = await supabase.from("ai_video_projects").insert({
           agent_id: user.id,
-          brokerage_id: brokerageId || user.id,
+          brokerage_id: brokerageId,
           title: newVideoTitle,
           video_url: publicUrl,
           status: "uploaded",

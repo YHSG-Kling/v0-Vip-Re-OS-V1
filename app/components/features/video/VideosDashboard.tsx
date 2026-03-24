@@ -16,6 +16,7 @@ import {
   Loader2,
   CheckCircle,
   AlertCircle,
+  AlertTriangle,
   Sparkles,
   ArrowRight,
 } from "lucide-react"
@@ -49,6 +50,7 @@ export function VideosDashboard() {
   const [recommendations, setRecommendations] = useState<VideoRecommendation[]>([])
   const [weeklyViews, setWeeklyViews] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
 
   useEffect(() => {
     loadDashboardData()
@@ -95,28 +97,6 @@ export function VideosDashboard() {
       if (inProgress) setInProgressVideos(inProgress)
       if (recent) setRecentVideos(recent)
 
-      // Demo recommendations
-      setRecommendations([
-        {
-          type: "listing_tour",
-          title: "New Listing Video",
-          description: "You have 2 new listings without videos",
-          priority: "high",
-        },
-        {
-          type: "market_update",
-          title: "Monthly Market Update",
-          description: "It's been 30 days since your last market update",
-          priority: "medium",
-        },
-        {
-          type: "personalized",
-          title: "Follow-up Video",
-          description: "3 leads haven't received a personalized video yet",
-          priority: "high",
-        },
-      ])
-
       // Real views from video_performance_tracking — no synthetic data
       const { data: perf } = await supabase
         .from("video_performance_tracking")
@@ -124,38 +104,14 @@ export function VideosDashboard() {
         .eq("brokerage_id", user?.id ?? "")
       const totalViews = (perf ?? []).reduce((s: number, p: { total_views?: number }) => s + (p.total_views ?? 0), 0)
       setWeeklyViews(totalViews > 0 ? Math.round(totalViews / 4) : 0)
+      setLoadError(false)
     } catch (error) {
       console.error("Error loading video dashboard:", error)
-      // Set demo data
-      setInProgressVideos([
-        {
-          id: "demo-1",
-          project_name: "Listing Tour - 456 Oak Ave",
-          video_type: "listing_tour",
-          status: "generating",
-          heygen_status: "generating",
-          created_at: new Date().toISOString(),
-        },
-      ])
-      setRecentVideos([
-        {
-          id: "demo-2",
-          project_name: "Market Update - January",
-          video_type: "market_update",
-          status: "video_ready",
-          video_url: "#",
-          created_at: new Date().toISOString(),
-        },
-      ])
-      setRecommendations([
-        {
-          type: "listing_tour",
-          title: "New Listing Video",
-          description: "You have 2 new listings without videos",
-          priority: "high",
-        },
-      ])
-      setWeeklyViews(234)
+      setInProgressVideos([])
+      setRecentVideos([])
+      setRecommendations([])
+      setWeeklyViews(0)
+      setLoadError(true)
     } finally {
       setLoading(false)
     }
@@ -214,6 +170,26 @@ export function VideosDashboard() {
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Error state */}
+        {loadError && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0" />
+              <p className="text-sm text-amber-800">Could not load video data. Check your connection.</p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setLoadError(false)
+                loadDashboardData()
+              }}
+            >
+              Retry
+            </Button>
+          </div>
+        )}
+
         {/* Performance Snapshot */}
         <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
           <div className="flex items-center gap-2">

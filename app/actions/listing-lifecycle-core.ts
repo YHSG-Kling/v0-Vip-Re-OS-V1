@@ -193,7 +193,7 @@ export async function executeListingTransition(params: {
       fromStage: currentStage,
       toStage: params.targetStage,
       userId: user.id,
-      userRole: profile.role || "agent",
+      userRole: profile.user_type || "agent",
       failureReason: validation.validation?.reason || validation.error || "Validation failed",
       readinessChecksPassed: validation.validation?.readinessChecks?.passed || [],
       readinessChecksFailed: validation.validation?.readinessChecks?.failed || [],
@@ -214,7 +214,7 @@ export async function executeListingTransition(params: {
     fromStage: currentStage,
     toStage: params.targetStage,
     userId: user.id,
-    userRole: profile.role || "agent",
+    userRole: profile.user_type || "agent",
     isOverride: !!params.overrideReason,
     overrideReason: params.overrideReason,
     readinessChecksPassed: validation.validation?.readinessChecks?.passed || [],
@@ -313,7 +313,7 @@ export async function getListingNextStages(listingId: string) {
   // Get user role
   const { data: profile } = await supabase
     .from("users")
-    .select("user_type, role")
+    .select("user_type")
     .eq("id", user.id)
     .single()
   
@@ -329,14 +329,14 @@ export async function getListingNextStages(listingId: string) {
   
   const nextStages = getNextAllowedStages(
     currentStage,
-    profile?.role || "agent"
+    profile?.user_type || "agent"
   )
   
   return {
     success: true,
     currentStage,
     nextStages,
-    canSkipStages: canSkipStages(profile?.role || "agent"),
+    canSkipStages: canSkipStages(profile?.user_type || "agent"),
   }
 }
 

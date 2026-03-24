@@ -28,14 +28,14 @@ export default async function AccountingSettingsPage() {
   // Get user profile and verify role
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, brokerage_id")
     .eq("id", user.id)
     .single()
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Role gate: broker + admin only
-  if (!["broker", "admin"].includes(profile.role ?? "")) {
+  if (!["broker", "admin"].includes(profile.user_type ?? "")) {
     redirect("/dashboard")
   }
 
