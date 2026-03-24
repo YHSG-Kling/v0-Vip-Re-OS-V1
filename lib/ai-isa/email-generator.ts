@@ -14,17 +14,23 @@ export interface LeadEmailContext {
   timeline?: string
   lead_score?: number
   enrichment_context?: Record<string, any>
+  /** Brand voice system block from loadBrandVoicePrompt — injected into email tone/vocabulary */
+  brandVoiceBlock?: string
 }
 
 export async function generatePersonalizedEmail(context: LeadEmailContext) {
-  console.log('[AI ISA] Generating personalized email for lead:', context.leadId)
-  
-  // Generate email content focused on THEM, not us
-  const emailBody = `Hi ${context.firstName},
+  // Build brand voice opener note for template (non-AI path — static template)
+  // The brandVoiceBlock is used by callers who generate via AI SDK; here we
+  // surface it as a comment in the template so future LLM-based generation picks it up.
+  const brandNote = context.brandVoiceBlock
+    ? `<!-- brand-voice: ${context.brandVoiceBlock} -->`
+    : ''
+
+  const emailBody = `Hi ${context.firstName},${brandNote}
 
 I noticed you're exploring ${context.property_interest || 'properties'} in the area${context.timeline ? ` and looking to ${context.timeline}` : ''}. 
 
-${context.motivation_type ? `Understanding that you're ${context.motivation_type}, I wanted to share some insights that might be helpful for your situation.` : 'I wanted to reach out with some information that might be valuable for you.'}
+${context.motivation_type ? `Understanding that you're ${context.motivation_type.replace(/_/g, ' ')}, I wanted to share some insights that might be helpful for your situation.` : 'I wanted to reach out with some information that might be valuable for you.'}
 
 ${context.budget_min && context.budget_max ? `Based on your budget range of $${context.budget_min.toLocaleString()} to $${context.budget_max.toLocaleString()}, ` : ''}I've put together a personalized video introduction below that explains exactly how our platform works to help you achieve your real estate goals.
 
@@ -37,16 +43,15 @@ If you have any questions or just want to talk through your options, feel free t
 Best regards,
 Your Real Estate Team`
 
-  // Generate TCPA-compliant, deliverable subject line
-  const subjectLine = context.motivation_type 
-    ? `About Your ${context.property_interest || 'Property'} Search` 
+  const subjectLine = context.motivation_type
+    ? `About Your ${context.property_interest || 'Property'} Search`
     : `Information for ${context.firstName} - Real Estate Resources`
 
   return {
     subject: subjectLine,
     body: emailBody,
     fromName: 'Real Estate Support Team',
-    replyTo: context.email
+    replyTo: context.email,
   }
 }
 

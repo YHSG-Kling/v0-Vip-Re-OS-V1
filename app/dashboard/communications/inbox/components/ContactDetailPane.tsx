@@ -1,9 +1,12 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Mail, Phone, User, TrendingUp, Circle, ShieldAlert, CalendarPlus, ListPlus } from "lucide-react"
+import { Mail, Phone, User, TrendingUp, Circle, ShieldAlert, CalendarPlus, ListPlus, Inbox, Settings2, PhoneOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { createClient } from "@/lib/supabase/client"
+import UnifiedInboxTab from "@/app/components/contact/UnifiedInboxTab"
+import ContactChannelControls from "@/app/components/contact/ContactChannelControls"
+import type { PreferredChannel, SocialHandles } from "@/app/actions/contacts/update-channel-controls"
 
 type ConversationContact = {
   id: string
@@ -13,6 +16,9 @@ type ConversationContact = {
   phone?: string
   lifecycle_state?: string
   lead_score?: number
+  preferred_channel?: PreferredChannel | null
+  social_handles?: SocialHandles | null
+  call_stop_flag?: boolean
 }
 
 interface ContactDetailPaneProps {
@@ -81,10 +87,13 @@ function activityIcon(type: string) {
   return icons[type] ?? "•"
 }
 
+type DetailTab = "activity" | "inbox" | "channels"
+
 export default function ContactDetailPane({ contact, sentimentSummary, agentId }: ContactDetailPaneProps) {
   const [activities, setActivities]   = useState<ISAActivity[]>([])
   const [actLoading, setActLoading]   = useState(false)
   const [actionMsg, setActionMsg]     = useState<string | null>(null)
+  const [activeTab, setActiveTab]     = useState<DetailTab>("activity")
 
   // Load ISA activities when contact changes
   useEffect(() => {
@@ -261,52 +270,101 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
           </div>
         )}
 
-        {/* ISA Activity Timeline */}
-        <div>
-          <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-2">
-            Recent ISA Activity
-          </p>
-          {actLoading ? (
-            <p className="text-[11px] text-muted-foreground">Loading…</p>
-          ) : activities.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">No recorded ISA activities.</p>
-          ) : (
-            <div className="space-y-2">
-              {activities.map(act => (
-                <div key={act.id} className="flex gap-2 text-[11px]">
-                  <span className="shrink-0 w-4 text-center">{activityIcon(act.activity_type)}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-foreground capitalize">
-                      {act.activity_type}
-                      {act.channel && <span className="text-muted-foreground font-normal"> · {act.channel}</span>}
-                    </p>
-                    {act.notes && (
-                      <p className="text-muted-foreground truncate">{act.notes}</p>
-                    )}
-                    <p className="text-muted-foreground text-[10px]">
-                      {new Date(act.created_at).toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-                    </p>
-                  </div>
-                  {act.status && (
-                    <span className={cn(
-                      "shrink-0 text-[9px] px-1 py-0.5 rounded-full font-medium capitalize h-fit",
-                      act.status === "completed" ? "bg-green-100 text-green-700" :
-                      act.status === "failed"    ? "bg-red-100 text-red-700" :
-                                                   "bg-muted text-muted-foreground"
-                    )}>
-                      {act.status}
-                    </span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+        {/* ── Tab strip ──────────────────────────────────────────────────────── */}
+        <div className="flex rounded-lg border border-border overflow-hidden text-[11px]">
+          {(
+            [
+              { id: "activity" as const, label: "Activity",  icon: <TrendingUp size={11} /> },
+              { id: "inbox"    as const, label: "Inbox",     icon: <Inbox size={11} /> },
+              { id: "channels" as const, label: "Channels",  icon: <Settings2 size={11} /> },
+            ] satisfies { id: DetailTab; label: string; icon: React.ReactNode }[]
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-1 py-1.5 font-medium transition-colors",
+                activeTab === tab.id
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-background text-muted-foreground hover:bg-muted"
+              )}
+            >
+              {tab.icon}
+              {tab.label}
+            </button>
+          ))}
         </div>
+
+        {/* ── Tab: Activity ──────────────────────────────────────────────────── */}
+        {activeTab === "activity" && (
+          <div>
+            {actLoading ? (
+              <p className="text-[11px] text-muted-foreground">Loading…</p>
+            ) : activities.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">No recorded ISA activities.</p>
+            ) : (
+              <div className="space-y-2">
+                {activities.map(act => (
+                  <div key={act.id} className="flex gap-2 text-[11px]">
+                    <span className="shrink-0 w-4 text-center">{activityIcon(act.activity_type)}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-foreground capitalize">
+                        {act.activity_type}
+                        {act.channel && <span className="text-muted-foreground font-normal"> · {act.channel}</span>}
+                      </p>
+                      {act.notes && (
+                        <p className="text-muted-foreground truncate">{act.notes}</p>
+                      )}
+                      <p className="text-muted-foreground text-[10px]">
+                        {new Date(act.created_at).toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      </p>
+                    </div>
+                    {act.status && (
+                      <span className={cn(
+                        "shrink-0 text-[9px] px-1 py-0.5 rounded-full font-medium capitalize h-fit",
+                        act.status === "completed" ? "bg-green-100 text-green-700" :
+                        act.status === "failed"    ? "bg-red-100 text-red-700" :
+                                                     "bg-muted text-muted-foreground"
+                      )}>
+                        {act.status}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Tab: Unified Inbox ─────────────────────────────────────────────── */}
+        {activeTab === "inbox" && (
+          <UnifiedInboxTab contactId={contact.id} variant="compact" />
+        )}
+
+        {/* ── Tab: Channel Controls ──────────────────────────────────────────── */}
+        {activeTab === "channels" && (
+          <>
+            {/* Call stop indicator at-a-glance */}
+            {contact.call_stop_flag && (
+              <div className="flex items-center gap-1.5 text-[11px] text-destructive bg-destructive/5 border border-destructive/20 rounded-lg px-2.5 py-2">
+                <PhoneOff size={12} className="shrink-0" />
+                <span>Calls are currently <strong>stopped</strong> for this contact.</span>
+              </div>
+            )}
+            <ContactChannelControls
+              contactId={contact.id}
+              initialPreferredChannel={contact.preferred_channel}
+              initialSocialHandles={contact.social_handles}
+              initialCallStopFlag={contact.call_stop_flag ?? false}
+            />
+          </>
+        )}
 
         {/* View profile link */}
         <a
           href={`/contacts/${contact.id}`}
-          className="block text-center text-xs text-primary hover:underline pt-1"
+          className="block text-center text-xs text-primary hover:underline pt-1 pb-1"
         >
           View full profile
         </a>

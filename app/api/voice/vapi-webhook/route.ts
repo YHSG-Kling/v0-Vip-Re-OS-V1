@@ -91,20 +91,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (direction === "inbound" && phoneFrom && brokerageId) {
       const digits = normalizePhone(phoneFrom)
 
-      // Resolve contact (prefer exact match, then leads)
+      // Resolve contact (prefer exact match, then leads) — include call_stop_flag
       const { data: contact } = await supabase
         .from("contacts")
-        .select("id, tcpa_consent, dnc_status, status, isa_reengage_allowed")
+        .select("id, tcpa_consent, dnc_status, status, isa_reengage_allowed, call_stop_flag")
         .eq("phone_digits", digits)
         .maybeSingle()
 
       if (contact) {
         const blocked =
+          contact.call_stop_flag ||
           contact.dnc_status ||
           !contact.tcpa_consent ||
           (RESTRICTED_STATES.has(contact.status ?? "") && !contact.isa_reengage_allowed)
 
         const violations: string[] = []
+        if (contact.call_stop_flag) violations.push("CallStop: Contact has requested no calls")
         if (contact.dnc_status) violations.push("TCPA: On Do Not Contact list")
         if (!contact.tcpa_consent) violations.push("TCPA: No phone consent on file")
         if (RESTRICTED_STATES.has(contact.status ?? "") && !contact.isa_reengage_allowed)

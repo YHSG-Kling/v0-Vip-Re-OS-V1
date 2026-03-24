@@ -42,10 +42,10 @@ export async function initiateVoiceCall(
   try {
     const supabase = createServiceClient()
 
-    // Validate contact exists
+    // Validate contact exists and check call stop flag
     const { data: contact, error: contactError } = await supabase
       .from('contacts')
-      .select('id, brokerage_id, phone')
+      .select('id, brokerage_id, phone, call_stop_flag, dnc_status')
       .eq('id', metadata.contactId)
       .single()
 
@@ -53,6 +53,23 @@ export async function initiateVoiceCall(
       return {
         success: false,
         error: 'Contact not found',
+      }
+    }
+
+    // Hard stop: call_stop_flag blocks all outbound calls (inbound + outbound)
+    if (contact.call_stop_flag === true) {
+      return {
+        success: false,
+        error:
+          'Call blocked — contact has requested no calls (call_stop_flag). Remove the flag in the contact record to resume calling.',
+      }
+    }
+
+    // Hard stop: DNC blocks all outbound
+    if (contact.dnc_status === true) {
+      return {
+        success: false,
+        error: 'Call blocked — contact is on the Do Not Contact list.',
       }
     }
 
