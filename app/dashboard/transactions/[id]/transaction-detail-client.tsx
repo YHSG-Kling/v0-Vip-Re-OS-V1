@@ -473,16 +473,33 @@ export function TransactionDetailClient({
     notes: string | null
   }>>([])
 
+  const [complianceTasks, setComplianceTasks] = useState<Array<{
+    id: string
+    task_type: string
+    description: string
+    due_date: string | null
+    status: string
+    completed_at: string | null
+    completed_by: string | null
+  }>>([])
+
   useEffect(() => {
     const supabase = createClient()
-    supabase
-      .from("deposits")
-      .select("id, deposit_type, amount, received_date, due_date, escrow_company, check_number, status, delivered_to_escrow_at, notes")
-      .eq("transaction_id", transaction.id)
-      .order("received_date", { ascending: false })
-      .then(({ data }) => {
-        if (data) setDeposits(data)
-      })
+    Promise.all([
+      supabase
+        .from("deposits")
+        .select("id, deposit_type, amount, received_date, due_date, escrow_company, check_number, status, delivered_to_escrow_at, notes")
+        .eq("transaction_id", transaction.id)
+        .order("received_date", { ascending: false }),
+      supabase
+        .from("compliance_tasks")
+        .select("id, task_type, description, due_date, status, completed_at, completed_by")
+        .eq("transaction_id", transaction.id)
+        .order("due_date", { ascending: true }),
+    ]).then(([depositsResult, complianceResult]) => {
+      if (depositsResult.data) setDeposits(depositsResult.data)
+      if (complianceResult.data) setComplianceTasks(complianceResult.data)
+    })
   }, [transaction.id])
   const [docChecklist, setDocChecklist] = useState<any[]>([])
   const [checklistLoading, setChecklistLoading] = useState(false)
@@ -1372,10 +1389,19 @@ export function TransactionDetailClient({
               </TabsTrigger>
               <TabsTrigger value="deposits" className="text-xs">
                 <Landmark className="h-3 w-3 mr-1" />
-                Deposits
-                {deposits.some(d => d.status === "received" && d.due_date && new Date(d.due_date) < new Date()) && (
-                  <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-red-500" />
-                )}
+                Deposits &amp; Compliance
+                {(() => {
+                  const overdueCount = complianceTasks.filter(
+                    t => t.status === "pending" && t.due_date && new Date(t.due_date) < new Date()
+                  ).length
+                  return overdueCount > 0 ? (
+                    <Badge variant="destructive" className="ml-1 h-4 px-1 text-xs">
+                      {overdueCount}
+                    </Badge>
+                  ) : deposits.some(d => d.status === "received" && d.due_date && new Date(d.due_date) < new Date()) ? (
+                    <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-red-500" />
+                  ) : null
+                })()}
               </TabsTrigger>
               <TabsTrigger value="inspection" className="text-xs">
                 <Shield className="h-3 w-3 mr-1" />
@@ -1729,6 +1755,104 @@ export function TransactionDetailClient({
                       })}
                     </div>
                   )}
+
+                  {/* Compliance Tasks */}
+                  <div className="mt-6 border-t pt-4">
+                    <h4 className="text-sm font-semibold flex items-center gap-2 mb-3">
+                      <ClipboardList className="h-4 w-4" />
+                      Compliance Tasks
+                    </h4>
+                    {complianceTasks.length === 0 ? (
+                      <p className="text-sm text-muted-foreground py-3">No compliance tasks yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {complianceTasks.map((task) => {
+                          const isOverdue =
+                            task.status === "pending" &&
+                            task.due_date != null &&
+                            new Date(task.due_date) < new Date()
+                          return (
+                            <div
+                              key={task.id}
+                              className={cn(
+                                "rounded border p-3 flex items-start justify-between text-sm",
+                                isOverdue
+                                  ? "border-red-200 bg-red-50"
+                                  : task.status === "complete"
+                                  ? "border-green-200 bg-green-50 opacity-70"
+                                  : "border-gray-200 bg-white"
+                              )}
+                            >
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium">{task.description}</p>
+                                <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground">
+                                  <span className="capitalize">{task.task_type.replace(/_/g, " ")}</span>
+                                  {task.due_date && (
+                                    <span>· Due {format(new Date(task.due_date), "MMM d, yyyy")}</span>
+                                  )}
+                                </div>
+                                {isOverdue && (
+                                  <p className="text-xs text-red-700 font-semibold mt-1">Overdue</p>
+                                )}
+                                {task.status === "complete" && task.completed_at && (
+                                  <p className="text-xs text-green-700 mt-1">
+                                    Completed {format(new Date(task.completed_at), "MMM d")}
+                                  </p>
+                                )}
+                              </div>
+                              {task.status === "pending" && (
+                                <div className="flex gap-1.5 ml-3 shrink-0">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={async () => {
+                                      const supabase = createClient()
+                                      const now = new Date().toISOString()
+                                      await supabase
+                                        .from("compliance_tasks")
+                                        .update({ status: "complete", completed_at: now, completed_by: userId })
+                                        .eq("id", task.id)
+                                      setComplianceTasks((prev) =>
+                                        prev.map((t) =>
+                                          t.id === task.id
+                                            ? { ...t, status: "complete", completed_at: now }
+                                            : t
+                                        )
+                                      )
+                                      toast.success("Task completed")
+                                    }}
+                                  >
+                                    Done
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 text-xs"
+                                    onClick={async () => {
+                                      const supabase = createClient()
+                                      await supabase
+                                        .from("compliance_tasks")
+                                        .update({ status: "waived" })
+                                        .eq("id", task.id)
+                                      setComplianceTasks((prev) =>
+                                        prev.map((t) =>
+                                          t.id === task.id ? { ...t, status: "waived" } : t
+                                        )
+                                      )
+                                      toast.success("Task waived")
+                                    }}
+                                  >
+                                    Waive
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>
