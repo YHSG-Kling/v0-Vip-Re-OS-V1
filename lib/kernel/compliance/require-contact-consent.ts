@@ -1,5 +1,3 @@
-'use server'
-
 /**
  * lib/kernel/compliance/require-contact-consent.ts
  * ─────────────────────────────────────────────────────────────────────────────
@@ -69,7 +67,7 @@ export async function persistContactConsent(params: PersistConsentParams): Promi
         tcpa_consent_ip:     params.ipAddress ?? null,
         updated_at:          now,
       })
-      .eq('contact_id', params.contactId)
+      .eq('id', params.contactId)
   }
 
   // 3. Always insert a consent event for audit trail
