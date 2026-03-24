@@ -182,7 +182,7 @@ export default function UnifiedInboxTab({
     // 1. Messages (all channels)
     const { data: msgs } = await supabase
       .from("messages")
-      .select("id, type, channel, direction, subject, body, status, created_at")
+      .select("id, type, direction, subject, body, status, created_at")
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(50)
@@ -209,7 +209,7 @@ export default function UnifiedInboxTab({
       timeline.push({
         id: `msg-${m.id}`,
         source: "message",
-        channel: (m.channel ?? m.type ?? "email") as Channel,
+        channel: (m.type ?? "email") as Channel,
         direction: (m.direction ?? "outbound") as Direction,
         subject: m.subject ?? undefined,
         body: m.body?.slice(0, 180) ?? undefined,

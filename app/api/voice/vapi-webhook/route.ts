@@ -411,13 +411,13 @@ async function schedulePostCallFollowUp(params: {
       agent_id: agentId,
       activity_type: smsSent ? "sms_sent" : "email_sent",
       description: `Post-call AI follow-up: ${followUpMessage.slice(0, 100)}`,
-      metadata: {
+      notes: JSON.stringify({
         source: "vapi_post_call_followup",
         voice_call_id: params.voiceCallId,
         intent_primary: intentPrimary,
         urgency_score: urgencyScore,
         channel: smsSent ? "sms" : "email",
-      },
+      }),
     })
   }
 }

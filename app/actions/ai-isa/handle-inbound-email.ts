@@ -178,16 +178,14 @@ export async function processInboundEmail(params: {
     contact_id: params.leadId,
     conversation_id: params.conversationId ?? null,
     type: 'email',
-    channel: 'email',
     direction: 'inbound',
     subject: params.subject,
     body: params.body,
     status: 'received',
-    brokerage_id: lead.brokerage_id,
     created_at: new Date().toISOString(),
   })
 
-  // ── Send reply via kernel dispatch ────────────────────────────────────────
+  // ── Send reply via kernel dispatch ───────────────────────��────────────────
   const sendResult = await dispatchEmail({
     brokerageId: lead.brokerage_id,
     to: lead.email,
@@ -207,13 +205,10 @@ export async function processInboundEmail(params: {
     contact_id: params.leadId,
     conversation_id: params.conversationId ?? null,
     type: 'email',
-    channel: 'email',
     direction: 'outbound',
     subject: params.subject.startsWith('Re:') ? params.subject : `Re: ${params.subject}`,
     body: replyBody,
     status: 'sent',
-    brokerage_id: lead.brokerage_id,
-    provider_key: sendResult.providerKey,
     created_at: new Date().toISOString(),
   })
 
@@ -223,7 +218,7 @@ export async function processInboundEmail(params: {
     brokerage_id: lead.brokerage_id,
     activity_type: 'ai_isa_conversation',
     description: `AI ISA replied to inbound email. Subject: ${params.subject}`,
-    metadata: { provider_key: sendResult.providerKey, source: 'ai_isa_reply', channel: 'email' },
+    notes: JSON.stringify({ provider_key: sendResult.providerKey, source: 'ai_isa_reply', channel: 'email' }),
     created_at: new Date().toISOString(),
   })
 

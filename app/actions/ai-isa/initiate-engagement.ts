@@ -308,12 +308,10 @@ async function dispatchToChannel(
     await supabase.from('messages').insert({
       contact_id: leadId,
       type: 'email',
-      channel: 'email',
       direction: 'outbound',
       subject,
       body: finalEmailBody.replace(/<[^>]+>/g, '').substring(0, 1000),
       status: 'sent',
-      brokerage_id: lead.brokerage_id,
       created_at: new Date().toISOString(),
     })
 
@@ -378,11 +376,9 @@ async function dispatchToChannel(
     await supabase.from('messages').insert({
       contact_id: leadId,
       type: 'sms',
-      channel: 'sms',
       direction: 'outbound',
       body: smsBody,
       status: 'sent',
-      brokerage_id: lead.brokerage_id,
       created_at: new Date().toISOString(),
     })
 
@@ -415,11 +411,9 @@ async function dispatchToChannel(
     await supabase.from('messages').insert({
       contact_id: leadId,
       type: 'direct_mail',
-      channel: 'direct_mail',
       direction: 'outbound',
-      body: `Direct mail campaign initiated`,
+      body: 'Direct mail campaign initiated',
       status: 'queued',
-      brokerage_id: lead.brokerage_id,
       created_at: new Date().toISOString(),
     })
 
@@ -432,25 +426,24 @@ async function dispatchToChannel(
       contactRow?.social_handles?.[channel] ?? null
 
     // Log to messages as "queued" — agent notified to send manually if no API
+    const socialBody = [
+      `Hi ${lead.first_name ?? 'there'}!`,
+      brandVoice.tagline ? brandVoice.tagline : '',
+      lead.motivation_type
+        ? `I see you may be interested in ${lead.motivation_type.replace(/_/g, ' ')}.`
+        : '',
+      'Would love to connect about your real estate goals.',
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .slice(0, 500)
+
     await supabase.from('messages').insert({
       contact_id: leadId,
       type: 'social',
-      channel,
       direction: 'outbound',
-      body: [
-        `Hi ${lead.first_name ?? 'there'}!`,
-        brandVoice.tagline ? brandVoice.tagline : '',
-        lead.motivation_type
-          ? `I see you may be interested in ${lead.motivation_type.replace(/_/g, ' ')}.`
-          : '',
-        'Would love to connect about your real estate goals.',
-      ]
-        .filter(Boolean)
-        .join(' ')
-        .slice(0, 500),
+      body: socialBody,
       status: socialHandle ? 'queued' : 'pending_manual',
-      metadata: { social_handle: socialHandle, platform: channel },
-      brokerage_id: lead.brokerage_id,
       created_at: new Date().toISOString(),
     })
 
@@ -468,8 +461,6 @@ async function dispatchToChannel(
         type: 'action_required',
         title: `Social outreach needed — ${channel}`,
         body: `AI ISA cannot send ${channel} to ${lead.first_name ?? 'lead'} — no handle on file. Please send manually.`,
-        entity_type: 'lead',
-        entity_id: leadId,
         created_at: new Date().toISOString(),
       })
     }
