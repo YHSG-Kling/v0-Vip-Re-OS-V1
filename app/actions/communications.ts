@@ -21,6 +21,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
 import { supabaseService } from "@/services/supabaseService"
+import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 
 // =====================================================
 // SEND SMS (via kernel dispatch — Twilio or GHL based on provider resolution)
@@ -47,6 +48,17 @@ export async function sendSMS(params: {
 
   if (!contact.phone) {
     return { success: false, error: "Contact has no phone number" }
+  }
+
+  // Suppression check — hard stop before dispatch
+  const suppression = await checkSuppression({
+    brokerageId: contact.brokerage_id,
+    contactId: params.contactId,
+    channel: "sms",
+    phone: contact.phone,
+  })
+  if (suppression.suppressed) {
+    return { success: false, error: `SMS suppressed: ${suppression.reason}`, suppressed: true }
   }
 
   const result = await dispatchSms({
@@ -104,6 +116,17 @@ export async function sendEmail(params: {
 
   if (!contact.email) {
     return { success: false, error: "Contact has no email address" }
+  }
+
+  // Suppression check — hard stop before dispatch
+  const suppression = await checkSuppression({
+    brokerageId: contact.brokerage_id,
+    contactId: params.contactId,
+    channel: "email",
+    email: contact.email,
+  })
+  if (suppression.suppressed) {
+    return { success: false, error: `Email suppressed: ${suppression.reason}`, suppressed: true }
   }
 
   const result = await dispatchEmail({

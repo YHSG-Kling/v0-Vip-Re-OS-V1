@@ -12,12 +12,19 @@ export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const body = await req.json() as { slug: string; data: Record<string, unknown> }
-    const { slug, data } = body
+    const body = await req.json() as { slug: string; data: Record<string, unknown>; tcpaConsent?: boolean; tcpaConsentText?: string }
+    const { slug, data, tcpaConsent, tcpaConsentText } = body
 
     if (!slug || !data) {
       return NextResponse.json({ success: false, error: 'Missing slug or data' }, { status: 400 })
     }
+
+    if (!tcpaConsent) {
+      return NextResponse.json({ success: false, error: 'TCPA consent is required' }, { status: 400 })
+    }
+
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
+    const userAgent = req.headers.get('user-agent') ?? null
 
     const supabase = createServiceClient()
 
@@ -32,9 +39,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     if (formError || !form) {
       return NextResponse.json({ success: false, error: 'Form not found' }, { status: 404 })
     }
-
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
-    const userAgent = req.headers.get('user-agent') ?? null
 
     // ── Step 2: Insert form_submissions ───────────────────────────────────────
     const { data: submission, error: submissionError } = await supabase
@@ -78,6 +82,19 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       tcpa_consent_date: new Date().toISOString(),
       rawPayload: data,
     })
+
+    // ── Persist consent audit event ────────────────────────────────────────
+    const { persistContactConsent } = await import('@/lib/kernel/compliance/require-contact-consent')
+    await persistContactConsent({
+      brokerageId: form.brokerage_id,
+      agentId: form.agent_id ?? null,
+      contactId,
+      consentText: tcpaConsentText ?? `Form consent given on ${form.slug}`,
+      consentSource: `/forms/${slug}`,
+      consented: true,
+      ipAddress: ip,
+      userAgent: userAgent,
+    }).catch(() => {})
 
     // ── Step 6: Link submission to contact ────────────────────────────────────
     await supabase

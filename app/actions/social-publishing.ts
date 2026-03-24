@@ -2,6 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
 
 // =====================================================
 // EVENT HANDLERS - Called by orchestrator
@@ -228,7 +229,50 @@ export async function createSocialPost(params: {
   const effectiveUserId = params.userId || "system"
 
   // Get user's brokerage
-  const { data: userData } = await supabase.from("users").select("brokerage_id").eq("id", effectiveUserId).single()
+  const { data: userData } = await supabase.from("users").select("brokerage_id, user_type").eq("id", effectiveUserId).single()
+
+  // Compliance gate — hard stop if content violates real-estate rules
+  const gate = await runComplianceGate({
+    content: params.content,
+    brokerageId: userData?.brokerage_id ?? null,
+    authorUserId: effectiveUserId,
+    contentType: (params.contentType as any) ?? "social_post",
+    platforms: params.platforms,
+  })
+
+  if (!gate.passed) {
+    // Record the violation on the draft post for review
+    const { data: draftPost } = await supabase
+      .from("social_posts")
+      .insert({
+        user_id: effectiveUserId,
+        brokerage_id: userData?.brokerage_id,
+        content: params.content,
+        media_urls: params.mediaUrls,
+        media_types: params.mediaTypes,
+        hashtags: params.hashtags,
+        scheduled_for: params.scheduledFor,
+        platforms: params.platforms,
+        content_type: params.contentType,
+        linked_listing_id: params.linkedListingId,
+        generated_by_ai: params.generatedByAi || false,
+        ai_prompt: params.aiPrompt,
+        status: "compliance_review",
+        brand_compliance_passed: false,
+        approval_status: "pending",
+      })
+      .select("id")
+      .single()
+
+    revalidatePath("/content-studio")
+    return {
+      success: false,
+      complianceBlocked: true,
+      violations: gate.violations,
+      draftPostId: draftPost?.id ?? null,
+      message: `Content held for compliance review: ${gate.violations.map((v) => v.rule).join(", ")}`,
+    }
+  }
 
   const { data, error } = await supabase
     .from("social_posts")
@@ -246,6 +290,8 @@ export async function createSocialPost(params: {
       generated_by_ai: params.generatedByAi || false,
       ai_prompt: params.aiPrompt,
       status: "scheduled",
+      brand_compliance_passed: true,
+      approval_status: gate.requiresHumanReview ? "pending" : "approved",
     })
     .select()
     .single()

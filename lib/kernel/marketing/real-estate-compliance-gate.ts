@@ -93,6 +93,60 @@ interface GateParams {
   requireAttribution?: boolean
 }
 
+/** Orchestrator-facing params used by createSocialPost and similar callers */
+export interface RunComplianceGateParams {
+  content: string
+  brokerageId: string | null
+  authorUserId: string
+  contentType: 'social_post' | 'ad' | 'listing_remarks' | 'comment_reply' | 'newsletter' | 'blog'
+  platforms?: string[]
+}
+
+/** Orchestrator-facing result — enriches ComplianceGateResult with action fields */
+export interface RunComplianceGateResult {
+  passed: boolean
+  violations: Array<{ rule: string; severity: 'blocker' | 'warning'; detail: string }>
+  requiresHumanReview: boolean
+}
+
+/**
+ * Entry point for server-action callers.
+ * Resolves brokerage name from DB then delegates to realEstateComplianceGate.
+ */
+export async function runComplianceGate(
+  params: RunComplianceGateParams
+): Promise<RunComplianceGateResult> {
+  let brokerageName: string | undefined
+  if (params.brokerageId) {
+    const { createServiceClient } = await import('@/lib/supabase/service')
+    const supabase = createServiceClient()
+    const { data } = await supabase
+      .from('brokerages')
+      .select('name')
+      .eq('id', params.brokerageId)
+      .maybeSingle()
+    brokerageName = data?.name ?? undefined
+  }
+
+  const result = await realEstateComplianceGate({
+    content: params.content,
+    contentType: params.contentType,
+    brokerageName,
+    requireAttribution: params.contentType === 'ad' || params.contentType === 'social_post',
+  })
+
+  const violations: RunComplianceGateResult['violations'] = [
+    ...result.blockers.map((b) => ({ rule: 'blocker', severity: 'blocker' as const, detail: b })),
+    ...result.warnings.map((w) => ({ rule: 'warning', severity: 'warning' as const, detail: w })),
+  ]
+
+  return {
+    passed: result.passed,
+    violations,
+    requiresHumanReview: result.warnings.length > 0,
+  }
+}
+
 export async function realEstateComplianceGate(params: GateParams): Promise<ComplianceGateResult> {
   const blockers: string[] = []
   const warnings: string[] = []

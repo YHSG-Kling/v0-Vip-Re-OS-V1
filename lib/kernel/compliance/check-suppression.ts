@@ -25,7 +25,7 @@ export interface CheckSuppressionParams {
 }
 
 export interface SuppressionResult {
-  blocked: boolean
+  suppressed: boolean
   reason?: string
 }
 
@@ -41,23 +41,23 @@ export async function checkSuppression(
       .select(
         'email_unsubscribed, email_opt_out, sms_unsubscribed, sms_opt_out, dnc_status, call_stop_flag'
       )
-      .eq('contact_id', params.contactId)
+      .eq('id', params.contactId)
       .maybeSingle()
 
     if (contact) {
       if (params.channel === 'email') {
         if (contact.email_unsubscribed || contact.email_opt_out) {
-          return { blocked: true, reason: 'Contact has unsubscribed from email' }
+          return { suppressed: true, reason: 'Contact has unsubscribed from email' }
         }
       }
       if (params.channel === 'sms') {
         if (contact.sms_unsubscribed || contact.sms_opt_out) {
-          return { blocked: true, reason: 'Contact has opted out of SMS' }
+          return { suppressed: true, reason: 'Contact has opted out of SMS' }
         }
       }
       if (params.channel === 'phone') {
         if (contact.dnc_status || contact.call_stop_flag) {
-          return { blocked: true, reason: 'Contact is on DNC / call stop list' }
+          return { suppressed: true, reason: 'Contact is on DNC / call stop list' }
         }
       }
     }
@@ -85,13 +85,13 @@ export async function checkSuppression(
 
     if (suppressionRows && suppressionRows.length > 0) {
       return {
-        blocked: true,
+        suppressed: true,
         reason: `Suppressed: ${suppressionRows[0].suppression_reason}`,
       }
     }
   }
 
-  return { blocked: false }
+  return { suppressed: false }
 }
 
 /**
@@ -142,7 +142,7 @@ export async function addSuppression(params: {
     await supabase
       .from('contacts')
       .update(updates)
-      .eq('contact_id', params.contactId)
+      .eq('id', params.contactId)
   }
 
   // Also insert consent event for audit

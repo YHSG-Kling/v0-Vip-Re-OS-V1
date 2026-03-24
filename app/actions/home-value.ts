@@ -28,6 +28,9 @@ interface HomeValueFormData {
   agentSlug?: string
   brokerageId?: string
   utmSource?: string
+  /** Caller MUST pass true — form must show and require TCPA checkbox */
+  tcpaConsent: boolean
+  tcpaConsentText?: string
   qualificationData?: {
     sellTimeline?: string
     motivation?: string
@@ -163,11 +166,17 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       lastName,
       email,
       phone,
-      agentSlug,
-      brokerageId,
-      utmSource,
-      qualificationData,
-    } = formData
+    agentSlug,
+    brokerageId,
+    utmSource,
+    tcpaConsent,
+    tcpaConsentText,
+    qualificationData,
+  } = formData
+
+  if (!tcpaConsent) {
+    return { success: false, error: "TCPA consent is required before we can contact you." }
+  }
 
     // Step 1: Resolve agent from slug if provided, else get default brokerage agent
     let resolvedAgentId: string | null = null
@@ -216,6 +225,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
 
     // Step 3: If no match, INSERT new contact FIRST
     if (!existingContact) {
+      const consentNow = new Date().toISOString()
       const { data: newContact, error: contactError } = await supabase
         .from("contacts")
         .insert({
@@ -229,6 +239,11 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
           buyer_stage: "BUYER_CONTACT_CREATED",
           agent_id: resolvedAgentId,
           brokerage_id: resolvedBrokerageId,
+          tcpa_consent: true,
+          tcpa_consent_at: consentNow,
+          tcpa_consent_date: consentNow,
+          tcpa_consent_text: tcpaConsentText ?? null,
+          tcpa_consent_source: "home_value_tool",
         })
         .select("id")
         .single()
