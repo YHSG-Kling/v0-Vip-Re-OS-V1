@@ -61,6 +61,8 @@ export default async function AgentFinancialsPage() {
     currentBilling,
     existingBudget,
     pipelineTransactions,
+    commissionProfile,
+    capTracking,
   ] = await Promise.all([
     // Agent profile for cap info
     supabase
@@ -210,6 +212,27 @@ export default async function AgentFinancialsPage() {
       .order("created_at", { ascending: false })
       .limit(20)
       .then((r) => r.data || []),
+
+    // Active commission profile for this agent
+    supabase
+      .from("agent_commission_profiles")
+      .select("split_percent, cap_amount, transaction_fee_value, transaction_fee_type, structure_type, desk_fee_value, royalty_percent, is_active")
+      .eq("agent_id", agentId)
+      .eq("is_active", true)
+      .order("effective_date", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then((r) => r.data),
+
+    // Current anniversary cap tracking record
+    supabase
+      .from("agent_cap_tracking")
+      .select("cap_amount, cap_paid_to_date, is_capped, anniversary_start, anniversary_end")
+      .eq("agent_id", agentId)
+      .order("anniversary_start", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then((r) => r.data),
   ])
 
   // Process earnings history to include property address
@@ -349,6 +372,8 @@ export default async function AgentFinancialsPage() {
         currentBilling={currentBilling ?? null}
         existingBudget={existingBudget ?? null}
         pipelineTransactions={(pipelineTransactions as any[]) ?? []}
+        commissionProfile={commissionProfile ?? null}
+        capTracking={capTracking ?? null}
       >
         {/* Financial Command Strip */}
         <FinancialCommandStrip
@@ -370,12 +395,15 @@ export default async function AgentFinancialsPage() {
         ytdTransactionCount={ytdTransactionCount}
       />
 
-      {/* Section 2: Cap Progress */}
+      {/* Section 2: Cap Progress — prefers agent_cap_tracking, falls back to agents table */}
       <CapProgressBar
-        capAmount={agentData?.cap_amount || null}
-        capProgress={agentData?.cap_progress || 0}
+        capAmount={capTracking?.cap_amount ?? agentData?.cap_amount ?? null}
+        capProgress={capTracking?.cap_paid_to_date ?? agentData?.cap_progress ?? 0}
         capProgressPct={ytdEarnings?.cap_progress_pct || 0}
         bonusCredits={bonusCredits}
+        isCapped={capTracking?.is_capped ?? false}
+        anniversaryStart={capTracking?.anniversary_start ?? undefined}
+        anniversaryEnd={capTracking?.anniversary_end ?? undefined}
       />
 
       {/* Section 3: Commission Breakdown Table */}

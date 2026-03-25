@@ -39,18 +39,30 @@ interface CommissionBreakdown {
 interface CommissionCalculatorCardProps {
   agentId: string
   pendingTransactions: PipelineTransaction[]
+  /** Pre-fill from agent_commission_profiles.split_percent */
+  defaultSplitPercent?: number
+  /** Pre-fill from agent_commission_profiles.transaction_fee_value */
+  defaultTransactionFee?: number
+  /** Display badge e.g. "graduated", "cap_based", "flat" */
+  structureType?: string
 }
 
 const fmt = (n: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
 
-export function CommissionCalculatorCard({ agentId, pendingTransactions }: CommissionCalculatorCardProps) {
+export function CommissionCalculatorCard({
+  agentId,
+  pendingTransactions,
+  defaultSplitPercent = 70,
+  defaultTransactionFee = 0,
+  structureType,
+}: CommissionCalculatorCardProps) {
   const [form, setForm] = useState({
     transactionId: "",
     salePrice: "",
     commissionRate: "3",
-    agentSplitPct: "70",
-    brokerageFee: "0",
+    agentSplitPct: String(defaultSplitPercent),
+    brokerageFee: String(defaultTransactionFee),
   })
   const [breakdown, setBreakdown] = useState<CommissionBreakdown | null>(null)
   const [isPending, startTransition] = useTransition()

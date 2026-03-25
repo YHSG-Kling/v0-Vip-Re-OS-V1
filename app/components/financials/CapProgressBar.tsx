@@ -10,6 +10,12 @@ interface CapProgressBarProps {
   capProgress: number
   capProgressPct: number
   bonusCredits: number
+  /** From agent_cap_tracking.is_capped */
+  isCapped?: boolean
+  /** ISO date string — from agent_cap_tracking.anniversary_start */
+  anniversaryStart?: string
+  /** ISO date string — from agent_cap_tracking.anniversary_end */
+  anniversaryEnd?: string
 }
 
 export function CapProgressBar({
@@ -17,6 +23,9 @@ export function CapProgressBar({
   capProgress,
   capProgressPct,
   bonusCredits,
+  isCapped = false,
+  anniversaryStart,
+  anniversaryEnd,
 }: CapProgressBarProps) {
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("en-US", {
@@ -27,10 +36,10 @@ export function CapProgressBar({
     }).format(amount)
   }
 
-  // Determine cap status
+  // Determine cap status — agent_cap_tracking.is_capped is authoritative
   const getCapStatus = () => {
     if (!capAmount) return { label: "No Cap", variant: "secondary" as const, color: "text-muted-foreground" }
-    if (capProgressPct >= 100) return { label: "Cap Hit!", variant: "default" as const, color: "text-green-600" }
+    if (isCapped || capProgressPct >= 100) return { label: "Cap Hit!", variant: "default" as const, color: "text-green-600" }
     if (capProgressPct >= 80) return { label: "Near Cap", variant: "outline" as const, color: "text-amber-600" }
     return { label: "Below Cap", variant: "secondary" as const, color: "text-muted-foreground" }
   }
