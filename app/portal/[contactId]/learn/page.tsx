@@ -113,6 +113,8 @@ export default async function LearnPage({ params }: LearnPageProps) {
         <LearnClient
           contactId={contactId}
           initialFeed={feed}
+          agentId={contact.agent_id ?? null}
+          contactFirstName={contact.first_name ?? null}
         />
       </Suspense>
     </div>

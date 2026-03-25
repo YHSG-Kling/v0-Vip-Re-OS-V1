@@ -1189,6 +1189,56 @@ export default function PersonaPropertiesDashboard({
         {/* Saved Homes Tab */}
         {tabConfig.tabs.includes("saved") && (
           <TabsContent value="saved" className="space-y-6">
+
+            {/* AI Picks for You — shown above saved list when recommendations exist */}
+            {recommendedProperties.length > 0 && (
+              <section className="mb-2">
+                <div className="flex items-center gap-2 mb-4">
+                  <Sparkles className="h-5 w-5 text-primary" />
+                  <h2 className="text-base font-semibold">AI Picks for You</h2>
+                  <Badge className="bg-primary/10 text-primary text-xs border-0">Personalized</Badge>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {recommendedProperties.map((prop: any) => (
+                    <div key={prop.id} className="rounded-xl border border-border overflow-hidden hover:shadow-md transition-shadow bg-card">
+                      <div className="aspect-[4/3] bg-muted relative">
+                        {prop.primary_image_url ? (
+                          <img src={prop.primary_image_url} alt={prop.address ?? "Property"} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Home className="h-10 w-10 text-muted-foreground" />
+                          </div>
+                        )}
+                        <div className="absolute top-2 left-2">
+                          <Badge className="bg-primary text-primary-foreground text-xs">AI Pick</Badge>
+                        </div>
+                      </div>
+                      <div className="p-4">
+                        <p className="font-semibold truncate">{prop.address}</p>
+                        <p className="text-xl font-bold text-primary">
+                          ${prop.list_price?.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {prop.bedrooms}bd &middot; {prop.bathrooms}ba
+                          {prop.sqft ? ` · ${prop.sqft.toLocaleString()} sqft` : ""}
+                        </p>
+                        {prop.match_reason && (
+                          <p className="text-xs text-primary mt-2 font-medium border-l-2 border-primary/40 pl-2">
+                            {prop.match_reason}
+                          </p>
+                        )}
+                        <div className="flex gap-2 mt-3">
+                          <Button size="sm" className="flex-1 text-xs" asChild>
+                            <Link href={`/portal/${contactId}/properties/${prop.id}`}>View</Link>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {savedProperties.length > 0 ? (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {savedProperties.map((property: any) => (

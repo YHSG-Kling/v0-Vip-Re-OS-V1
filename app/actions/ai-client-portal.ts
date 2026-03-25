@@ -96,9 +96,11 @@ export async function getRecommendedProperties(params: {
 }
 
 // Mark education resource as completed
+// Schema: contact_education_progress uses lesson_key (not resource_id)
 export async function markResourceCompleted(params: {
   contactId: string
   resourceId: string
+  completionData?: Record<string, unknown>
 }) {
   const supabase = await createClient()
   
@@ -107,9 +109,9 @@ export async function markResourceCompleted(params: {
       .from("contact_education_progress")
       .upsert({
         contact_id: params.contactId,
-        resource_id: params.resourceId,
+        lesson_key: params.resourceId,
         completed_at: new Date().toISOString(),
-      })
+      }, { onConflict: "contact_id,lesson_key" })
 
     if (error) throw error
 

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import PersonaPropertiesDashboard from "@/app/components/portal/PersonaPropertiesDashboard"
 import { getPersonaConfig } from "@/lib/portal"
 import { determinePortalView } from "@/lib/kernel/portal"
+import { getRecommendedProperties } from "@/app/actions/ai-client-portal"
 
 export default async function PropertiesPage({ params }: { params: Promise<{ contactId: string }> }) {
   const { contactId } = await params
@@ -161,10 +162,12 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     sellerListing = listing ?? null
   }
 
-  // recommendedProperties kept as empty array — buyers use smart searches,
-  // sellers use their own listing. The listings table is not surfaced directly
-  // to buyers in the portal per kernel OS specification.
-  const recommendedProperties: never[] = []
+  // Load AI-recommended properties for buyers only — uses buyer preferences
+  // and budget from contacts table to surface matched active listings.
+  const recommendedResult = portalView === "buyer"
+    ? await getRecommendedProperties({ contactId, limit: 6 }).catch(() => ({ success: false, properties: [] }))
+    : { success: false, properties: [] }
+  const recommendedProperties = recommendedResult.properties ?? []
 
   // Parse custom_fields
   const customFields = typeof contact.custom_fields === "string" 
