@@ -604,38 +604,61 @@ export function CreateSubscriberModal({ tiers, onCreated }: CreateSubscriberModa
                 <div>
                   <h2 className="text-xl font-bold text-foreground">Subscriber Created</h2>
                   <p className="text-sm text-muted-foreground mt-1">
-                    Account provisioned and invite sent
+                    Account provisioned successfully
                   </p>
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <div className="flex items-center justify-between rounded-lg border p-3">
+              {/* Spec confirmation items */}
+              <div className="rounded-lg border divide-y">
+                <div className="flex items-start gap-3 p-3">
+                  <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
                   <div>
-                    <p className="text-xs text-muted-foreground">Brokerage ID</p>
-                    <p className="text-sm font-mono">{result.brokerageId}</p>
+                    <p className="text-sm font-medium">Brokerage created</p>
+                    <p className="text-sm text-muted-foreground">{form.brokerageName}</p>
                   </div>
-                  <Button size="sm" variant="ghost" onClick={copyBrokerageId}>
-                    {copied ? (
-                      <Check className="h-4 w-4 text-green-600" />
-                    ) : (
-                      <Copy className="h-4 w-4" />
-                    )}
-                  </Button>
+                  <div className="ml-auto">
+                    <Button size="sm" variant="ghost" onClick={copyBrokerageId} className="h-7 px-2">
+                      {copied ? (
+                        <Check className="h-3.5 w-3.5 text-green-600" />
+                      ) : (
+                        <Copy className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="flex items-start gap-3 p-3">
+                  <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
                   <div>
-                    <p className="text-xs text-muted-foreground">Admin Email</p>
-                    <p className="text-sm">{form.adminEmail}</p>
+                    <p className="text-sm font-medium">Admin invitation sent</p>
+                    <p className="text-sm text-muted-foreground">{form.adminEmail}</p>
                   </div>
-                  <Badge className="bg-green-100 text-green-700 text-xs">Invite sent</Badge>
+                  <Badge className="ml-auto bg-green-100 text-green-700 text-xs border-0 self-center shrink-0">
+                    Sent
+                  </Badge>
                 </div>
-                <div className="flex items-center justify-between rounded-lg border p-3">
+                <div className="flex items-start gap-3 p-3">
+                  <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
                   <div>
-                    <p className="text-xs text-muted-foreground">Subscription</p>
-                    <p className="text-sm">{selectedTier?.display_name}</p>
+                    <p className="text-sm font-medium">
+                      Tier: {selectedTier?.display_name}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      {(TIER_META[form.tierName]?.features ?? []).join(" · ")}
+                    </p>
                   </div>
-                  <Badge className="bg-green-100 text-green-700 text-xs">Active</Badge>
+                  <Badge className="ml-auto bg-blue-100 text-blue-700 text-xs border-0 self-center shrink-0 capitalize">
+                    {form.billingCycle}
+                  </Badge>
+                </div>
+                <div className="flex items-start gap-3 p-3">
+                  <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium">Onboarding seeded</p>
+                    <p className="text-sm text-muted-foreground">
+                      First login redirects to /dashboard/onboarding
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -645,10 +668,10 @@ export function CreateSubscriberModal({ tiers, onCreated }: CreateSubscriberModa
                   className="flex-1"
                   onClick={() => {
                     handleClose()
-                    router.refresh()
+                    router.push("/admin/billing")
                   }}
                 >
-                  View in Billing
+                  View Subscriber List
                 </Button>
                 <Button className="flex-1" onClick={handleReset}>
                   Create Another

@@ -35,24 +35,22 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
 
   const { data: callerProfile } = await supabase
     .from("users")
-    .select("user_type, role")
+    .select("user_type, role, platform_role")
     .eq("id", callerUser.id)
     .single()
 
-  const callerType = callerProfile?.user_type ?? callerProfile?.role
+  // Accept superadmin via any of the three role columns
+  const callerType =
+    callerProfile?.platform_role ?? callerProfile?.user_type ?? callerProfile?.role
   if (callerType !== "superadmin") {
     return { success: false, error: "Forbidden: superadmin only" }
   }
 
   const service = createServiceClient()
 
-  const TIER_USER_TYPE: Record<string, string> = {
-    solo_agent: "agent",
-    team: "team_lead",
-    brokerage: "admin",
-    multi_location: "admin",
-  }
-  const adminUserType = TIER_USER_TYPE[params.tierName] || "admin"
+  // The provisioned user is always the billing admin for the new brokerage.
+  // Tier-specific roles (agent, team_lead) are assigned after onboarding.
+  const adminUserType = "admin"
 
   try {
     // Step 1: Create brokerage — only insert columns that exist in schema
@@ -99,6 +97,24 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
     }
 
     const userId = newUser.id
+
+    // Step 2b: Seed agent_onboarding row so first-login lands in onboarding flow
+    await service
+      .from("agent_onboarding")
+      .insert({
+        agent_id: userId,
+        user_id: userId,
+        brokerage_id: brokerageId,
+        status: "not_started",
+        current_day: 1,
+        start_date: new Date().toISOString().split("T")[0],
+        completion_percentage: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .catch(() => {
+        // Non-fatal: onboarding record will be created on first login if missing
+      })
 
     // Step 3: Create Stripe customer
     let stripeCustomerId = params.stripeCustomerId || null
