@@ -70,6 +70,7 @@ import {
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { toast } from "sonner"
 import { Progress } from "@/components/ui/progress"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
@@ -124,6 +125,7 @@ interface TransactionDetailClientProps {
     status: string
     completed_at: string | null
     notes: string | null
+    is_client_visible: boolean | null
   }>
   deadlines: Array<{
     id: string
@@ -387,6 +389,9 @@ export function TransactionDetailClient({
 }: TransactionDetailClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+
+  // Local milestones state — allows optimistic visibility toggle updates
+  const [localMilestones, setLocalMilestones] = useState(milestones)
 
   // Stage advancement state
   const [showBlockersModal, setShowBlockersModal] = useState(false)
@@ -1435,13 +1440,27 @@ export function TransactionDetailClient({
             <TabsContent value="milestones" className="mt-4">
               <Card>
                 <CardContent className="pt-4">
+                  <div className="flex items-center gap-2 mb-3 pb-3 border-b">
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="text-xs text-muted-foreground cursor-help underline decoration-dotted">
+                            Client portal visibility
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-xs">
+                          Client portal journey only shows milestones you mark visible. Defaults to hidden so no accidental exposure.
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
                   <div className="space-y-2">
-                    {milestones.map((m) => (
+                    {localMilestones.map((m) => (
                       <div key={m.id} className="flex items-center justify-between py-2 border-b last:border-0">
                         <div className="flex items-center gap-3">
                           <div
                             className={cn(
-                              "w-3 h-3 rounded-full",
+                              "w-3 h-3 rounded-full flex-shrink-0",
                               m.status === "completed" && "bg-green-500",
                               m.status === "pending" && "bg-amber-500",
                               m.status === "overdue" && "bg-red-500"
@@ -1449,16 +1468,54 @@ export function TransactionDetailClient({
                           />
                           <span className="text-sm">{m.milestone_name.replace(/_/g, " ")}</span>
                         </div>
-                        <div className="text-sm text-muted-foreground">
-                          {m.completed_at
-                            ? `Completed ${new Date(m.completed_at).toLocaleDateString()}`
-                            : m.milestone_date
-                            ? new Date(m.milestone_date).toLocaleDateString()
-                            : "No date set"}
+                        <div className="flex items-center gap-4">
+                          <span className="text-sm text-muted-foreground">
+                            {m.completed_at
+                              ? `Completed ${new Date(m.completed_at).toLocaleDateString()}`
+                              : m.milestone_date
+                              ? new Date(m.milestone_date).toLocaleDateString()
+                              : "No date set"}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              {m.is_client_visible ? "Client sees this" : "Agent only"}
+                            </span>
+                            <Switch
+                              checked={m.is_client_visible ?? false}
+                              onCheckedChange={async (visible) => {
+                                // Optimistic update
+                                setLocalMilestones((prev) =>
+                                  prev.map((row) =>
+                                    row.id === m.id ? { ...row, is_client_visible: visible } : row
+                                  )
+                                )
+                                const supabase = createClient()
+                                const { error } = await supabase
+                                  .from("transaction_milestones")
+                                  .update({ is_client_visible: visible })
+                                  .eq("id", m.id)
+                                if (error) {
+                                  // Revert on failure
+                                  setLocalMilestones((prev) =>
+                                    prev.map((row) =>
+                                      row.id === m.id ? { ...row, is_client_visible: !visible } : row
+                                    )
+                                  )
+                                  toast.error("Failed to update milestone visibility")
+                                } else {
+                                  toast.success(
+                                    visible
+                                      ? "Milestone now visible in client portal"
+                                      : "Milestone hidden from client portal"
+                                  )
+                                }
+                              }}
+                            />
+                          </div>
                         </div>
                       </div>
                     ))}
-                    {milestones.length === 0 && (
+                    {localMilestones.length === 0 && (
                       <p className="text-sm text-muted-foreground">No milestones defined.</p>
                     )}
                   </div>

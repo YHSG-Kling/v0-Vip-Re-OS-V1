@@ -248,6 +248,14 @@ export default function JourneyClient({
           </div>
         </CardHeader>
         <CardContent>
+          {milestones.length === 0 && (
+            <div className="text-center py-8">
+              <p className="text-muted-foreground text-sm">
+                Your journey milestones will appear here as your agent updates your file.
+              </p>
+            </div>
+          )}
+
           <div className="relative space-y-0">
             {/* Vertical line */}
             <div className="absolute left-5 top-5 bottom-5 w-0.5 bg-muted print:bg-gray-300" />
