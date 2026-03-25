@@ -45,7 +45,6 @@ export default function VideoAssistantPage() {
   const [selectedLength, setSelectedLength] = useState("medium")
 
   useEffect(() => {
-    console.log("[v0] Video Assistant ready")
     // Don't load scripts on mount - table query causes delay
   }, [])
 
@@ -89,13 +88,6 @@ export default function VideoAssistantPage() {
     setGeneratedOptions([])
     
     try {
-      console.log("[v0] Generating 3 script variations with:", { 
-        purpose: selectedPurpose, 
-        persona: selectedPersona,
-        tone: selectedTone,
-        length: selectedLength
-      })
-      
       // Generate 3 different variations with slightly different tones
       const tones = ["friendly", "professional", "energetic"]
       const promises = tones.map(tone =>
@@ -110,9 +102,6 @@ export default function VideoAssistantPage() {
       
       const results = await Promise.all(promises)
       const scripts = results.filter(r => r.success).map(r => r.script || "")
-      
-      console.log("[v0] Generated scripts count:", scripts.length)
-      
       setGeneratedOptions(scripts)
       
       if (scripts.length > 0) {

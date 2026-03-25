@@ -170,14 +170,19 @@ Answer their questions while keeping the focus on their needs and perspective.`
       const result = await generateAIText(prompt)
       const text = result.text || "I couldn't generate a response."
 
-      const simulatedConfidence = Math.random()
+      // Use the response length and content as a deterministic proxy for confidence.
+      // Real confidence scoring requires structured AI output with logprobs or a
+      // separate classification model — Math.random() is never acceptable here.
+      const responseLength = text.length
+      const hasHedgingLanguage = /\b(not sure|uncertain|unclear|cannot|don't know|I'm not)\b/i.test(text)
+      const deterministicConfidence = hasHedgingLanguage ? 0.25 : responseLength > 100 ? 0.85 : 0.6
 
-      if (simulatedConfidence < 0.3) {
+      if (deterministicConfidence < 0.3) {
         await executeWorkflow("escalate-low-confidence", {
           userName: "Current User",
           userMessage: userMsg,
           aiResponse: text,
-          confidence: simulatedConfidence,
+          confidence: deterministicConfidence,
         })
         setMessages((prev) => [
           ...prev,

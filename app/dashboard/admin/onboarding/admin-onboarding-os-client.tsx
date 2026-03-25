@@ -69,9 +69,8 @@ export function AdminOnboardingOsClient({
   const [activeTab, setActiveTab] = useState('overview')
   const [selectedBatch, setSelectedBatch] = useState<string[]>([])
 
-  const handleBatchAction = useCallback((action: string, agentIds: string[]) => {
+  const handleBatchAction = useCallback((_action: string, _agentIds: string[]) => {
     // Batch actions handled by OnboardingBatchActionsPanel
-    console.log(`[v0] Batch action: ${action} on agents:`, agentIds)
   }, [])
 
   return (

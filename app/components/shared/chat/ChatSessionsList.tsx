@@ -22,8 +22,6 @@ export default function ChatSessionsList({ sessions, agentId }: { sessions: any[
   const handleNewSession = async () => {
     setIsCreating(true)
     try {
-      console.log("[v0] Creating new session for agentId:", agentId)
-      
       const session = await createChatSession({
         agentId: agentId,
         sessionType: "lead_qualification",

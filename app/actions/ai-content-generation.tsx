@@ -1788,7 +1788,15 @@ export async function createABTest(params: {
   }
 }
 
+/** Deterministic seed from content hash — avoids non-reproducible Math.random() in AI contexts */
+function getVariationSeed(content: string): number {
+  return Math.abs([...content.slice(0, 50)].reduce((h, c) =>
+    (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0))
+}
+
 async function generateVariant(baseContent: any, testVariable: string) {
+  const seed = getVariationSeed(baseContent.generated_text ?? baseContent.metadata?.subject_line ?? testVariable)
+
   const prompts: Record<string, string> = {
     subject_line: `Generate alternative subject line for this email.
 Original: "${baseContent.metadata?.subject_line || ""}"
@@ -1797,11 +1805,11 @@ Keep same topic but fresh angle.`,
 
     opening_hook: `Rewrite opening paragraph with different hook strategy.
 Original: "${baseContent.generated_text?.substring(0, 200) || ""}"
-Try a ${["question", "statistic", "story", "bold statement"][Math.floor(Math.random() * 4)]} approach.`,
+Try a ${["question", "statistic", "story", "bold statement"][seed % 4]} approach.`,
 
     cta: `Generate alternative call-to-action.
 Original: "${baseContent.metadata?.cta_text || ""}"
-Make it more ${["urgent", "soft", "benefit-focused", "curiosity-driven"][Math.floor(Math.random() * 4)]}.`,
+Make it more ${["urgent", "soft", "benefit-focused", "curiosity-driven"][seed % 4]}.`,
 
     length: `${baseContent.generated_text?.length > 500 ? "Shorten" : "Expand"} this content while keeping key points.
 Original length: ${baseContent.generated_text?.length} characters
@@ -1809,7 +1817,7 @@ Target: ${baseContent.generated_text?.length > 500 ? "50%" : "150%"} of original
 
     tone: `Rewrite entire content with different tone.
 Original: ${baseContent.generated_text}
-New tone: ${["more professional", "more casual", "more energetic", "more empathetic"][Math.floor(Math.random() * 4)]}
+New tone: ${["more professional", "more casual", "more energetic", "more empathetic"][seed % 4]}
 Keep same information, change how it's presented.`,
   }
 

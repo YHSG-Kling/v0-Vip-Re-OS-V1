@@ -135,7 +135,7 @@ export default function BehavioralInsights() {
         .limit(100)
 
       if (error) {
-        console.log("[v0] external_behavior table may not exist yet:", error.message)
+        console.error("[BehavioralInsights] external_behavior table may not exist yet:", error.message)
         return []
       }
 
@@ -190,7 +190,7 @@ export default function BehavioralInsights() {
         .limit(100)
 
       if (error) {
-        console.log("[v0] lead_property_searches table may not exist yet:", error.message)
+        console.error("[BehavioralInsights] lead_property_searches table may not exist yet:", error.message)
         return []
       }
 
@@ -249,7 +249,7 @@ export default function BehavioralInsights() {
         .limit(100)
 
       if (error) {
-        console.log("[v0] social_intelligence table may not exist yet:", error.message)
+        console.error("[BehavioralInsights] social_intelligence table may not exist yet:", error.message)
         return []
       }
 

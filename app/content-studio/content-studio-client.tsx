@@ -149,18 +149,10 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
   }, [userId, userRole])
 
   async function loadAgentSettings() {
-    if (!userId) {
-      console.log("[v0] No userId, skipping agent settings load")
-      return
-    }
+    if (!userId) return
     try {
-      console.log("[v0] Loading agent settings for user:", userId)
       const settings = await getAgentSettings(userId)
-      console.log("[v0] Agent settings loaded:", settings)
       setAgentSettings(settings)
-      if (settings.message) {
-        console.log("[v0] Settings message:", settings.message)
-      }
     } catch (error) {
       console.error("[v0] Failed to load agent settings:", error)
       setAgentSettings({

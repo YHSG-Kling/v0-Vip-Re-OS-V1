@@ -930,9 +930,8 @@ function RefreshButton({ listingId, isExpired }: { listingId: string; isExpired:
 function EmbedButton({ listingId }: { listingId: string }) {
   async function handleCopyEmbed() {
     "use server"
-    const snippet = await generateEmbedSnippet(listingId)
+    await generateEmbedSnippet(listingId)
     // Note: Server actions can't access clipboard, this would need client component
-    console.log("Embed snippet:", snippet)
   }
 
   return (

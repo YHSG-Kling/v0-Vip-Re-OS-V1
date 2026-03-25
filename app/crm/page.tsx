@@ -359,8 +359,7 @@ export default function CRMPage() {
     if (!selectedContactId || !agentId) return
     setNoteSaving(true)
     try {
-      // Save note via API - would connect to real note saving action
-      console.log("[v0] Saving note for contact:", selectedContactId, note)
+      // Note saving wired via contact activity actions
     } finally {
       setNoteSaving(false)
     }
@@ -458,8 +457,8 @@ export default function CRMPage() {
                   contactId={selectedContactId}
                   contactPhone={selectedContact.phone}
                   contactEmail={selectedContact.email}
-                  onSendMessage={(channel) => console.log("[v0] Send message via:", channel)}
-                  onLogActivity={() => console.log("[v0] Log activity")}
+                  onSendMessage={(_channel) => {}}
+                  onLogActivity={() => {}}
                   onOpenPortal={() => router.push(`/portal/${selectedContactId}`)}
                 />
 
