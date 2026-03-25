@@ -20,33 +20,27 @@ export async function analyzePhoto(params: { photoId: string; photoUrl: string }
   const supabase = await createClient()
 
   try {
+    const roomType = detectRoomType(params.photoUrl)
+    const qualityScore = calculateQualityScore()
+
     // AI analysis would integrate with vision API (OpenAI Vision, Google Vision, etc.)
-    // For now, returning structured analysis format
     const analysis = {
-      room_type: detectRoomType(params.photoUrl),
-      quality_score: calculateQualityScore(),
-      detected_features: [
-        "hardwood floors",
-        "recessed lighting",
-        "large windows",
-        "modern fixtures",
-      ],
-      composition_score: 85,
-      lighting_quality: "good",
-      suggestions: [
-        "Increase brightness by 10%",
-        "Straighten horizon line",
-      ],
-      is_hero_worthy: true,
+      room_type: roomType,
+      quality_score: qualityScore,
+      detected_features: [] as string[],
+      composition_score: null as number | null,
+      lighting_quality: null as string | null,
+      suggestions: [] as string[],
+      is_hero_worthy: null as boolean | null,
     }
 
-    // Update photo record with analysis
+    // Update photo record — only write fields with real values
     await supabase
       .from("listing_photos")
       .update({
-        room_type: analysis.room_type,
-        ai_quality_score: analysis.quality_score,
-        ai_detected_features: analysis.detected_features,
+        ...(roomType !== 'unknown' && { room_type: roomType }),
+        ...(qualityScore !== null && { ai_quality_score: qualityScore }),
+        ai_analyzed_at: new Date().toISOString(),
         ai_analysis_completed: true,
       })
       .eq("id", params.photoId)
@@ -59,22 +53,24 @@ export async function analyzePhoto(params: { photoId: string; photoUrl: string }
 }
 
 function detectRoomType(photoUrl: string): string {
-  // In production, this would use AI vision API
-  const roomTypes = [
-    "living_room",
-    "kitchen",
-    "primary_bedroom",
-    "bathroom",
-    "exterior_front",
-    "exterior_back",
-    "dining_room",
-  ]
-  return roomTypes[Math.floor(Math.random() * roomTypes.length)]
+  const url = (photoUrl || '').toLowerCase()
+  if (url.match(/exterior|front|outside|curb|street|aerial|drone/)) return 'exterior_front'
+  if (url.match(/kitchen|kit_/)) return 'kitchen'
+  if (url.match(/master|primary|bedroom|bed_/)) return 'primary_bedroom'
+  if (url.match(/bath|wc|toilet/)) return 'bathroom'
+  if (url.match(/living|lounge|great_room/)) return 'living_room'
+  if (url.match(/dining/)) return 'dining_room'
+  if (url.match(/garage|carport/)) return 'garage'
+  if (url.match(/pool|yard|garden|patio|deck|backyard/)) return 'exterior_back'
+  if (url.match(/office|study/)) return 'office'
+  if (url.match(/laundry|utility/)) return 'utility'
+  return 'unknown'
 }
 
-function calculateQualityScore(): number {
-  // In production, this would analyze sharpness, exposure, composition
-  return Math.floor(Math.random() * 30) + 70 // 70-100
+function calculateQualityScore(): number | null {
+  // Real scoring requires computer vision API (AWS Rekognition, Google Vision, etc.)
+  // Returns null until wired — do not use random numbers for real estate decisions
+  return null
 }
 
 // ============================================
@@ -168,7 +164,7 @@ export async function batchEnhancePhotos(params: {
     }
 
     const enhancementPromises = photos
-      .filter((p) => (p.ai_quality_score || 0) < 80) // Only enhance lower quality photos
+      .filter((p) => p.ai_quality_score !== null && p.ai_quality_score < 80) // Only enhance scored, lower-quality photos
       .map((photo) =>
         enhancePhoto({
           photoId: photo.id,
@@ -250,8 +246,10 @@ function optimizePhotoSequence(photos: any[]): any[] {
       return priorityA - priorityB
     }
 
-    // Within same room type, sort by quality score
-    return (b.ai_quality_score || 0) - (a.ai_quality_score || 0)
+    // Within same room type, sort by quality score — null scores sort last
+    const scoreA = a.ai_quality_score ?? -1
+    const scoreB = b.ai_quality_score ?? -1
+    return scoreB - scoreA
   })
 }
 
@@ -355,8 +353,10 @@ export async function validatePhotoQuality(listingId: string) {
       }
     }
 
-    // Check photo quality
-    const lowQualityPhotos = photos.filter((p) => (p.ai_quality_score || 0) < 70)
+    // Check photo quality — only flag photos that have been scored and are below threshold
+    const lowQualityPhotos = photos.filter(
+      (p) => p.ai_quality_score !== null && p.ai_quality_score < 70
+    )
     if (lowQualityPhotos.length > 0) {
       issues.push(`${lowQualityPhotos.length} photos below quality threshold`)
     }
@@ -365,7 +365,7 @@ export async function validatePhotoQuality(listingId: string) {
     const heroPhoto = photos.find((p) => p.is_hero_image)
     if (!heroPhoto) {
       issues.push("No hero image selected")
-    } else if ((heroPhoto.ai_quality_score || 0) < 85) {
+    } else if (heroPhoto.ai_quality_score !== null && heroPhoto.ai_quality_score < 85) {
       issues.push("Hero image quality too low (should be 85+)")
     }
 
@@ -373,7 +373,12 @@ export async function validatePhotoQuality(listingId: string) {
       passed: issues.length === 0,
       issues,
       photoCount: photos.length,
-      avgQuality: photos.reduce((sum, p) => sum + (p.ai_quality_score || 0), 0) / photos.length,
+      avgQuality: (() => {
+        const scored = photos.filter((p) => p.ai_quality_score !== null)
+        return scored.length > 0
+          ? scored.reduce((sum, p) => sum + p.ai_quality_score, 0) / scored.length
+          : null
+      })(),
     }
   } catch (error) {
     console.error("Validate photo quality error:", error)
@@ -477,12 +482,15 @@ export async function getPhotoPerformanceStats(listingId: string) {
     const roomTypes = new Set(photos.map((p) => p.room_type))
     const expectedRooms = 8 // Standard room types
 
+    const scoredPhotos = photos.filter((p) => p.ai_quality_score !== null)
     return {
       totalPhotos: photos.length,
-      avgQuality: photos.reduce((sum, p) => sum + (p.ai_quality_score || 0), 0) / photos.length,
+      avgQuality: scoredPhotos.length > 0
+        ? scoredPhotos.reduce((sum, p) => sum + p.ai_quality_score, 0) / scoredPhotos.length
+        : null,
       roomCoverage: (roomTypes.size / expectedRooms) * 100,
       enhancedCount: photos.filter((p) => p.enhancement_applied).length,
-      heroImageQuality: photos.find((p) => p.is_hero_image)?.ai_quality_score || 0,
+      heroImageQuality: photos.find((p) => p.is_hero_image)?.ai_quality_score ?? null,
     }
   } catch (error) {
     console.error("Get photo stats error:", error)
