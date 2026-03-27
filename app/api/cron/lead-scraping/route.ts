@@ -4,6 +4,12 @@ import { ZenrowsClient, BatchDataClient, PeopleDataClient, ApifyClient } from "@
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { createLead } from "@/app/actions/leads"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
+import {
+  type NormalizedScrapedRecord,
+  isViableRecord,
+  buildLeadIdentityKey,
+} from "@/lib/lead-pipeline/raw-record-types"
+import * as cheerio from "cheerio"
 
 export const dynamic = "force-dynamic"
 
@@ -145,18 +151,33 @@ export async function GET(request: Request) {
               sourceCostUsd += scraped.cost ?? 0
 
               if (scraped.success && scraped.html) {
+                // parsePropertySearchResults returns NormalizedScrapedRecord[] filtered by isViableRecord
                 const buyers = parsePropertySearchResults(scraped.html, site, market)
                 sourceItemsFound += buyers.length
 
                 for (const buyer of buyers) {
-                  const enrichedLead = await enrichLeadPipeline(buyer, { peopledata, osint, validation }, results)
+                  const enrichedLead = await enrichLeadPipeline(
+                    {
+                      first_name:   buyer.firstName,
+                      last_name:    buyer.lastName,
+                      city:         buyer.city,
+                      state:        buyer.state,
+                      address:      buyer.propertyAddress,
+                      email:        buyer.email,
+                      phone:        buyer.phone,
+                      identity_key: buildLeadIdentityKey(buyer),
+                    },
+                    { peopledata, osint, validation },
+                    results,
+                  )
                   if (enrichedLead) {
                     const leadResult = await createLead({
                       ...enrichedLead,
-                      lead_source: site,
-                      scraped_from: searchUrl,
-                      intent_type: "buyer",
-                      temperature: "warm",
+                      lead_source:     site,
+                      scraped_from:    searchUrl,
+                      intent_type:     "buyer",
+                      temperature:     "warm",
+                      raw_scraped_data: buyer.rawPayload,
                     })
                     if (leadResult.success) { sourceLeadsCreated++; results.total_leads_created++ }
                   }
@@ -232,42 +253,48 @@ export async function GET(request: Request) {
 
             // STEP 7 — geography comes entirely from market record, never hardcoded
             const location = `${market.city}, ${market.state}`
-            const sellers = await batchdata.getMotivatedSellerData(location)
-            sourceItemsFound = sellers.length
+            const rawSellers = await batchdata.getMotivatedSellerData(location)
+            // Normalize to canonical shape and filter by viability gate
+            const sellers = rawSellers
+              .map((r) => normalizeBatchDataRecord(r as Record<string, unknown>, market))
+              .filter(isViableRecord)
+            sourceItemsFound = rawSellers.length
 
             for (const seller of sellers) {
               const matchesType = motivatedParams.signal_types?.some((type: string) =>
-                seller.motivation_indicators?.includes(type),
+                seller.intentSignals?.includes(type),
               )
 
               if (matchesType || !motivatedParams.signal_types?.length) {
-                const nameParts = seller.owner_name?.split(" ") || []
-                const firstName = nameParts[0] || ""
-                const lastName = nameParts.slice(1).join(" ") || ""
+                // buildLeadIdentityKey ensures we don't enrich duplicates
+                const identityKey = buildLeadIdentityKey(seller)
 
                 const enrichedLead = await enrichLeadPipeline(
                   {
-                    first_name: firstName,
-                    last_name: lastName,
-                    address: seller.property_address,
-                    city: market.city,
-                    state: market.state,
-                    email: seller.email,
-                    phone: seller.phone,
+                    first_name:  seller.firstName,
+                    last_name:   seller.lastName,
+                    address:     seller.mailingAddress,
+                    city:        seller.city,
+                    state:       seller.state,
+                    email:       seller.email,
+                    phone:       seller.phone,
+                    identity_key: identityKey,
                   },
                   { peopledata, osint, validation },
                   results,
                 )
 
                 if (enrichedLead) {
+                  const temp = (seller.motivationScore ?? 0) > 70 ? "hot"
+                    : (seller.motivationScore ?? 0) > 40 ? "warm" : "cold"
                   const leadResult = await createLead({
                     ...enrichedLead,
-                    lead_source: "batchdata",
-                    scraped_from: "batchdata_motivated_sellers",
-                    intent_type: "seller",
-                    motivation_score: seller.motivation_score,
-                    temperature: seller.motivation_score > 70 ? "hot" : seller.motivation_score > 40 ? "warm" : "cold",
-                    raw_scraped_data: seller,
+                    lead_source:      "batchdata",
+                    scraped_from:     "batchdata_motivated_sellers",
+                    intent_type:      "seller",
+                    motivation_score: seller.motivationScore,
+                    temperature:      temp,
+                    raw_scraped_data: seller.rawPayload,
                   })
                   if (leadResult.success) leadsCreated++
                 }
@@ -477,16 +504,19 @@ export async function GET(request: Request) {
             sourceCostUsd += scraped.cost ?? 0
 
             if (scraped.success && scraped.html) {
+              // parseCraigslistHtml returns NormalizedScrapedRecord[] filtered by isViableRecord
               const listings = parseCraigslistHtml(scraped.html)
               for (const listing of listings) {
                 const enrichedLead = await enrichLeadPipeline(
                   {
-                    first_name: listing.contact_name?.split(" ")[0] || "",
-                    last_name: listing.contact_name?.split(" ").slice(1).join(" ") || "",
-                    email: listing.email,
-                    phone: listing.phone,
-                    city: market.city,
-                    state: market.state,
+                    first_name:   listing.firstName,
+                    last_name:    listing.lastName,
+                    email:        listing.email,
+                    phone:        listing.phone,
+                    address:      listing.propertyAddress,
+                    city:         market.city,
+                    state:        market.state,
+                    identity_key: buildLeadIdentityKey(listing),
                   },
                   { peopledata, osint, validation },
                   results,
@@ -494,11 +524,11 @@ export async function GET(request: Request) {
                 if (enrichedLead) {
                   const leadResult = await createLead({
                     ...enrichedLead,
-                    lead_source: "craigslist",
-                    scraped_from: craigslistUrl,
-                    intent_type: "seller",
-                    temperature: "warm",
-                    raw_scraped_data: listing,
+                    lead_source:      "craigslist",
+                    scraped_from:     craigslistUrl,
+                    intent_type:      "seller",
+                    temperature:      listing.motivationScore && listing.motivationScore >= 70 ? "hot" : "warm",
+                    raw_scraped_data:  listing.rawPayload,
                   })
                   if (leadResult.success) socialLeadsCreated++
                 }
@@ -708,18 +738,207 @@ function buildPropertySearchUrl(site: string, market: any, params: any): string 
   }
 }
 
-function parsePropertySearchResults(html: string, site: string, market: any): Array<any> {
-  // Simplified parser - real implementation would use cheerio
-  return []
+/**
+ * Parse property search HTML from Zillow, Realtor, Redfin, or Trulia.
+ * Returns only records that pass the viability gate.
+ */
+function parsePropertySearchResults(
+  html: string,
+  site: string,
+  market: { city: string | null; state: string | null },
+): NormalizedScrapedRecord[] {
+  const $ = cheerio.load(html)
+  const records: NormalizedScrapedRecord[] = []
+
+  if (site === "zillow") {
+    // Zillow embeds listing data in a <script type="application/json"> containing
+    // the key "listResults" (or "cat1.searchResults.listResults" in newer builds).
+    $('script[type="application/json"]').each((_, el) => {
+      try {
+        const raw = $(el).html() ?? ""
+        if (!raw.includes("listResults") && !raw.includes("zpid")) return
+        const json = JSON.parse(raw)
+        // Traverse common nested paths where listResults appears
+        const listResults: unknown[] =
+          json?.cat1?.searchResults?.listResults ??
+          json?.listResults ??
+          json?.searchPageState?.cat1?.searchResults?.listResults ??
+          []
+        for (const item of listResults) {
+          const listing = item as Record<string, unknown>
+          const address = (listing.address as string | undefined) ?? (listing.streetAddress as string | undefined)
+          const zpid   = String(listing.zpid ?? listing.id ?? `zillow-${Date.now()}-${Math.random()}`)
+          if (!address) continue
+          const record: NormalizedScrapedRecord = {
+            sourceRecordId: `zillow-${zpid}`,
+            source: "zillow",
+            behaviorType: "property_view",
+            intentType: "buyer",
+            intentSignals: ["zillow_listing"],
+            propertyAddress: address,
+            city: (listing.city as string | null | undefined) ?? market.city,
+            state: (listing.state as string | null | undefined) ?? market.state,
+            zip: (listing.zipcode as string | null | undefined) ?? null,
+            motivationScore: 40,
+            sourceUrl: listing.detailUrl
+              ? `https://www.zillow.com${listing.detailUrl}`
+              : null,
+            rawPayload: listing,
+          }
+          records.push(record)
+        }
+      } catch {
+        // malformed JSON block — skip silently
+      }
+    })
+  } else if (site === "realtor") {
+    // Realtor.com property cards
+    $('[data-testid="property-card"]').each((_, el) => {
+      const addressEl  = $(el).find('[data-testid="card-address"]')
+      const line1      = addressEl.first().text().trim()
+      const line2      = addressEl.last().text().trim()
+      const address    = line1 ? `${line1}${line2 ? `, ${line2}` : ""}` : null
+      const href       = $(el).find('a').first().attr('href') ?? null
+      const pid        = href?.split('/').filter(Boolean).pop() ?? `realtor-${Date.now()}-${Math.random()}`
+      const priceText  = $(el).find('[data-testid="card-price"]').first().text().replace(/[^0-9]/g, '')
+      if (!address) return
+      const record: NormalizedScrapedRecord = {
+        sourceRecordId: `realtor-${pid}`,
+        source: "realtor",
+        behaviorType: "property_view",
+        intentType: "buyer",
+        intentSignals: ["realtor_listing"],
+        propertyAddress: address,
+        city: market.city,
+        state: market.state,
+        motivationScore: 40,
+        sourceUrl: href ? `https://www.realtor.com${href}` : null,
+        rawPayload: { address, href, price: priceText ? Number(priceText) : null },
+      }
+      records.push(record)
+    })
+  } else if (site === "redfin") {
+    // Redfin uses data-rf-test-name attributes on listing cards
+    $('[data-rf-test-name="mapHomeCard"], .HomeCard, .home-card').each((_, el) => {
+      const address   = $(el).find('[data-rf-test-name="homecard-address"], .address').first().text().trim() || null
+      const href      = $(el).find('a').first().attr('href') ?? null
+      const pid       = href?.split('/').filter(Boolean).pop() ?? `redfin-${Date.now()}-${Math.random()}`
+      if (!address) return
+      const record: NormalizedScrapedRecord = {
+        sourceRecordId: `redfin-${pid}`,
+        source: "redfin",
+        behaviorType: "property_view",
+        intentType: "buyer",
+        intentSignals: ["redfin_listing"],
+        propertyAddress: address,
+        city: market.city,
+        state: market.state,
+        motivationScore: 40,
+        sourceUrl: href ? `https://www.redfin.com${href}` : null,
+        rawPayload: { address, href },
+      }
+      records.push(record)
+    })
+  } else {
+    // Generic fallback: grab any element that looks like a property address
+    $('[class*="address"], [class*="Address"]').each((_, el) => {
+      const address = $(el).text().trim()
+      if (address.length < 5 || address.length > 120) return
+      const record: NormalizedScrapedRecord = {
+        sourceRecordId: `${site}-${Date.now()}-${Math.random()}`,
+        source: site,
+        behaviorType: "property_view",
+        intentType: "buyer",
+        intentSignals: [`${site}_listing`],
+        propertyAddress: address,
+        city: market.city,
+        state: market.state,
+        motivationScore: 35,
+        sourceUrl: null,
+        rawPayload: { address },
+      }
+      records.push(record)
+    })
+  }
+
+  return records.filter(isViableRecord)
 }
 
-function parseCraigslistHtml(html: string): Array<{
-  contact_name?: string
-  email?: string
-  phone?: string
-  title?: string
-  price?: number
-}> {
-  // Simplified parser - real implementation would use cheerio
-  return []
+/**
+ * Parse Craigslist real-estate listing HTML.
+ * Returns only FSBO / property listing rows that pass the viability gate.
+ */
+function parseCraigslistHtml(html: string): NormalizedScrapedRecord[] {
+  const $ = cheerio.load(html)
+  const records: NormalizedScrapedRecord[] = []
+
+  $('.result-row, .cl-search-result').each((_, el) => {
+    const titleEl  = $(el).find('.result-title, .titlestring').first()
+    const title    = titleEl.text().trim()
+    const listingId = ($(el).attr('data-pid') ?? `cl-${Date.now()}-${Math.random()}`).toString()
+    const href     = titleEl.attr('href') ?? $(el).find('a.result-title').first().attr('href') ?? ''
+    const priceText = $(el).find('.result-price').first().text().replace(/[^0-9]/g, '')
+    const isFsbo   = /\b(by owner|fsbo|for sale by owner)\b/i.test(title)
+
+    if (title.length < 5) return
+
+    const record: NormalizedScrapedRecord = {
+      sourceRecordId: listingId,
+      source: "craigslist_fsbo",
+      behaviorType: isFsbo ? "fsbo_listing" : "property_listing",
+      intentType: "seller",
+      intentSignals: isFsbo ? ["fsbo_listed"] : ["craigslist_listing"],
+      propertyAddress: title.slice(0, 100),
+      motivationScore: isFsbo ? 75 : 45,
+      sourceUrl: href.startsWith("http") ? href : `https://craigslist.org${href}`,
+      rawPayload: {
+        title,
+        listing_id: listingId,
+        price: priceText ? Number(priceText) : null,
+      },
+    }
+    records.push(record)
+  })
+
+  return records.filter(isViableRecord)
+}
+
+/**
+ * Normalize a raw BatchData motivated-seller record into the canonical shape.
+ * The motivationScore is clamped to [0, 100].
+ */
+function normalizeBatchDataRecord(
+  record: Record<string, unknown>,
+  market: { city: string | null; state: string | null },
+): NormalizedScrapedRecord {
+  const firstName = (record.firstName ?? record.first_name ?? record.owner_name?.toString().split(' ')[0] ?? '') as string
+  const lastName  = (record.lastName  ?? record.last_name  ??
+    (record.owner_name?.toString().split(' ').slice(1).join(' ') ?? '')) as string
+
+  const rawScore  = record.motivationConfidence ?? record.motivation_score ?? 0.5
+  const score     = Math.min(100, Math.max(0, Math.round(Number(rawScore) * (Number(rawScore) <= 1 ? 100 : 1))))
+
+  const idSlug = `${firstName}-${lastName}-${record.propertyAddress ?? record.property_address ?? ''}`
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+
+  return {
+    sourceRecordId: `batchdata-${idSlug || Date.now()}`,
+    source: "batchdata_motivated",
+    behaviorType: "motivated_seller",
+    intentType: "seller",
+    intentSignals: [(record.motivationType ?? record.motivation_type ?? 'motivated_seller') as string],
+    firstName:       firstName || null,
+    lastName:        lastName  || null,
+    email:           (record.email  as string | null | undefined) ?? null,
+    phone:           (record.phone  as string | null | undefined) ?? null,
+    city:            (record.city   as string | null | undefined) ?? market.city,
+    state:           (record.state  as string | null | undefined) ?? market.state,
+    zip:             (record.zip    as string | null | undefined) ?? null,
+    mailingAddress:  (record.address as string | null | undefined) ?? null,
+    propertyAddress: (record.propertyAddress ?? record.property_address) as string | null | undefined ?? null,
+    motivationScore: score,
+    rawPayload: record,
+  }
 }
