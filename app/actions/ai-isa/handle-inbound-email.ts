@@ -15,7 +15,7 @@
 
 import { generateTextRouted as generateText } from '@/lib/ai/models'
 import { createServiceClient } from '@/lib/supabase/service'
-import { shouldStopAutoResponding } from '@/lib/ai-isa/conversation-handler'
+import { shouldStopAutoResponding, haltEngagementForNegativeReply } from '@/lib/ai-isa/conversation-handler'
 import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa'
 import { dispatchEmail } from '@/lib/providers/dispatch'
 import { evaluateOutbound } from '@/lib/kernel'
@@ -31,6 +31,26 @@ export async function processInboundEmail(params: {
   conversationId?: string
 }) {
   const supabase = createServiceClient()
+
+  // ── Guard 0: negative reply / opt-out detection ───────────────────────────
+  // Must run FIRST before any DB fetch or AI call. If the lead says stop,
+  // halt all engagement immediately, set DNC, and notify the agent.
+  const { data: leadForDnc } = await supabase
+    .from('leads')
+    .select('brokerage_id')
+    .eq('id', params.leadId)
+    .maybeSingle()
+
+  if (leadForDnc?.brokerage_id) {
+    const halted = await haltEngagementForNegativeReply({
+      leadId: params.leadId,
+      body: params.body,
+      brokerageId: leadForDnc.brokerage_id,
+    })
+    if (halted) {
+      return { success: true, responded: false, reason: 'negative_reply_dnc_set' }
+    }
+  }
 
   // ── Guard 1: auto-respond check ───────────────────────────────────────────
   const stopResponding = await shouldStopAutoResponding(params.leadId)
@@ -185,7 +205,7 @@ export async function processInboundEmail(params: {
     created_at: new Date().toISOString(),
   })
 
-  // ── Send reply via kernel dispatch ───────────────────────��───────���────────
+  // ── Send reply via kernel dispatch ───────────────────────��───────�����────────
   // assembleEmail() runs inside dispatchEmail() — do NOT pre-assemble.
   const sendResult = await dispatchEmail({
     brokerageId:    lead.brokerage_id,
