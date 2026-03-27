@@ -383,6 +383,10 @@ export default async function BrokerageDashboard({
   ]
   const unassignedLeadsCount = unassignedLeadsResult.count ?? 0
 
+  // Alias destructured names to match JSX references
+  const licenseStatus = expirations as { expiringLicenses: any[]; expiredLicenses: any[] } ?? { expiringLicenses: [], expiredLicenses: [] }
+  const forecast = forecastData as any
+
   // Agent performance (derived from dashboard agents)
   const agentPerformance = (agents || []).slice(0, 5).map((agent: any) => ({
     id: agent.id,
