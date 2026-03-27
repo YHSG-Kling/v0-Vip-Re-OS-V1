@@ -2,7 +2,6 @@ import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient, ApifyClient } from "@/lib/external"
 import { processRawRecord } from "@/lib/lead-pipeline"
-import { createLead } from "@/app/actions/leads"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
 import {
   type NormalizedScrapedRecord,
@@ -156,31 +155,15 @@ export async function GET(request: Request) {
                 sourceItemsFound += buyers.length
 
                 for (const buyer of buyers) {
-                  const enrichedLead = await enrichLeadPipeline(
-                    {
-                      first_name:   buyer.firstName,
-                      last_name:    buyer.lastName,
-                      city:         buyer.city,
-                      state:        buyer.state,
-                      address:      buyer.propertyAddress,
-                      email:        buyer.email,
-                      phone:        buyer.phone,
-                      identity_key: buildLeadIdentityKey(buyer),
-                    },
-                    { peopledata, osint, validation },
-                    results,
-                  )
-                  if (enrichedLead) {
-                    const leadResult = await createLead({
-                      ...enrichedLead,
-                      lead_source:     site,
-                      scraped_from:    searchUrl,
-                      intent_type:     "buyer",
-                      temperature:     "warm",
-                      raw_scraped_data: buyer.rawPayload,
-                    })
-                    if (leadResult.success) { sourceLeadsCreated++; results.total_leads_created++ }
-                  }
+                  // Write raw record only — enrichment and promotion happen in pipeline-processor
+                  const { inserted } = await insertRawRecord({
+                    supabase,
+                    record:      buyer,
+                    brokerageId: market.brokerage_id,
+                    marketId:    market.id,
+                    executionId: execRecord?.id ?? null,
+                  })
+                  if (inserted) { sourceLeadsCreated++; results.total_leads_created++ }
                 }
                 results.total_leads_found += buyers.length
               }
@@ -266,38 +249,15 @@ export async function GET(request: Request) {
               )
 
               if (matchesType || !motivatedParams.signal_types?.length) {
-                // buildLeadIdentityKey ensures we don't enrich duplicates
-                const identityKey = buildLeadIdentityKey(seller)
-
-                const enrichedLead = await enrichLeadPipeline(
-                  {
-                    first_name:  seller.firstName,
-                    last_name:   seller.lastName,
-                    address:     seller.mailingAddress,
-                    city:        seller.city,
-                    state:       seller.state,
-                    email:       seller.email,
-                    phone:       seller.phone,
-                    identity_key: identityKey,
-                  },
-                  { peopledata, osint, validation },
-                  results,
-                )
-
-                if (enrichedLead) {
-                  const temp = (seller.motivationScore ?? 0) > 70 ? "hot"
-                    : (seller.motivationScore ?? 0) > 40 ? "warm" : "cold"
-                  const leadResult = await createLead({
-                    ...enrichedLead,
-                    lead_source:      "batchdata",
-                    scraped_from:     "batchdata_motivated_sellers",
-                    intent_type:      "seller",
-                    motivation_score: seller.motivationScore,
-                    temperature:      temp,
-                    raw_scraped_data: seller.rawPayload,
-                  })
-                  if (leadResult.success) leadsCreated++
-                }
+                // Write raw record only — enrichment and promotion run in pipeline-processor
+                const { inserted } = await insertRawRecord({
+                  supabase,
+                  record:      seller,
+                  brokerageId: market.brokerage_id,
+                  marketId:    market.id,
+                  executionId: execRecord?.id ?? null,
+                })
+                if (inserted) leadsCreated++
               }
             }
 
@@ -397,29 +357,29 @@ export async function GET(request: Request) {
                     kw.sources?.includes("nextdoor") && post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
                 )
                 if (matchedKeyword && matchedKeyword.weight >= 3) {
-                  const nameParts = post.author_name?.split(" ") || []
-                  const enrichedLead = await enrichLeadPipeline(
-                    {
-                      first_name: nameParts[0] || "",
-                      last_name: nameParts.slice(1).join(" ") || "",
-                      city: market.city,
-                      state: market.state,
-                    },
-                    { peopledata, osint, validation },
-                    results,
-                  )
-                  if (enrichedLead) {
-                    const leadResult = await createLead({
-                      ...enrichedLead,
-                      lead_source: "nextdoor",
-                      scraped_from: nextdoorUrl,
-                      intent_type: matchedKeyword.category === "buying_intent" ? "buyer" : "seller",
-                      motivation_score: matchedKeyword.weight * 20,
-                      temperature: matchedKeyword.weight >= 4 ? "hot" : "warm",
-                      raw_scraped_data: { post, matched_keyword: matchedKeyword.keyword },
-                    })
-                    if (leadResult.success) socialLeadsCreated++
+                  const nameParts = (post.author_name ?? "").split(" ")
+                  const ndRecord: NormalizedScrapedRecord = {
+                    sourceRecordId:  `nextdoor-${post.post_id ?? `${Date.now()}-${Math.random()}`}`,
+                    source:          "nextdoor",
+                    behaviorType:    "social_intent",
+                    intentType:      matchedKeyword.category === "buying_intent" ? "buyer" : "seller",
+                    intentSignals:   [matchedKeyword.keyword],
+                    firstName:       nameParts[0] || null,
+                    lastName:        nameParts.slice(1).join(" ") || null,
+                    city:            market.city,
+                    state:           market.state,
+                    motivationScore: matchedKeyword.weight * 20,
+                    sourceUrl:       nextdoorUrl,
+                    rawPayload:      { post, matched_keyword: matchedKeyword.keyword },
                   }
+                  const { inserted } = await insertRawRecord({
+                    supabase,
+                    record:      ndRecord,
+                    brokerageId: market.brokerage_id,
+                    marketId:    market.id,
+                    executionId: execRecord?.id ?? null,
+                  })
+                  if (inserted) socialLeadsCreated++
                 }
               }
             }
@@ -442,16 +402,25 @@ export async function GET(request: Request) {
                   post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
               )
               if (matched && (matched.weight ?? 1) >= 3) {
-                await supabase
-                  .from("raw_scraped_leads")
-                  .insert({
-                    brokerage_id: market.brokerage_id,
-                    source: "facebook_group",
-                    raw_data: { post, matched_keyword: matched.keyword, market_id: market.id },
-                    processing_status: "pending",
-                  })
-                  .catch(() => {})
-                socialLeadsCreated++
+                const fbRecord: NormalizedScrapedRecord = {
+                  sourceRecordId:  `fb-${post.post_id ?? `${Date.now()}-${Math.random()}`}`,
+                  source:          "facebook_group",
+                  behaviorType:    "social_intent",
+                  intentType:      "seller",
+                  intentSignals:   [matched.keyword],
+                  city:            market.city,
+                  state:           market.state,
+                  motivationScore: (matched.weight ?? 1) * 15,
+                  rawPayload:      { post, matched_keyword: matched.keyword },
+                }
+                const { inserted } = await insertRawRecord({
+                  supabase,
+                  record:      fbRecord,
+                  brokerageId: market.brokerage_id,
+                  marketId:    market.id,
+                  executionId: execRecord?.id ?? null,
+                })
+                if (inserted) socialLeadsCreated++
               }
             }
           }
@@ -480,16 +449,26 @@ export async function GET(request: Request) {
                   `${post.title ?? ""} ${post.body ?? ""}`.toLowerCase().includes(kw.keyword.toLowerCase()),
               )
               if (matched && (matched.weight ?? 1) >= 2) {
-                await supabase
-                  .from("raw_scraped_leads")
-                  .insert({
-                    brokerage_id: market.brokerage_id,
-                    source: "reddit_intent",
-                    raw_data: { post, matched_keyword: matched.keyword, market_id: market.id },
-                    processing_status: "pending",
-                  })
-                  .catch(() => {})
-                socialLeadsCreated++
+                const redditRecord: NormalizedScrapedRecord = {
+                  sourceRecordId:  `reddit-${post.post_id ?? post.url ?? `${Date.now()}-${Math.random()}`}`,
+                  source:          "reddit_intent",
+                  behaviorType:    "social_intent",
+                  intentType:      "buyer",
+                  intentSignals:   [matched.keyword],
+                  city:            market.city,
+                  state:           market.state,
+                  motivationScore: (matched.weight ?? 1) * 15,
+                  sourceUrl:       post.url ?? null,
+                  rawPayload:      { post, matched_keyword: matched.keyword },
+                }
+                const { inserted } = await insertRawRecord({
+                  supabase,
+                  record:      redditRecord,
+                  brokerageId: market.brokerage_id,
+                  marketId:    market.id,
+                  executionId: execRecord?.id ?? null,
+                })
+                if (inserted) socialLeadsCreated++
               }
             }
           }
@@ -507,31 +486,17 @@ export async function GET(request: Request) {
               // parseCraigslistHtml returns NormalizedScrapedRecord[] filtered by isViableRecord
               const listings = parseCraigslistHtml(scraped.html)
               for (const listing of listings) {
-                const enrichedLead = await enrichLeadPipeline(
-                  {
-                    first_name:   listing.firstName,
-                    last_name:    listing.lastName,
-                    email:        listing.email,
-                    phone:        listing.phone,
-                    address:      listing.propertyAddress,
-                    city:         market.city,
-                    state:        market.state,
-                    identity_key: buildLeadIdentityKey(listing),
-                  },
-                  { peopledata, osint, validation },
-                  results,
-                )
-                if (enrichedLead) {
-                  const leadResult = await createLead({
-                    ...enrichedLead,
-                    lead_source:      "craigslist",
-                    scraped_from:     craigslistUrl,
-                    intent_type:      "seller",
-                    temperature:      listing.motivationScore && listing.motivationScore >= 70 ? "hot" : "warm",
-                    raw_scraped_data:  listing.rawPayload,
-                  })
-                  if (leadResult.success) socialLeadsCreated++
-                }
+                // listing already has city/state from market; ensure they're set
+                listing.city  = listing.city  ?? market.city
+                listing.state = listing.state ?? market.state
+                const { inserted } = await insertRawRecord({
+                  supabase,
+                  record:      listing,
+                  brokerageId: market.brokerage_id,
+                  marketId:    market.id,
+                  executionId: execRecord?.id ?? null,
+                })
+                if (inserted) socialLeadsCreated++
               }
             }
           }
@@ -736,6 +701,61 @@ function buildPropertySearchUrl(site: string, market: any, params: any): string 
     default:
       return `https://www.zillow.com/${location}/`
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// insertRawRecord — Kernel OS canonical raw-record writer
+// ALL scraping paths funnel through this. Zero createLead() calls in this file.
+// ─────────────────────────────────────────────────────────────────────────────
+interface InsertRawRecordParams {
+  supabase: Awaited<ReturnType<typeof import('@/lib/supabase/server').createClient>>
+  record: NormalizedScrapedRecord
+  brokerageId: string
+  marketId: string
+  executionId?: string | null
+}
+
+async function insertRawRecord(params: InsertRawRecordParams): Promise<{ inserted: boolean; rawId?: string }> {
+  if (!isViableRecord(params.record)) return { inserted: false }
+
+  const identityKey = buildLeadIdentityKey(params.record)
+
+  const { data, error } = await params.supabase
+    .from('raw_scraped_leads')
+    .insert({
+      brokerage_id:         params.brokerageId,
+      market_id:            params.marketId,
+      source:               params.record.source,
+      source_record_id:     params.record.sourceRecordId,
+      raw_data:             params.record.rawPayload ?? null,
+      normalized_preview: {
+        firstName:       params.record.firstName    ?? null,
+        lastName:        params.record.lastName     ?? null,
+        email:           params.record.email        ?? null,
+        phone:           params.record.phone        ?? null,
+        city:            params.record.city         ?? null,
+        state:           params.record.state        ?? null,
+        intentType:      params.record.intentType,
+        behaviorType:    params.record.behaviorType,
+        motivationScore: params.record.motivationScore ?? null,
+        intentSignals:   params.record.intentSignals   ?? [],
+        propertyAddress: params.record.propertyAddress ?? null,
+        sourceUrl:       params.record.sourceUrl       ?? null,
+        leadIdentityKey: identityKey,
+      },
+      processing_status:    'pending',
+      scraper_execution_id: params.executionId ?? null,
+    })
+    .select('id')
+    .single()
+
+  // 23505 = unique_violation — duplicate from same source, skip silently
+  if (error?.code === '23505') return { inserted: false }
+  if (error) {
+    console.error('[Scraping] raw_scraped_leads insert failed:', error.message)
+    return { inserted: false }
+  }
+  return { inserted: true, rawId: data?.id }
 }
 
 /**
