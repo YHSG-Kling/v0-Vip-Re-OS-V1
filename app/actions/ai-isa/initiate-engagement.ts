@@ -117,25 +117,52 @@ export async function initiateAIISAEngagement(leadId: string) {
       return { success: false, reason: 'stop:max_touches' }
     }
 
-    // ── Resolve preferred channel ───────────────────────────────────────────
-    // Contact preference overrides lead field; lead field overrides default (email)
-    const preferredChannel: string =
-      (contactRow?.preferred_channel ?? lead.preferred_channel ?? 'email') as string
+    // ── Channels permitted for unconsented leads (no TCPA) ─────────────────
+    const LEAD_ALLOWED_CHANNELS = new Set(['email', 'direct_mail'])
 
-    // ── Call stop flag: block all phone-channel attempts ───────────────────
-    const callStopped: boolean =
-      !!(contactRow?.call_stop_flag ?? lead.call_stop_flag ?? false)
-
-    if (callStopped && PHONE_CHANNELS.has(preferredChannel)) {
-      // Fall back to email if phone/sms is blocked
-      return await dispatchToChannel(
-        'email',
-        lead,
-        contactRow,
-        leadId,
-        supabase
-      )
+    /**
+     * resolveKernelOutreachChannel — single channel source-of-truth for
+     * all lead/contact routing decisions in Kernel OS.
+     *
+     * Rules:
+     *   - Unconsented lead: ONLY email or verified direct_mail
+     *   - Post-conversion contact: follow stored preferences + opt-out state
+     *   - call_stop_flag / sms_unsubscribed / email_opt_out handled here
+     *
+     * Any future phone/SMS path added to Kernel OS MUST route through this
+     * resolver before reaching a dispatch or compliance gate.
+     */
+    function resolveKernelOutreachChannel(
+      lead: Record<string, any>,
+      contactRow: Record<string, any> | null
+    ): string {
+      // Post-conversion contact: follow stored preferences + opt-out state
+      if (contactRow?.id) {
+        const ch = (contactRow.preferred_channel ?? 'email') as string
+        if (contactRow.call_stop_flag && ch === 'phone') return 'email'
+        if (contactRow.sms_unsubscribed && ch === 'sms') return 'email'
+        if (contactRow.email_opt_out && ch === 'email') {
+          const hasAddr = !!(
+            contactRow.mailing_address ||
+            (contactRow.mailing_city && contactRow.mailing_state)
+          )
+          return hasAddr ? 'direct_mail' : 'email'
+        }
+        return ch
+      }
+      // Lead only (unconsented): ONLY email or verified direct_mail
+      const requested = (lead.preferred_channel ?? 'email') as string
+      if (!LEAD_ALLOWED_CHANNELS.has(requested)) return 'email'
+      if (requested === 'direct_mail') {
+        const hasVerifiedAddr = !!(
+          lead.mailing_address && lead.mailing_address_verified === true
+        )
+        return hasVerifiedAddr ? 'direct_mail' : 'email'
+      }
+      return 'email'
     }
+
+    const preferredChannel = resolveKernelOutreachChannel(lead, contactRow)
 
     return await dispatchToChannel(
       preferredChannel,
@@ -351,8 +378,26 @@ async function dispatchToChannel(
     }
   }
 
+  // ── PHONE ──────────────────────────────────────────────────────────────
+  if (channel === 'phone') {
+    // TCPA double-guard: phone is never permitted for unconsented leads
+    if (!contactRow?.id) {
+      console.error('[AI-ISA][TCPA] Phone blocked for unconsented lead', { leadId })
+      return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
+    }
+    // Phone dispatch implementation lives in the telephony provider layer.
+    // Fall through to email until voice dispatch is wired here.
+    return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
+  }
+
   // ── SMS ────────────────────────────────────────────────────────────────
   if (channel === 'sms') {
+    // TCPA double-guard: SMS is never permitted for unconsented leads
+    if (!contactRow?.id) {
+      console.error('[AI-ISA][TCPA] SMS blocked for unconsented lead', { leadId })
+      return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
+    }
+
     const phone = contactRow?.phone ?? lead.phone
     if (!phone) {
       return { success: false, reason: 'no_phone', channel }
