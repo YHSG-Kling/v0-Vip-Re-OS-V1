@@ -768,6 +768,7 @@ export default function MarketingStudioClient() {
               <CampaignLauncherPanel
                 listings={listings}
                 agentId={agentId}
+                brokerageId={brokerageId}
                 onCampaignCreated={() => {
                   loadCampaigns()
                   loadInitialData()

@@ -40,6 +40,7 @@ import {
   getPublishingStats,
   getSavedIdeas,
 } from "@/app/actions/content-studio"
+import { checkContentCompliance } from "@/app/dashboard/marketing/studio/components/ad-os/ad-os-actions"
 import { aiWriteNewsletterContent, aiGenerateSubjectLines } from "@/app/actions/ai-newsletter"
 import { createMailCampaign } from "@/app/actions/direct-mail"
 import { createClient } from "@/lib/supabase/client"
@@ -101,6 +102,12 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
     body: string
     topic: string
   } | null>(null)
+
+  // Compliance state — shared across newsletter and direct mail publish paths
+  const [newsletterComplianceBlockers, setNewsletterComplianceBlockers] = useState<string[]>([])
+  const [newsletterComplianceWarnings, setNewsletterComplianceWarnings] = useState<string[]>([])
+  const [mailComplianceBlockers, setMailComplianceBlockers] = useState<string[]>([])
+  const [mailComplianceWarnings, setMailComplianceWarnings] = useState<string[]>([])
 
   // Long-form video state
   const [longVideos, setLongVideos] = useState<any[]>([])
@@ -272,6 +279,25 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       toast.info("Loading brokerage profile...")
       return
     }
+
+    // If a drafted body already exists, run compliance before allowing send
+    if (generatedNewsletterContent?.body) {
+      setNewsletterComplianceBlockers([])
+      setNewsletterComplianceWarnings([])
+      const compliance = await checkContentCompliance({
+        content: generatedNewsletterContent.body,
+        brokerageId,
+        contentType: "newsletter",
+      })
+      if (!compliance.passed) {
+        setNewsletterComplianceBlockers(compliance.blockers)
+        setNewsletterComplianceWarnings(compliance.warnings)
+        toast.error("Newsletter blocked by compliance — review issues below")
+        return
+      }
+      if (compliance.warnings.length > 0) setNewsletterComplianceWarnings(compliance.warnings)
+    }
+
     setIsProcessing("create-newsletter")
     try {
       const topic = newNewsletter.title || "Monthly real estate market update"
@@ -290,6 +316,8 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
         }),
       ])
       if (contentResult?.success) {
+        setNewsletterComplianceBlockers([])
+        setNewsletterComplianceWarnings([])
         setGeneratedNewsletterContent({
           subjects: subjectResult?.subjectLines ?? [],
           body: contentResult.content ?? "",
@@ -316,6 +344,29 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       toast.info("Loading brokerage profile...")
       return
     }
+
+    // Run compliance gate on the direct mail copy before creating the campaign
+    const mailCopyContent = [newMail.contentHeadline, newMail.contentBody, newMail.contentCta]
+      .filter(Boolean)
+      .join("\n")
+
+    if (mailCopyContent.trim()) {
+      setMailComplianceBlockers([])
+      setMailComplianceWarnings([])
+      const compliance = await checkContentCompliance({
+        content: mailCopyContent,
+        brokerageId,
+        contentType: "ad",
+      })
+      if (!compliance.passed) {
+        setMailComplianceBlockers(compliance.blockers)
+        setMailComplianceWarnings(compliance.warnings)
+        toast.error("Direct mail copy blocked by compliance — review issues below")
+        return
+      }
+      if (compliance.warnings.length > 0) setMailComplianceWarnings(compliance.warnings)
+    }
+
     setIsProcessing("create-mail")
     try {
       const result = await createMailCampaign({
@@ -1221,6 +1272,24 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
                       placeholder="What recipients see in inbox"
                     />
                   </div>
+                  {newsletterComplianceBlockers.length > 0 && (
+                    <div className="rounded border border-red-200 bg-red-50 p-3">
+                      <p className="text-sm font-semibold text-red-800 mb-1">Compliance issues — fix before sending</p>
+                      {newsletterComplianceBlockers.map((b) => (
+                        <p key={b} className="text-xs text-red-700 mt-1">{b}</p>
+                      ))}
+                    </div>
+                  )}
+
+                  {newsletterComplianceWarnings.length > 0 && newsletterComplianceBlockers.length === 0 && (
+                    <div className="rounded border border-yellow-200 bg-yellow-50 p-3">
+                      <p className="text-sm font-semibold text-yellow-800 mb-1">Compliance warnings — review before sending</p>
+                      {newsletterComplianceWarnings.map((w) => (
+                        <p key={w} className="text-xs text-yellow-700 mt-1">{w}</p>
+                      ))}
+                    </div>
+                  )}
+
                   <Button
                     onClick={handleCreateNewsletter}
                     disabled={!newNewsletter.title || isProcessing === "create-newsletter"}
@@ -1384,6 +1453,24 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
                         </div>
                       </div>
                     </div>
+
+                    {mailComplianceBlockers.length > 0 && (
+                      <div className="rounded border border-red-200 bg-red-50 p-3 mt-3">
+                        <p className="text-sm font-semibold text-red-800 mb-1">Compliance issues — fix before sending</p>
+                        {mailComplianceBlockers.map((b) => (
+                          <p key={b} className="text-xs text-red-700 mt-1">{b}</p>
+                        ))}
+                      </div>
+                    )}
+
+                    {mailComplianceWarnings.length > 0 && mailComplianceBlockers.length === 0 && (
+                      <div className="rounded border border-yellow-200 bg-yellow-50 p-3 mt-3">
+                        <p className="text-sm font-semibold text-yellow-800 mb-1">Compliance warnings — review before sending</p>
+                        {mailComplianceWarnings.map((w) => (
+                          <p key={w} className="text-xs text-yellow-700 mt-1">{w}</p>
+                        ))}
+                      </div>
+                    )}
 
                     {/* Send Provider Selection */}
                     <div className="flex gap-3 pt-4">

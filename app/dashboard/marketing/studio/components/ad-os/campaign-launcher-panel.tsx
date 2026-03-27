@@ -40,6 +40,7 @@ interface Listing {
 interface Props {
   listings: Listing[]
   agentId: string
+  brokerageId?: string
   onCampaignCreated: () => void
 }
 
@@ -56,7 +57,7 @@ const CAMPAIGN_TYPES = [
   { value: "recruitment", label: "Recruitment" },
 ]
 
-export function CampaignLauncherPanel({ listings, agentId, onCampaignCreated }: Props) {
+export function CampaignLauncherPanel({ listings, agentId, brokerageId, onCampaignCreated }: Props) {
   const [campaignName, setCampaignName] = useState("")
   const [campaignType, setCampaignType] = useState<"listing" | "brand" | "recruitment" | "event" | "seasonal">("listing")
   const [budgetTotal, setBudgetTotal] = useState<number>(500)
@@ -72,6 +73,8 @@ export function CampaignLauncherPanel({ listings, agentId, onCampaignCreated }: 
   } | null>(null)
   const [readinessStatus, setReadinessStatus] = useState<"ready" | "blocked" | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [complianceBlockers, setComplianceBlockers] = useState<string[]>([])
+  const [complianceWarnings, setComplianceWarnings] = useState<string[]>([])
 
   const selectedListing = listings.find((l) => l.id === selectedListingId)
 
@@ -104,16 +107,29 @@ export function CampaignLauncherPanel({ listings, agentId, onCampaignCreated }: 
   async function handleLaunch() {
     setStage("launching")
     setError(null)
+    setComplianceBlockers([])
+    setComplianceWarnings([])
+
+    const adCopyText =
+      previewContent.trim() ||
+      `New campaign: ${campaignName}${selectedListing ? ` for ${selectedListing.address}, ${selectedListing.city}` : ""}`
 
     const res = await launchListingCampaign({
       campaignName: campaignName.trim(),
       campaignType,
       budgetTotal,
       listingId: selectedListingId || undefined,
+      adCopyText,
+      brokerageId: brokerageId ?? undefined,
     })
 
     if (!res.success) {
-      setError(res.error ?? "Launch failed")
+      if ((res as any).complianceBlocked) {
+        setComplianceBlockers((res as any).blockers ?? [])
+        setComplianceWarnings((res as any).warnings ?? [])
+      } else {
+        setError(res.error ?? "Launch failed")
+      }
       setStage("predicted")
       return
     }
@@ -133,6 +149,8 @@ export function CampaignLauncherPanel({ listings, agentId, onCampaignCreated }: 
     setReadinessStatus(null)
     setStage("form")
     setError(null)
+    setComplianceBlockers([])
+    setComplianceWarnings([])
   }
 
   if (stage === "done") {
@@ -320,6 +338,30 @@ export function CampaignLauncherPanel({ listings, agentId, onCampaignCreated }: 
 
         {error && (
           <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{error}</p>
+        )}
+
+        {complianceBlockers.length > 0 && (
+          <div className="rounded border border-red-200 bg-red-50 p-3">
+            <p className="text-sm font-semibold text-red-800 mb-1">Compliance issues — fix before launching</p>
+            {complianceBlockers.map((b) => (
+              <p key={b} className="text-xs text-red-700 flex items-start gap-1 mt-1">
+                <XCircle className="h-3 w-3 mt-0.5 shrink-0" />
+                {b}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {complianceWarnings.length > 0 && complianceBlockers.length === 0 && (
+          <div className="rounded border border-yellow-200 bg-yellow-50 p-3">
+            <p className="text-sm font-semibold text-yellow-800 mb-1">Compliance warnings — review before launching</p>
+            {complianceWarnings.map((w) => (
+              <p key={w} className="text-xs text-yellow-700 flex items-start gap-1 mt-1">
+                <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                {w}
+              </p>
+            ))}
+          </div>
         )}
 
         {/* Launch button — only visible after prediction */}

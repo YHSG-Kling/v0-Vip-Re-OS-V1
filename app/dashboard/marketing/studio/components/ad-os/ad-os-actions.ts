@@ -13,6 +13,7 @@ import { evaluateContentReadiness } from "@/app/actions/campaign-readiness"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { scheduleSocialPost } from "@/app/actions/social-media-automation"
 import { createCampaign } from "@/app/actions/marketing-studio"
+import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
 import type { ContentType } from "@/lib/content/performance-predictor"
 import type { ReadinessInput } from "@/lib/campaign-readiness/readiness-evaluator"
 
@@ -274,6 +275,7 @@ export async function loadRecentPredictions(brokerageId: string) {
 
 // ─── launchListingCampaign ────────────────────────────────────────────────────
 // Creates a campaign from the Campaign Launcher panel.
+// Runs the compliance gate on the ad copy before creating the campaign record.
 
 export async function launchListingCampaign(params: {
   campaignName: string
@@ -281,11 +283,63 @@ export async function launchListingCampaign(params: {
   budgetTotal: number
   listingId?: string
   visibilityScope?: "agent" | "team" | "brokerage"
+  adCopyText?: string
+  brokerageId?: string
 }) {
+  // ── Compliance gate ───────────────────────────────────────────────────────
+  const adCopyText = params.adCopyText?.trim() || params.campaignName
+  const complianceResult = await runComplianceGate({
+    content: adCopyText,
+    brokerageId: params.brokerageId ?? null,
+    authorUserId: "",
+    contentType: "ad",
+  }).catch(() => ({ passed: true, violations: [], requiresHumanReview: false }))
+
+  if (!complianceResult.passed) {
+    const blockers = complianceResult.violations
+      .filter((v) => v.severity === "blocker")
+      .map((v) => v.detail)
+    const warnings = complianceResult.violations
+      .filter((v) => v.severity === "warning")
+      .map((v) => v.detail)
+    return {
+      success: false,
+      complianceBlocked: true,
+      blockers,
+      warnings,
+      error: `Ad copy failed compliance: ${blockers.join(". ")}`,
+    }
+  }
+
   return createCampaign({
     campaignName: params.campaignName,
     campaignType: params.campaignType,
     budgetTotal: params.budgetTotal,
     visibilityScope: params.visibilityScope ?? "agent",
   })
+}
+
+// ─── checkContentCompliance ───────────────────────────────────────────────────
+// Thin server-action wrapper so client components can call the compliance gate
+// without bundling the gate logic client-side.
+
+export async function checkContentCompliance(params: {
+  content: string
+  brokerageId: string
+  contentType: "social_post" | "ad" | "listing_remarks" | "comment_reply" | "newsletter" | "blog"
+}): Promise<{ passed: boolean; blockers: string[]; warnings: string[] }> {
+  try {
+    const result = await runComplianceGate({
+      content: params.content,
+      brokerageId: params.brokerageId || null,
+      authorUserId: "",
+      contentType: params.contentType,
+    })
+    const blockers = result.violations.filter((v) => v.severity === "blocker").map((v) => v.detail)
+    const warnings = result.violations.filter((v) => v.severity === "warning").map((v) => v.detail)
+    return { passed: result.passed, blockers, warnings }
+  } catch {
+    // Fail open — do not block publishing on gate errors
+    return { passed: true, blockers: [], warnings: [] }
+  }
 }
