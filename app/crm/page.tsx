@@ -40,6 +40,7 @@ import {
 import Link from "next/link"
 import { format } from "date-fns"
 import { toast } from "sonner"
+import { cn } from "@/lib/utils"
 
 // Import all 10 Contact OS components
 import {
@@ -93,6 +94,98 @@ const TYPE_COLORS: Record<string, string> = {
   other: "bg-gray-50 text-gray-600",
 }
 
+function ContactOSSummary({
+  contact,
+  copilotPlan,
+  portalStatus,
+  lastTouch,
+  onMessageClick,
+}: {
+  contact: Contact
+  copilotPlan: any
+  portalStatus?: string | null
+  lastTouch?: string | null
+  onMessageClick: () => void
+}) {
+  const daysSince =
+    lastTouch != null
+      ? Math.floor((Date.now() - new Date(lastTouch).getTime()) / 86400000)
+      : null
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap px-4 py-2 border-b bg-muted/30 rounded-t-md">
+      {contact.contact_persona && (
+        <Badge variant="outline" className="capitalize text-xs">
+          {contact.contact_persona.replace(/_/g, " ")}
+        </Badge>
+      )}
+
+      {contact.status && (
+        <Badge
+          className={cn(
+            "text-xs border-0",
+            contact.status === "active" || contact.status === "lifetime_customer"
+              ? "bg-green-100 text-green-800"
+              : contact.status === "nurture" || contact.status === "contacted"
+              ? "bg-blue-100 text-blue-800"
+              : "bg-gray-100 text-gray-700"
+          )}
+        >
+          {contact.status.replace(/_/g, " ")}
+        </Badge>
+      )}
+
+      {portalStatus && (
+        <Badge variant="outline" className="text-xs">
+          Portal: {portalStatus}
+        </Badge>
+      )}
+
+      {daysSince !== null && (
+        <span
+          className={cn(
+            "text-xs",
+            daysSince > 30
+              ? "text-red-600 font-medium"
+              : daysSince > 14
+              ? "text-amber-600"
+              : "text-muted-foreground"
+          )}
+        >
+          {daysSince === 0
+            ? "Touched today"
+            : daysSince === 1
+            ? "Last touch: yesterday"
+            : `Last touch: ${daysSince}d ago`}
+        </span>
+      )}
+
+      {copilotPlan?.next_action && (
+        <span className="text-xs text-indigo-700 truncate max-w-[220px]">
+          AI Plan: {copilotPlan.next_action.slice(0, 60)}
+          {copilotPlan.next_action.length > 60 ? "…" : ""}
+        </span>
+      )}
+
+      <div className="ml-auto flex gap-1.5 shrink-0">
+        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" asChild>
+          <Link href={`/portal/${contact.id}`} target="_blank">
+            Portal
+          </Link>
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 px-2 text-xs"
+          onClick={onMessageClick}
+        >
+          Message
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export default function CRMPage() {
   const { user, role, loading: authLoading } = useAuth()
   const searchParams = useSearchParams()
@@ -133,6 +226,9 @@ export default function CRMPage() {
   const [contactInsights, setContactInsights] = useState<ContactInsight[]>([])
   const [loadingInsights, setLoadingInsights] = useState(false)
   const [draftingFor, setDraftingFor] = useState<string | null>(null)
+
+  // Portal invite status for selected contact
+  const [portalInviteStatus, setPortalInviteStatus] = useState<string | null>(null)
 
   // AI Copilot Plan state
   const [copilotPlan, setCopilotPlan] = useState<any>(null)
@@ -280,6 +376,24 @@ export default function CRMPage() {
     }
   }, [selectedContactId, agentId, loadContactDetail])
 
+  // Fetch portal invite status when a contact is selected — non-blocking
+  useEffect(() => {
+    if (!selectedContactId) {
+      setPortalInviteStatus(null)
+      return
+    }
+    const supabase = createClient()
+    supabase
+      .from("portal_contact_invites")
+      .select("status")
+      .eq("contact_id", selectedContactId)
+      .order("invited_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => setPortalInviteStatus(data?.status ?? null))
+      .catch(() => {/* non-blocking */})
+  }, [selectedContactId])
+
   // Fetch active copilot plan when a contact is selected
   useEffect(() => {
     if (!selectedContactId) {
@@ -420,6 +534,17 @@ export default function CRMPage() {
               onEnableAutopilot={handleEnableAutopilot}
               onToggleAutopilot={handleToggleAutopilot}
               loading={isPending}
+            />
+
+            {/* Contact OS Summary Strip */}
+            <ContactOSSummary
+              contact={selectedContact}
+              copilotPlan={copilotPlan}
+              portalStatus={portalInviteStatus}
+              lastTouch={selectedContact.last_contact_date ?? null}
+              onMessageClick={() =>
+                router.push(`/dashboard/inbox?contact=${selectedContactId}`)
+              }
             />
 
             {/* Main content grid */}
