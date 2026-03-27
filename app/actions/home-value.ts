@@ -207,6 +207,24 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       return { success: false, error: "Unable to determine brokerage" }
     }
 
+    // Agent assignment fallback — if no agent resolved from slug, assign the
+    // brokerage's primary active agent (earliest-created active agent = owner/primary).
+    // This ensures every home value contact has an agent owner immediately.
+    if (!resolvedAgentId) {
+      const { data: primaryAgent } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("brokerage_id", resolvedBrokerageId)
+        .eq("is_active", true)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle()
+
+      if (primaryAgent?.id) {
+        resolvedAgentId = primaryAgent.id
+      }
+    }
+
     // Step 2: Check for existing contact by email OR phone in this brokerage
     const normalizedPhone = phone.replace(/\D/g, "")
 
@@ -308,41 +326,11 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     }
 
     // ── Kernel OS seller intake chain ────────────────────────────────────────
-    // A home value request is a motivated seller signal. If this contact did
-    // not already exist, insert a raw scraped lead so Kernel's chronology
-    // processor picks it up for full lead scoring + deduplication.
-
-    if (!existingContact) {
-      await supabase.from("raw_scraped_leads").insert({
-        brokerage_id: resolvedBrokerageId,
-        source: "home_value_form",
-        raw_data: {
-          first_name: firstName,
-          last_name: lastName,
-          email,
-          phone: tcpaConsent ? phone : null,
-          property_address: propertyAddress,
-          city,
-          state,
-          zip_code: zipCode,
-          sell_timeline: qualificationData?.sellTimeline ?? null,
-          motivation: qualificationData?.motivation ?? null,
-          valuation_request_id: valuationRequest.id,
-          tcpa_consent: tcpaConsent,
-        },
-        normalized_preview: {
-          firstName,
-          lastName,
-          email,
-          phone: tcpaConsent ? phone : null,
-          city,
-          state,
-          intentType: "seller",
-          behaviorType: "home_value_inquiry",
-        },
-        processing_status: "pending",
-      }).catch(() => {})
-    }
+    // Home value form submitters have given explicit TCPA consent and are
+    // created as contacts directly above. No raw_scraped_leads row is needed —
+    // that table is for unauthenticated/non-consented inbound signals.
+    // The lifecycle_event (Step 8) and agent notification (Step 9) below are
+    // sufficient for Kernel to pick up this contact.
 
     // Activity for immediate agent CRM visibility
     if (resolvedAgentId) {
