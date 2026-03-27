@@ -235,7 +235,7 @@ export function ContactDetail({
         brokerage_id: brokerageId ?? (contact as any).brokerage_id,
         type: "isa_escalation",
         title: "Contact escalated for immediate attention",
-        message: `Contact ${contact.first_name} ${contact.last_name} has been escalated from the CRM.`,
+        body: `Contact ${contact.first_name} ${contact.last_name} has been escalated from the CRM.`,
         entity_type: "contact",
         entity_id: contact.id,
         is_read: false,
@@ -251,9 +251,15 @@ export function ContactDetail({
     try {
       const { createClient } = await import("@/lib/supabase/client")
       const supabase = createClient()
+      // aiisa_state lives in ai_isa_qualifications; contacts table has no such column
+      await supabase
+        .from("ai_isa_qualifications")
+        .update({ stage: hold ? "compliance_hold" : "ai_active" })
+        .eq("contact_id", contact.id)
+      // Also stamp on contact outreach pause so ISA engine stops immediately
       await supabase
         .from("contacts")
-        .update({ aiisa_state: hold ? "compliance_hold" : "ai_active", updated_at: new Date().toISOString() })
+        .update({ ai_outreach_paused: hold, updated_at: new Date().toISOString() })
         .eq("id", contact.id)
       toast.success(hold ? "Compliance hold placed" : "Compliance hold removed")
       router.refresh()
@@ -262,7 +268,8 @@ export function ContactDetail({
   }
 
   const isAiPaused = (contact as any).ai_outreach_paused
-  const isComplianceHold = (contact as any).aiisa_state === "compliance_hold"
+  // compliance hold is read from ai_isa_qualifications stage; fall back to paused flag
+  const isComplianceHold = (contact as any).isa_stage === "compliance_hold"
   const hasPhone = !!contact.phone && !(contact as any).call_stop_flag
   const hasEmail = !!contact.email && !(contact as any).email_opt_out
   const hasAddress = !!((contact as any).mailing_address || (contact as any).address)
