@@ -53,17 +53,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const supabase = createServiceClient()
 
-  // ── 0. Resolve contactId from lead when not explicitly supplied ───────────
-  // A call can be initiated with either a contactId OR a leadId. When only
-  // a leadId is given, check whether the lead already has a linked contact
-  // and use that for compliance checks and ai_isa_calls attribution.
+  // ── 0. Resolve contactId only when the lead already has a linked contact ──
+  // Architecture rules:
+  //   - contactId provided directly → call operates from contact
+  //   - leadId provided + lead has contact_id → resolve and operate from contact
+  //   - leadId provided + lead has NO contact_id → call operates from lead directly;
+  //     do NOT create a contact — conversion only happens on positive call outcome
+  let resolvedLeadId: string | null = leadId ?? null
   if (!contactId && leadId) {
     const { data: leadRow } = await supabase
       .from("leads")
       .select("contact_id")
       .eq("id", leadId)
       .maybeSingle()
-    if (leadRow?.contact_id) contactId = leadRow.contact_id
+    if (leadRow?.contact_id) {
+      // Lead already has a contact — operate from the contact
+      contactId = leadRow.contact_id
+      resolvedLeadId = null // contact takes precedence; no need to track lead separately
+    }
+    // If leadRow?.contact_id is null — leave contactId as null, call from lead
   }
 
   // ── 1. Optional compliance check when contactId is available ──────────────
@@ -194,12 +202,16 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   // ── 4. INSERT voice_calls ──────────────────────────────────────────────────
+  // contact_id and lead_id are mutually exclusive per call origin:
+  //   contact_id set → call from a contact record
+  //   lead_id set    → call from a lead with no contact yet
   const { data: voiceCallRow } = await supabase
     .from("voice_calls")
     .insert({
       brokerage_id: brokerageId,
       agent_id: agentId,
       contact_id: contactId ?? null,
+      lead_id: resolvedLeadId ?? null,
       direction: "outbound",
       status: "initiated",
       call_type: "isa_ai",
@@ -213,6 +225,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   await supabase.from("ai_isa_calls").insert({
     brokerage_id: brokerageId,
     contact_id: contactId ?? null,
+    lead_id: resolvedLeadId ?? null,
     voice_call_id: voiceCallRow?.id ?? null,
     script_used: callPurpose,
     appointment_set: false,

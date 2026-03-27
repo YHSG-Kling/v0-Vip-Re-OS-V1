@@ -74,42 +74,46 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const direction: string = call.direction ?? "outbound"
     const phoneFrom: string | null = call.customer?.number ?? null
     const phoneTo: string | null = call.phoneNumber?.number ?? null
+    const callerPhone = direction === "inbound" ? phoneFrom : null
 
-    // Write initial voice_calls row
-    await supabase.from("voice_calls").insert({
-      brokerage_id: brokerageId,
-      vapi_call_id: callId,
-      direction,
-      call_type: "isa_ai",
-      phone_from: direction === "inbound" ? phoneFrom : phoneTo,
-      phone_to: direction === "inbound" ? phoneTo : phoneFrom,
-      status: "in_progress",
-      started_at: new Date().toISOString(),
-    })
+    // ── Inbound: resolve or create record BEFORE writing voice_calls ─────────
+    let resolvedContactId: string | null = null
+    let resolvedLeadId: string | null = null
 
-    // ── Inbound authority gate ─────────────────────────────────────────────
-    if (direction === "inbound" && phoneFrom && brokerageId) {
-      const digits = normalizePhone(phoneFrom)
+    if (direction === "inbound" && callerPhone && brokerageId) {
+      const digits = normalizePhone(callerPhone)
 
-      // Resolve contact (prefer exact match, then leads) — include call_stop_flag
-      const { data: contact } = await supabase
+      // 1. Check contacts first
+      const { data: existingContact } = await supabase
         .from("contacts")
         .select("id, tcpa_consent, dnc_status, status, isa_reengage_allowed, call_stop_flag")
         .eq("phone_digits", digits)
+        .eq("brokerage_id", brokerageId)
         .maybeSingle()
 
-      if (contact) {
+      if (existingContact) {
+        // Known contact — update record to reflect inbound call, stamp TCPA consent
+        // (the act of calling in IS consent for that communication)
+        await supabase
+          .from("contacts")
+          .update({
+            tcpa_consent: true,
+            tcpa_consent_date: existingContact.tcpa_consent ? existingContact.tcpa_consent : new Date().toISOString(),
+            last_contacted_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existingContact.id)
+
+        // Block if DNC / call_stop_flag / restricted state that has opted out
         const blocked =
-          contact.call_stop_flag ||
-          contact.dnc_status ||
-          !contact.tcpa_consent ||
-          (RESTRICTED_STATES.has(contact.status ?? "") && !contact.isa_reengage_allowed)
+          existingContact.call_stop_flag ||
+          existingContact.dnc_status ||
+          (RESTRICTED_STATES.has(existingContact.status ?? "") && !existingContact.isa_reengage_allowed)
 
         const violations: string[] = []
-        if (contact.call_stop_flag) violations.push("CallStop: Contact has requested no calls")
-        if (contact.dnc_status) violations.push("TCPA: On Do Not Contact list")
-        if (!contact.tcpa_consent) violations.push("TCPA: No phone consent on file")
-        if (RESTRICTED_STATES.has(contact.status ?? "") && !contact.isa_reengage_allowed)
+        if (existingContact.call_stop_flag) violations.push("CallStop: Contact has requested no calls")
+        if (existingContact.dnc_status) violations.push("TCPA: On Do Not Contact list")
+        if (RESTRICTED_STATES.has(existingContact.status ?? "") && !existingContact.isa_reengage_allowed)
           violations.push("Authority: Contact in restricted state")
 
         await supabase.from("compliance_events").insert({
@@ -121,27 +125,119 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           actor_role: "isa",
           actor_user_id: "system",
           entity_type: "contact",
-          entity_id: contact.id,
+          entity_id: existingContact.id,
           message_type: "phone",
         })
 
         if (blocked) {
-          await supabase
-            .from("voice_calls")
-            .update({ outcome: "authority_blocked", compliance_passed: false, compliance_flags: violations })
-            .eq("vapi_call_id", callId)
-
-          // Tell VAPI to play a block message and hang up
+          await supabase.from("voice_calls").insert({
+            brokerage_id: brokerageId,
+            vapi_call_id: callId,
+            direction,
+            call_type: "isa_ai",
+            contact_id: existingContact.id,
+            phone_from: callerPhone,
+            phone_to: phoneTo,
+            status: "blocked",
+            outcome: "authority_blocked",
+            compliance_passed: false,
+            compliance_flags: violations,
+            started_at: new Date().toISOString(),
+          })
           return NextResponse.json(
-            {
-              response:
-                "This line is managed by your real estate agent. Please contact your agent directly.",
-            },
+            { response: "This line is managed by your real estate agent. Please contact your agent directly." },
             { status: 200 }
           )
         }
+
+        resolvedContactId = existingContact.id
+
+      } else {
+        // 2. Check leads
+        const { data: existingLead } = await supabase
+          .from("leads")
+          .select("id, contact_id, call_stop_flag, dnc_status")
+          .eq("phone_digits", digits)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+
+        if (existingLead) {
+          // Lead exists — if it has a linked contact use that, otherwise track on lead
+          if (existingLead.contact_id) {
+            resolvedContactId = existingLead.contact_id
+          } else {
+            resolvedLeadId = existingLead.id
+          }
+
+          // Block if lead has DNC / call_stop_flag
+          if (existingLead.call_stop_flag || existingLead.dnc_status) {
+            await supabase.from("voice_calls").insert({
+              brokerage_id: brokerageId,
+              vapi_call_id: callId,
+              direction,
+              call_type: "isa_ai",
+              lead_id: resolvedLeadId,
+              contact_id: resolvedContactId,
+              phone_from: callerPhone,
+              phone_to: phoneTo,
+              status: "blocked",
+              outcome: "authority_blocked",
+              compliance_passed: false,
+              compliance_flags: ["CallStop: Lead has requested no contact"],
+              started_at: new Date().toISOString(),
+            })
+            return NextResponse.json(
+              { response: "This line is managed by your real estate agent. Please contact your agent directly." },
+              { status: 200 }
+            )
+          }
+
+        } else {
+          // 3. Unknown caller — calling is consent; create a contact record immediately
+          const { data: newContact } = await supabase
+            .from("contacts")
+            .insert({
+              brokerage_id: brokerageId,
+              phone: callerPhone,
+              phone_digits: digits,
+              source: "inbound_call",
+              tcpa_consent: true,
+              tcpa_consent_date: new Date().toISOString(),
+              preferred_channel: "phone",
+              last_contacted_at: new Date().toISOString(),
+              isa_reengage_allowed: true,
+              dnc_status: false,
+            })
+            .select("id")
+            .single()
+
+          if (newContact?.id) {
+            resolvedContactId = newContact.id
+            // Queue enrichment for the new contact
+            await supabase.from("contact_enrichment_queue").insert({
+              contact_id: newContact.id,
+              brokerage_id: brokerageId,
+              status: "pending",
+              source: "inbound_call",
+            }).catch(() => {})
+          }
+        }
       }
     }
+
+    // Write voice_calls row with resolved IDs
+    await supabase.from("voice_calls").insert({
+      brokerage_id: brokerageId,
+      vapi_call_id: callId,
+      direction,
+      call_type: "isa_ai",
+      contact_id: resolvedContactId,
+      lead_id: resolvedLeadId ?? null,
+      phone_from: direction === "inbound" ? callerPhone : phoneTo,
+      phone_to: direction === "inbound" ? phoneTo : callerPhone,
+      status: "in_progress",
+      started_at: new Date().toISOString(),
+    })
 
     return NextResponse.json({ received: true, event: "call-started" })
   }
@@ -203,10 +299,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       structuredData?.suggested_next_action ??
       (vapiAnalysis?.successEvaluation === "true" ? "schedule_agent_handoff" : "continue_nurturing")
 
-    // Look up our voice_calls row
+    // Look up our voice_calls row — include lead_id for lead-based routing
     const { data: voiceCall } = await supabase
       .from("voice_calls")
-      .select("id, brokerage_id, agent_id, contact_id, direction")
+      .select("id, brokerage_id, agent_id, contact_id, lead_id, direction")
       .eq("vapi_call_id", callId)
       .maybeSingle()
 
@@ -331,9 +427,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // 8. Negative response → halt all future AI outreach + set DNC
-      // Checks both VAPI sentiment analysis AND text-based negative phrases in the transcript.
-      const isNegativeSentiment =
+      // 8. Post-call lead / contact routing
+      //
+      // Architecture rules:
+      //   Contact record → update contact with call notes; positive = notify agent
+      //   Lead with contact_id → calls already operated from contact; same as above
+      //   Lead (no contact_id) + POSITIVE → assign agent + convert to contact
+      //   Lead (no contact_id) + NEGATIVE → notes only, block phone/SMS, do NOT convert
+
+      const isPositiveOutcome =
+        sentiment === "positive" ||
+        suggestedNextAction === "schedule_agent_handoff" ||
+        intentPrimary === "appointment_requested" ||
+        intentPrimary === "ready_to_buy" ||
+        intentPrimary === "ready_to_list"
+
+      const isNegativeOutcome =
         sentiment === "negative" ||
         suggestedNextAction === "do_not_contact" ||
         objections.some((o: string) =>
@@ -342,27 +451,97 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           )
         )
 
-      if (isNegativeSentiment && voiceCall.contact_id) {
-        const { haltEngagementForNegativeReply } = await import(
-          "@/lib/ai-isa/conversation-handler"
-        )
-        // Re-use transcript as the "body" for phrase detection
-        await haltEngagementForNegativeReply({
-          leadId: voiceCall.contact_id,
-          body: transcript,
-          brokerageId: voiceCall.brokerage_id ?? "",
-        }).catch(() => {})
+      const callNoteSummary = `[AI Call ${new Date().toLocaleDateString()}] ${summary || `Intent: ${intentPrimary}. Urgency: ${urgencyScore}/100.`}`
 
-        // Also mark on the contact directly (haltEngagementForNegativeReply covers leads)
-        await supabase
-          .from("contacts")
-          .update({
-            dnc_status: true,
-            isa_reengage_allowed: false,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", voiceCall.contact_id)
-          .catch(() => {})
+      if (voiceCall.lead_id && !voiceCall.contact_id) {
+        // ── Call operated from a LEAD (no contact yet) ──────────────────────
+        if (isPositiveOutcome) {
+          // Positive: assign agent + convert lead to contact for further follow-up
+          const { acceptAIISAHandoff } = await import("@/app/actions/ai-isa/accept-handoff")
+          await acceptAIISAHandoff({
+            leadId: voiceCall.lead_id,
+            brokerageId: voiceCall.brokerage_id ?? "",
+            actorUserId: "system",
+          }).catch(() => {})
+        } else if (isNegativeOutcome) {
+          // Negative: notes only, block phone + SMS, do NOT convert to contact
+          await supabase
+            .from("leads")
+            .update({
+              call_stop_flag: true,
+              ai_isa_owner: false,
+              notes: callNoteSummary,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", voiceCall.lead_id)
+            .catch(() => {})
+
+          await supabase.from("activities").insert({
+            brokerage_id: voiceCall.brokerage_id,
+            contact_id: voiceCall.lead_id,
+            activity_type: "call_negative_outcome",
+            title: "Lead requested no further contact via phone",
+            description: callNoteSummary,
+            status: "completed",
+          }).catch(() => {})
+        } else {
+          // Neutral: add notes, keep lead in AI queue
+          await supabase
+            .from("leads")
+            .update({ notes: callNoteSummary, updated_at: new Date().toISOString() })
+            .eq("id", voiceCall.lead_id)
+            .catch(() => {})
+        }
+
+      } else if (voiceCall.contact_id) {
+        // ── Call operated from a CONTACT ────────────────────────────────────
+        if (isNegativeOutcome) {
+          // Negative: block phone + SMS channels on the contact, no channel removal
+          await supabase
+            .from("contacts")
+            .update({
+              call_stop_flag: true,
+              dnc_status: true,
+              isa_reengage_allowed: false,
+              notes: callNoteSummary,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", voiceCall.contact_id)
+            .catch(() => {})
+
+          await supabase.from("activities").insert({
+            brokerage_id: voiceCall.brokerage_id,
+            contact_id: voiceCall.contact_id,
+            activity_type: "call_negative_outcome",
+            title: "Contact requested no further phone/SMS contact",
+            description: callNoteSummary,
+            status: "completed",
+          }).catch(() => {})
+
+        } else {
+          // Positive or neutral: update contact with call notes
+          await supabase
+            .from("contacts")
+            .update({
+              last_contacted_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", voiceCall.contact_id)
+            .catch(() => {})
+
+          // Notify assigned agent on strong positive signal
+          if (isPositiveOutcome && voiceCall.agent_id) {
+            await supabase.from("notifications").insert({
+              user_id: voiceCall.agent_id,
+              brokerage_id: voiceCall.brokerage_id,
+              type: "isa_qualified_lead",
+              title: "AI-ISA: Contact ready for agent follow-up",
+              body: callNoteSummary,
+              entity_type: "contact",
+              entity_id: voiceCall.contact_id,
+            }).catch(() => {})
+          }
+        }
       }
 
       // 9. Post-call AI SDK follow-up (non-blocking — intentional fire-and-forget)
