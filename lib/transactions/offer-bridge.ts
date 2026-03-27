@@ -82,11 +82,10 @@ export async function createTransactionFromOffer(params: {
     },
   })
   
-  // Generate required milestones
+  // Generate required milestones — signature: (transactionId, brokerageId, contractTerms)
   await ensureRequiredMilestones(
     transaction.id,
     params.brokerageId,
-    "UNDER_CONTRACT",
     params.contractTerms
   )
   

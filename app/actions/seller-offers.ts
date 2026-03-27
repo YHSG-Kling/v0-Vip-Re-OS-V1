@@ -128,7 +128,43 @@ export async function acceptOffer(params: {
     metadata:    { winning_offer_id: offerId },
   })
 
+  // Automatically create the transaction shell from the accepted offer
+  // This is the core Session D requirement: accept → transaction shell created automatically
+  try {
+    const { data: acceptedOffer } = await supabase
+      .from("offers")
+      .select("offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money, earnest_money_amount, contact_id")
+      .eq("id", offerId)
+      .single()
+
+    if (acceptedOffer) {
+      const { createTransactionFromOffer } = await import("@/lib/transactions/offer-bridge")
+      await createTransactionFromOffer({
+        offerId,
+        brokerageId,
+        contractDate: new Date().toISOString().split("T")[0],
+        compliancePassedAt: new Date().toISOString(),
+        contractTerms: {
+          closingDate: acceptedOffer.closing_date ?? undefined,
+          inspectionDeadline: acceptedOffer.inspection_period_days
+            ? new Date(Date.now() + acceptedOffer.inspection_period_days * 86400000).toISOString().split("T")[0]
+            : undefined,
+          financingDeadline: acceptedOffer.financing_contingency_days
+            ? new Date(Date.now() + acceptedOffer.financing_contingency_days * 86400000).toISOString().split("T")[0]
+            : undefined,
+          appraisalDeadline: acceptedOffer.appraisal_contingency_days
+            ? new Date(Date.now() + acceptedOffer.appraisal_contingency_days * 86400000).toISOString().split("T")[0]
+            : undefined,
+        },
+      })
+    }
+  } catch (err) {
+    // Non-fatal: log but do not block the accept response
+    console.error("[acceptOffer] createTransactionFromOffer failed:", err)
+  }
+
   revalidatePath(`/dashboard/listings/${listingId}/offers`)
+  revalidatePath(`/dashboard/transactions`)
   return { success: true }
 }
 

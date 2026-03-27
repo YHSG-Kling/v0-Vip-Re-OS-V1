@@ -241,9 +241,56 @@ export async function advanceStage(params: {
       calculationMode: 'final',
       triggeredBy: params.userId
     }).catch(error => {
-      console.error("[v0] Final commission calculation failed:", error)
-      // Don't block stage advancement on commission calculation failure
+      console.error("[stage-progression] Final commission calculation failed:", error)
     })
+
+    // ── Session D: Close Listing requirements ─────────────────────────────────
+    // 1. Get transaction to find seller_contact_id and listing_id
+    const { data: closedTxn } = await supabase
+      .from("transactions")
+      .select("seller_contact_id, listing_id")
+      .eq("id", params.transactionId)
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
+
+    // 2. Update seller contact_type to 'lifetime' so they enter the past-client journey
+    if (closedTxn?.seller_contact_id) {
+      await supabase
+        .from("contacts")
+        .update({
+          contact_type: "lifetime",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", closedTxn.seller_contact_id)
+        .catch(err => console.error("[stage-progression] seller contact_type update failed:", err))
+
+      // 3. Grant portal access to the sold listing view if not already enabled
+      await supabase
+        .from("contact_portal_modules")
+        .upsert({
+          contact_id: closedTxn.seller_contact_id,
+          module_key: "sold_listing",
+          is_enabled: true,
+          enabled_by_agent_id: params.userId,
+          enabled_at: new Date().toISOString(),
+        }, { onConflict: "contact_id,module_key" })
+        .catch(err => console.error("[stage-progression] portal module upsert failed:", err))
+    }
+
+    // 4. Mark the listing as sold
+    if (closedTxn?.listing_id) {
+      await supabase
+        .from("listings")
+        .update({
+          status: "sold",
+          current_stage: "SOLD",
+          stage_updated_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", closedTxn.listing_id)
+        .eq("brokerage_id", params.brokerageId)
+        .catch(err => console.error("[stage-progression] listing sold update failed:", err))
+    }
   }
 
   return {
