@@ -357,6 +357,7 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
           agentId={user.id}
           brokerageId={userRow.brokerage_id}
           canLaunch={mediaReady && publishReady && marketingReady}
+          blockers={blockers}
         />
         <StageTimeline
           listing={listing}

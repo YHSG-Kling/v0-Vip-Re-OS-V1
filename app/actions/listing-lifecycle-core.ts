@@ -107,7 +107,35 @@ export async function validateListingTransition(params: {
   }
   
   const validation = validateStageTransition(validationContext)
-  
+
+  // ── Launch gate: block if required listing data is missing ────────────────
+  // Evaluated after the stage-machine check so the stage-machine always wins.
+  const LAUNCH_STAGES = new Set(["active", "launch_ready", "mls_active", "published", "ACTIVE", "LAUNCH_READY", "MLS_ACTIVE", "PUBLISHED"])
+  if (validation.allowed && LAUNCH_STAGES.has(params.targetStage)) {
+    const launchBlockers = await evaluateLaunchBlockers(params.listingId, supabase)
+    if (launchBlockers.length > 0) {
+      return {
+        success: true,
+        validation: {
+          allowed: false,
+          blocked: true,
+          blockers: launchBlockers,
+          reason: `Cannot launch: ${launchBlockers.join(". ")}`,
+          warnings: validation.warnings,
+          currentStage,
+          targetStage: params.targetStage,
+          readinessChecks: {
+            allPassed: readinessEval.allPassed,
+            passed: readinessEval.passedChecks,
+            failed: readinessEval.failedChecks,
+            results: readinessEval.results,
+          },
+          nextAllowedStages: [],
+        },
+      }
+    }
+  }
+
   return {
     success: true,
     validation: {
@@ -127,6 +155,50 @@ export async function validateListingTransition(params: {
         : getNextAllowedStages(currentStage || "LEAD", resolvedRole),
     },
   }
+}
+
+// ── Launch blocker evaluator ───────────────────────────────────────────────
+// Checks the listing record and photo count to ensure the listing meets the
+// minimum requirements before it can be moved to any live/published stage.
+// Returns an array of human-readable blocker strings (empty = no blockers).
+async function evaluateLaunchBlockers(
+  listingId: string,
+  supabase: Awaited<ReturnType<typeof createClient>>
+): Promise<string[]> {
+  const blockers: string[] = []
+
+  const [listingResult, photoCountResult] = await Promise.all([
+    supabase
+      .from("listings")
+      .select("address, list_price, public_remarks, assigned_agent_id, seller_contact_id")
+      .eq("id", listingId)
+      .maybeSingle(),
+    supabase
+      .from("listing_photos")
+      .select("id", { count: "exact", head: true })
+      .eq("listing_id", listingId),
+  ])
+
+  const listing = listingResult.data
+  if (!listing) return ["Listing record not found"]
+
+  if (!listing.seller_contact_id) {
+    blockers.push("No seller contact attached")
+  }
+  if (!listing.list_price) {
+    blockers.push("No list price set")
+  }
+
+  const photoCount = photoCountResult.count ?? 0
+  if (photoCount < 5) {
+    blockers.push(`Photos: need at least 5 (${photoCount} uploaded)`)
+  }
+
+  if (!listing.public_remarks || listing.public_remarks.length < 50) {
+    blockers.push("Public remarks missing or too short (minimum 50 characters)")
+  }
+
+  return blockers
 }
 
 /**
