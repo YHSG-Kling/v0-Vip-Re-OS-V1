@@ -47,7 +47,7 @@ export async function inviteUser(params: {
     })
 
     // Upsert users record so they appear in admin panel immediately
-    await service
+    const { data: upsertedUser } = await service
       .from("users")
       .upsert(
         {
@@ -63,7 +63,69 @@ export async function inviteUser(params: {
         },
         { onConflict: "email" }
       )
-      .catch(() => {})
+      .select("id")
+      .maybeSingle()
+      .catch(() => ({ data: null }))
+
+    // ── Full provisioning for agent / coordinator roles ──────────────────
+    const isAgentRole = ["agent", "coordinator", "tc"].includes(params.userType)
+    if (isAgentRole && upsertedUser?.id && resolvedBrokerageId) {
+      const newUserId = upsertedUser.id
+
+      // 1. agents row — creates the canonical agent record
+      const { data: agentRow } = await service
+        .from("agents")
+        .upsert(
+          {
+            user_id: newUserId,
+            brokerage_id: resolvedBrokerageId,
+            first_name: params.firstName || null,
+            last_name: params.lastName || null,
+            email: params.email,
+            status: "pending",
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id" }
+        )
+        .select("id")
+        .maybeSingle()
+        .catch(() => ({ data: null }))
+
+      // 2. commission profile (agent_commission_profiles)
+      if (agentRow?.id) {
+        await service
+          .from("agent_commission_profiles")
+          .upsert(
+            {
+              agent_id: agentRow.id,
+              brokerage_id: resolvedBrokerageId,
+              split_percentage: 70, // brokerage default; overrideable post-onboard
+              is_active: true,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "agent_id" }
+          )
+          .catch(() => {})
+      }
+
+      // 3. onboarding state row — prevents "onboarding incomplete" false-negative
+      await service
+        .from("agent_onboarding")
+        .upsert(
+          {
+            user_id: newUserId,
+            brokerage_id: resolvedBrokerageId,
+            status: "pending",
+            completion_percentage: 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id" }
+        )
+        .catch(() => {})
+    }
 
     // Audit log
     await service
@@ -77,6 +139,7 @@ export async function inviteUser(params: {
           user_type: params.userType,
           brokerage_id: resolvedBrokerageId,
           invited_by: user.id,
+          provisioned: isAgentRole,
         }),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),

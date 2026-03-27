@@ -27,14 +27,15 @@ export default async function RecruitingROIPage() {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
-  // Check RBAC - only brokers and admins can access
-  if (!["broker", "admin", "superadmin"].includes(profile.role || "")) {
+  // Check RBAC — user_type is canonical; role is legacy fallback
+  const resolvedType = profile?.user_type ?? profile?.role ?? ""
+  if (!["broker", "admin", "superadmin"].includes(resolvedType)) {
     redirect("/dashboard")
   }
 

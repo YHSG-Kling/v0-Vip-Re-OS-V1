@@ -10,14 +10,15 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  // Verify role
+  // Verify role — user_type is the canonical field; role is legacy fallback
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, role, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!profile || !["broker", "admin", "superadmin"].includes(profile.role ?? "")) {
+  const resolvedType = profile?.user_type ?? profile?.role ?? ""
+  if (!profile || !["broker", "admin", "superadmin"].includes(resolvedType)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 
@@ -26,7 +27,7 @@ export async function GET(request: NextRequest) {
   const brokerageId = searchParams.get("brokerageId") || profile.brokerage_id
 
   // Verify brokerage access
-  if (brokerageId !== profile.brokerage_id && profile.role !== "superadmin") {
+  if (brokerageId !== profile.brokerage_id && resolvedType !== "superadmin") {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 })
   }
 

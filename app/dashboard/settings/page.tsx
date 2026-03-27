@@ -13,14 +13,15 @@ export default async function SettingsControlOSPage() {
   const service = createServiceClient()
   const { data: profile } = await service
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, role, brokerage_id")
     .eq("id", user.id)
     .single()
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
-  
-  // Role gate: broker + admin only for full settings
-  if (!["broker", "admin"].includes(profile.role ?? "")) {
+
+  // Role gate: broker + admin only for full settings — user_type is canonical; role is legacy fallback
+  const resolvedType = profile.user_type ?? profile.role ?? ""
+  if (!["broker", "admin"].includes(resolvedType)) {
     redirect("/dashboard")
   }
 

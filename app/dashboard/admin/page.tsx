@@ -2,6 +2,7 @@ import { getAgentContext } from '@/lib/identity/get-agent-context'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { AdminDashboardClient } from './admin-dashboard-client'
+import { ProvisioningHealthPanel } from './components/provisioning-health-panel'
 
 // Force dynamic rendering to prevent build-time prerendering errors
 export const dynamic = 'force-dynamic'
@@ -89,9 +90,14 @@ export default async function AdminPage() {
   }
 
   return (
-    <AdminDashboardClient
-      brokerageId={brokerageId}
-      operationalSnapshot={operationalSnapshot}
-    />
+    <>
+      <AdminDashboardClient
+        brokerageId={brokerageId}
+        operationalSnapshot={operationalSnapshot}
+      />
+      <div className="px-6 pb-6">
+        <ProvisioningHealthPanel brokerageId={brokerageId} />
+      </div>
+    </>
   )
 }
