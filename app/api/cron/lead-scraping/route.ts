@@ -9,6 +9,7 @@ import {
   buildLeadIdentityKey,
 } from "@/lib/lead-pipeline/raw-record-types"
 import * as cheerio from "cheerio"
+import { buildTerritoryPhrases } from "@/lib/lead-pipeline/source-intent-map"
 
 export const dynamic = "force-dynamic"
 
@@ -498,6 +499,62 @@ export async function GET(request: Request) {
                 })
                 if (inserted) socialLeadsCreated++
               }
+            }
+          }
+
+          // STEP 4 gate — G-5: Google phrase intent
+          // buildTerritoryPhrases() derives buyer+seller search queries from city, state, zip_codes, counties.
+          if (enabledSources.has("google_phrase_intent")) {
+            const { buyerPhrases, sellerPhrases } = buildTerritoryPhrases({
+              city:      market.city,
+              state:     market.state,
+              zip_codes: market.zip_codes,
+              counties:  market.counties,
+            })
+
+            // Sample 3 seller phrases and 2 buyer phrases per run to stay within cost envelope
+            const phrases = [
+              ...sellerPhrases.slice(0, 3).map(p => ({ phrase: p, intentType: 'seller' as const })),
+              ...buyerPhrases.slice(0, 2).map(p => ({ phrase: p, intentType: 'buyer' as const })),
+            ]
+
+            for (const { phrase, intentType } of phrases) {
+              const result = await zenrows.googleSearch(phrase, { num: 5 }).catch(() => null)
+              sourceCostUsd += 0.002 // Google SERP costs ~$0.002/call via ZenRows
+
+              if (!result) continue
+
+              // Parse organic result snippets from raw HTML
+              const $g = cheerio.load(result)
+              $g('.g, [data-sokoban-container]').each((_, el) => {
+                const title   = $g(el).find('h3').first().text().trim()
+                const snippet = $g(el).find('.VwiC3b, span.st, .IsZvec').first().text().trim()
+                const link    = $g(el).find('a').first().attr('href') ?? null
+
+                if (!title || title.length < 5) return
+
+                const gRecord: NormalizedScrapedRecord = {
+                  sourceRecordId:  `google-${Buffer.from(`${phrase}|${link ?? title}`).toString('base64').slice(0, 32)}`,
+                  source:          'google_phrase_intent',
+                  behaviorType:    'search_signal',
+                  intentType,
+                  intentSignals:   [phrase],
+                  city:            market.city,
+                  state:           market.state,
+                  motivationScore: intentType === 'seller' ? 42 : 38,
+                  sourceUrl:       link,
+                  rawPayload:      { phrase, title, snippet, link, market_id: market.id },
+                }
+
+                // Fire and forget — analytics_only identity policy means no enrichment spend
+                insertRawRecord({
+                  supabase,
+                  record:      gRecord,
+                  brokerageId: market.brokerage_id,
+                  marketId:    market.id,
+                  executionId: execRecord?.id ?? null,
+                }).then(({ inserted }) => { if (inserted) socialLeadsCreated++ }).catch(() => {})
+              })
             }
           }
 
