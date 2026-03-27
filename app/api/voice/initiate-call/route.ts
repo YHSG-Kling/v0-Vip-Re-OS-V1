@@ -13,6 +13,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { buildCallContext } from "@/lib/ai-isa/build-call-context"
 import type { KernelContact } from "@/lib/kernel/types"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -29,9 +30,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   let body: {
     phoneNumber: string
     contactId?: string
+    leadId?: string
     scriptId?: string
     agentId: string
     brokerageId: string
+    callPurpose?: 'isa_qualification' | 'isa_followup' | 'ghost_recovery' | 'appointment_confirm' | 'post_close'
   }
 
   try {
@@ -40,7 +43,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
 
-  const { phoneNumber, contactId, scriptId, agentId, brokerageId } = body
+  const { phoneNumber, contactId, leadId, scriptId, agentId, brokerageId, callPurpose = 'isa_qualification' } = body
 
   if (!phoneNumber || !agentId || !brokerageId) {
     return NextResponse.json({ error: "phoneNumber, agentId, and brokerageId are required" }, { status: 400 })
@@ -96,14 +99,29 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── 2. Fetch assistant_wake_name for the agent ─────────────────────────────
-  const { data: agentUser } = await supabase
-    .from("users")
-    .select("assistant_wake_name")
-    .eq("id", agentId)
+  // ── 2. Build brokerage-branded call context via buildCallContext() ───────────
+  // This returns the assistant name, system prompt, and first message derived
+  // from ai_identity_profiles (brokerage → team → agent hierarchy).
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id, user_id")
+    .eq("user_id", agentId)
     .maybeSingle()
 
-  const wakeName = agentUser?.assistant_wake_name ?? "VIP"
+  const callCtx = await buildCallContext({
+    brokerageId,
+    agentId: agentRow?.id ?? null,
+    contactId: contactId ?? null,
+    leadId: leadId ?? null,
+    callPurpose,
+  })
+
+  if (callCtx.blocked) {
+    return NextResponse.json(
+      { blocked: true, reason: callCtx.blockReason ?? "blocked" },
+      { status: 403 }
+    )
+  }
 
   // ── 3. POST to VAPI API ────────────────────────────────────────────────────
   const vapiKey = process.env.VAPI_API_KEY
@@ -115,21 +133,39 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   let vapiResponse: { id: string; status: string; createdAt?: string }
   try {
+    const vapiBody: Record<string, unknown> = {
+      phoneNumberId,
+      customer: { number: phoneNumber },
+      assistant: {
+        firstMessage: callCtx.firstMessage,
+        transcriber: { provider: "deepgram" },
+        model: {
+          provider: "anthropic",
+          model: "claude-haiku-4-5",
+          systemPrompt: callCtx.systemPrompt,
+          temperature: callCtx.temperature,
+        },
+        // Voice config from identity profile when set
+        ...(callCtx.voiceConfig
+          ? {
+              voice: {
+                provider: callCtx.voiceConfig.provider,
+                voiceId: callCtx.voiceConfig.voiceId,
+                stability: callCtx.voiceConfig.stability,
+                similarityBoost: callCtx.voiceConfig.similarityBoost,
+              },
+            }
+          : {}),
+      },
+    }
+
     const vapiRes = await fetch("https://api.vapi.ai/call", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${vapiKey}`,
       },
-      body: JSON.stringify({
-        phoneNumberId,
-        customer: { number: phoneNumber },
-        assistant: {
-          firstMessage: `Hi, this is ${wakeName} calling on behalf of your agent. How can I help you today?`,
-          transcriber: { provider: "deepgram" },
-          model: { provider: "anthropic", model: "claude-haiku-4-5" },
-        },
-      }),
+      body: JSON.stringify(vapiBody),
     })
 
     if (!vapiRes.ok) {
@@ -138,20 +174,33 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     vapiResponse = await vapiRes.json()
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: "Failed to reach VAPI" }, { status: 502 })
   }
 
   // ── 4. INSERT voice_calls ──────────────────────────────────────────────────
-  await supabase.from("voice_calls").insert({
+  const { data: voiceCallRow } = await supabase
+    .from("voice_calls")
+    .insert({
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      contact_id: contactId ?? null,
+      direction: "outbound",
+      status: "initiated",
+      call_type: "isa_ai",
+      phone_to: phoneNumber,
+      vapi_call_id: vapiResponse.id,
+    })
+    .select("id")
+    .single()
+
+  // ── 5. INSERT ai_isa_calls row (brokerage_id, contact_id, voice_call_id) ──
+  await supabase.from("ai_isa_calls").insert({
     brokerage_id: brokerageId,
-    agent_id: agentId,
     contact_id: contactId ?? null,
-    direction: "outbound",
-    status: "initiated",
-    call_type: "agent_call",
-    phone_to: phoneNumber,
-    vapi_call_id: vapiResponse.id,
+    voice_call_id: voiceCallRow?.id ?? null,
+    script_used: callPurpose,
+    appointment_set: false,
   })
 
   return NextResponse.json({ callId: vapiResponse.id, status: "initiated" }, { status: 200 })

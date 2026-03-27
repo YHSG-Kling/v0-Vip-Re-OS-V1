@@ -19,6 +19,7 @@ import {
   Clock,
   Mail,
   Phone,
+  PhoneCall,
   MessageSquare,
   Home,
   Layers,
@@ -28,6 +29,7 @@ import {
   UserCheck,
   ChevronRight,
   Brain,
+  Radio,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -300,6 +302,39 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
     router.refresh()
   }
 
+  // ── AI Call Now ────────────────────────────────────────────
+  async function handleAICallNow(record: any) {
+    const phone = record.phone
+    if (!phone) { toast.error('No phone number on this record'); return }
+    try {
+      const res = await fetch('/api/voice/initiate-call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: phone,
+          contactId: record.contact_id ?? undefined,
+          leadId: record.id,
+          agentId: userId,
+          brokerageId,
+          callPurpose: 'isa_qualification',
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        if (data.blocked) {
+          toast.error(`Call blocked: ${data.reason}`)
+        } else {
+          toast.error(data.error ?? 'Failed to initiate call')
+        }
+        return
+      }
+      toast.success(`AI call initiated — Call ID: ${data.callId}`)
+      router.refresh()
+    } catch {
+      toast.error('Network error initiating AI call')
+    }
+  }
+
   // ── Draft actions ──────────────────────────────────────────
   async function approveDraft(draftId: string) {
     const { error } = await supabase
@@ -334,32 +369,54 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
   return (
     <div className="space-y-6">
 
-      {/* Top-right status badges */}
-      <div className="flex flex-wrap gap-2">
-        <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse inline-block" />
-          {blockerStats.active} Active
-        </Badge>
-        {blockerStats.handoffReady > 0 && (
-          <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">
-            {blockerStats.handoffReady} Handoffs Ready
-          </Badge>
-        )}
-        {blockerStats.agentTakeover > 0 && (
-          <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
-            {blockerStats.agentTakeover} Agent Takeover
-          </Badge>
-        )}
-        {blockerStats.complianceHolds > 0 && (
-          <Badge variant="outline" className="bg-gray-100 text-gray-600 border-gray-300">
-            {blockerStats.complianceHolds} Compliance Hold
-          </Badge>
-        )}
-        {blockerStats.awaitingApproval > 0 && (
-          <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
-            {blockerStats.awaitingApproval} Awaiting Approval
-          </Badge>
-        )}
+      {/* AI-ISA Status Strip — named 3-state banner (spec requirement) */}
+      <div className="flex flex-col sm:flex-row gap-2 rounded-lg border bg-muted/30 p-3">
+        {/* State 1: AI-ISA Active */}
+        <div className={cn(
+          'flex-1 flex items-center gap-2.5 rounded-md px-3 py-2 border',
+          blockerStats.active > 0
+            ? 'bg-blue-50 border-blue-200 text-blue-800'
+            : 'bg-background border-border text-muted-foreground',
+        )}>
+          <Radio className={cn('h-4 w-4 shrink-0', blockerStats.active > 0 && 'animate-pulse')} />
+          <div>
+            <p className="text-xs font-semibold">AI-ISA Active</p>
+            <p className="text-xs">{blockerStats.active} record{blockerStats.active !== 1 ? 's' : ''} under AI management</p>
+          </div>
+        </div>
+
+        {/* State 2: AI-ISA Paused */}
+        {(() => {
+          const pausedCount = records.filter((r: any) => r.ai_outreach_paused).length
+          return (
+            <div className={cn(
+              'flex-1 flex items-center gap-2.5 rounded-md px-3 py-2 border',
+              pausedCount > 0
+                ? 'bg-orange-50 border-orange-200 text-orange-800'
+                : 'bg-background border-border text-muted-foreground',
+            )}>
+              <Pause className="h-4 w-4 shrink-0" />
+              <div>
+                <p className="text-xs font-semibold">AI-ISA Paused</p>
+                <p className="text-xs">{pausedCount} record{pausedCount !== 1 ? 's' : ''} with outreach paused</p>
+              </div>
+            </div>
+          )
+        })()}
+
+        {/* State 3: Human Handoff Required */}
+        <div className={cn(
+          'flex-1 flex items-center gap-2.5 rounded-md px-3 py-2 border',
+          blockerStats.agentTakeover > 0
+            ? 'bg-red-50 border-red-200 text-red-800'
+            : 'bg-background border-border text-muted-foreground',
+        )}>
+          <AlertTriangle className={cn('h-4 w-4 shrink-0', blockerStats.agentTakeover > 0 && 'text-red-600')} />
+          <div>
+            <p className="text-xs font-semibold">Human Handoff Required</p>
+            <p className="text-xs">{blockerStats.agentTakeover} record{blockerStats.agentTakeover !== 1 ? 's' : ''} need immediate attention</p>
+          </div>
+        </div>
       </div>
 
       {/* KPI strip — Section 7 */}
@@ -557,6 +614,19 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Link>
                         </Button>
 
+                        {/* AI Call Now — triggers real VAPI call via /api/voice/initiate-call */}
+                        {item.phone && !item.call_stop_flag && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full justify-start text-green-700 border-green-300 hover:bg-green-50"
+                            onClick={() => handleAICallNow(item)}
+                          >
+                            <PhoneCall className="h-3.5 w-3.5 mr-1.5" />
+                            AI Call Now
+                          </Button>
+                        )}
+
                         {(item.aiisa_state === 'handoff_ready' || item.aiisa_state === 'agent_handoff_required') && (
                           <Button
                             size="sm"
@@ -566,21 +636,21 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                             disabled={isPending}
                           >
                             <UserCheck className="h-3.5 w-3.5 mr-1.5" />
-                            Accept Handoff
+                            Hand Off to Human Agent
                           </Button>
                         )}
 
                         {(item.aiisa_state === 'ai_active' || item.aiisa_state === 'ai_nurturing') && !item.ai_outreach_paused && (
                           <Button size="sm" variant="ghost" className="w-full justify-start" onClick={() => handlePauseAI(item.id)}>
                             <Pause className="h-3.5 w-3.5 mr-1.5" />
-                            Pause AI
+                            Pause AI-ISA
                           </Button>
                         )}
 
                         {item.ai_outreach_paused && (
                           <Button size="sm" variant="ghost" className="w-full justify-start" onClick={() => handleResumeAI(item.id)}>
                             <Play className="h-3.5 w-3.5 mr-1.5" />
-                            Resume AI
+                            Resume AI-ISA
                           </Button>
                         )}
 
