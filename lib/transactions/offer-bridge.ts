@@ -82,11 +82,21 @@ export async function createTransactionFromOffer(params: {
     },
   })
   
-  // Generate required milestones — signature: (transactionId, brokerageId, contractTerms)
+  // ensureRequiredMilestones looks up dates by snake_case milestone_name key
+  // e.g. contractTerms["closing_date"], contractTerms["inspection_deadline"]
+  // Normalise camelCase keys from the offer bridge params before passing in
+  const normalisedTerms: Record<string, string> = {}
+  const { closingDate, inspectionDeadline, appraisalDeadline, financingDeadline, earnestMoneyDue } = params.contractTerms
+  if (closingDate)        normalisedTerms["closing_date"]        = closingDate
+  if (inspectionDeadline) normalisedTerms["inspection_deadline"] = inspectionDeadline
+  if (appraisalDeadline)  normalisedTerms["appraisal_deadline"]  = appraisalDeadline
+  if (financingDeadline)  normalisedTerms["financing_deadline"]  = financingDeadline
+  if (earnestMoneyDue)    normalisedTerms["earnest_money_due"]   = earnestMoneyDue
+
   await ensureRequiredMilestones(
     transaction.id,
     params.brokerageId,
-    params.contractTerms
+    normalisedTerms
   )
   
   // Create first activity — Agent task (correct location, no changes) — activity_type: transaction_started
