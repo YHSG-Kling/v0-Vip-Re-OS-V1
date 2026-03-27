@@ -18,6 +18,7 @@ import {
   ShieldOff,
   Clock,
   Mail,
+  MailOpen,
   Phone,
   PhoneCall,
   MessageSquare,
@@ -312,6 +313,22 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
       router.refresh()
     } catch (err: any) {
       toast.error(err?.message ?? 'Failed to send email')
+    }
+  }
+
+  // ── Send Direct Mail Now ───────────────────────────────────
+  async function handleSendDirectMail(record: any) {
+    if (!record.mailing_address && !record.address) {
+      toast.error('No mailing address on this record')
+      return
+    }
+    try {
+      const { initiateAIISAEngagement } = await import('@/app/actions/ai-isa/initiate-engagement')
+      await initiateAIISAEngagement(record.id, { forceChannel: 'direct_mail' })
+      toast.success('Direct mail piece queued for dispatch')
+      router.refresh()
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to queue direct mail')
     }
   }
 
@@ -652,6 +669,19 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           >
                             <Mail className="h-3.5 w-3.5 mr-1.5" />
                             Send Email Now
+                          </Button>
+                        )}
+
+                        {/* Send Direct Mail Now — force direct mail dispatch */}
+                        {(item.mailing_address || item.address) && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full justify-start text-purple-700 border-purple-300 hover:bg-purple-50"
+                            onClick={() => handleSendDirectMail(item)}
+                          >
+                            <MailOpen className="h-3.5 w-3.5 mr-1.5" />
+                            Send Direct Mail
                           </Button>
                         )}
 

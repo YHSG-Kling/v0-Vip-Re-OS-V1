@@ -119,10 +119,12 @@ export async function initiateAIISAEngagement(
       return { success: false, reason: 'stop:max_touches' }
     }
 
-    // ── forceChannel override (e.g. "Send Email Now" button on ISA console) ──
-    // Only email is safe to force — phone/SMS still require TCPA validation.
-    if (opts?.forceChannel && opts.forceChannel !== 'email') {
-      throw new Error('Only email can be force-dispatched from the ISA console. Phone/SMS channels require TCPA compliance checks.')
+    // ── forceChannel override (operator-initiated send from ISA console) ─────
+    // Email and direct_mail are safe to force — no TCPA consent required.
+    // Phone and SMS still require explicit TCPA validation; block them here.
+    const FORCE_ALLOWED_CHANNELS = new Set(['email', 'direct_mail'])
+    if (opts?.forceChannel && !FORCE_ALLOWED_CHANNELS.has(opts.forceChannel)) {
+      throw new Error('Only email and direct_mail can be force-dispatched from the ISA console. Phone/SMS require TCPA compliance checks.')
     }
 
     // ── Channels permitted for unconsented leads (no TCPA) ─────────────────
@@ -195,7 +197,7 @@ export async function initiateAIISAEngagement(
   }
 }
 
-// ─── CHANNEL DISPATCHER ────────────────────────────────────────────────────────
+// ─── CHANNEL DISPATCHER ─────────────────────────────────────���──────────────────
 
 async function dispatchToChannel(
   channel: string,
