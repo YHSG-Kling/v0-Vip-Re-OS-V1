@@ -3,10 +3,15 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { streamText, convertToModelMessages } from "ai"
 import { NextRequest, NextResponse } from "next/server"
 
-// Roles that are permitted to use the internal AI assistant
+// Roles that are permitted to use the internal AI assistant.
+// Uses canonical role values from lib/security/types.ts.
+// Legacy DB values (e.g. "transaction_coordinator") are normalised below.
 const PERMITTED_ROLES = new Set([
-  "agent", "broker", "admin", "transaction_coordinator",
-  "lender", "vendor", "title",
+  "agent", "broker", "admin", "tc", "transaction_coordinator",
+  "lender", "vendor", "title", "title_agent",
+  "compliance_officer", "compliance_manager",
+  "superadmin", "platform_admin", "super_admin",
+  "isa", "team_lead",
 ])
 
 // ─── Role-scoped context loaders ────────────────────────────────────────────
@@ -139,6 +144,80 @@ async function loadTitleContext(service: ReturnType<typeof createServiceClient>,
   return { titleTxns }
 }
 
+async function loadComplianceContext(service: ReturnType<typeof createServiceClient>, brokerageId: string) {
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString()
+
+  const [
+    { data: violations, count: violationCount },
+    { data: pendingApprovals, count: pendingCount },
+    { data: recentAuditLogs },
+    { data: agentSummary },
+  ] = await Promise.all([
+    service.from("compliance_violations")
+      .select("id, violation_type, severity, status, created_at, agent_id", { count: "exact" })
+      .eq("brokerage_id", brokerageId)
+      .neq("status", "resolved")
+      .order("created_at", { ascending: false })
+      .limit(15),
+    service.from("content_approvals")
+      .select("id, content_type, status, created_at, agent_id", { count: "exact" })
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "pending")
+      .limit(20),
+    service.from("audit_logs")
+      .select("id, action, resource_type, created_at, user_id, details")
+      .eq("brokerage_id", brokerageId)
+      .order("created_at", { ascending: false })
+      .limit(25),
+    service.from("agents")
+      .select("id, user_id, is_active")
+      .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
+      .limit(50),
+  ])
+
+  return {
+    activeViolations: { count: violationCount ?? 0, recent: violations },
+    pendingApprovals: { count: pendingCount ?? 0, items: pendingApprovals },
+    recentAuditLogs,
+    activeAgentCount: agentSummary?.length ?? 0,
+    windowStart: thirtyDaysAgo,
+  }
+}
+
+async function loadSuperadminContext(service: ReturnType<typeof createServiceClient>) {
+  const [
+    { data: brokerages, count: brokerageCount },
+    { data: systemErrors },
+    { data: recentUsers },
+    { data: aiAuditSample },
+  ] = await Promise.all([
+    service.from("brokerages")
+      .select("id, name, subscription_tier, is_active, created_at", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .limit(20),
+    service.from("automation_errors")
+      .select("id, workflow_name, error_message, status, severity, created_at, brokerage_id")
+      .order("created_at", { ascending: false })
+      .limit(15),
+    service.from("users")
+      .select("id, email, role, created_at, last_sign_in_at")
+      .order("created_at", { ascending: false })
+      .limit(10),
+    service.from("ai_feedback_log")
+      .select("id, source_record_type, rating, feedback_text, created_at")
+      .order("created_at", { ascending: false })
+      .limit(20),
+  ])
+
+  return {
+    brokerages: { count: brokerageCount ?? 0, recent: brokerages },
+    systemErrors,
+    recentUsers,
+    aiAuditSample,
+  }
+}
+
 // ─── Build system prompt from role + context ─────────────────────────────────
 
 function buildSystemPrompt(role: string, ctx: Record<string, unknown>): string {
@@ -198,7 +277,16 @@ export async function POST(req: NextRequest) {
     .eq("id", user.id)
     .maybeSingle()
 
-  const role = (roleRow?.role ?? userData?.role ?? "agent").toLowerCase()
+  const rawRole = (roleRow?.role ?? userData?.role ?? "agent").toLowerCase()
+  // Normalise legacy role strings to canonical values
+  const ROLE_ALIASES: Record<string, string> = {
+    transaction_coordinator: "tc",
+    compliance_manager: "compliance_officer",
+    title: "title_agent",
+    super_admin: "superadmin",
+    platform_admin: "superadmin",
+  }
+  const role = ROLE_ALIASES[rawRole] ?? rawRole
   const brokerageId = (roleRow?.brokerage_id ?? userData?.brokerage_id) as string
 
   if (!PERMITTED_ROLES.has(role)) {
@@ -214,12 +302,14 @@ export async function POST(req: NextRequest) {
   const service = createServiceClient()
   let ctx: Record<string, unknown> = {}
   try {
-    if (role === "agent") ctx = await loadAgentContext(service, user.id, brokerageId)
+    if (role === "agent" || role === "isa" || role === "team_lead") ctx = await loadAgentContext(service, user.id, brokerageId)
     else if (role === "broker" || role === "admin") ctx = await loadBrokerContext(service, brokerageId)
     else if (role === "lender") ctx = await loadLenderContext(service, user.id)
     else if (role === "vendor") ctx = await loadVendorContext(service, user.id, brokerageId)
-    else if (role === "transaction_coordinator") ctx = await loadTCContext(service, user.id, brokerageId)
-    else if (role === "title") ctx = await loadTitleContext(service, user.id)
+    else if (role === "tc") ctx = await loadTCContext(service, user.id, brokerageId)
+    else if (role === "title_agent") ctx = await loadTitleContext(service, user.id)
+    else if (role === "compliance_officer") ctx = await loadComplianceContext(service, brokerageId)
+    else if (role === "superadmin") ctx = await loadSuperadminContext(service)
   } catch {
     // Non-fatal — proceed with empty context rather than failing the stream
     ctx = {}

@@ -26,6 +26,12 @@ const ROLE_SUGGESTIONS: Record<string, string[]> = {
     "Summarize brokerage lead activity",
     "Flag any deals missing documents",
   ],
+  tc: [
+    "What deadlines are coming up this week?",
+    "Which transactions have overdue tasks?",
+    "Summarize my assigned deals",
+    "Draft a status update for my busiest deal",
+  ],
   transaction_coordinator: [
     "What deadlines are coming up this week?",
     "Which transactions have overdue tasks?",
@@ -44,11 +50,29 @@ const ROLE_SUGGESTIONS: Record<string, string[]> = {
     "Which jobs are still pending completion?",
     "note: job completed at 123 Main St, all items resolved",
   ],
+  title_agent: [
+    "What transactions am I working on?",
+    "Which deals have title issues noted?",
+    "Which closings are scheduled this week?",
+    "Flag any transactions missing title commitment dates",
+  ],
   title: [
     "What transactions am I working on?",
     "Which deals have title issues noted?",
     "Which closings are scheduled this week?",
     "Flag any transactions missing title commitment dates",
+  ],
+  compliance_officer: [
+    "How many active violations are open right now?",
+    "Summarize pending content approvals",
+    "Which agents have the most compliance flags this month?",
+    "Generate a summary of recent audit log activity",
+  ],
+  superadmin: [
+    "How many active brokerages are on the platform?",
+    "Are there any open system errors or automation failures?",
+    "Summarize recent AI feedback ratings",
+    "Which brokerages were added in the last 30 days?",
   ],
 }
 
@@ -68,10 +92,18 @@ const ROLE_LABEL: Record<string, string> = {
   agent: "Agent Assistant",
   broker: "Broker Assistant",
   admin: "Admin Assistant",
+  tc: "TC Assistant",
   transaction_coordinator: "TC Assistant",
   lender: "Lender Assistant",
   vendor: "Vendor Assistant",
+  title_agent: "Title Assistant",
   title: "Title Assistant",
+  compliance_officer: "Compliance Assistant",
+  compliance_manager: "Compliance Assistant",
+  superadmin: "Platform Assistant",
+  platform_admin: "Platform Assistant",
+  isa: "ISA Assistant",
+  team_lead: "Team Lead Assistant",
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
