@@ -114,14 +114,21 @@ export async function persistQualificationSignals(
 
   // ── FULL HANDOFF CHAIN (readinessForAgent = true) ────────────────────────
 
-  // Step 2: Mark lifecycle_state = 'qualified' (only lead-acquisition-handlers
-  //         writes lifecycle_state normally, but qualification is the exception
-  //         that causes the handoff — we write it directly here to avoid
-  //         circular async import chains)
+  // Step 2: Transition lifecycle via the OFFICIAL handler chain.
+  //         lead-acquisition-handlers.ts is the SOLE writer of lifecycle_state.
+  //         handleConsentReceived: isa_qualifying → consented (valid transition)
+  //         This also stamps stage_entered_at and fires CONSENT_RECEIVED event.
+  const { handleConsentReceived } = await import('@/lib/kernel/lead-acquisition-handlers')
+  await handleConsentReceived({
+    leadId,
+    brokerageId: lead.brokerage_id,
+    consentSource: 'reply',
+  })
+
+  // Clear AI ISA ownership now that the lead has been consented
   await supabase
     .from('leads')
     .update({
-      lifecycle_state: 'qualified',
       ai_isa_owner: false,
       updated_at: new Date().toISOString(),
     })

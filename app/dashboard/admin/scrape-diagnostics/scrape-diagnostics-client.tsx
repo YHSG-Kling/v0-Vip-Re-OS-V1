@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { runScrapeTestAction } from "@/app/actions/admin/run-scrape-test"
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface Market {
@@ -114,13 +115,10 @@ export function ScrapeDiagnosticsClient({ data }: { data: DiagnosticsData }) {
     setDryRunError(null)
     setDryRunResult(null)
     try {
-      const res = await fetch(
-        `/api/admin/scrape-test?marketId=${selectedMarketId}&source=${selectedSource}&dryRun=true`,
-        { headers: { authorization: `Bearer ${process.env.NEXT_PUBLIC_CRON_SECRET ?? ""}` } }
-      )
-      const json = await res.json()
-      if (!res.ok) { setDryRunError(json.error ?? "Request failed"); return }
-      setDryRunResult(json)
+      // Server action keeps CRON_SECRET server-side — never exposed to the browser
+      const result = await runScrapeTestAction(selectedMarketId, selectedSource)
+      if (result.error) { setDryRunError(result.error); return }
+      setDryRunResult(result as DryRunResult)
     } catch (err) {
       setDryRunError(String(err))
     } finally {
