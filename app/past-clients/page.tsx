@@ -187,6 +187,9 @@ export default function LifetimeCustomersPage() {
   // Track which contact opened the touchpoint draft dialog (for market update send)
   const [touchpointContactId, setTouchpointContactId] = useState<string | null>(null)
 
+  // Priority sub-tab within the Relationship Feed
+  const [priorityTab, setPriorityTab] = useState("all")
+
   // Bulk selection state
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkSending, setBulkSending] = useState(false)
@@ -461,6 +464,47 @@ export default function LifetimeCustomersPage() {
     return true
   })
 
+  // Priority tab derived lists — use real schema column names
+  // last_interaction is the real column; last_touchpoint_date degrades to undefined gracefully
+  function getDaysSinceContactReal(client: PastClient): number | null {
+    const date = client.client_engagement_scores?.[0]?.last_touchpoint_date
+      ?? (client.client_engagement_scores?.[0] as any)?.last_interaction
+    return date ? getDaysSinceContact(date) : null
+  }
+
+  const needsTouchNow = filteredClients.filter(c => {
+    const days = getDaysSinceContactReal(c)
+    return days === null || days > 30
+  })
+
+  const hasAnniversaryThisMonth = filteredClients.filter(c => {
+    const closeDate = c.transactions?.[0]?.actual_close_date
+    if (!closeDate) return false
+    return new Date(closeDate).getMonth() === new Date().getMonth()
+  })
+
+  const hasReferralOpportunity = filteredClients.filter(c => {
+    // Use real schema: score column (no referral_likelihood in DB)
+    const score = (c.client_engagement_scores?.[0] as any)?.score
+      ?? c.client_engagement_scores?.[0]?.engagement_score
+      ?? 0
+    return score >= 70
+  })
+
+  function getSuggestedAction(client: PastClient, daysSince: number | null): string {
+    if (!daysSince || daysSince > 365) return "Schedule annual check-in call"
+    const closeDate = client.transactions?.[0]?.actual_close_date
+      ? new Date(client.transactions[0].actual_close_date) : null
+    const isAnniversaryMonth = closeDate && closeDate.getMonth() === new Date().getMonth()
+    if (isAnniversaryMonth) return "Send home anniversary message"
+    const score = (client.client_engagement_scores?.[0] as any)?.score
+      ?? client.client_engagement_scores?.[0]?.engagement_score
+      ?? 0
+    if (score >= 70) return "Ask for a referral"
+    if (daysSince > 90) return "Send market update for their neighborhood"
+    return "Quick check-in message"
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -571,31 +615,63 @@ export default function LifetimeCustomersPage() {
               </Card>
             )}
 
-            {/* Filter Bar */}
-            <div className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                aria-label="Select all clients"
-                checked={filteredClients.length > 0 && selectedIds.size === filteredClients.length}
-                ref={(el) => {
-                  if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < filteredClients.length
-                }}
-                onChange={toggleSelectAll}
-                className="h-4 w-4 rounded border-border accent-foreground cursor-pointer"
-              />
-              <Select value={engagementFilter} onValueChange={setEngagementFilter}>
-                <SelectTrigger className="w-36">
-                  <SelectValue placeholder="Engagement" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="hot">Hot</SelectItem>
-                  <SelectItem value="warm">Warm</SelectItem>
-                  <SelectItem value="cold">Cold</SelectItem>
-                </SelectContent>
-              </Select>
-              <span className="text-sm text-muted-foreground">{filteredClients.length} clients</span>
-            </div>
+            {/* Priority Sub-Tabs */}
+            <Tabs value={priorityTab} onValueChange={setPriorityTab}>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                <TabsList className="h-auto flex-wrap">
+                  <TabsTrigger value="all" className="text-xs">
+                    All Clients
+                    <span className="ml-1.5 text-xs text-muted-foreground">({filteredClients.length})</span>
+                  </TabsTrigger>
+                  <TabsTrigger value="needs_touch" className="text-xs">
+                    Needs Touch
+                    {needsTouchNow.length > 0 && (
+                      <Badge className="ml-1.5 bg-red-100 text-red-700 border-red-200 text-[10px] px-1.5 py-0 h-4">
+                        {needsTouchNow.length}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="anniversary" className="text-xs">
+                    Anniversaries
+                    {hasAnniversaryThisMonth.length > 0 && (
+                      <Badge className="ml-1.5 bg-purple-100 text-purple-700 border-purple-200 text-[10px] px-1.5 py-0 h-4">
+                        {hasAnniversaryThisMonth.length}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                  <TabsTrigger value="referral" className="text-xs">
+                    Referral Ready
+                    {hasReferralOpportunity.length > 0 && (
+                      <Badge className="ml-1.5 bg-green-100 text-green-700 border-green-200 text-[10px] px-1.5 py-0 h-4">
+                        {hasReferralOpportunity.length}
+                      </Badge>
+                    )}
+                  </TabsTrigger>
+                </TabsList>
+                <div className="flex items-center gap-3 ml-auto">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all clients"
+                    checked={filteredClients.length > 0 && selectedIds.size === filteredClients.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < filteredClients.length
+                    }}
+                    onChange={toggleSelectAll}
+                    className="h-4 w-4 rounded border-border accent-foreground cursor-pointer"
+                  />
+                  <Select value={engagementFilter} onValueChange={setEngagementFilter}>
+                    <SelectTrigger className="w-32">
+                      <SelectValue placeholder="Engagement" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="hot">Hot</SelectItem>
+                      <SelectItem value="warm">Warm</SelectItem>
+                      <SelectItem value="cold">Cold</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
 
             {/* Bulk action bar */}
             {selectedIds.size > 0 && (
@@ -632,16 +708,36 @@ export default function LifetimeCustomersPage() {
               </div>
             )}
 
-            {/* Client List */}
+            {/* Client List — respects priority sub-tab */}
+            {(() => {
+              const activeList =
+                priorityTab === "needs_touch" ? needsTouchNow :
+                priorityTab === "anniversary" ? hasAnniversaryThisMonth :
+                priorityTab === "referral" ? hasReferralOpportunity :
+                filteredClients
+              return (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 space-y-3">
-                {filteredClients.map((client) => {
+                {activeList.map((client) => {
                   const engagementScore = client.client_engagement_scores?.[0]?.engagement_score || 0
                   const badge = getEngagementBadge(engagementScore)
                   const lastTouchpoint = client.client_engagement_scores?.[0]?.last_touchpoint_date
+                    ?? (client.client_engagement_scores?.[0] as any)?.last_interaction
                   const daysSince = getDaysSinceContact(lastTouchpoint)
                   const transaction = client.transactions?.[0]
                   const isSelected = selectedClient?.id === client.id
+                  const suggestedAction = getSuggestedAction(client, daysSince)
+
+                  const daysSinceClass =
+                    daysSince === null ? "text-red-600" :
+                    daysSince > 60 ? "text-red-600" :
+                    daysSince > 30 ? "text-amber-600" : "text-green-600"
+
+                  const daysSinceLabel =
+                    daysSince === null ? "Never contacted" :
+                    daysSince === 0 ? "Today" :
+                    daysSince === 1 ? "Yesterday" :
+                    `${daysSince} days ago`
 
                   return (
                     <Card
@@ -677,9 +773,14 @@ export default function LifetimeCustomersPage() {
                                   {transaction.property_address || "Address N/A"}
                                 </p>
                               )}
-                              <p className="text-xs text-muted-foreground mt-1">
-                                {daysSince !== null ? `${daysSince} days since contact` : "Never contacted"}
-                              </p>
+                              <div className="flex items-center gap-3 mt-1">
+                                <span className={`text-xs font-medium ${daysSinceClass}`}>
+                                  {daysSinceLabel}
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                  &rarr; {suggestedAction}
+                                </span>
+                              </div>
                             </div>
                           </div>
                           <div className="flex items-center gap-1">
@@ -854,6 +955,9 @@ export default function LifetimeCustomersPage() {
                 )}
               </div>
             </div>
+              )
+            })()}
+            </Tabs>
           </TabsContent>
 
           {/* TAB 2: Sphere Intelligence */}
