@@ -48,7 +48,6 @@ export async function POST(req: NextRequest) {
       conversationContext: string
     }
 
-    // Role-specific note types
     const extraTypes =
       role === "lender"
         ? "loan_update"
@@ -61,7 +60,7 @@ Given raw note text and conversation context, return ONLY a valid JSON object (n
 {
   "noteText": "polished, clear version of the note (max 500 chars, present tense, professional)",
   "noteType": "one of: general|call_outcome|meeting_outcome|follow_up|decision|action_item|${extraTypes}",
-  "entityType": "one of: contact|transaction|lead|general",
+  "entityType": "one of: contact|lead|transaction|general",
   "entityId": "uuid extracted from context, or null",
   "entityLabel": "human-readable name e.g. 'John Smith' or '123 Main St deal', or null",
   "confidence": "high if entity confidently identified from context, low otherwise",
@@ -70,6 +69,8 @@ Given raw note text and conversation context, return ONLY a valid JSON object (n
 }
 
 Rules:
+- Prefer 'contact' entityType when the note is about a specific person in the CRM
+- Prefer 'lead' entityType when the note is about an unqualified incoming lead
 - Use 'loan_update' only for lender role, 'vendor_update' only for vendor role
 - If entity cannot be confidently resolved, use entityType='general', entityId=null, confidence='low'
 - hasActionItem=true when note contains a follow-up promise or action to complete`
@@ -94,7 +95,6 @@ Rules:
         suggestedTaskTitle: result.suggestedTaskTitle ?? null,
       })
     } catch {
-      // Fallback: return raw text as-is
       return NextResponse.json({
         noteText: rawText,
         noteType: "general",
@@ -197,7 +197,21 @@ Rules:
 
     const activityId = activityRow?.id ?? null
 
-    // ── 3. leads.notes append (when entity is lead) ───────────────────────────
+    // ── 3. contacts.notes append (when entity is contact) ─────────────────────
+    if (contactId) {
+      const ts = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+      const { data: contact } = await service
+        .from("contacts")
+        .select("notes")
+        .eq("id", contactId)
+        .maybeSingle()
+      const appended = contact?.notes
+        ? `${contact.notes}\n\n[AI Note - ${ts}]\n${noteText}`
+        : `[AI Note - ${ts}]\n${noteText}`
+      await service.from("contacts").update({ notes: appended }).eq("id", contactId)
+    }
+
+    // ── 4. leads.notes append (when entity is lead) ────────────────────────────
     if (leadId) {
       const ts = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
       const { data: lead } = await service
@@ -211,8 +225,7 @@ Rules:
       await service.from("leads").update({ notes: appended }).eq("id", leadId)
     }
 
-    // ── 4. transaction_lenders.notes (role=lender + entity=transaction) ───────
-    // Schema column is 'notes', not 'lender_notes'
+    // ── 5. transaction_lenders.notes (role=lender + entity=transaction) ───────
     if (role === "lender" && transactionId) {
       const { data: tl } = await service
         .from("transaction_lenders")
@@ -229,7 +242,7 @@ Rules:
       }
     }
 
-    // ── 5. vendor_bookings.notes (role=vendor, most recent active booking) ────
+    // ── 6. vendor_bookings.notes (role=vendor, most recent active booking) ────
     if (role === "vendor" && vendorId) {
       const { data: booking } = await service
         .from("vendor_bookings")
@@ -248,7 +261,7 @@ Rules:
       }
     }
 
-    // ── 6. tasks (human-confirmed, optional) ──────────────────────────────────
+    // ── 7. tasks (human-confirmed, optional) ──────────────────────────────────
     let taskId: string | null = null
     if (createTask && taskTitle?.trim()) {
       const dueDate = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0]

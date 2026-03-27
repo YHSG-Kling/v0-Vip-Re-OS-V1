@@ -223,8 +223,47 @@ function NoteDraftCard({
         )}
       </div>
 
+      {/* Entity-type selector — lets user override AI guess or pin general note */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "6px",
+        padding: "7px 12px",
+        borderBottom: "1px solid #fde68a",
+        background: "#fffdf0",
+        flexWrap: "wrap",
+      }}>
+        <span style={{ fontSize: "10px", color: "#92400e", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", marginRight: "2px" }}>
+          Save to
+        </span>
+        {(["contact", "lead", "transaction", "general"] as const).map((et) => (
+          <button
+            key={et}
+            onClick={() => onUpdate(draft.cardId, { entityType: et, entityId: et === "general" ? null : draft.entityId })}
+            style={{
+              padding: "3px 8px",
+              fontSize: "10px",
+              fontWeight: draft.entityType === et ? 700 : 500,
+              borderRadius: "4px",
+              border: draft.entityType === et ? "1.5px solid #92400e" : "1px solid #e2e8f0",
+              cursor: "pointer",
+              background: draft.entityType === et ? "#fcd34d" : "#ffffff",
+              color: draft.entityType === et ? "#78350f" : "#64748b",
+              textTransform: "capitalize",
+            }}
+          >
+            {et === "general" ? "General" : et.charAt(0).toUpperCase() + et.slice(1)}
+          </button>
+        ))}
+        {draft.entityLabel && draft.entityType !== "general" && (
+          <span style={{ fontSize: "10px", color: "#78350f", marginLeft: "auto", fontStyle: "italic" }}>
+            {draft.entityLabel}
+          </span>
+        )}
+      </div>
+
       {/* Low-confidence warning */}
-      {draft.confidence === "low" && (
+      {draft.confidence === "low" && draft.entityType === "general" && (
         <div style={{
           display: "flex",
           alignItems: "center",
