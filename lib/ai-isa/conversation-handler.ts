@@ -1,5 +1,3 @@
-'use server'
-
 import { createServiceClient } from '@/lib/supabase/service'
 
 export interface InboundEmailContext {
