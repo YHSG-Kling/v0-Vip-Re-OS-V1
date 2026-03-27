@@ -25,6 +25,8 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
   brokerageId?: string
   userId?: string
   subscriptionId?: string
+  inviteSent?: boolean
+  inviteError?: string
   error?: string
 }> {
   const supabase = await createClient()
@@ -182,7 +184,10 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       })
       .catch(() => {})
 
-    // Step 6: Send invite email via Supabase auth — non-fatal
+    // Step 6: Send invite email via Supabase auth — non-fatal, but result is surfaced
+    let inviteSucceeded = false
+    let inviteErrorMessage: string | null = null
+
     try {
       await service.auth.admin.inviteUserByEmail(params.adminEmail, {
         data: {
@@ -193,8 +198,10 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
         },
         redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
       })
+      inviteSucceeded = true
     } catch (inviteErr: any) {
       console.warn("[createSubscriber] Invite email failed:", inviteErr.message)
+      inviteErrorMessage = inviteErr.message ?? "Unknown invite error"
     }
 
     return {
@@ -202,9 +209,30 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
       brokerageId,
       userId,
       subscriptionId: subscription.id,
+      inviteSent: inviteSucceeded,
+      inviteError: inviteErrorMessage ?? undefined,
     }
   } catch (err: any) {
     console.error("[createSubscriber] Error:", err)
     return { success: false, error: err.message || "Unexpected error" }
+  }
+}
+
+export async function retrySubscriberInvite(params: {
+  adminEmail: string
+  brokerageId: string
+}): Promise<{ success: boolean; error?: string }> {
+  const service = createServiceClient()
+  try {
+    await service.auth.admin.inviteUserByEmail(params.adminEmail, {
+      data: {
+        brokerage_id: params.brokerageId,
+        user_type: "admin",
+      },
+      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
+    })
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message ?? "Unknown error" }
   }
 }

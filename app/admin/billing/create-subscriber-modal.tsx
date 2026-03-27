@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { useRouter } from "next/navigation"
-import { createSubscriber } from "@/app/actions/admin/create-subscriber"
+import { createSubscriber, retrySubscriberInvite } from "@/app/actions/admin/create-subscriber"
 import {
   Dialog,
   DialogContent,
@@ -27,6 +27,8 @@ import {
   ChevronLeft,
   Copy,
   CheckCircle2,
+  AlertTriangle,
+  RefreshCw,
 } from "lucide-react"
 
 interface Tier {
@@ -124,6 +126,10 @@ export function CreateSubscriberModal({ tiers, onCreated }: CreateSubscriberModa
   } | null>(null)
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [copied, setCopied] = useState(false)
+  const [showRetryInvite, setShowRetryInvite] = useState(false)
+  const [inviteRetrying, setInviteRetrying] = useState(false)
+  const [createdAdminEmail, setCreatedAdminEmail] = useState("")
+  const [createdBrokerageId, setCreatedBrokerageId] = useState("")
 
   function updateForm(field: keyof FormState, value: string) {
     setForm((f) => ({ ...f, [field]: value }))
@@ -188,8 +194,28 @@ export function CreateSubscriberModal({ tiers, onCreated }: CreateSubscriberModa
         subscriptionId: res.subscriptionId,
       })
       onCreated({ brokerageId: res.brokerageId, userId: res.userId })
+      if (res.inviteError) {
+        setShowRetryInvite(true)
+        setCreatedAdminEmail(form.adminEmail)
+        setCreatedBrokerageId(res.brokerageId)
+      }
     } else {
       setError(res.error || "Creation failed. Please try again.")
+    }
+  }
+
+  async function handleRetryInvite() {
+    setInviteRetrying(true)
+    const res = await retrySubscriberInvite({
+      adminEmail: createdAdminEmail,
+      brokerageId: createdBrokerageId,
+    })
+    setInviteRetrying(false)
+    if (res.success) {
+      setShowRetryInvite(false)
+    } else {
+      // Keep the panel open so the superadmin can try again
+      setError(`Retry failed: ${res.error}`)
     }
   }
 
@@ -628,13 +654,23 @@ export function CreateSubscriberModal({ tiers, onCreated }: CreateSubscriberModa
                   </div>
                 </div>
                 <div className="flex items-start gap-3 p-3">
-                  <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
+                  {showRetryInvite ? (
+                    <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
+                  )}
                   <div>
-                    <p className="text-sm font-medium">Admin invitation sent</p>
+                    <p className="text-sm font-medium">Admin invitation</p>
                     <p className="text-sm text-muted-foreground">{form.adminEmail}</p>
                   </div>
-                  <Badge className="ml-auto bg-green-100 text-green-700 text-xs border-0 self-center shrink-0">
-                    Sent
+                  <Badge
+                    className={`ml-auto text-xs border-0 self-center shrink-0 ${
+                      showRetryInvite
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-green-100 text-green-700"
+                    }`}
+                  >
+                    {showRetryInvite ? "Failed" : "Sent"}
                   </Badge>
                 </div>
                 <div className="flex items-start gap-3 p-3">
@@ -661,6 +697,37 @@ export function CreateSubscriberModal({ tiers, onCreated }: CreateSubscriberModa
                   </div>
                 </div>
               </div>
+
+              {/* Retry invite panel — shown only when invite failed */}
+              {showRetryInvite && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-3">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-amber-900">Invite email failed</p>
+                      <p className="text-xs text-amber-700 mt-0.5">
+                        The brokerage and user were created successfully, but the invite email
+                        could not be sent. Use the button below to retry without recreating the
+                        account.
+                      </p>
+                    </div>
+                  </div>
+                  {error && (
+                    <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+                      {error}
+                    </p>
+                  )}
+                  <Button
+                    size="sm"
+                    onClick={handleRetryInvite}
+                    disabled={inviteRetrying}
+                    className="w-full"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${inviteRetrying ? "animate-spin" : ""}`} />
+                    {inviteRetrying ? "Retrying..." : "Retry Invite"}
+                  </Button>
+                </div>
+              )}
 
               <div className="flex gap-2">
                 <Button
