@@ -72,7 +72,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const consentNow = new Date().toISOString()
     const { contactId, action } = await captureContact({
       brokerageId: form.brokerage_id,
-      agentUserId: null,
+      // Use agent from form record; captureContact will fallback to brokerage primary if null
+      agentUserId: form.agent_id ?? null,
       source: 'web_form',
       first_name: first_name || null,
       last_name: last_name || null,

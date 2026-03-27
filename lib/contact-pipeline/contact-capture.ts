@@ -107,6 +107,20 @@ export async function captureContact(
   if (bestId !== null && bestScore >= DEDUP_THRESHOLD) {
     const existing = (candidates ?? []).find((x) => x.id === bestId)
 
+    // Resolve agent to assign on merge if existing contact has none
+    let mergeAgentId = params.agentUserId ?? null
+    if (!mergeAgentId && !existing?.agent_id) {
+      const { data: primaryAgent } = await supabase
+        .from('agents')
+        .select('user_id')
+        .eq('brokerage_id', params.brokerageId)
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+      if (primaryAgent?.user_id) mergeAgentId = primaryAgent.user_id
+    }
+
     await supabase
       .from('contacts')
       .update({
@@ -115,6 +129,8 @@ export async function captureContact(
         email: existing?.email || params.email,
         phone: existing?.phone || params.phone,
         source: existing?.source || params.source,
+        // Assign agent if not already set
+        ...(mergeAgentId && !existing?.agent_id ? { agent_id: mergeAgentId } : {}),
         // Only upgrade preferred_channel if consent was just given
         preferred_channel: params.tcpa_consent
           ? (params.preferred_channel ?? existing?.preferred_channel)
@@ -151,11 +167,26 @@ export async function captureContact(
   }
 
   // ── CREATE path ──────────────────────────────────────────────────────────
+  // If no agent was passed from metadata, resolve the brokerage's primary active
+  // agent (earliest created_at) so every contact always has an owner.
+  let resolvedAgentUserId = params.agentUserId ?? null
+  if (!resolvedAgentUserId) {
+    const { data: primaryAgent } = await supabase
+      .from('agents')
+      .select('user_id')
+      .eq('brokerage_id', params.brokerageId)
+      .eq('is_active', true)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    if (primaryAgent?.user_id) resolvedAgentUserId = primaryAgent.user_id
+  }
+
   const { data: created, error: createError } = await supabase
     .from('contacts')
     .insert({
       brokerage_id: params.brokerageId,
-      agent_id: params.agentUserId ?? null,   // references users.id NOT agents.id
+      agent_id: resolvedAgentUserId,   // references users.id NOT agents.id
       first_name: params.first_name ?? null,
       last_name: params.last_name ?? null,
       email: params.email ?? null,
