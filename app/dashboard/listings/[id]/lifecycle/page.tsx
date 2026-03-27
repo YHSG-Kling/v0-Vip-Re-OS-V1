@@ -181,18 +181,11 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     openHouseData?.posts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
   const rsvpCount = openHouseData?.invitations?.filter((i: any) => i.rsvp_response === "yes").length ?? 0
 
-  // Fetch vendor bookings for transactions linked to this listing
+  // Fetch vendor bookings directly by listing_id (column now exists after migration)
   const { data: listingVendorBookings } = await supabase
     .from("vendor_bookings")
-    .select("id, service_type, status, scheduled_date, notes, vendors(name)")
-    .in(
-      "transaction_id",
-      (await supabase
-        .from("transactions")
-        .select("id")
-        .eq("listing_id", listingId)
-        .then(r => (r.data ?? []).map(t => t.id)))
-    )
+    .select("id, service_type, status, scheduled_date, notes, contact_id, listing_id, vendors(name)")
+    .eq("listing_id", listingId)
     .not("status", "in", "(cancelled,no_show)")
     .order("scheduled_date", { ascending: true })
 

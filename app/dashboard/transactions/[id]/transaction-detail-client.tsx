@@ -355,6 +355,8 @@ interface TransactionDetailClientProps {
     status: string | null
     scheduled_date: string | null
     notes: string | null
+    contact_id: string | null
+    listing_id: string | null
     vendors: { name: string } | null
   }>
 }

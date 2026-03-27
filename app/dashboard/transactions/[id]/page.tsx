@@ -292,10 +292,10 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .eq("transaction_id", id),
   ])
 
-  // vendor_bookings with joined vendor name
+  // vendor_bookings with joined vendor name — includes contact_id and listing_id
   const { data: vendorBookings } = await supabase
     .from("vendor_bookings")
-    .select("id, service_type, status, scheduled_date, notes, vendors(name)")
+    .select("id, service_type, status, scheduled_date, notes, contact_id, listing_id, vendors(name)")
     .eq("transaction_id", id)
     .not("status", "in", "(cancelled,no_show)")
     .order("scheduled_date", { ascending: true })
