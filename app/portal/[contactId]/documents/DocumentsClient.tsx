@@ -254,6 +254,12 @@ export function DocumentsClient({
 
   return (
     <div className="space-y-6">
+      {/* Trust language */}
+      <p className="text-xs text-muted-foreground">
+        Documents shared here are between you and your agent. Nothing is shared externally
+        without your approval.
+      </p>
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

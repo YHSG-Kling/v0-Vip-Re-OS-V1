@@ -27,6 +27,7 @@ import {
   Building,
   Bell,
   MapPin,
+  Clock,
 } from "lucide-react"
 import SellerHome from "./seller-home"
 import LifetimeHome from "./lifetime-home"
@@ -306,6 +307,66 @@ export default async function PortalHomePage({
       </div>
 
       <div className="max-w-2xl mx-auto px-4 -mt-4 pb-12 space-y-5">
+
+        {/* What's Next For You — prominent action panel */}
+        <div className="rounded-xl border bg-slate-50 p-5">
+          <h2 className="font-semibold text-base mb-1 text-foreground">{"What's Next For You"}</h2>
+          <p className="text-sm text-muted-foreground mb-4 leading-relaxed">{stageCtx.whatNext}</p>
+          <div className="flex flex-wrap gap-2">
+            {contact.buyer_stage === 'BUYER_RESEARCHING' && (
+              <Button size="sm" asChild>
+                <Link href={`/portal/${contactId}/properties`}>Browse AI Picks</Link>
+              </Button>
+            )}
+            {contact.buyer_stage === 'BUYER_ACTIVELY_SEARCHING' && activeTransaction && (
+              <>
+                <Button size="sm" asChild>
+                  <Link href={`/portal/${contactId}/showings`}>View My Showings</Link>
+                </Button>
+                <Button size="sm" variant="outline" asChild>
+                  <Link href={`/portal/${contactId}/my-offer`}>My Offers</Link>
+                </Button>
+              </>
+            )}
+            {contact.buyer_stage === 'BUYER_UNDER_CONTRACT' && (
+              <Button size="sm" asChild>
+                <Link href={`/portal/${contactId}/journey`}>Track My Journey</Link>
+              </Button>
+            )}
+            {contact.buyer_stage === 'BUYER_PREPARING_TO_CLOSE' && (
+              <>
+                <Button size="sm" asChild>
+                  <Link href={`/portal/${contactId}/documents`}>My Documents</Link>
+                </Button>
+                <Button size="sm" variant="outline" asChild>
+                  <Link href={`/portal/${contactId}/learn`}>Closing Checklist</Link>
+                </Button>
+              </>
+            )}
+            <Button size="sm" variant="ghost" asChild>
+              <Link href={`/portal/${contactId}/messages`}>Message My Agent</Link>
+            </Button>
+          </div>
+        </div>
+
+        {/* Your Agent Is Working On — transparency section */}
+        {activeTransaction && (
+          <div className="rounded-lg border bg-muted/30 p-4">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+              Your Agent Is Working On
+            </p>
+            {milestones.filter((m: any) => m.status === 'pending').length > 0 ? (
+              milestones.filter((m: any) => m.status === 'pending').slice(0, 2).map((m: any) => (
+                <div key={m.id} className="flex items-center gap-2 text-sm py-1">
+                  <Clock className="h-3 w-3 text-muted-foreground shrink-0" />
+                  <span className="text-foreground">{m.milestone_name?.replace(/_/g, ' ')}</span>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">All milestones are on track</p>
+            )}
+          </div>
+        )}
 
         {/* What This Means — persona-aware */}
         <Card className="shadow-lg border-0">

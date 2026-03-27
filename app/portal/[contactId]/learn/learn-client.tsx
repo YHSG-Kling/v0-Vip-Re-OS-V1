@@ -125,6 +125,12 @@ export default function LearnClient({ contactId, initialFeed, agentId, contactFi
 
   return (
     <div className="space-y-6">
+      {/* Trust language */}
+      <p className="text-xs text-muted-foreground">
+        These resources are curated for your situation. They are educational guides —
+        not legal advice. Your agent is always available if you have questions.
+      </p>
+
       {/* Progress Section */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -180,6 +186,17 @@ export default function LearnClient({ contactId, initialFeed, agentId, contactFi
           </TabsTrigger>
         </TabsList>
       </Tabs>
+
+      {/* All-complete celebration */}
+      {progressPercent === 100 && filter !== "unread" && (
+        <div className="rounded-xl border-2 border-green-200 bg-green-50 p-4 text-center">
+          <CheckCircle2 className="h-8 w-8 text-green-600 mx-auto mb-2" />
+          <p className="font-semibold text-green-800 mt-1">{"You're all caught up!"}</p>
+          <p className="text-sm text-green-700 mt-1">
+            {"You've completed all the resources for this stage. Your agent has been notified."}
+          </p>
+        </div>
+      )}
 
       {/* Empty States */}
       {filteredLessons.length === 0 && filter === "completed" && (
