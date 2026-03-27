@@ -20,6 +20,7 @@ import {
 } from "../components/launch"
 import { ListingAgreementStatusCard } from "./components/listing-agreement-status-card"
 import { OpenHousePostEventPanel } from "../components/open-house-post-event-panel"
+import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
 import { DecisionHistoryPanel } from "./components/decision-history-panel"
 import { ComingSoonCommandCard } from "./components/coming-soon-command-card"
 import { ListingPacketPanel } from "./components/listing-packet-panel"
@@ -180,6 +181,21 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     openHouseData?.posts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
   const rsvpCount = openHouseData?.invitations?.filter((i: any) => i.rsvp_response === "yes").length ?? 0
 
+  // Fetch vendor bookings for transactions linked to this listing
+  const { data: listingVendorBookings } = await supabase
+    .from("vendor_bookings")
+    .select("id, service_type, status, scheduled_date, notes, vendors(name)")
+    .in(
+      "transaction_id",
+      (await supabase
+        .from("transactions")
+        .select("id")
+        .eq("listing_id", listingId)
+        .then(r => (r.data ?? []).map(t => t.id)))
+    )
+    .not("status", "in", "(cancelled,no_show)")
+    .order("scheduled_date", { ascending: true })
+
   // Blockers
   const blockers: string[] = []
   if (!mediaReady) blockers.push("Need 10+ photos")
@@ -331,6 +347,13 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
                 attendees={event.attendees ?? []}
               />
             ))}
+          </div>
+        )}
+
+        {/* Vendor bookings linked via transactions on this listing */}
+        {(listingVendorBookings ?? []).length > 0 && (
+          <div className="mb-6">
+            <VendorBookingsPanel bookings={listingVendorBookings ?? []} />
           </div>
         )}
 

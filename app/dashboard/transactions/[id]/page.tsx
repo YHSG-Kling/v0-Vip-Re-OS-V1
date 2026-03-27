@@ -292,6 +292,14 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .eq("transaction_id", id),
   ])
 
+  // vendor_bookings with joined vendor name
+  const { data: vendorBookings } = await supabase
+    .from("vendor_bookings")
+    .select("id, service_type, status, scheduled_date, notes, vendors(name)")
+    .eq("transaction_id", id)
+    .not("status", "in", "(cancelled,no_show)")
+    .order("scheduled_date", { ascending: true })
+
   // Compute participant counts by role
   const participantCountsByRole = (participants ?? []).reduce((acc, p) => {
     acc[p.role] = (acc[p.role] || 0) + 1
@@ -347,6 +355,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       availableTCs={availableTCs ?? []}
       currentLenderId={currentLenderId}
       availableLenders={availableLenders ?? []}
+      vendorBookings={vendorBookings ?? []}
     />
   )
 }

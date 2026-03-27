@@ -1,6 +1,43 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+
+// ── Vendor booking lifecycle ─────────────────────────────────────────────────
+
+export type VendorBookingStatus =
+  | "booked"
+  | "confirmed"
+  | "completed"
+  | "cancelled"
+  | "no_show"
+
+/**
+ * Transition a vendor booking to a new lifecycle status.
+ * Appends a completed_at timestamp when moving to "completed".
+ */
+export async function transitionBookingStatus(params: {
+  bookingId: string
+  toStatus: VendorBookingStatus
+  notes?: string
+}): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) return { success: false, error: "Unauthorized" }
+
+  const { error } = await supabase
+    .from("vendor_bookings")
+    .update({
+      status: params.toStatus,
+      notes: params.notes ?? null,
+      ...(params.toStatus === "completed"
+        ? { completed_at: new Date().toISOString() }
+        : {}),
+    })
+    .eq("id", params.bookingId)
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
 import { generateObject } from "ai"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"

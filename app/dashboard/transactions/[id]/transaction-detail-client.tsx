@@ -79,6 +79,7 @@ import { DocumentSignaturePanel } from "@/app/components/shared/DocumentSignatur
 import { isSignableDocType } from "@/lib/documents/signable-doc-types"
 import { AssignTCPanel } from "./assign-tc-panel"
 import { AssignLenderPanel } from "./assign-lender-panel"
+import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
 import {
   analyzeTransactionDocument,
   generateTransactionDocumentReminders,
@@ -347,6 +348,15 @@ interface TransactionDetailClientProps {
     id: string
     lender_company: string | null
   }>
+  // Vendor bookings
+  vendorBookings?: Array<{
+    id: string
+    service_type: string | null
+    status: string | null
+    scheduled_date: string | null
+    notes: string | null
+    vendors: { name: string } | null
+  }>
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
@@ -409,6 +419,7 @@ export function TransactionDetailClient({
   availableTCs = [],
   currentLenderId = null,
   availableLenders = [],
+  vendorBookings = [],
 }: TransactionDetailClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -3053,6 +3064,9 @@ export function TransactionDetailClient({
                   </div>
                 </CardContent>
               </Card>
+
+              {/* Vendor Bookings Panel */}
+              <VendorBookingsPanel bookings={vendorBookings} />
 
             </div>
           </TabsContent>
