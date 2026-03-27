@@ -49,16 +49,26 @@ export async function launchAIISACampaignService(params: {
     }
   }
 
+  // Resolve brokerage_id from the agent's record — loginId is agent user id
+  const { data: agentForCampaign } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", loginId)
+    .single()
+
+  const campaignBrokerageId = agentForCampaign?.brokerage_id
+  if (!campaignBrokerageId) {
+    return { success: false, error: "Could not resolve brokerage_id for campaign" }
+  }
+
   const { data: campaign, error: campaignError } = await supabase
     .from("ai_isa_campaigns")
     .insert({
-      login_id: loginId,
-      campaign_name: campaignName || `${campaignType} - ${new Date().toLocaleDateString()}`,
-      campaign_type: campaignType,
-      vapi_assistant_id: vapiAssistantId,
-      target_contact_segment: contactSegment,
-      contacts_targeted: contacts.length,
-      status: "active",
+      brokerage_id:           campaignBrokerageId,
+      name:                   campaignName || `${campaignType} - ${new Date().toLocaleDateString()}`,
+      campaign_type:          campaignType,
+      leads_targeted:         contacts.length,
+      is_active:              true,
     })
     .select()
     .single()
@@ -168,22 +178,62 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     assistantOverrides,
   })
 
-  const { data: call, error: callError } = await supabase
+  // Write voice_calls row first — ai_isa_calls.voice_call_id is an FK to it
+  const { data: voiceCallRow } = await supabase
+    .from("voice_calls")
+    .insert({
+      contact_id:  contactId,
+      brokerage_id: brokerageId,
+      agent_id:    loginId,
+      vapi_call_id: callData.id,
+      direction:   "outbound",
+      call_type:   "isa_ai",
+      status:      "initiated",
+      started_at:  new Date().toISOString(),
+    })
+    .select("id")
+    .single()
+    .then((r) => r.data)
+    .catch(() => null)
+
+  // Write vapi_voice_calls billing row
+  await supabase
+    .from("vapi_voice_calls")
+    .insert({
+      voice_call_id: voiceCallRow?.id ?? null,
+      brokerage_id:  brokerageId,
+      vapi_call_id:  callData.id,
+      assistant_id:  campaign.vapi_assistant_id ?? null,
+      agent_id:      loginId,
+      contact_id:    contactId,
+    })
+    .catch((err: any) => {
+      console.error("[AI-ISA] vapi_voice_calls insert failed:", err.message)
+    })
+
+  // Write ai_isa_calls with correct build34 columns — no campaign_id/login_id/vapi_call_id/call_status/attempt_number
+  const { data: isaCall, error: isaCallError } = await supabase
     .from("ai_isa_calls")
     .insert({
-      campaign_id:   campaignId,
-      contact_id:    contactId,
-      login_id:      loginId,
-      vapi_call_id:  callData.id,
-      call_status:   callData.status ?? "initiated",
-      attempt_number: 1,
+      voice_call_id:   voiceCallRow?.id ?? null,
+      brokerage_id:    brokerageId,
+      contact_id:      contactId,
+      isa_campaign_id: campaignId ?? null,
+      script_used:     ctx.systemPrompt?.substring(0, 500) ?? null,
     })
-    .select()
+    .select("id")
     .single()
 
-  if (callError) throw callError
+  if (isaCallError) {
+    console.error("[AI-ISA] ai_isa_calls insert failed:", isaCallError.message)
+  }
 
-  return { success: true, call_id: call.id, vapi_call_id: callData.id }
+  return {
+    success:      true,
+    call_id:      isaCall?.id ?? null,
+    voice_call_id: voiceCallRow?.id ?? null,
+    vapi_call_id: callData.id,
+  }
 }
 
 // Handle Vapi call completion webhook
@@ -192,41 +242,50 @@ export async function handleVapiCallCompleteService(payload: any) {
 
   const { call: callData, transcript, summary, analysis } = payload
 
-  const { data: call } = await supabase
-    .from("ai_isa_calls")
-    .select("*")
+  // Resolve voice_calls row first — ai_isa_calls no longer stores vapi_call_id
+  const { data: voiceCall } = await supabase
+    .from("voice_calls")
+    .select("id, contact_id, agent_id, brokerage_id")
     .eq("vapi_call_id", callData.id)
-    .single()
+    .maybeSingle()
 
-  if (!call) {
-    console.warn("[AI ISA] Call not found for vapi_call_id:", callData.id)
+  if (!voiceCall) {
+    console.warn("[AI ISA] voice_calls row not found for vapi_call_id:", callData.id)
     return { success: false, error: "Call not found" }
   }
 
-  await supabase
+  const { data: call } = await supabase
     .from("ai_isa_calls")
-    .update({
-      call_status: callData.status || "completed",
-      call_duration_seconds: callData.duration,
-      conversation_transcript: transcript?.text || null,
-      qualification_result: analysis?.qualification || null,
-      outcome: analysis?.outcome || "completed",
-      recording_url: callData.recordingUrl || null,
-    })
-    .eq("id", call.id)
+    .select("id, isa_campaign_id")
+    .eq("voice_call_id", voiceCall.id)
+    .maybeSingle()
 
-  await supabase
-    .from("ai_isa_campaigns")
-    .update({ calls_completed: supabase.raw("calls_completed + 1") })
-    .eq("id", call.campaign_id)
+  if (call) {
+    await supabase
+      .from("ai_isa_calls")
+      .update({
+        ai_response_summary: (summary || analysis?.outcome || "").substring(0, 500) || null,
+      })
+      .eq("id", call.id)
+  }
+
+  // ai_isa_campaigns still has calls_completed — use rpc to increment safely
+  if (call?.isa_campaign_id) {
+    await supabase.rpc("increment_campaign_calls_completed", {
+      p_campaign_id: call.isa_campaign_id,
+    }).catch(() => {
+      // rpc may not exist yet — non-blocking
+    })
+  }
 
   if (analysis?.outcome === "appointment_booked" && analysis?.appointment_time) {
     const { data: showing } = await supabase
       .from("showings")
       .insert({
-        agent_id: call.login_id,
-        contact_id: call.contact_id,
-        scheduled_at: analysis.appointment_time,
+        agent_id:      voiceCall.agent_id,
+        contact_id:    voiceCall.contact_id,
+        brokerage_id:  voiceCall.brokerage_id,
+        scheduled_at:  analysis.appointment_time,
         duration_minutes: 30,
         status: "scheduled",
         notes: `Booked by AI ISA - ${summary || ""}`,
@@ -235,35 +294,36 @@ export async function handleVapiCallCompleteService(payload: any) {
       .single()
 
     if (showing) {
-      await supabase
-        .from("ai_isa_calls")
-        .update({ showing_scheduled_id: showing.id })
-        .eq("id", call.id)
+      if (call?.isa_campaign_id) {
+        await supabase.rpc("increment_campaign_appointments_booked", {
+          p_campaign_id: call.isa_campaign_id,
+        }).catch(() => {})
+      }
 
-      await supabase
-        .from("ai_isa_campaigns")
-        .update({ appointments_booked: supabase.raw("appointments_booked + 1") })
-        .eq("id", call.campaign_id)
-
-      await supabase.from("notifications").insert({
-        recipient_id: call.login_id,
-        notification_type: "ai_isa_booked_appointment",
-        title: "AI ISA Booked Appointment",
-        message: `Appointment with ${analysis.contact_name || "contact"} scheduled for ${new Date(analysis.appointment_time).toLocaleString()}`,
-        priority: "high",
-      })
+      if (voiceCall.agent_id) {
+        await supabase.from("notifications").insert({
+          user_id:      voiceCall.agent_id,
+          brokerage_id: voiceCall.brokerage_id,
+          type:         "ai_isa_booked_appointment",
+          title:        "AI-ISA Booked Appointment",
+          body:         `Appointment with ${analysis.contact_name || "contact"} scheduled for ${new Date(analysis.appointment_time).toLocaleString()}`,
+          priority:     "high",
+        }).catch(() => {})
+      }
     }
   }
 
   if (analysis?.qualification?.qualified && analysis?.outcome !== "appointment_booked") {
     await supabase.from("tasks").insert({
-      assigned_to: call.login_id,
-      contact_id: call.contact_id,
-      title: "Follow up - AI ISA qualified lead",
+      assigned_to_agent_id: voiceCall.agent_id,
+      contact_id:           voiceCall.contact_id,
+      brokerage_id:         voiceCall.brokerage_id,
+      title:       "Follow up - AI-ISA qualified lead",
       description: `Budget: $${analysis.qualification.budget || "N/A"}, Timeline: ${analysis.qualification.timeline || "N/A"}. ${analysis.qualification.notes || ""}`,
-      due_date: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
-      priority: "urgent",
-    })
+      due_date:    new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString().split("T")[0],
+      priority:    "urgent",
+      status:      "pending",
+    }).catch(() => {})
   }
 
   return { success: true }
@@ -292,14 +352,15 @@ export async function getAIISACallsService(campaignId?: string, loginId?: string
       `
       *,
       contact:contacts(first_name, last_name, phone),
-      campaign:ai_isa_campaigns(campaign_name, campaign_type)
+      campaign:ai_isa_campaigns(name, campaign_type),
+      voice_call:voice_calls(vapi_call_id, status, duration_seconds)
     `
     )
     .order("created_at", { ascending: false })
     .limit(100)
 
-  if (campaignId) query = query.eq("campaign_id", campaignId)
-  if (loginId) query = query.eq("login_id", loginId)
+  if (campaignId) query = query.eq("isa_campaign_id", campaignId)
+  if (loginId) query = query.eq("contact_id", loginId) // fallback — callers should pass contactId
 
   const { data: calls } = await query
   return calls || []
@@ -309,24 +370,26 @@ export async function getAIISACallsService(campaignId?: string, loginId?: string
 export async function retryFailedCallsService(loginId: string) {
   const supabase = await createClient()
 
-  const { data: failedCalls } = await supabase
-    .from("ai_isa_calls")
-    .select("*")
-    .eq("login_id", loginId)
-    .in("call_status", ["no_answer", "busy", "failed"])
-    .lt("attempt_number", 3)
-    .lte("created_at", new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString())
+  // Resolve failed voice_calls for this agent, then look up ai_isa_calls via voice_call_id
+  const { data: failedVoiceCalls } = await supabase
+    .from("voice_calls")
+    .select("id, contact_id")
+    .eq("agent_id", loginId)
+    .in("status", ["no_answer", "busy", "failed"])
+    .lte("started_at", new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString())
+    .limit(50)
+
+  const { data: failedIsaCalls } = failedVoiceCalls?.length
+    ? await supabase
+        .from("ai_isa_calls")
+        .select("id, contact_id, isa_campaign_id")
+        .in("voice_call_id", failedVoiceCalls.map((v) => v.id))
+    : { data: [] }
 
   let retriedCount = 0
-  for (const call of failedCalls || []) {
-    const result = await queueAIISACallService(call.campaign_id, call.contact_id, loginId)
-    if (result.success) {
-      await supabase
-        .from("ai_isa_calls")
-        .update({ attempt_number: call.attempt_number + 1 })
-        .eq("id", call.id)
-      retriedCount++
-    }
+  for (const call of failedIsaCalls || []) {
+    const result = await queueAIISACallService(call.isa_campaign_id ?? "", call.contact_id, loginId)
+    if (result.success) retriedCount++
   }
 
   return { success: true, retried_count: retriedCount }

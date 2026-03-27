@@ -385,9 +385,110 @@ async function dispatchToChannel(
       console.error('[AI-ISA][TCPA] Phone blocked for unconsented lead', { leadId })
       return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
     }
-    // Phone dispatch implementation lives in the telephony provider layer.
-    // Fall through to email until voice dispatch is wired here.
-    return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
+
+    const phone = contactRow.phone ?? lead.phone
+    if (!phone) {
+      return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
+    }
+
+    const vapiAssistantId = process.env.VAPI_ISA_ASSISTANT_ID
+    if (!vapiAssistantId) {
+      console.error('[AI-ISA] VAPI_ISA_ASSISTANT_ID not set — falling back to email')
+      return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
+    }
+
+    const { buildCallContext } = await import('@/lib/ai-isa/build-call-context')
+    const callContext = await buildCallContext({
+      brokerageId:   lead.brokerage_id,
+      teamId:        contactRow.team_id ?? null,
+      agentId:       lead.agent_id ?? null,
+      contactId:     contactRow.id,
+      callPurpose:   'isa_qualification',
+    })
+
+    if (callContext.blocked) {
+      console.error('[AI-ISA][TCPA] buildCallContext blocked call:', callContext.blockedReason)
+      return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
+    }
+
+    const { initiateCall } = await import('@/lib/voice/vapi-client')
+    let vapiResponse: { id: string; status: string }
+    try {
+      vapiResponse = await initiateCall({
+        phoneNumber:  phone,
+        assistantId:  vapiAssistantId,
+        assistantOverrides: {
+          name:         callContext.assistantName,
+          firstMessage: callContext.firstMessage,
+          ...(callContext.voiceConfig?.elevenlabs_voice_id
+            ? {
+                voice: {
+                  provider:        'elevenlabs',
+                  voiceId:         callContext.voiceConfig.elevenlabs_voice_id,
+                  stability:       callContext.voiceConfig.voice_stability        ?? undefined,
+                  similarityBoost: callContext.voiceConfig.voice_similarity_boost ?? undefined,
+                },
+              }
+            : {}),
+          model:          { systemPrompt: callContext.systemPrompt },
+          variableValues: callContext.variables ?? {},
+        },
+      })
+    } catch (err: any) {
+      console.error('[AI-ISA] VAPI call failed, falling back to email:', err.message)
+      return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
+    }
+
+    // voice_calls row — initiateCall confirmed the call is live
+    const { data: voiceCallRow } = await supabase
+      .from('voice_calls')
+      .insert({
+        contact_id:  contactRow.id,
+        brokerage_id: lead.brokerage_id,
+        agent_id:    lead.agent_id ?? null,
+        vapi_call_id: vapiResponse.id,
+        direction:   'outbound',
+        call_type:   'isa_ai',
+        status:      'initiated',
+        started_at:  new Date().toISOString(),
+      })
+      .select('id')
+      .single()
+      .then((r) => r.data)
+      .catch(() => null)
+
+    // vapi_voice_calls billing row
+    await supabase.from('vapi_voice_calls').insert({
+      voice_call_id: voiceCallRow?.id ?? null,
+      brokerage_id:  lead.brokerage_id,
+      vapi_call_id:  vapiResponse.id,
+      assistant_id:  vapiAssistantId,
+      agent_id:      lead.agent_id ?? null,
+      contact_id:    contactRow.id,
+    }).catch(() => {})
+
+    // ai_isa_calls with correct build34 columns
+    await supabase.from('ai_isa_calls').insert({
+      voice_call_id:   voiceCallRow?.id ?? null,
+      brokerage_id:    lead.brokerage_id,
+      contact_id:      contactRow.id,
+      isa_campaign_id: null,
+      script_used:     callContext.systemPrompt?.substring(0, 500) ?? null,
+    }).catch(() => {})
+
+    await logISAOutreach({
+      brokerageId: lead.brokerage_id,
+      entity: { entityType: 'lead', leadId },
+      channel: 'phone',
+      bodySnippet: `AI-ISA outbound call initiated. VAPI call ID: ${vapiResponse.id}`,
+    })
+
+    return {
+      success:       true,
+      callInitiated: true,
+      vapiCallId:    vapiResponse.id,
+      channel:       'phone',
+    }
   }
 
   // ── SMS ────────────────────────────────────────────────────────────────

@@ -282,7 +282,56 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         })
       }
 
-      // 7. Post-call AI SDK follow-up (non-blocking — intentional fire-and-forget)
+      // 7. Update ai_isa_calls with outcome scoring
+      const { data: isaCall } = await supabase
+        .from("ai_isa_calls")
+        .select("id")
+        .eq("voice_call_id", voiceCall.id)
+        .maybeSingle()
+
+      if (isaCall) {
+        const appointmentSet =
+          suggestedNextAction === "schedule_agent_handoff" ||
+          intentPrimary === "appointment_requested" ||
+          (summary ?? "").toLowerCase().includes("appointment")
+
+        const qualScore = Math.min(
+          100,
+          Math.max(
+            0,
+            urgencyScore +
+              (["ready_to_buy", "ready_to_list"].includes(intentPrimary) ? 20 : 0) +
+              (intentPrimary === "appointment_requested" ? 30 : 0) +
+              (appointmentSet ? 20 : 0)
+          )
+        )
+
+        await supabase
+          .from("ai_isa_calls")
+          .update({
+            appointment_set:    appointmentSet,
+            lead_quality_score: qualScore,
+            ai_response_summary: (summary ?? "").substring(0, 500) || null,
+            ...(appointmentSet ? { appointment_datetime: new Date().toISOString() } : {}),
+          })
+          .eq("id", isaCall.id)
+          .catch(() => {})
+
+        // Notify agent when lead is highly qualified but appointment not yet set
+        if (!appointmentSet && qualScore >= 60 && voiceCall.contact_id && voiceCall.agent_id) {
+          await supabase.from("notifications").insert({
+            user_id:      voiceCall.agent_id,
+            brokerage_id: brokerageId,
+            type:         "isa_qualified_lead",
+            title:        "AI-ISA qualified a contact for you",
+            body:         `Score: ${qualScore}/100. Intent: ${intentPrimary?.replace(/_/g, " ")}.`,
+            entity_type:  "contact",
+            entity_id:    voiceCall.contact_id,
+          }).catch(() => {})
+        }
+      }
+
+      // 8. Post-call AI SDK follow-up (non-blocking — intentional fire-and-forget)
       // Only trigger if call had meaningful duration (> 15s) and outcome warrants follow-up
       const shouldFollowUp =
         durationSeconds > 15 &&
@@ -406,17 +455,19 @@ async function schedulePostCallFollowUp(params: {
   // Log the follow-up activity
   if (smsSent || emailSent) {
     await supabase.from("activities").insert({
-      contact_id: contactId,
-      brokerage_id: brokerageId,
-      agent_id: agentId,
+      contact_id:    contactId,
+      brokerage_id:  brokerageId,
+      agent_id:      agentId,
       activity_type: smsSent ? "sms_sent" : "email_sent",
-      description: `Post-call AI follow-up: ${followUpMessage.slice(0, 100)}`,
+      title:         "AI post-call follow-up",
+      description:   `Post-call AI follow-up: ${followUpMessage.slice(0, 100)}`,
+      status:        "completed",
       notes: JSON.stringify({
-        source: "vapi_post_call_followup",
-        voice_call_id: params.voiceCallId,
+        source:         "vapi_post_call_followup",
+        voice_call_id:  params.voiceCallId,
         intent_primary: intentPrimary,
-        urgency_score: urgencyScore,
-        channel: smsSent ? "sms" : "email",
+        urgency_score:  urgencyScore,
+        channel:        smsSent ? "sms" : "email",
       }),
     })
   }
