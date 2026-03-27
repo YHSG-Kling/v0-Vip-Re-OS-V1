@@ -57,51 +57,58 @@ export async function ProvisioningHealthPanel({ brokerageId }: Props) {
   // Parallel fetch all provisioning signals
   const [
     agentsRes,
-    commissionRes,
-    teamRes,
     onboardingRes,
     authUsersRes,
   ] = await Promise.all([
-    // Which user_ids have an agents row?
+    // Fetch agent rows including their agents.id for downstream joins
     supabase
       .from("agents")
-      .select("user_id")
+      .select("id, user_id")
       .eq("brokerage_id", brokerageId)
       .in("user_id", userIds),
-    // Which user_ids have a commission profile?
-    supabase
-      .from("agent_commission_profiles")
-      .select("agent_id")
-      .eq("brokerage_id", brokerageId)
-      .eq("is_active", true),
-    // Which agent_ids have a team membership?
-    supabase
-      .from("team_members")
-      .select("agent_id")
-      .eq("brokerage_id", brokerageId)
-      .eq("is_active", true),
-    // Which user_ids have completed onboarding?
+    // Which user_ids have an onboarding record?
     supabase
       .from("agent_onboarding")
       .select("user_id, status, completion_percentage")
       .eq("brokerage_id", brokerageId)
       .in("user_id", userIds),
-    // Auth invites: check auth.users via supabase admin if available
-    // We use invited_at presence in lender_portal_users as a proxy — instead
-    // directly check users.created_by is not null as a "was provisioned" signal.
-    // Since we cannot call auth.admin.listUsers in a server component without
-    // service role, we check if the user has a password_hash or platform_role set.
+    // Check invite acceptance via password_hash or platform_role presence
     supabase
       .from("users")
       .select("id, platform_role, password_hash")
       .in("id", userIds),
   ])
 
-  const agentUserIds   = new Set((agentsRes.data ?? []).map((a) => a.user_id))
+  // Build user_id → agents.id map
+  const agentRows = agentsRes.data ?? []
+  const agentUserIds = new Set(agentRows.map((a) => a.user_id))
+  const userIdToAgentId = new Map(agentRows.map((a) => [a.user_id, a.id]))
+  const allAgentIds = agentRows.map((a) => a.id)
+
+  // Fetch commission profiles and team memberships by agents.id (not users.id)
+  const [commissionRes, teamRes] = await Promise.all([
+    allAgentIds.length > 0
+      ? supabase
+          .from("agent_commission_profiles")
+          .select("agent_id")
+          .eq("brokerage_id", brokerageId)
+          .eq("is_active", true)
+          .in("agent_id", allAgentIds)
+      : { data: [] },
+    allAgentIds.length > 0
+      ? supabase
+          .from("team_members")
+          .select("agent_id")
+          .eq("brokerage_id", brokerageId)
+          .eq("is_active", true)
+          .in("agent_id", allAgentIds)
+      : { data: [] },
+  ])
+
   const commissionAgentIds = new Set((commissionRes.data ?? []).map((a) => a.agent_id))
-  const teamAgentIds   = new Set((teamRes.data ?? []).map((a) => a.agent_id))
-  const onboardingMap  = new Map((onboardingRes.data ?? []).map((o) => [o.user_id, o]))
-  const authMap        = new Map((authUsersRes.data ?? []).map((u) => [u.id, u]))
+  const teamAgentIds       = new Set((teamRes.data ?? []).map((a) => a.agent_id))
+  const onboardingMap      = new Map((onboardingRes.data ?? []).map((o) => [o.user_id, o]))
+  const authMap            = new Map((authUsersRes.data ?? []).map((u) => [u.id, u]))
 
   // Build per-user provisioning result
   const results: ProvisioningResult[] = users.map((user) => {
@@ -115,19 +122,17 @@ export async function ProvisioningHealthPanel({ brokerageId }: Props) {
     // Agent-specific checks
     const resolvedType = user.user_type ?? user.role
     if (resolvedType === "agent" || resolvedType === "coordinator") {
-      const agentRow = agentUserIds.has(user.id)
-      if (!agentRow) flags.push("noAgent")
+      const hasAgentRow = agentUserIds.has(user.id)
+      if (!hasAgentRow) flags.push("noAgent")
 
-      // Commission profile check requires agent_id — we skip if no agent row
-      // (since agent_id !== user_id); check via agent_commission_profiles using
-      // agent_id which is in the agents table. We only flag if agent row exists.
-      if (agentRow && !commissionAgentIds.has(user.id)) {
-        // Note: commission profile agent_id may be agents.id not users.id.
-        // We mark as potentially missing; this is a best-effort check.
+      // Commission and team lookups use agents.id, not users.id
+      const agentId = userIdToAgentId.get(user.id)
+      if (hasAgentRow && agentId && !commissionAgentIds.has(agentId)) {
         flags.push("noCommission")
       }
-
-      if (!teamAgentIds.has(user.id)) flags.push("noTeam")
+      if (hasAgentRow && agentId && !teamAgentIds.has(agentId)) {
+        flags.push("noTeam")
+      }
     }
 
     // Onboarding
