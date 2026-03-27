@@ -239,6 +239,27 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       started_at: new Date().toISOString(),
     })
 
+    // Insert ai_isa_calls row so call-ended can update appointment_set / quality score.
+    // outbound calls get this row from initiate-call/route.ts; inbound calls need it here.
+    if (direction === "inbound") {
+      const { data: voiceCallRow } = await supabase
+        .from("voice_calls")
+        .select("id")
+        .eq("vapi_call_id", callId)
+        .maybeSingle()
+
+      if (voiceCallRow?.id) {
+        await supabase.from("ai_isa_calls").insert({
+          brokerage_id: brokerageId,
+          contact_id: resolvedContactId ?? null,
+          lead_id: resolvedLeadId ?? null,
+          voice_call_id: voiceCallRow.id,
+          script_used: "inbound",
+          appointment_set: false,
+        }).catch(() => {})
+      }
+    }
+
     return NextResponse.json({ received: true, event: "call-started" })
   }
 

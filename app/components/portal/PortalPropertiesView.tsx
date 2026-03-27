@@ -14,7 +14,6 @@ import { SmartPropertyInsights } from "./SmartPropertyInsights"
 import { addPropertyToSearch, getCollaborativeSearches } from "@/app/actions/collaborative-search"
 import { requestShowing } from "@/app/actions/smart-insights"
 import { getSavedProperties } from "@/app/actions/properties"
-import { mockProperties } from "@/app/data/mockProperties" // Import mockProperties
 
 interface PortalPropertiesViewProps {
   contactId: string

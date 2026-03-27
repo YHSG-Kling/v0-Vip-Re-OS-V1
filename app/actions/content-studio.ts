@@ -93,8 +93,6 @@ export async function researchKeywords(topic: string, userId?: string) {
       Provide exactly 10 keywords with realistic search volumes for real estate.`,
     })
 
-    console.log("[v0] Raw AI response for keywords:", text.substring(0, 200))
-    
     const keywords = parseAIJsonResponse(text)
 
     return { success: true, keywords }
