@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createServiceClient } from '@/lib/supabase/service'
 
 export async function acceptAIISAHandoff(params: {
   leadId: string
@@ -8,6 +9,7 @@ export async function acceptAIISAHandoff(params: {
   actorUserId: string
 }): Promise<{ success: boolean; contactId?: string; error?: string }> {
   const supabase = await createClient()
+  const service = createServiceClient()
 
   const { data: lead, error: leadErr } = await supabase
     .from('leads')
@@ -24,18 +26,45 @@ export async function acceptAIISAHandoff(params: {
     return { success: true, contactId: lead.contact_id }
   }
 
-  // Ensure agent is assigned before conversion
+  // ── Agent assignment: governance → team fallback → brokerage primary ──────
+  // Priority: (1) already on the lead, (2) governLead routing engine,
+  // (3) brokerage/team primary active agent. Handoff never stalls waiting
+  // for manual assignment — a human can reassign afterwards via the CRM.
   let assignedAgentId: string | null = lead.agent_id ?? null
 
   if (!assignedAgentId) {
-    const { governLead } = await import('@/app/actions/lead-governance/govern-lead')
-    const governance = await governLead(lead.id, lead.brokerage_id)
-    assignedAgentId = governance?.agentAssigned ?? null
+    try {
+      const { governLead } = await import('@/app/actions/lead-governance/govern-lead')
+      const governance = await governLead(lead.id, lead.brokerage_id)
+      assignedAgentId = governance?.agentAssigned ?? null
+    } catch {
+      // governLead failure is non-fatal — fall through to primary-agent lookup
+    }
+  }
+
+  // Fallback: brokerage's earliest-created active agent (owner/primary)
+  if (!assignedAgentId) {
+    const { data: primaryAgent } = await service
+      .from('agents')
+      .select('user_id')
+      .eq('brokerage_id', lead.brokerage_id)
+      .eq('is_active', true)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    assignedAgentId = primaryAgent?.user_id ?? null
   }
 
   if (!assignedAgentId) {
-    return { success: false, error: 'No agent available for handoff. Assign an agent first.' }
+    return { success: false, error: 'No active agent found in this brokerage. Add an agent first.' }
   }
+
+  // Stamp the agent on the lead immediately so it is visible in the CRM
+  // before the contact conversion completes
+  await service
+    .from('leads')
+    .update({ agent_id: assignedAgentId, updated_at: new Date().toISOString() })
+    .eq('id', lead.id)
 
   // Convert lead → contact through canonical path
   let contactId: string | undefined

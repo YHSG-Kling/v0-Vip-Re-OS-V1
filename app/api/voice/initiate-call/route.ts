@@ -43,7 +43,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
 
-  const { phoneNumber, contactId, leadId, scriptId, agentId, brokerageId, callPurpose = 'isa_qualification' } = body
+  const { phoneNumber, leadId, scriptId, agentId, brokerageId, callPurpose = 'isa_qualification' } = body
+  // contactId may be provided directly OR resolved from the lead record below
+  let contactId = body.contactId ?? null
 
   if (!phoneNumber || !agentId || !brokerageId) {
     return NextResponse.json({ error: "phoneNumber, agentId, and brokerageId are required" }, { status: 400 })
@@ -51,7 +53,20 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const supabase = createServiceClient()
 
-  // ── 1. Optional compliance check when contactId is provided ───────────────
+  // ── 0. Resolve contactId from lead when not explicitly supplied ───────────
+  // A call can be initiated with either a contactId OR a leadId. When only
+  // a leadId is given, check whether the lead already has a linked contact
+  // and use that for compliance checks and ai_isa_calls attribution.
+  if (!contactId && leadId) {
+    const { data: leadRow } = await supabase
+      .from("leads")
+      .select("contact_id")
+      .eq("id", leadId)
+      .maybeSingle()
+    if (leadRow?.contact_id) contactId = leadRow.contact_id
+  }
+
+  // ── 1. Optional compliance check when contactId is available ──────────────
   if (contactId) {
     const { data: contact } = await supabase
       .from("contacts")
