@@ -349,6 +349,29 @@ interface TransactionDetailClientProps {
   }>
 }
 
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+const LOAN_STAGES = [
+  "lender_assigned",
+  "preapproval_received",
+  "application_in_progress",
+  "underwriting",
+  "conditional_approval",
+  "clear_to_close",
+] as const
+
+type LoanStage = typeof LOAN_STAGES[number]
+
+function deriveLoanStatus(info: TransactionDetailClientProps["lenderInfo"]): LoanStage | "no_lender_assigned" {
+  if (!info) return "no_lender_assigned"
+  if (info.clear_to_close_date) return "clear_to_close"
+  if (info.underwriting_status === "approved") return "conditional_approval"
+  if (info.underwriting_status === "in_review") return "underwriting"
+  if (info.appraisal_completed_date) return "application_in_progress"
+  if (info.pre_approval_date) return "preapproval_received"
+  return "lender_assigned"
+}
+
 // ─── COMPONENT ─────────────────────────────────────────────────────────────────
 
 export function TransactionDetailClient({
@@ -1197,6 +1220,68 @@ export function TransactionDetailClient({
               availableLenders={availableLenders}
               userRole={userRole}
             />
+
+            {/* Lending Status Card */}
+            {(() => {
+              const loanStatus = deriveLoanStatus(lenderInfo)
+              const currentIdx = LOAN_STAGES.indexOf(loanStatus as LoanStage)
+              return (
+                <Card className="mb-4">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <Landmark className="h-4 w-4 text-muted-foreground" />
+                        Lending Status
+                      </span>
+                      <Button size="sm" variant="outline" asChild>
+                        <Link href={`/portal/lender/${transaction.id}`}>
+                          Lender Portal
+                          <ExternalLink className="h-3 w-3 ml-1.5" />
+                        </Link>
+                      </Button>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm font-medium mb-3">
+                      {lenderInfo?.lender_name ?? "No lender assigned yet"}
+                      {lenderInfo?.loan_officer_name ? ` · ${lenderInfo.loan_officer_name}` : ""}
+                    </p>
+                    {/* Pipeline strip */}
+                    <div className="flex gap-1 mb-2">
+                      {LOAN_STAGES.map((stage, i) => (
+                        <div
+                          key={stage}
+                          className={cn(
+                            "h-2 flex-1 rounded-full transition-colors",
+                            loanStatus === "no_lender_assigned"
+                              ? "bg-muted"
+                              : i < currentIdx
+                              ? "bg-green-500"
+                              : i === currentIdx
+                              ? "bg-blue-500"
+                              : "bg-muted"
+                          )}
+                          title={stage.replace(/_/g, " ")}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground capitalize">
+                      {loanStatus === "no_lender_assigned"
+                        ? "No lender assigned"
+                        : loanStatus.replace(/_/g, " ")}
+                    </p>
+                    {loanStatus === "clear_to_close" && (
+                      <div className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs font-medium text-green-800">
+                        Clear to Close
+                        {lenderInfo?.clear_to_close_date
+                          ? ` · ${new Date(lenderInfo.clear_to_close_date).toLocaleDateString()}`
+                          : ""}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )
+            })()}
 
             {/* Participants & Docs Summary */}
             <div className="grid grid-cols-2 gap-4">

@@ -1,3 +1,5 @@
+"use server"
+
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -133,6 +135,8 @@ export async function uploadLenderDocument(data: {
 
   if (error) throw error
 
+  // Revalidate inside function to avoid module-level server dependency
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/portal/lender/${data.transactionId}`)
   return document
 }
