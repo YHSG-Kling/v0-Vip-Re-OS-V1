@@ -76,9 +76,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'credit-pipeline', label: 'Credit Pipeline', href: '/credit-pipeline', icon: 'CreditCard' },
       {
         id: 'referrals-group',
-        label: 'Referrals',
+        label: 'Referrals & Reviews',
         icon: 'Share2',
         children: [
+          { id: 'referrals-os', label: 'Referrals & Reviews', href: '/dashboard/referrals' },
           { id: 'referrals', label: 'My Referrals', href: '/referrals' },
           { id: 'referral-pipeline', label: 'Referral Pipeline', href: '/referrals/pipeline' },
           { id: 'referral-partners', label: 'Referral Partners', href: '/dashboard/agent/referrals' },
@@ -648,9 +649,10 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
       {
         id: 'referrals-group',
-        label: 'Referrals',
+        label: 'Referrals & Reviews',
         icon: 'Share2',
         children: [
+          { id: 'referrals-os', label: 'Referrals & Reviews', href: '/dashboard/referrals' },
           { id: 'referrals', label: 'My Referrals', href: '/referrals' },
           { id: 'referral-pipeline', label: 'Referral Pipeline', href: '/referrals/pipeline' },
           { id: 'referral-partners', label: 'Referral Partners', href: '/dashboard/agent/referrals' },
