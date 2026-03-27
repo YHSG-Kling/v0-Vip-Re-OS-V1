@@ -1,4 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
+import { initiateCall } from "@/lib/voice/vapi-client"
+import { buildCallContext } from "@/lib/ai-isa/build-call-context"
 
 /**
  * AI Inside Sales Agent (ISA) Application Service
@@ -87,7 +89,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
 
   const { data: contact } = await supabase
     .from("contacts")
-    .select("first_name, last_name, phone, lead_score, stage, last_property_viewed, preferred_areas")
+    .select("first_name, last_name, phone, lead_score, stage, last_property_viewed, preferred_areas, brokerage_id, agent_id")
     .eq("id", contactId)
     .single()
 
@@ -97,7 +99,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
 
   const { data: agent } = await supabase
     .from("users")
-    .select("first_name, last_name, phone, brokerage:brokerages(name)")
+    .select("first_name, last_name, phone, brokerage_id, brokerage:brokerages(name)")
     .eq("id", loginId)
     .single()
 
@@ -115,57 +117,65 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     return { success: false, error: "Campaign not found" }
   }
 
-  const vapiApiKey = process.env.VAPI_API_KEY
-  if (!vapiApiKey) {
-    return { success: false, error: "VAPI_API_KEY not configured" }
+  const brokerageId = agent.brokerage_id ?? contact.brokerage_id
+  if (!brokerageId) {
+    return { success: false, error: "brokerageId could not be resolved for this call" }
   }
 
-  const brokerageName = agent.brokerage?.name || "Smart Engine"
-  const greeting = `Hi ${contact.first_name}, this is the AI assistant calling on behalf of ${agent.first_name} from ${brokerageName}. Do you have a quick minute to chat about your home search?`
-
-  const vapiResponse = await fetch("https://api.vapi.ai/call/phone", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${vapiApiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      phoneNumber: contact.phone,
-      assistantId: campaign.vapi_assistant_id,
-      customer: {
-        name: `${contact.first_name} ${contact.last_name}`,
-        number: contact.phone,
-      },
-      assistantOverrides: {
-        variableValues: {
-          contact_name: contact.first_name,
-          contact_full_name: `${contact.first_name} ${contact.last_name}`,
-          agent_name: agent.first_name,
-          agent_full_name: `${agent.first_name} ${agent.last_name}`,
-          brokerage_name: brokerageName,
-          lead_stage: contact.stage || "prospect",
-          last_viewed_property: contact.last_property_viewed || "properties in your area",
-          preferred_areas: contact.preferred_areas || "your preferred areas",
-        },
-        firstMessage: greeting,
-      },
-    }),
+  // Build per-call context via Kernel OS: persona, brand voice, voice config, TCPA gate
+  const ctx = await buildCallContext({
+    leadId: contactId,
+    agentId: loginId,
+    brokerageId,
   })
 
-  const callData = await vapiResponse.json()
-
-  if (!vapiResponse.ok) {
-    throw new Error(callData.message || "Vapi API error")
+  if (ctx.blocked) {
+    return { success: false, error: `Call blocked: ${ctx.blockedReason ?? "TCPA or call stop flag"}` }
   }
+
+  // Assemble assistantOverrides from buildCallContext output
+  const assistantOverrides: NonNullable<Parameters<typeof initiateCall>[0]["assistantOverrides"]> = {
+    name:         ctx.assistantName,
+    firstMessage: ctx.firstMessage,
+    model: {
+      systemPrompt: ctx.systemPrompt,
+    },
+    variableValues: {
+      contact_name:          contact.first_name,
+      contact_full_name:     `${contact.first_name} ${contact.last_name}`,
+      agent_name:            agent.first_name,
+      agent_full_name:       `${agent.first_name} ${agent.last_name}`,
+      brokerage_name:        (agent.brokerage as any)?.name ?? "your brokerage",
+      lead_stage:            contact.stage            ?? "prospect",
+      last_viewed_property:  contact.last_property_viewed ?? "properties in your area",
+      preferred_areas:       contact.preferred_areas  ?? "your preferred areas",
+    },
+  }
+
+  // Wire ElevenLabs voice config when present on the identity profile
+  if (ctx.voiceConfig?.elevenlabs_voice_id) {
+    assistantOverrides.voice = {
+      provider:        "elevenlabs",
+      voiceId:         ctx.voiceConfig.elevenlabs_voice_id,
+      stability:       ctx.voiceConfig.voice_stability        ?? undefined,
+      similarityBoost: ctx.voiceConfig.voice_similarity_boost ?? undefined,
+    }
+  }
+
+  const callData = await initiateCall({
+    phoneNumber:      contact.phone,
+    assistantId:      campaign.vapi_assistant_id,
+    assistantOverrides,
+  })
 
   const { data: call, error: callError } = await supabase
     .from("ai_isa_calls")
     .insert({
-      campaign_id: campaignId,
-      contact_id: contactId,
-      login_id: loginId,
-      vapi_call_id: callData.id,
-      call_status: "initiated",
+      campaign_id:   campaignId,
+      contact_id:    contactId,
+      login_id:      loginId,
+      vapi_call_id:  callData.id,
+      call_status:   callData.status ?? "initiated",
       attempt_number: 1,
     })
     .select()
