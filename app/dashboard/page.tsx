@@ -54,14 +54,22 @@ function DashboardContent() {
     if (userContext) {
       const primaryRole = userContext.roles?.[0] || "agent"
       setResolvedRole(primaryRole)
-      
+
       const targetRoute = ROLE_DASHBOARD_ROUTES[primaryRole]
       if (targetRoute && targetRoute !== "/dashboard") {
         setRedirected(true)
         router.replace(targetRoute)
       }
+    } else if (!user) {
+      // No session at all — send to login
+      setRedirected(true)
+      router.replace("/login")
+    } else {
+      // Authenticated but no users table row yet (new signup) — go to onboarding
+      setRedirected(true)
+      router.replace("/dashboard/onboarding")
     }
-  }, [userContext, authLoading, redirected, router])
+  }, [userContext, authLoading, redirected, router, user])
 
   // Show loading while auth is loading or redirecting
   if (authLoading || redirected) {

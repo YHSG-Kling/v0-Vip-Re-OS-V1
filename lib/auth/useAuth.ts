@@ -75,9 +75,10 @@ export function useAuth(): AuthState {
         return
       }
 
-      // Fetch extended profile + roles in parallel
+      // Fetch extended profile + roles in parallel.
+      // Use maybeSingle() so a missing `users` row returns null instead of throwing PGRST116.
       const [{ data: userData }, { data: rolesData }] = await Promise.all([
-        client.from('users').select('*').eq('id', authUser.id).single(),
+        client.from('users').select('*').eq('id', authUser.id).maybeSingle(),
         client.from('user_role_assignments').select('role, brokerage_id, team_id, agent_id, vendor_id').eq('user_id', authUser.id),
       ])
 

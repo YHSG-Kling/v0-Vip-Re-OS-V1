@@ -1,6 +1,7 @@
 'use client'
 
 import { useChat } from '@ai-sdk/react'
+import { DefaultChatTransport } from 'ai'
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
@@ -18,12 +19,15 @@ export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading, setInput } = useChat({
-    api: '/api/onboarding/assistant',
-    body: {
-      brokerageId,
-      agentId,
-    },
+  // AI SDK 6 requires the transport pattern; the legacy api/body form leaves
+  // `input` undefined on first render in @ai-sdk/react v3, causing .trim() crash.
+  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
+    transport: new DefaultChatTransport({
+      api: '/api/onboarding/assistant',
+      prepareSendMessagesRequest: ({ messages }) => ({
+        body: { messages, brokerageId, agentId },
+      }),
+    }),
   })
 
   // Auto-scroll to bottom when new messages arrive
@@ -45,7 +49,7 @@ export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!input.trim() || isLoading) return
+    if (!input?.trim() || isLoading) return
     handleSubmit(e)
   }
 
@@ -174,7 +178,7 @@ export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps
                 <Button
                   type="submit"
                   size="icon"
-                  disabled={isLoading || !input.trim()}
+                  disabled={isLoading || !input?.trim()}
                   className="h-9 w-9 rounded-xl bg-[#1e3a5f] hover:bg-[#2a4a73] flex-shrink-0"
                 >
                   <Send className="w-4 h-4" />
