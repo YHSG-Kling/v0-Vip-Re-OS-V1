@@ -8,6 +8,7 @@ import { Header } from './header'
 import { MobileBottomNav } from './mobile-bottom-nav'
 import { getNavigationForRole } from '@/app/config/navigation-config'
 import { Loader2 } from 'lucide-react'
+import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
 
 interface AppShellProps {
   children: React.ReactNode
@@ -78,6 +79,9 @@ export function AppShell({ children }: AppShellProps) {
           </div>
         )}
       </div>
+
+      {/* Internal AI Assistant — rendered for agent/broker/admin/coordinator roles */}
+      <InternalAIAssistant role={primaryRole} />
     </div>
   )
 }

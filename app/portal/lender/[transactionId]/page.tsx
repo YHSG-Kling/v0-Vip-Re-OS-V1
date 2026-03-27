@@ -22,6 +22,7 @@ import { LenderDocumentUpload } from "./document-upload"
 import { LenderActions } from "./lender-actions"
 import { LenderConditionsPanel } from "./lender-conditions-panel"
 import { Progress } from "@/components/ui/progress"
+import { InternalAIAssistant } from "@/app/components/shared/internal-ai-assistant"
 
 const LOAN_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   submitted: { label: "Submitted", color: "bg-blue-100 text-blue-800" },
@@ -360,6 +361,7 @@ export default async function LenderTransactionDetailPage({
           )}
         </div>
       </div>
+      <InternalAIAssistant role="lender" />
     </div>
   )
 }

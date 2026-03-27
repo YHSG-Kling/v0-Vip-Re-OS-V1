@@ -7,6 +7,7 @@ import { redirect } from "next/navigation"
 import { Wrench, Calendar, CheckCircle2, Clock, DollarSign, FileText, MessageSquare } from "lucide-react"
 import { VendorJobsList } from "@/components/vendor/jobs-list"
 import { VendorJobDetail } from "@/components/vendor/job-detail"
+import { InternalAIAssistant } from "@/app/components/shared/internal-ai-assistant"
 
 export default async function VendorPortalDashboard({ searchParams }: { searchParams: Promise<{ vendorId?: string; jobId?: string }> }) {
   const params = await searchParams
@@ -130,6 +131,7 @@ export default async function VendorPortalDashboard({ searchParams }: { searchPa
           </CardContent>
         </Card>
       )}
+      <InternalAIAssistant role="vendor" />
     </div>
   )
 }
