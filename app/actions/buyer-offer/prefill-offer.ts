@@ -10,6 +10,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { logActivity } from "@/app/actions/activities"
 
 // ─── Property Data AI Fill ────────────────────────────────────────────────────
 
@@ -146,6 +147,11 @@ export interface PrefillOfferParams {
   propertyAddress: string
   propertyMlsId?: string
   userId: string
+  /** Required by logActivity — must come from contacts row, not user.id */
+  brokerageId: string
+  /** Agent who initiated the offer flow */
+  agentId: string
+  transactionId?: string
 }
 
 export interface PrefillOfferResult {
@@ -172,10 +178,25 @@ export interface OfferPrefillData {
 export async function prefillOfferWithAI(
   params: PrefillOfferParams
 ): Promise<PrefillOfferResult> {
-  const { offerId, buyerId, propertyAddress, propertyMlsId, userId } = params
+  const {
+    offerId,
+    buyerId,
+    propertyAddress,
+    propertyMlsId,
+    userId,
+    brokerageId,
+    agentId,
+    transactionId,
+  } = params
 
   if (!isValidUUID(buyerId)) {
     return { success: false, error: "Invalid buyer ID" }
+  }
+  if (!brokerageId) {
+    return { success: false, error: "brokerageId is required" }
+  }
+  if (!agentId) {
+    return { success: false, error: "agentId is required" }
   }
 
   const supabase = createServiceClient()
@@ -191,27 +212,27 @@ export async function prefillOfferWithAI(
     return { success: false, error: "Buyer not found" }
   }
 
-  // Get financial verification details
+  // Get financial verification details — use contact_id (canonical), not entity_id
   const { data: financialEvents } = await supabase
     .from("activities")
-    .select("type, metadata, created_at")
+    .select("activity_type, notes, created_at")
     .eq("entity_type", "contact")
-    .eq("entity_id", buyerId)
-    .in("type", [
-      "buyer.pre_approval.uploaded",
-      "buyer.proof_of_funds.uploaded",
-      "buyer.lender.introduced",
+    .eq("contact_id", buyerId)
+    .in("activity_type", [
+      "buyer_pre_approval_uploaded",
+      "buyer_proof_of_funds_uploaded",
+      "buyer_lender_introduced",
     ])
     .order("created_at", { ascending: false })
     .limit(1)
 
-  // Get buyer search preferences
+  // Get buyer search preferences — use contact_id (canonical), not entity_id
   const { data: searchConfig } = await supabase
     .from("activities")
-    .select("metadata")
+    .select("notes")
     .eq("entity_type", "contact")
-    .eq("entity_id", buyerId)
-    .eq("type", "buyer.search.configured")
+    .eq("contact_id", buyerId)
+    .eq("activity_type", "buyer_search_configured")
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -220,6 +241,17 @@ export async function prefillOfferWithAI(
   const propertyType = determinePropertyType(propertyAddress)
   const template = getOfferTemplate(propertyType)
 
+  // Parse notes JSON for financial and search context (notes replaces metadata)
+  const financialNotesRaw = financialEvents?.[0]?.notes
+  const financialContext = financialNotesRaw
+    ? (() => { try { return JSON.parse(financialNotesRaw) } catch { return {} } })()
+    : {}
+
+  const searchNotesRaw = searchConfig?.notes
+  const searchPreferencesContext = searchNotesRaw
+    ? (() => { try { return JSON.parse(searchNotesRaw) } catch { return {} } })()
+    : {}
+
   // Build AI context
   const context = {
     buyer: {
@@ -227,8 +259,8 @@ export async function prefillOfferWithAI(
       notes: buyer.notes,
       metadata: buyer.metadata,
     },
-    financial: financialEvents?.[0]?.metadata || {},
-    searchPreferences: searchConfig?.metadata || {},
+    financial: financialContext,
+    searchPreferences: searchPreferencesContext,
     property: {
       address: propertyAddress,
       mlsId: propertyMlsId,
@@ -248,19 +280,24 @@ export async function prefillOfferWithAI(
 
     const prefillData = parsePrefillResponse(text, template)
 
-    // Emit prefill event
-    await supabase.from("activities").insert({
-      type: "buyer.offer.forms.prefilled",
-      entity_type: "contact",
-      entity_id: buyerId,
-      user_id: userId,
-      metadata: {
+    // Emit prefill event via canonical logActivity — no metadata/entity_id/user_id columns
+    await logActivity({
+      brokerageId,
+      agentId,
+      contactId: buyerId,
+      transactionId: transactionId ?? undefined,
+      activityType: "offer_draft_prefilled",
+      title: "Offer Draft Prefilled",
+      description: "AI prepared an offer draft for agent review",
+      notes: JSON.stringify({
         offer_id: offerId,
         prefill_source: "ai",
         confidence_score: prefillData.confidence,
         template_used: template,
         prefill_data: prefillData,
-      },
+      }),
+      entityType: "offer",
+      status: "completed",
     })
 
     return {

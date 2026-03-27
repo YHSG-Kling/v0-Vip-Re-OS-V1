@@ -3,12 +3,13 @@
 /**
  * System 7.1A - Buyer Offer Execution Engine
  * Domain 2: Dotloop Loop Creation
- * 
+ *
  * Creates Dotloop loop for buyer offer with proper state package
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
+import { logActivity } from "@/app/actions/activities"
 
 const DOTLOOP_API_BASE = "https://api-gateway.dotloop.com/public/v2"
 
@@ -18,6 +19,11 @@ export interface CreateDotloopLoopParams {
   propertyAddress: string
   state: string // e.g. "CA", "TX"
   userId: string
+  /** Required by logActivity — must come from contacts row, not user.id */
+  brokerageId: string
+  /** Agent who initiated the offer flow */
+  agentId: string
+  transactionId?: string
 }
 
 export interface CreateDotloopLoopResult {
@@ -33,29 +39,49 @@ export interface CreateDotloopLoopResult {
 export async function createDotloopLoopForOffer(
   params: CreateDotloopLoopParams
 ): Promise<CreateDotloopLoopResult> {
-  const { offerId, buyerId, propertyAddress, state, userId } = params
+  const {
+    offerId,
+    buyerId,
+    propertyAddress,
+    state,
+    userId,
+    brokerageId,
+    agentId,
+    transactionId,
+  } = params
 
   // Validate inputs
   if (!isValidUUID(buyerId)) {
     return { success: false, error: "Invalid buyer ID", errorCode: "invalid_buyer_id" }
+  }
+  if (!brokerageId) {
+    return { success: false, error: "brokerageId is required", errorCode: "missing_brokerage_id" }
+  }
+  if (!agentId) {
+    return { success: false, error: "agentId is required", errorCode: "missing_agent_id" }
   }
 
   const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
   const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
 
   if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
-    // Fallback mode - emit manual required event
-    const supabase = createServiceClient()
-    await supabase.from("activities").insert({
-      type: "buyer.offer.manual_dotloop_required",
-      entity_type: "contact",
-      entity_id: buyerId,
-      user_id: userId,
-      metadata: {
+    // Fallback mode — emit manual required event
+    await logActivity({
+      brokerageId,
+      agentId,
+      contactId: buyerId,
+      transactionId: transactionId ?? undefined,
+      activityType: "buyer_offer_manual_dotloop_required",
+      title: "Dotloop Manual Setup Required",
+      description: `Dotloop API not configured — manual setup required for ${propertyAddress ?? "transaction"}`,
+      notes: JSON.stringify({
+        provider: "dotloop",
         offer_id: offerId,
         reason: "dotloop_api_unavailable",
         property_address: propertyAddress,
-      },
+      }),
+      entityType: "transaction",
+      status: "completed",
     })
 
     return {
@@ -64,8 +90,6 @@ export async function createDotloopLoopForOffer(
       errorCode: "dotloop_not_configured",
     }
   }
-
-  const supabase = createServiceClient()
 
   try {
     // Create Dotloop loop
@@ -88,16 +112,22 @@ export async function createDotloopLoopForOffer(
       console.error("[buyer-offer] Dotloop API error:", errorText)
 
       // Emit fallback event
-      await supabase.from("activities").insert({
-        type: "buyer.offer.manual_dotloop_required",
-        entity_type: "contact",
-        entity_id: buyerId,
-        user_id: userId,
-        metadata: {
+      await logActivity({
+        brokerageId,
+        agentId,
+        contactId: buyerId,
+        transactionId: transactionId ?? undefined,
+        activityType: "buyer_offer_manual_dotloop_required",
+        title: "Dotloop Manual Setup Required",
+        description: `Dotloop API error — manual setup required for ${propertyAddress ?? "transaction"}`,
+        notes: JSON.stringify({
+          provider: "dotloop",
           offer_id: offerId,
           reason: "dotloop_api_error",
           api_error: errorText,
-        },
+        }),
+        entityType: "transaction",
+        status: "completed",
       })
 
       return {
@@ -111,15 +141,21 @@ export async function createDotloopLoopForOffer(
     const loopId = result.data?.loop_id
 
     if (!loopId) {
-      await supabase.from("activities").insert({
-        type: "buyer.offer.manual_dotloop_required",
-        entity_type: "contact",
-        entity_id: buyerId,
-        user_id: userId,
-        metadata: {
+      await logActivity({
+        brokerageId,
+        agentId,
+        contactId: buyerId,
+        transactionId: transactionId ?? undefined,
+        activityType: "buyer_offer_manual_dotloop_required",
+        title: "Dotloop Manual Setup Required",
+        description: "No loop ID returned from Dotloop — manual setup required",
+        notes: JSON.stringify({
+          provider: "dotloop",
           offer_id: offerId,
           reason: "no_loop_id_returned",
-        },
+        }),
+        entityType: "transaction",
+        status: "completed",
       })
 
       return {
@@ -129,18 +165,25 @@ export async function createDotloopLoopForOffer(
       }
     }
 
-    // Emit success event
-    await supabase.from("activities").insert({
-      type: "buyer.offer.dotloop.loop.created",
-      entity_type: "contact",
-      entity_id: buyerId,
-      user_id: userId,
-      metadata: {
+    // Emit success event — loopId stored in notes JSON for lookup
+    await logActivity({
+      brokerageId,
+      agentId,
+      contactId: buyerId,
+      transactionId: transactionId ?? undefined,
+      activityType: "dotloop_loop_created",
+      title: "Dotloop Loop Created",
+      description: `Dotloop loop created for ${propertyAddress ?? "transaction"}`,
+      notes: JSON.stringify({
+        provider: "dotloop",
+        loopId,
+        loopName: `Buyer Offer - ${propertyAddress}`,
         offer_id: offerId,
-        dotloop_loop_id: loopId,
         state,
         brokerage_package_version: "v1.0",
-      },
+      }),
+      entityType: "transaction",
+      status: "completed",
     })
 
     return {
@@ -151,16 +194,22 @@ export async function createDotloopLoopForOffer(
     console.error("[buyer-offer] Error creating Dotloop loop:", error)
 
     // Emit fallback event
-    await supabase.from("activities").insert({
-      type: "buyer.offer.manual_dotloop_required",
-      entity_type: "contact",
-      entity_id: buyerId,
-      user_id: userId,
-      metadata: {
+    await logActivity({
+      brokerageId,
+      agentId,
+      contactId: buyerId,
+      transactionId: transactionId ?? undefined,
+      activityType: "buyer_offer_manual_dotloop_required",
+      title: "Dotloop Manual Setup Required",
+      description: "Exception during Dotloop loop creation — manual setup required",
+      notes: JSON.stringify({
+        provider: "dotloop",
         offer_id: offerId,
         reason: "exception",
         error_message: error.message,
-      },
+      }),
+      entityType: "transaction",
+      status: "completed",
     })
 
     return {
@@ -172,7 +221,8 @@ export async function createDotloopLoopForOffer(
 }
 
 /**
- * Get Dotloop loop ID for offer
+ * Get Dotloop loop ID for offer.
+ * Looks up via notes JSON — metadata column does not exist in activities.
  */
 export async function getDotloopLoopIdForOffer(
   offerId: string,
@@ -182,17 +232,25 @@ export async function getDotloopLoopIdForOffer(
 
   const { data } = await supabase
     .from("activities")
-    .select("metadata")
-    .eq("entity_type", "contact")
-    .eq("entity_id", buyerId)
-    .eq("type", "buyer.offer.dotloop.loop.created")
-    .eq("metadata->offer_id", offerId)
+    .select("notes")
+    .eq("contact_id", buyerId)
+    .eq("entity_type", "transaction")
+    .eq("activity_type", "dotloop_loop_created")
     .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
+    .limit(20)
 
-  if (!data?.metadata) return null
+  const match = (data ?? []).find((row: any) => {
+    try {
+      return JSON.parse(row.notes || "{}")?.offer_id === offerId
+    } catch {
+      return false
+    }
+  })
 
-  const metadata = data.metadata as { dotloop_loop_id?: string }
-  return metadata.dotloop_loop_id || null
+  if (!match?.notes) return null
+  try {
+    return JSON.parse(match.notes)?.loopId ?? null
+  } catch {
+    return null
+  }
 }
