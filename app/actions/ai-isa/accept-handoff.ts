@@ -41,21 +41,12 @@ export async function acceptAIISAHandoff(params: {
   let contactId: string | undefined
   try {
     const { convertLeadToContact } = await import('@/app/actions/lead-lifecycle')
-    // convertLeadToContact throws on failure; we catch below
-    await convertLeadToContact({
+    const result = await convertLeadToContact({
       leadId: lead.id,
       agentId: assignedAgentId,
       brokerageId: lead.brokerage_id,
     })
-
-    // Read the contact_id back — convertLeadToContact writes it to leads
-    const { data: updated } = await supabase
-      .from('leads')
-      .select('contact_id')
-      .eq('id', lead.id)
-      .single()
-
-    contactId = updated?.contact_id ?? undefined
+    contactId = result?.contactId ?? undefined
   } catch (err: any) {
     return { success: false, error: err?.message ?? 'Conversion failed' }
   }
