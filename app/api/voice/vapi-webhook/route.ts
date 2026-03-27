@@ -331,7 +331,41 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // 8. Post-call AI SDK follow-up (non-blocking — intentional fire-and-forget)
+      // 8. Negative response → halt all future AI outreach + set DNC
+      // Checks both VAPI sentiment analysis AND text-based negative phrases in the transcript.
+      const isNegativeSentiment =
+        sentiment === "negative" ||
+        suggestedNextAction === "do_not_contact" ||
+        objections.some((o: string) =>
+          ["not interested", "stop calling", "remove me", "do not call", "take me off"].some(
+            (phrase) => o.toLowerCase().includes(phrase)
+          )
+        )
+
+      if (isNegativeSentiment && voiceCall.contact_id) {
+        const { haltEngagementForNegativeReply } = await import(
+          "@/lib/ai-isa/conversation-handler"
+        )
+        // Re-use transcript as the "body" for phrase detection
+        await haltEngagementForNegativeReply({
+          leadId: voiceCall.contact_id,
+          body: transcript,
+          brokerageId: voiceCall.brokerage_id ?? "",
+        }).catch(() => {})
+
+        // Also mark on the contact directly (haltEngagementForNegativeReply covers leads)
+        await supabase
+          .from("contacts")
+          .update({
+            dnc_status: true,
+            isa_reengage_allowed: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", voiceCall.contact_id)
+          .catch(() => {})
+      }
+
+      // 9. Post-call AI SDK follow-up (non-blocking — intentional fire-and-forget)
       // Only trigger if call had meaningful duration (> 15s) and outcome warrants follow-up
       const shouldFollowUp =
         durationSeconds > 15 &&

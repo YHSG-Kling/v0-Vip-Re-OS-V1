@@ -30,6 +30,7 @@ import {
   CheckCircle,
   X,
   Info,
+  Phone,
 } from "lucide-react"
 import {
   saveAIIdentityProfile,
@@ -181,6 +182,20 @@ export function AIIdentityEditor({
     initialProfile?.followup_style ?? "warm_persistent"
   )
 
+  // ── Call handling state (brokerage-level only; inherited by child scopes)
+  const [aiAnswerCalls, setAiAnswerCalls] = useState<boolean>(
+    (initialProfile as any)?.ai_answer_calls ?? false
+  )
+  const [aiCallHandleInbound, setAiCallHandleInbound] = useState<boolean>(
+    (initialProfile as any)?.ai_call_handle_inbound ?? true
+  )
+  const [aiCallHandleOutbound, setAiCallHandleOutbound] = useState<boolean>(
+    (initialProfile as any)?.ai_call_handle_outbound ?? false
+  )
+  const [aiCallForwardNumber, setAiCallForwardNumber] = useState<string>(
+    (initialProfile as any)?.ai_call_forward_number ?? ""
+  )
+
   // ── Preview state
   const [previewText, setPreviewText] = useState<string | null>(null)
   const [previewError, setPreviewError] = useState<string | null>(null)
@@ -233,6 +248,11 @@ export function AIIdentityEditor({
         escalationRules: overrideEscalation || scope === "brokerage" ? escalationRules : {},
         followupStyle,
         parentScopeId: parentProfile?.id ?? null,
+        // Call handling — brokerage-level only; child scopes inherit
+        aiAnswerCalls: scope === "brokerage" ? aiAnswerCalls : undefined,
+        aiCallHandleInbound: scope === "brokerage" ? aiCallHandleInbound : undefined,
+        aiCallHandleOutbound: scope === "brokerage" ? aiCallHandleOutbound : undefined,
+        aiCallForwardNumber: scope === "brokerage" ? (aiCallForwardNumber.trim() || null) : undefined,
       }
 
       const result = await saveAIIdentityProfile(input)
@@ -248,6 +268,7 @@ export function AIIdentityEditor({
     scope, scopeId, brokerageId, assistantName, personaLabel,
     tone, formalityLevel, overrideTone, overrideFaq, overrideEscalation,
     faqs, objections, prohibitedChips, escalationRules, followupStyle, parentProfile,
+    aiAnswerCalls, aiCallHandleInbound, aiCallHandleOutbound, aiCallForwardNumber,
   ])
 
   const addFaq = () => setFaqs((prev) => [...prev, { question: "", answer: "" }])
@@ -701,7 +722,96 @@ export function AIIdentityEditor({
         </CardContent>
       </Card>
 
-      {/* ── Section 4: Inheritance (team / agent only) ───────────────────── */}
+      {/* ── Section 4: Call Handling (brokerage only) ───────────────────── */}
+      {scope === "brokerage" && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Phone className="h-5 w-5 text-primary" />
+              <CardTitle>AI Call Handling</CardTitle>
+            </div>
+            <CardDescription>
+              Configure whether the AI answers inbound calls, makes outbound calls, and
+              which number to forward calls to when handing off to a human.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            {/* Master toggle */}
+            <div className="flex items-center justify-between rounded-md border px-4 py-3">
+              <div>
+                <p className="font-medium text-sm">Enable AI call handling</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  AI will be available to answer and/or place calls on behalf of your brokerage.
+                </p>
+              </div>
+              <Switch
+                checked={aiAnswerCalls}
+                onCheckedChange={setAiAnswerCalls}
+                id="ai-answer-calls"
+              />
+            </div>
+
+            {aiAnswerCalls && (
+              <>
+                <Separator />
+
+                {/* Inbound */}
+                <div className="flex items-center justify-between rounded-md border px-4 py-3">
+                  <div>
+                    <p className="font-medium text-sm">Handle inbound calls</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      AI answers calls from leads and contacts that come into your forwarding number.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={aiCallHandleInbound}
+                    onCheckedChange={setAiCallHandleInbound}
+                    id="ai-inbound"
+                  />
+                </div>
+
+                {/* Outbound */}
+                <div className="flex items-center justify-between rounded-md border px-4 py-3">
+                  <div>
+                    <p className="font-medium text-sm">Make outbound calls</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      AI places calls to leads and contacts as part of the ISA follow-up sequence.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={aiCallHandleOutbound}
+                    onCheckedChange={setAiCallHandleOutbound}
+                    id="ai-outbound"
+                  />
+                </div>
+
+                <Separator />
+
+                {/* Forward number */}
+                <div className="space-y-2">
+                  <Label htmlFor="forward-number">
+                    Forward-to number <span className="text-destructive">*</span>
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    When a caller requests a human or the AI cannot handle the call, it will
+                    transfer to this number. Use E.164 format (e.g. +14155552671).
+                  </p>
+                  <Input
+                    id="forward-number"
+                    type="tel"
+                    placeholder="+14155552671"
+                    value={aiCallForwardNumber}
+                    onChange={(e) => setAiCallForwardNumber(e.target.value)}
+                    className="max-w-xs"
+                  />
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Section 5: Inheritance (team / agent only) ───────────────────── */}
       {scope !== "brokerage" && parentProfile && (
         <Card>
           <CardHeader>

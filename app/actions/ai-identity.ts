@@ -38,6 +38,11 @@ export type SaveAIIdentityInput = {
   escalationRules: Record<string, boolean>
   followupStyle: string
   parentScopeId: string | null
+  // Call handling — only set at brokerage scope; undefined means no change
+  aiAnswerCalls?: boolean
+  aiCallHandleInbound?: boolean
+  aiCallHandleOutbound?: boolean
+  aiCallForwardNumber?: string | null
 }
 
 export async function getAIIdentityProfile(
@@ -117,6 +122,11 @@ export async function saveAIIdentityProfile(
           followup_style: input.followupStyle,
           active: true,
           parent_scope_id: input.parentScopeId ?? null,
+          // Call handling — only written when provided (brokerage upserts)
+          ...(input.aiAnswerCalls !== undefined ? { ai_answer_calls: input.aiAnswerCalls } : {}),
+          ...(input.aiCallHandleInbound !== undefined ? { ai_call_handle_inbound: input.aiCallHandleInbound } : {}),
+          ...(input.aiCallHandleOutbound !== undefined ? { ai_call_handle_outbound: input.aiCallHandleOutbound } : {}),
+          ...(input.aiCallForwardNumber !== undefined ? { ai_call_forward_number: input.aiCallForwardNumber } : {}),
         },
         { onConflict: "scope_type,scope_id" }
       )
