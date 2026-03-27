@@ -19,6 +19,7 @@ import {
   LaunchActionsPanel,
 } from "../components/launch"
 import { ListingAgreementStatusCard } from "./components/listing-agreement-status-card"
+import { OpenHousePostEventPanel } from "../components/open-house-post-event-panel"
 import { DecisionHistoryPanel } from "./components/decision-history-panel"
 import { ComingSoonCommandCard } from "./components/coming-soon-command-card"
 import { ListingPacketPanel } from "./components/listing-packet-panel"
@@ -165,6 +166,15 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // Open house data
   const openHouseData = openHouseResult
   const scheduledEvent = openHouseData?.events?.[0]
+
+  // Past/completed open houses with their attendees attached
+  const allOpenHouseAttendees = openHouseData?.attendees ?? []
+  const pastOpenHouses = (openHouseData?.events ?? [])
+    .filter((e: any) => e.status === "completed")
+    .map((e: any) => ({
+      ...e,
+      attendees: allOpenHouseAttendees.filter((a: any) => a.event_id === e.id),
+    }))
   const openHousePromotionStatus: "not_started" | "scheduled" | "published" =
     openHouseData?.posts?.some((p: any) => p.status === "published") ? "published" :
     openHouseData?.posts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
@@ -310,6 +320,19 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
             agreement={listingAgreement ?? null}
           />
         </div>
+
+        {/* Post-event action centers for completed open houses */}
+        {pastOpenHouses.length > 0 && (
+          <div className="space-y-4 mb-6">
+            {pastOpenHouses.map((event: any) => (
+              <OpenHousePostEventPanel
+                key={event.id}
+                event={event}
+                attendees={event.attendees ?? []}
+              />
+            ))}
+          </div>
+        )}
 
         {(currentStage === "COMING_SOON_PREP" ||
           currentStage === "COMING_SOON_ACTIVE" ||
