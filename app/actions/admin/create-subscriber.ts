@@ -196,7 +196,8 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
           brokerage_id: brokerageId,
           user_type: adminUserType,
         },
-        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
+        // /auth/callback handles PKCE exchange; `next` tells it where to land
+        redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
       })
       inviteSucceeded = true
     } catch (inviteErr: any) {
@@ -229,7 +230,7 @@ export async function retrySubscriberInvite(params: {
         brokerage_id: params.brokerageId,
         user_type: "admin",
       },
-      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/onboarding`,
+      redirectTo: `${process.env.NEXT_PUBLIC_APP_URL}/auth/callback?next=/dashboard/onboarding`,
     })
     return { success: true }
   } catch (err: any) {
