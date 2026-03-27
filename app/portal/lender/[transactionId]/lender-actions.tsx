@@ -17,7 +17,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { CheckCircle2, AlertTriangle, Loader2, PartyPopper } from "lucide-react"
-import { issueClearToClose, flagLenderIssue, updateLenderLoanStatus } from "@/app/actions/lender-portal"
+import { issueClearToClose, flagLenderIssue, updateLenderLoanStatus } from "@/app/actions/lender-portal-actions"
 import { useRouter } from "next/navigation"
 
 const LOAN_STATUSES = [

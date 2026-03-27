@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Upload, FileText, CheckCircle2, AlertCircle, X, Download } from "lucide-react"
-import { uploadLenderDocument } from "@/app/actions/lender-portal"
+import { uploadLenderDocument } from "@/app/actions/lender-portal-actions"
 import { createClient } from "@/lib/supabase/client"
 
 interface Document {
