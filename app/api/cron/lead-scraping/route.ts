@@ -62,13 +62,17 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Get active markets with their parameters
+    // STEP 2 — Load all active territories with their full config from DB only.
+    // Zero hardcoded geography — city, state, brokerage_id all come from the record.
     const { data: markets } = await supabase
       .from("lead_scraping_markets")
       .select(`
-        *,
-        lead_scraping_property_params(*),
-        lead_scraping_motivated_params(*)
+        id, brokerage_id, team_id, agent_id, territory_scope, name, city, state,
+        zip_codes, counties, enabled_sources, monthly_budget_usd, spend_this_month,
+        max_records_per_run, priority, last_scraped_at,
+        lead_scraping_property_params (id, is_active, target_sites, min_price, max_price),
+        lead_scraping_motivated_params (id, is_active, signal_types, lookback_days,
+          facebook_group_urls, reddit_subreddits)
       `)
       .eq("is_active", true)
       .order("priority", { ascending: false })
@@ -83,19 +87,51 @@ export async function GET(request: Request) {
 
     for (const market of markets) {
       results.markets_processed++
-      console.log(`[Lead Scraping Cron] Processing market: ${market.name}`)
+      console.log(`[Lead Scraping Cron] Processing market: ${market.name} (${market.city}, ${market.state})`)
+
+      // STEP 3 — Budget gate: skip this territory if monthly budget is exhausted.
+      if ((market.spend_this_month ?? 0) >= (market.monthly_budget_usd ?? 100)) {
+        const reason = `Skipped ${market.name}: monthly budget reached ($${market.spend_this_month ?? 0} / $${market.monthly_budget_usd ?? 100})`
+        console.warn(`[Lead Scraping Cron] ${reason}`)
+        results.errors.push(reason)
+        continue
+      }
+
+      // STEP 4 — Resolve the set of enabled sources for this territory.
+      const enabledSources = new Set<string>(market.enabled_sources ?? ["batchdata_motivated"])
+
+      // Track spend accumulated across all sources in this territory run.
+      let territorySpendUsd = 0
 
       // ============================================
       // 1. SCRAPE PROPERTY SEARCH SITES (ZenRows - find buyers)
       // ============================================
-      if (market.lead_scraping_property_params?.length > 0) {
+      // STEP 4 gate
+      if (enabledSources.has("zillow_behavior") && market.lead_scraping_property_params?.length > 0) {
         const propertyParams = market.lead_scraping_property_params[0]
         if (propertyParams.is_active) {
+          // STEP 5 — open scraper_executions record
+          const { data: execRecord } = await supabase
+            .from("scraper_executions")
+            .insert({
+              brokerage_id: market.brokerage_id,
+              scraper_type: "zillow_behavior",
+              status: "running",
+              started_at: new Date().toISOString(),
+            })
+            .select("id")
+            .single()
+
           const job = await createScrapingJob({
             job_type: "property_search",
             market_id: market.id,
             source: "zenrows_property",
           })
+
+          let sourceItemsFound = 0
+          let sourceLeadsCreated = 0
+          let sourceErr: Error | null = null
+          let sourceCostUsd = 0
 
           try {
             await updateScrapingJob(job.job?.id, {
@@ -106,14 +142,14 @@ export async function GET(request: Request) {
             for (const site of propertyParams.target_sites || ["zillow", "realtor", "redfin"]) {
               const searchUrl = buildPropertySearchUrl(site, market, propertyParams)
               const scraped = await zenrows.scrape(searchUrl, { js_render: true, premium_proxy: true })
+              sourceCostUsd += scraped.cost ?? 0
 
               if (scraped.success && scraped.html) {
                 const buyers = parsePropertySearchResults(scraped.html, site, market)
+                sourceItemsFound += buyers.length
 
                 for (const buyer of buyers) {
-                  // Run enrichment pipeline for each lead
                   const enrichedLead = await enrichLeadPipeline(buyer, { peopledata, osint, validation }, results)
-
                   if (enrichedLead) {
                     const leadResult = await createLead({
                       ...enrichedLead,
@@ -122,7 +158,7 @@ export async function GET(request: Request) {
                       intent_type: "buyer",
                       temperature: "warm",
                     })
-                    if (leadResult.success) results.total_leads_created++
+                    if (leadResult.success) { sourceLeadsCreated++; results.total_leads_created++ }
                   }
                 }
                 results.total_leads_found += buyers.length
@@ -131,11 +167,12 @@ export async function GET(request: Request) {
 
             await updateScrapingJob(job.job?.id, {
               status: "completed",
-              leads_found: results.total_leads_found,
-              leads_created: results.total_leads_created,
+              leads_found: sourceItemsFound,
+              leads_created: sourceLeadsCreated,
               completed_at: new Date().toISOString(),
             })
           } catch (error) {
+            sourceErr = error as Error
             await updateScrapingJob(job.job?.id, {
               status: "failed",
               error_message: String(error),
@@ -143,20 +180,49 @@ export async function GET(request: Request) {
             })
             results.errors.push(`Property search error for ${market.name}: ${error}`)
           }
+
+          // STEP 5 — close scraper_executions record
+          await supabase.from("scraper_executions").update({
+            status: sourceErr ? "failed" : "completed",
+            completed_at: new Date().toISOString(),
+            total_items_found: sourceItemsFound,
+            leads_created: sourceLeadsCreated,
+            api_cost: sourceCostUsd,
+            error_message: sourceErr?.message ?? null,
+          }).eq("id", execRecord?.id).catch(() => {})
+
+          territorySpendUsd += sourceCostUsd
         }
       }
 
       // ============================================
       // 2. SCRAPE MOTIVATED SELLERS (BatchData)
       // ============================================
-      if (market.lead_scraping_motivated_params?.length > 0) {
+      // STEP 4 gate
+      if (enabledSources.has("batchdata_motivated") && market.lead_scraping_motivated_params?.length > 0) {
         const motivatedParams = market.lead_scraping_motivated_params[0]
         if (motivatedParams.is_active) {
+          // STEP 5 — open scraper_executions record
+          const { data: execRecord } = await supabase
+            .from("scraper_executions")
+            .insert({
+              brokerage_id: market.brokerage_id,
+              scraper_type: "batchdata_motivated",
+              status: "running",
+              started_at: new Date().toISOString(),
+            })
+            .select("id")
+            .single()
+
           const job = await createScrapingJob({
             job_type: "motivated_sellers",
             market_id: market.id,
             source: "batchdata",
           })
+
+          let sourceItemsFound = 0
+          let leadsCreated = 0
+          let sourceErr: Error | null = null
 
           try {
             await updateScrapingJob(job.job?.id, {
@@ -164,22 +230,21 @@ export async function GET(request: Request) {
               started_at: new Date().toISOString(),
             })
 
+            // STEP 7 — geography comes entirely from market record, never hardcoded
             const location = `${market.city}, ${market.state}`
             const sellers = await batchdata.getMotivatedSellerData(location)
+            sourceItemsFound = sellers.length
 
-            let leadsCreated = 0
             for (const seller of sellers) {
-              const matchesType = motivatedParams.motivation_types?.some((type: string) =>
+              const matchesType = motivatedParams.signal_types?.some((type: string) =>
                 seller.motivation_indicators?.includes(type),
               )
 
-              if (matchesType || !motivatedParams.motivation_types?.length) {
-                // Extract name parts
+              if (matchesType || !motivatedParams.signal_types?.length) {
                 const nameParts = seller.owner_name?.split(" ") || []
                 const firstName = nameParts[0] || ""
                 const lastName = nameParts.slice(1).join(" ") || ""
 
-                // Run enrichment pipeline
                 const enrichedLead = await enrichLeadPipeline(
                   {
                     first_name: firstName,
@@ -209,16 +274,17 @@ export async function GET(request: Request) {
               }
             }
 
-            results.total_leads_found += sellers.length
+            results.total_leads_found += sourceItemsFound
             results.total_leads_created += leadsCreated
 
             await updateScrapingJob(job.job?.id, {
               status: "completed",
-              leads_found: sellers.length,
+              leads_found: sourceItemsFound,
               leads_created: leadsCreated,
               completed_at: new Date().toISOString(),
             })
           } catch (error) {
+            sourceErr = error as Error
             await updateScrapingJob(job.job?.id, {
               status: "failed",
               error_message: String(error),
@@ -226,26 +292,56 @@ export async function GET(request: Request) {
             })
             results.errors.push(`BatchData error for ${market.name}: ${error}`)
           }
+
+          // STEP 5 — close scraper_executions record
+          await supabase.from("scraper_executions").update({
+            status: sourceErr ? "failed" : "completed",
+            completed_at: new Date().toISOString(),
+            total_items_found: sourceItemsFound,
+            leads_created: leadsCreated,
+            api_cost: 0, // BatchData cost tracked separately via vendor_usage_tracking
+            error_message: sourceErr?.message ?? null,
+          }).eq("id", execRecord?.id).catch(() => {})
         }
       }
 
       // ============================================
       // 3. SCRAPE SOCIAL PLATFORMS (ZenRows + Keywords)
       // ============================================
-      if (keywords && keywords.length > 0) {
+      const socialSourcesEnabled =
+        enabledSources.has("nextdoor") ||
+        enabledSources.has("facebook") ||
+        enabledSources.has("reddit") ||
+        enabledSources.has("craigslist")
+
+      if (socialSourcesEnabled && keywords && keywords.length > 0) {
+        // STEP 5 — open scraper_executions record
+        const { data: execRecord } = await supabase
+          .from("scraper_executions")
+          .insert({
+            brokerage_id: market.brokerage_id,
+            scraper_type: "social_intent",
+            status: "running",
+            started_at: new Date().toISOString(),
+          })
+          .select("id")
+          .single()
+
         const job = await createScrapingJob({
           job_type: "social_scrape",
           market_id: market.id,
           source: "social_platforms",
         })
 
+        let socialLeadsCreated = 0
+        let sourceCostUsd = 0
+        let sourceErr: Error | null = null
+
         try {
           await updateScrapingJob(job.job?.id, {
             status: "running",
             started_at: new Date().toISOString(),
           })
-
-          let socialLeadsCreated = 0
 
           // Group keywords by source
           const keywordsBySource: Record<string, string[]> = {}
@@ -256,27 +352,25 @@ export async function GET(request: Request) {
             }
           }
 
-          // Resolve motivatedParams for this market (used by Facebook group URLs and Reddit subreddits)
+          // motivatedParams carries facebook_group_urls and reddit_subreddits from DB
           const motivatedParams = market.lead_scraping_motivated_params?.[0]
 
-          // Scrape Nextdoor
-          if (keywordsBySource["nextdoor"]) {
+          // STEP 4 gate + STEP 7 geography from market record
+          if (enabledSources.has("nextdoor") && keywordsBySource["nextdoor"]) {
             const nextdoorUrl = `https://nextdoor.com/search/?query=${encodeURIComponent(
               keywordsBySource["nextdoor"].slice(0, 3).join(" OR "),
-            )}&location=${encodeURIComponent(market.city + ", " + market.state)}`
+            )}&location=${encodeURIComponent(`${market.city}, ${market.state}`)}`
 
             const scraped = await zenrows.scrapeNextdoor(nextdoorUrl)
+            sourceCostUsd += scraped.cost ?? 0
             if (scraped.success && scraped.posts) {
               for (const post of scraped.posts) {
                 const matchedKeyword = keywords.find(
                   (kw) =>
                     kw.sources?.includes("nextdoor") && post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
                 )
-
                 if (matchedKeyword && matchedKeyword.weight >= 3) {
                   const nameParts = post.author_name?.split(" ") || []
-
-                  // Run enrichment pipeline
                   const enrichedLead = await enrichLeadPipeline(
                     {
                       first_name: nameParts[0] || "",
@@ -287,7 +381,6 @@ export async function GET(request: Request) {
                     { peopledata, osint, validation },
                     results,
                   )
-
                   if (enrichedLead) {
                     const leadResult = await createLead({
                       ...enrichedLead,
@@ -305,14 +398,15 @@ export async function GET(request: Request) {
             }
           }
 
-          // Scrape Facebook Groups
-          if (keywordsBySource["facebook"]) {
+          // STEP 4 gate
+          if (enabledSources.has("facebook") && keywordsBySource["facebook"]) {
             const groupUrls: string[] = motivatedParams?.facebook_group_urls?.length
               ? motivatedParams.facebook_group_urls
-              : [`https://www.facebook.com/groups/${market.city.toLowerCase().replace(/\s+/g, '')}realestate`]
+              : [`https://www.facebook.com/groups/${market.city.toLowerCase().replace(/\s+/g, "")}realestate`]
 
             const fbResult = await zenrows.scrapeFacebookGroups({ groupUrls, keywords: keywordsBySource["facebook"] })
               .catch(() => ({ success: false, posts: [], cost: 0 }))
+            sourceCostUsd += (fbResult as any).cost ?? 0
 
             for (const post of fbResult.posts) {
               const matched = keywords.find(
@@ -335,8 +429,8 @@ export async function GET(request: Request) {
             }
           }
 
-          // Scrape Reddit
-          if (keywordsBySource["reddit"]) {
+          // STEP 4 gate
+          if (enabledSources.has("reddit") && keywordsBySource["reddit"]) {
             const { scrapeRedditPosts } = await import("@/lib/external/apify-client")
             const subreddits: string[] = motivatedParams?.reddit_subreddits?.length
               ? motivatedParams.reddit_subreddits
@@ -373,17 +467,18 @@ export async function GET(request: Request) {
             }
           }
 
-          // Scrape Craigslist
-          if (keywordsBySource["craigslist"]) {
+          // STEP 4 gate
+          if (enabledSources.has("craigslist") && keywordsBySource["craigslist"]) {
+            // STEP 7 — city from market record
             const craigslistUrl = `https://${market.city.toLowerCase().replace(/ /g, "")}.craigslist.org/search/rea?query=${encodeURIComponent(
               keywordsBySource["craigslist"].slice(0, 3).join(" "),
             )}`
-
             const scraped = await zenrows.scrape(craigslistUrl, { js_render: false })
+            sourceCostUsd += scraped.cost ?? 0
+
             if (scraped.success && scraped.html) {
               const listings = parseCraigslistHtml(scraped.html)
               for (const listing of listings) {
-                // Run enrichment pipeline
                 const enrichedLead = await enrichLeadPipeline(
                   {
                     first_name: listing.contact_name?.split(" ")[0] || "",
@@ -396,7 +491,6 @@ export async function GET(request: Request) {
                   { peopledata, osint, validation },
                   results,
                 )
-
                 if (enrichedLead) {
                   const leadResult = await createLead({
                     ...enrichedLead,
@@ -420,6 +514,7 @@ export async function GET(request: Request) {
             completed_at: new Date().toISOString(),
           })
         } catch (error) {
+          sourceErr = error as Error
           await updateScrapingJob(job.job?.id, {
             status: "failed",
             error_message: String(error),
@@ -427,13 +522,29 @@ export async function GET(request: Request) {
           })
           results.errors.push(`Social scrape error for ${market.name}: ${error}`)
         }
+
+        // STEP 5 — close scraper_executions record
+        await supabase.from("scraper_executions").update({
+          status: sourceErr ? "failed" : "completed",
+          completed_at: new Date().toISOString(),
+          total_items_found: socialLeadsCreated,
+          leads_created: socialLeadsCreated,
+          api_cost: sourceCostUsd,
+          error_message: sourceErr?.message ?? null,
+        }).eq("id", execRecord?.id).catch(() => {})
+
+        territorySpendUsd += sourceCostUsd
       }
 
-      // Update market's last_scraped_at
+      // STEP 6 — Update territory spend and last_scraped_at after all sources run.
       await supabase
         .from("lead_scraping_markets")
-        .update({ last_scraped_at: new Date().toISOString() })
+        .update({
+          spend_this_month: (market.spend_this_month ?? 0) + territorySpendUsd,
+          last_scraped_at: new Date().toISOString(),
+        })
         .eq("id", market.id)
+        .catch(() => {})
     }
 
     console.log("[Lead Scraping Cron] Completed:", results)
