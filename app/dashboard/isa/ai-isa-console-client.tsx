@@ -302,6 +302,19 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
     router.refresh()
   }
 
+  // ── Send AI Email Now ──────────────────────────────────────
+  async function handleSendEmailNow(record: any) {
+    if (!record.email) { toast.error('No email address on this record'); return }
+    try {
+      const { initiateAIISAEngagement } = await import('@/app/actions/ai-isa/initiate-engagement')
+      await initiateAIISAEngagement(record.id, { forceChannel: 'email' })
+      toast.success('AI email queued for immediate send')
+      router.refresh()
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to send email')
+    }
+  }
+
   // ── AI Call Now ────────────────────────────────────────────
   async function handleAICallNow(record: any) {
     const phone = record.phone
@@ -606,15 +619,17 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                         <ChannelTruth record={item} />
                       </div>
 
-                      {/* Action rail — Section 5 */}
-                      <div className="flex flex-col gap-1.5 shrink-0 min-w-[150px]">
+                      {/* Action rail */}
+                      <div className="flex flex-col gap-1.5 shrink-0 min-w-[158px]">
+
+                        {/* Primary: open full CRM record */}
                         <Button size="sm" variant="default" className="w-full justify-start" asChild>
                           <Link href={`/crm?contactId=${item.contact_id ?? ''}&leadId=${item.contact_id ? '' : item.id}`}>
                             Open Record
                           </Link>
                         </Button>
 
-                        {/* AI Call Now — triggers real VAPI call via /api/voice/initiate-call */}
+                        {/* AI Call Now — triggers VAPI outbound via /api/voice/initiate-call */}
                         {item.phone && !item.call_stop_flag && (
                           <Button
                             size="sm"
@@ -627,7 +642,25 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Button>
                         )}
 
-                        {(item.aiisa_state === 'handoff_ready' || item.aiisa_state === 'agent_handoff_required') && (
+                        {/* Send AI Email Now — force immediate email dispatch */}
+                        {item.email && !item.email_opt_out && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full justify-start text-blue-700 border-blue-300 hover:bg-blue-50"
+                            onClick={() => handleSendEmailNow(item)}
+                          >
+                            <Mail className="h-3.5 w-3.5 mr-1.5" />
+                            Send Email Now
+                          </Button>
+                        )}
+
+                        {/* Hand Off to Human Agent — handoff_ready, agent_handoff_required, awaiting_approval */}
+                        {(
+                          item.aiisa_state === 'handoff_ready' ||
+                          item.aiisa_state === 'agent_handoff_required' ||
+                          item.aiisa_state === 'awaiting_approval'
+                        ) && (
                           <Button
                             size="sm"
                             variant="outline"
@@ -640,6 +673,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Button>
                         )}
 
+                        {/* Pause AI-ISA — only when actively running */}
                         {(item.aiisa_state === 'ai_active' || item.aiisa_state === 'ai_nurturing') && !item.ai_outreach_paused && (
                           <Button size="sm" variant="ghost" className="w-full justify-start" onClick={() => handlePauseAI(item.id)}>
                             <Pause className="h-3.5 w-3.5 mr-1.5" />
@@ -647,6 +681,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Button>
                         )}
 
+                        {/* Resume AI-ISA — only when paused */}
                         {item.ai_outreach_paused && (
                           <Button size="sm" variant="ghost" className="w-full justify-start" onClick={() => handleResumeAI(item.id)}>
                             <Play className="h-3.5 w-3.5 mr-1.5" />
@@ -654,11 +689,21 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Button>
                         )}
 
+                        {/* Force Reassess — re-run qualification evaluation */}
                         <Button size="sm" variant="ghost" className="w-full justify-start" onClick={() => handleForceReassess(item.id)}>
                           <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
                           Force Reassess
                         </Button>
 
+                        {/* View Call History — shortcut to CRM calls tab */}
+                        <Button size="sm" variant="ghost" className="w-full justify-start text-muted-foreground" asChild>
+                          <Link href={`/crm?contactId=${item.contact_id ?? ''}&leadId=${item.contact_id ? '' : item.id}&tab=calls`}>
+                            <Phone className="h-3.5 w-3.5 mr-1.5" />
+                            View Call History
+                          </Link>
+                        </Button>
+
+                        {/* Escalate — sends urgent notification to broker/admin */}
                         {item.aiisa_state !== 'handoff_complete' && (
                           <Button size="sm" variant="ghost" className="w-full justify-start text-orange-600 hover:text-orange-700" onClick={() => handleEscalate(item)}>
                             <AlertTriangle className="h-3.5 w-3.5 mr-1.5" />
@@ -666,12 +711,14 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
                           </Button>
                         )}
 
+                        {/* Compliance Hold toggle */}
                         {item.aiisa_state === 'compliance_hold' ? (
                           <Button size="sm" variant="ghost" className="w-full justify-start text-green-700" onClick={() => handleComplianceHold(item.id, false)}>
+                            <CheckCircle className="h-3.5 w-3.5 mr-1.5" />
                             Remove Hold
                           </Button>
                         ) : (
-                          <Button size="sm" variant="ghost" className="w-full justify-start text-gray-500" onClick={() => handleComplianceHold(item.id, true)}>
+                          <Button size="sm" variant="ghost" className="w-full justify-start text-muted-foreground" onClick={() => handleComplianceHold(item.id, true)}>
                             <ShieldOff className="h-3.5 w-3.5 mr-1.5" />
                             Compliance Hold
                           </Button>

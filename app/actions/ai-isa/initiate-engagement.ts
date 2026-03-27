@@ -44,7 +44,10 @@ const PHONE_CHANNELS = new Set(['phone', 'sms'])
 // Channels logged to the social table pending agent action if no API
 const SOCIAL_CHANNELS = new Set(['facebook', 'instagram', 'linkedin', 'twitter'])
 
-export async function initiateAIISAEngagement(leadId: string) {
+export async function initiateAIISAEngagement(
+  leadId: string,
+  opts?: { forceChannel?: 'email' | 'sms' | 'phone' | 'direct_mail' }
+) {
   const supabase = createServiceClient()
 
   try {
@@ -116,6 +119,12 @@ export async function initiateAIISAEngagement(leadId: string) {
       return { success: false, reason: 'stop:max_touches' }
     }
 
+    // ── forceChannel override (e.g. "Send Email Now" button on ISA console) ──
+    // Only email is safe to force — phone/SMS still require TCPA validation.
+    if (opts?.forceChannel && opts.forceChannel !== 'email') {
+      throw new Error('Only email can be force-dispatched from the ISA console. Phone/SMS channels require TCPA compliance checks.')
+    }
+
     // ── Channels permitted for unconsented leads (no TCPA) ─────────────────
     const LEAD_ALLOWED_CHANNELS = new Set(['email', 'direct_mail'])
 
@@ -161,7 +170,9 @@ export async function initiateAIISAEngagement(leadId: string) {
       return 'email'
     }
 
-    const preferredChannel = resolveKernelOutreachChannel(lead, contactRow)
+    const resolvedChannel = resolveKernelOutreachChannel(lead, contactRow)
+    // forceChannel='email' overrides the resolved channel (operator-initiated send)
+    const preferredChannel = opts?.forceChannel ?? resolvedChannel
 
     return await dispatchToChannel(
       preferredChannel,
@@ -171,7 +182,7 @@ export async function initiateAIISAEngagement(leadId: string) {
       supabase
     )
   } catch (error: any) {
-    console.error('[v0] AI ISA engagement error:', error)
+    console.error('[AIISAEngagement] Error:', error)
     await supabase.from('automation_errors').insert({
       workflow_name: 'ai_isa_engagement',
       error_message: error.message,
