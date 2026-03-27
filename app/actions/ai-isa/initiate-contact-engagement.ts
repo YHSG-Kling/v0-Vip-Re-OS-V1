@@ -113,7 +113,7 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
       html:           body,
       channelPurpose: 'campaign',
       systemSource:   'ai_isa',
-      leadId:         contactId,
+      contactId,
       metadata:       { contactId, source: 'ai_isa_contact_reengage' },
     })
 

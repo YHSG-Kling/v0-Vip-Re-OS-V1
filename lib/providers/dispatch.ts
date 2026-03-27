@@ -31,8 +31,17 @@ interface DispatchActorContext {
   teamId?: string
   /** Source system for vendor usage attribution, e.g. 'ai_isa', 'campaign' */
   systemSource?: string
-  /** Optional lead / contact for cost attribution */
+  /**
+   * Lead ID for cost attribution. Use this when the recipient is a lead record.
+   * Prefer contactId when the recipient is a promoted contact record.
+   * Internally, contactId takes precedence over leadId for assembleEmail().
+   */
   leadId?: string
+  /**
+   * Contact ID for cost attribution. Use this when the recipient is a contacts
+   * record (post-promotion). Takes precedence over leadId inside dispatch.
+   */
+  contactId?: string
   agentId?: string
 }
 
@@ -79,12 +88,16 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     : params.systemSource?.includes("transactional")  ? "transactional"
     : "conversation")
 
+  // contactId takes precedence over leadId — contacts are promoted leads and
+  // the signature/unsubscribe lookup keys off the contacts table.
+  const recipientId = params.contactId ?? params.leadId ?? null
+
   const assembled = await assembleEmail({
     bodyHtml:       params.html ?? "",
     bodyText:       params.text,
     userId:         params.agentId ?? params.userId ?? params.brokerageId ?? "",
     brokerageId:    params.brokerageId,
-    contactId:      params.leadId ?? (params as any).contactId ?? null,
+    contactId:      recipientId,
     channelPurpose,
   }).catch(() => ({
     html:                 params.html ?? "",
@@ -131,15 +144,16 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     vendorName: providerKey,
     usageType: "emails",
     unitCount: 1,
-    estimatedCost: 0.001, // ~$0.001 per email, normalised per cost-normalizer rates
+    estimatedCost: 0.001,
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
-    leadId: params.leadId,
+    leadId: params.leadId ?? params.contactId,
     metadata: {
       to: params.to,
       subject: params.subject,
       provider_key: providerKey,
+      contact_id: params.contactId,
       ...(params.metadata ?? {}),
     },
   })

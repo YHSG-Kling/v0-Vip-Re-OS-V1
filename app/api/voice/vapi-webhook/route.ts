@@ -432,7 +432,7 @@ async function schedulePostCallFollowUp(params: {
           brokerageId,
           agentId: agentId ?? undefined,
           systemSource: "vapi_post_call_followup",
-          leadId: contactId,
+          contactId,
           metadata: { voice_call_intent: intentPrimary, urgency_score: urgencyScore },
         }).then((r) => r.success).catch(() => false)
       : false
@@ -448,7 +448,8 @@ async function schedulePostCallFollowUp(params: {
           brokerageId,
           agentId: agentId ?? undefined,
           systemSource: "vapi_post_call_followup",
-          leadId: contactId,
+          contactId,
+          channelPurpose: "conversation",
         }).then((r) => r.success).catch(() => false)
       : false
 
