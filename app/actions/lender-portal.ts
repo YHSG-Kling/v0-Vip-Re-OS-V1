@@ -1,5 +1,3 @@
-"use server"
-
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -14,6 +12,7 @@ export const LENDER_VISIBLE_MILESTONES = [
 
 // ─── GET LENDER TRANSACTION DETAIL ───────────────────────────────────────────
 export async function getLenderTransactionDetail(transactionId: string, lenderId: string) {
+  "use server"
   const supabase = await createClient()
 
   // Verify lender has access to this transaction
@@ -105,6 +104,7 @@ export async function uploadLenderDocument(data: {
   fileName: string
   fileUrl: string
 }) {
+  "use server"
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -146,6 +146,7 @@ export async function issueClearToClose(data: {
   transactionId: string
   lenderId: string
 }) {
+  "use server"
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -235,6 +236,7 @@ export async function flagLenderIssue(data: {
   lenderId: string
   issueDescription: string
 }) {
+  "use server"
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -309,6 +311,7 @@ export async function updateLenderLoanStatus(data: {
   lenderId: string
   newStatus: string
 }) {
+  "use server"
   const supabase = await createClient()
 
   // Verify lender access
