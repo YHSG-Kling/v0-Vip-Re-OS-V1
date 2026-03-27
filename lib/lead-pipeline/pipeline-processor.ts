@@ -3,6 +3,12 @@
 import { createClient } from '@/lib/supabase/server'
 import { calculateFuzzyMatch } from './fuzzy-matcher'
 import { skipTraceWithPeopleData } from '@/lib/external'
+import {
+  calculateSourceScore,
+  getSourceSemantics,
+  scoreToUrgencyLevel,
+  recordMatchesTerritory,
+} from './source-intent-map'
 
 // ─── Processing status state machine ─────────────────────────────────────────
 // pending → processing → queued_for_enrichment | duplicate_pre_enrich
@@ -108,6 +114,54 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
   const phone      = rec.normalized_preview?.phone      ?? (rec.raw_data?.phone      as string | undefined) ?? null
   const city       = rec.normalized_preview?.city       ?? (rec.raw_data?.city       as string | undefined) ?? null
   const state      = rec.normalized_preview?.state      ?? (rec.raw_data?.state      as string | undefined) ?? null
+
+  // ── Territory gate — block before enrichment spend ────────────────────────
+  // Load the market this record was scraped for and check city/state/zip match.
+  if (rec.market_id) {
+    const { data: market } = await supabase
+      .from('lead_scraping_markets')
+      .select('city, state, zip_codes')
+      .eq('id', rec.market_id)
+      .single()
+
+    if (market) {
+      const recordGeo = {
+        city:  rec.normalized_preview?.city  ?? (rec.raw_data?.city  as string | null) ?? null,
+        state: rec.normalized_preview?.state ?? (rec.raw_data?.state as string | null) ?? null,
+        zip:   (rec.normalized_preview as any)?.zip ?? (rec.raw_data?.zip as string | null) ?? null,
+      }
+
+      const inTerritory = recordMatchesTerritory(recordGeo, market)
+
+      if (!inTerritory) {
+        await setStatus(supabase, rawRecordId, 'territory_mismatch')
+        await logDeduplication({
+          raw_record_id:             rawRecordId,
+          stage:                     'territory_gate',
+          match_score:               0,
+          match_details:             { record_city: recordGeo.city, record_state: recordGeo.state, record_zip: recordGeo.zip, market_city: market.city, market_state: market.state },
+          action_taken:              'skipped',
+          skip_reason:               `Territory mismatch: ${recordGeo.city ?? recordGeo.zip} not in market ${market.city}, ${market.state}`,
+          new_enrichment_confidence: null,
+        }, supabase)
+        return {
+          success: false,
+          action:  'skipped',
+          reason:  `Territory mismatch: record geography is outside the scraped market`,
+          stage:   'territory_gate',
+        }
+      }
+    }
+  }
+
+  // ── Source semantics — score and derive intent fields ─────────────────────
+  // Computed once before the identity gate; used on promotion.
+  const sourceSemantics = getSourceSemantics(rec.source)
+  const computedScore   = calculateSourceScore(
+    rec.source,
+    rec.normalized_preview?.intentSignals ?? [],
+  )
+  const urgencyLevel = scoreToUrgencyLevel(computedScore)
 
   // ── STEP 4B: Identity gate — require at least one usable anchor ────────────
   // Anchors: email, phone, full name + location, or property address.
@@ -268,10 +322,16 @@ export async function processRawRecord(rawRecordId: string, brokerageId: string)
       email:                 enriched.email,
       phone:                 enriched.phone        ?? phone,
       phone_secondary:       enriched.phone_secondary ?? null,
-      source:                rec.source,            // STEP 5 — source from raw record
-      lead_type:             rec.normalized_preview?.intentType ?? null,
-      motivation_type:       (rec.raw_data?.motivation_type    as string | null) ?? null,
-      motivation_confidence: (rec.raw_data?.motivation_confidence as number | null) ?? null,
+      source:                rec.source,
+      // STEP 5 + source-intent-map: lead_type, motivation_type, urgency_level from SOURCE_MAP
+      lead_type:             sourceSemantics.leadType !== 'unknown'
+                               ? sourceSemantics.leadType
+                               : (rec.normalized_preview?.intentType ?? null),
+      motivation_type:       (rec.raw_data?.motivation_type as string | null) ?? sourceSemantics.motivationType,
+      motivation_confidence: (rec.raw_data?.motivation_confidence as number | null)
+                               ?? (computedScore / 100),
+      urgency_level:         urgencyLevel,
+      lead_score:            computedScore,
       enrichment_status:     'completed',
       enrichment_confidence: enriched.enrichmentConfidence,
       last_enriched_at:      new Date().toISOString(),
