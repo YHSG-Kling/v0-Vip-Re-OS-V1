@@ -47,6 +47,7 @@ export default async function HomeValuePageBuilderPage() {
       .select(
         `id, property_address, bedrooms, bathrooms, square_feet, condition,
          qualification_data, utm_source, submitted_at, contact_id,
+         cma_sent, appointment_scheduled,
          contacts(first_name, last_name, email)`
       )
       .eq("brokerage_id", agentRow.brokerage_id)

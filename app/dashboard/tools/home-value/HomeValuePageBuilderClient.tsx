@@ -14,8 +14,25 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Card, CardContent } from "@/components/ui/card"
 import { useToast } from "@/hooks/use-toast"
-import { Copy, Check, ExternalLink, Save, Globe, Clock, ClipboardList, Palette, Inbox } from "lucide-react"
+import { Copy, Check, ExternalLink, Save, Globe, Clock, ClipboardList, Palette, Inbox, ArrowRight } from "lucide-react"
 import { cn } from "@/lib/utils"
+
+// ── Next-action logic ─────────────────────────────────────────────────────────
+// Uses only real columns that exist on valuation_requests post-migration:
+//   qualification_data, contact_id, cma_sent, appointment_scheduled
+
+interface NextAction {
+  label: string
+  urgency: "high" | "medium" | "low"
+}
+
+function getNextAction(request: ValuationRequest): NextAction {
+  if (!request.qualification_data) return { label: "Qualify seller", urgency: "high" }
+  if (!request.contact_id)         return { label: "Convert to contact", urgency: "high" }
+  if (!(request as any).cma_sent)  return { label: "Send CMA", urgency: "medium" }
+  if (!(request as any).appointment_scheduled) return { label: "Book consultation", urgency: "medium" }
+  return { label: "Track listing", urgency: "low" }
+}
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
@@ -115,6 +132,8 @@ interface ValuationRequest {
   utm_source: string | null
   submitted_at: string | null
   contact_id: string | null
+  cma_sent: boolean | null
+  appointment_scheduled: boolean | null
   contacts: { first_name: string | null; last_name: string | null; email: string | null } | null
 }
 
@@ -654,6 +673,7 @@ export function HomeValuePageBuilderClient({
                   ) : (
                     newRequests.map((req) => {
                       const qual = (req.qualification_data as any) ?? {}
+                      const next = getNextAction(req)
                       return (
                         <Card key={req.id} className="border-orange-200">
                           <CardContent className="p-4 space-y-3">
@@ -680,13 +700,31 @@ export function HomeValuePageBuilderClient({
                                   )}
                                 </div>
                               </div>
-                              {req.submitted_at && (
-                                <span className="text-xs text-muted-foreground shrink-0">
-                                  {format(new Date(req.submitted_at), "MMM d, h:mm a")}
-                                </span>
-                              )}
+                              <div className="flex flex-col items-end gap-1.5 shrink-0">
+                                {req.submitted_at && (
+                                  <span className="text-xs text-muted-foreground">
+                                    {format(new Date(req.submitted_at), "MMM d, h:mm a")}
+                                  </span>
+                                )}
+                                {/* Next-action badge */}
+                                <Badge
+                                  className={cn(
+                                    "text-xs flex items-center gap-1",
+                                    next.urgency === "high"
+                                      ? "bg-red-100 text-red-800 border-red-200"
+                                      : next.urgency === "medium"
+                                      ? "bg-amber-100 text-amber-800 border-amber-200"
+                                      : "bg-green-100 text-green-800 border-green-200",
+                                  )}
+                                  variant="outline"
+                                >
+                                  <ArrowRight className="h-2.5 w-2.5" />
+                                  {next.label}
+                                </Badge>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-2">
+                            {/* Quick-action buttons */}
+                            <div className="flex flex-wrap items-center gap-2">
                               <Button
                                 size="sm"
                                 disabled={convertingId === req.id}
@@ -699,11 +737,34 @@ export function HomeValuePageBuilderClient({
                                 variant="outline"
                                 onClick={() =>
                                   router.push(
-                                    `/dashboard/calendar?new=true&title=${encodeURIComponent(`Consultation for ${req.property_address ?? "property"}`)}`,
+                                    `/dashboard/listings?new_cma=true&address=${encodeURIComponent(req.property_address ?? "")}`,
+                                  )
+                                }
+                              >
+                                Open CMA Builder
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() =>
+                                  router.push(
+                                    `/dashboard/calendar?new=true&title=${encodeURIComponent(`Consultation: ${req.property_address ?? "property"}`)}`,
                                   )
                                 }
                               >
                                 Schedule Consultation
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-indigo-700 hover:text-indigo-800"
+                                onClick={() =>
+                                  router.push(
+                                    `/dashboard/ai-isa?source=home_value&request=${req.id}`,
+                                  )
+                                }
+                              >
+                                Send to AI-ISA
                               </Button>
                             </div>
                           </CardContent>

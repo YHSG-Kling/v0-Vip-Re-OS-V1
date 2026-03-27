@@ -307,6 +307,65 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       return { success: false, error: "Failed to create valuation request" }
     }
 
+    // ── Kernel OS seller intake chain ────────────────────────────────────────
+    // A home value request is a motivated seller signal. If this contact did
+    // not already exist, insert a raw scraped lead so Kernel's chronology
+    // processor picks it up for full lead scoring + deduplication.
+
+    if (!existingContact) {
+      await supabase.from("raw_scraped_leads").insert({
+        brokerage_id: resolvedBrokerageId,
+        source: "home_value_form",
+        raw_data: {
+          first_name: firstName,
+          last_name: lastName,
+          email,
+          phone: tcpaConsent ? phone : null,
+          property_address: propertyAddress,
+          city,
+          state,
+          zip_code: zipCode,
+          sell_timeline: qualificationData?.sellTimeline ?? null,
+          motivation: qualificationData?.motivation ?? null,
+          valuation_request_id: valuationRequest.id,
+          tcpa_consent: tcpaConsent,
+        },
+        normalized_preview: {
+          firstName,
+          lastName,
+          email,
+          phone: tcpaConsent ? phone : null,
+          city,
+          state,
+          intentType: "seller",
+          behaviorType: "home_value_inquiry",
+        },
+        processing_status: "pending",
+      }).catch(() => {})
+    }
+
+    // Activity for immediate agent CRM visibility
+    if (resolvedAgentId) {
+      await supabase.from("activities").insert({
+        activity_type: "home_value_request_received",
+        title: `Home value request: ${firstName} ${lastName}`,
+        description: `${propertyAddress}, ${city}, ${state}`,
+        notes: JSON.stringify({
+          email,
+          phone: tcpaConsent ? phone : null,
+          sell_timeline: qualificationData?.sellTimeline ?? null,
+          motivation: qualificationData?.motivation ?? null,
+          valuation_request_id: valuationRequest.id,
+        }),
+        contact_id: contactId,
+        agent_id: resolvedAgentId,
+        brokerage_id: resolvedBrokerageId,
+        entity_type: "contact",
+        status: "pending",
+        priority: qualificationData?.sellTimeline === "immediately" ? "high" : "medium",
+      }).catch(() => {})
+    }
+
     // Step 5: Generate AI estimate using Claude
     const aiValuation = await generateAIValuation({
       propertyAddress,
