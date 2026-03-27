@@ -37,9 +37,21 @@ export async function evaluatePromotionEligibility(
     }
   }
 
-  // 2. Check if record has been enriched via existing pipeline
-  // The pipeline processor sets processing_status to 'completed' when done
-  if (rawRecord.processing_status !== 'completed') {
+  // 2. Check if record has been enriched via the pipeline processor.
+  // The pipeline processor terminal statuses are 'promoted', 'duplicate_post_enrich',
+  // 'insufficient_identity_for_promotion', or 'error'.
+  // 'promoted' means the record already became a lead — reject further promotion.
+  // Allow re-evaluation only for 'insufficient_identity_for_promotion' (may gain identity via retry).
+  const terminalStatuses = ['promoted', 'duplicate_pre_enrich', 'duplicate_post_enrich', 'territory_mismatch', 'error']
+  if (terminalStatuses.includes(rawRecord.processing_status)) {
+    return {
+      eligible: false,
+      reason: `Record is in terminal status: ${rawRecord.processing_status}`,
+      rawRecord,
+    }
+  }
+  const enrichedStatuses = ['enriching', 'queued_for_enrichment', 'insufficient_identity_for_promotion']
+  if (!enrichedStatuses.includes(rawRecord.processing_status) && rawRecord.processing_status !== 'pending') {
     return {
       eligible: false,
       reason: `Enrichment not complete. Current status: ${rawRecord.processing_status}`,

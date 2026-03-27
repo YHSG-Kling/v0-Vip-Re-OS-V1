@@ -44,29 +44,39 @@ export async function scrapeBatchDataMotivated(params: {
         results.totalRecords += batchDataResult.records.length
 
         for (const record of batchDataResult.records) {
+          // Write to raw_scraped_leads — the canonical table for all scraped data.
+          // batchdata_motivated_sellers_raw is the legacy table and is no longer used.
+          const sourceRecordId = [
+            'batchdata',
+            motivationType,
+            record.firstName?.toLowerCase(),
+            record.lastName?.toLowerCase(),
+            (record.propertyAddress || record.address)?.toLowerCase().replace(/\s+/g, '-'),
+          ].filter(Boolean).join('-')
+
           const { data: rawRecord } = await supabase
-            .from('batchdata_motivated_sellers_raw')
+            .from('raw_scraped_leads')
             .insert({
-              first_name: record.firstName,
-              last_name: record.lastName,
-              email: record.email,
-              phone: record.phone,
-              residential_address: record.address,
-              residential_city: record.city,
-              residential_state: record.state,
-              residential_zip: record.zip,
-              property_address: record.propertyAddress || record.address,
-              property_city: record.propertyCity || record.city,
-              property_state: record.propertyState || record.state,
-              property_zip: record.propertyZip || record.zip,
-              property_beds: record.beds,
-              property_baths: record.baths,
-              property_sqft: record.sqft,
-              property_estimated_value: record.estimatedValue,
-              motivation_type: motivationType,
-              motivation_confidence: record.motivationConfidence,
-              raw_json: record as any,
-              created_at: new Date().toISOString()
+              brokerage_id:      brokerageId,
+              source:            'batchdata_motivated',
+              source_record_id:  sourceRecordId,
+              raw_data:          record as unknown as Record<string, unknown>,
+              normalized_preview: {
+                firstName:       record.firstName    ?? null,
+                lastName:        record.lastName     ?? null,
+                email:           record.email        ?? null,
+                phone:           record.phone        ?? null,
+                city:            record.city         ?? null,
+                state:           record.state        ?? null,
+                intentType:      'seller',
+                behaviorType:    'motivated_seller',
+                motivationScore: record.motivationConfidence
+                  ? Math.round(record.motivationConfidence * 100)
+                  : null,
+                intentSignals:   [motivationType],
+                propertyAddress: (record.propertyAddress || record.address) ?? null,
+              },
+              processing_status: 'pending',
             })
             .select('id')
             .single()

@@ -63,6 +63,12 @@ export async function promoteRawRecordToLead(
         source_raw_ids: [rawRecordId],
         is_active: true,
         lead_score: 0, // Will be set by scoring system
+        // Session G: promoted scraped leads must enter with unconsented lifecycle
+        // and be owned by the AI-ISA engine until explicit consent is obtained.
+        lifecycle_state: 'unconsented',
+        ai_isa_owner: true,
+        minimum_viable_for_isa: !!(rawData.email),
+        raw_record_id: rawRecordId,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         stage_entered_at: new Date().toISOString(),
