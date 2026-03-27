@@ -31,6 +31,7 @@ export interface CaptureContactParams {
   last_name?: string | null
   email?: string | null
   phone?: string | null
+  preferred_channel?: 'phone' | 'email' | 'sms' | null
   tcpa_consent: boolean
   tcpa_consent_date?: string | null
   rawPayload?: Record<string, unknown>
@@ -114,6 +115,10 @@ export async function captureContact(
         email: existing?.email || params.email,
         phone: existing?.phone || params.phone,
         source: existing?.source || params.source,
+        // Only upgrade preferred_channel if consent was just given
+        preferred_channel: params.tcpa_consent
+          ? (params.preferred_channel ?? existing?.preferred_channel)
+          : existing?.preferred_channel,
         tcpa_consent: params.tcpa_consent ? true : existing?.tcpa_consent,
         tcpa_consent_date: params.tcpa_consent
           ? (params.tcpa_consent_date ?? new Date().toISOString())
@@ -155,6 +160,7 @@ export async function captureContact(
       last_name: params.last_name ?? null,
       email: params.email ?? null,
       phone: params.phone ?? null,
+      preferred_channel: params.preferred_channel ?? (params.tcpa_consent ? 'phone' : 'email'),
       source: params.source,
       tcpa_consent: params.tcpa_consent,
       tcpa_consent_date: params.tcpa_consent
