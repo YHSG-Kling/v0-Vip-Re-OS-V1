@@ -52,7 +52,8 @@ export function WidgetChatClient({
       prepareSendMessagesRequest: ({ messages }) => ({
         body: {
           messages,
-          sessionToken,
+          // Server reads snake_case: session_token
+          session_token: sessionToken,
           brokerageSlug,
         },
       }),
@@ -100,11 +101,18 @@ export function WidgetChatClient({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sessionToken,
+          // Server reads snake_case: session_token
+          session_token: sessionToken,
           brokerageSlug,
-          name: captureForm.name.trim(),
+          // Split name into first/last for captureContact viability check
+          first_name: captureForm.name.trim().split(' ').slice(0, -1).join(' ') || captureForm.name.trim(),
+          last_name: captureForm.name.trim().split(' ').slice(-1).join(' ') !== captureForm.name.trim()
+            ? captureForm.name.trim().split(' ').slice(-1).join(' ')
+            : null,
           email: captureForm.email.trim(),
           phone: captureForm.phone.trim() || null,
+          tcpa_consent: !!captureForm.phone.trim(), // phone provided = TCPA consent
+          intent_type: 'unknown',
           conversationMessages: messages.map(m => ({
             role: m.role,
             content: m.parts
