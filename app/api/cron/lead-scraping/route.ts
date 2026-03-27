@@ -18,6 +18,39 @@ export async function GET(request: Request) {
   console.log("[Lead Scraping Cron] Starting scheduled scraping with full enrichment pipeline...")
 
   const supabase = await createClient()
+
+  // ── Instantiate all provider clients BEFORE the try block ─────────────────
+  const zenrows   = new ZenrowsClient()
+  const batchdata = new BatchDataClient()
+  const peopledata = new PeopleDataClient()
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const apify     = new ApifyClient()
+
+  const validation = {
+    validateContact: async (params: { email?: string | null; phone?: string | null }) => {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+      const phoneRegex = /^\+?[\d\s\-()\\.]{10,15}$/
+      const emailValid  = params.email ? emailRegex.test(params.email) : false
+      const phoneValid  = params.phone ? phoneRegex.test(params.phone) : false
+      return {
+        overall_valid:  emailValid || phoneValid,
+        email_valid:    emailValid,
+        email_status:   emailValid ? 'valid_format' : 'invalid_format',
+        phone_valid:    phoneValid,
+        phone_formatted: params.phone?.replace(/\D/g, '').slice(-10) ?? null,
+        phone_type:     phoneValid ? 'unknown' : null,
+      }
+    },
+  }
+
+  const osint = {
+    searchPerson: async (params: { name?: string; firstName?: string; lastName?: string; city?: string; state?: string; email?: string; phone?: string }) => {
+      const { skipTraceWithPeopleData } = await import('@/lib/external/peopledata-client')
+      const fullName = params.name ?? `${params.firstName ?? ''} ${params.lastName ?? ''}`.trim()
+      return skipTraceWithPeopleData({ name: fullName }).then(r => r.data).catch(() => null)
+    },
+  }
+
   const results = {
     markets_processed: 0,
     total_leads_found: 0,
@@ -223,6 +256,9 @@ export async function GET(request: Request) {
             }
           }
 
+          // Resolve motivatedParams for this market (used by Facebook group URLs and Reddit subreddits)
+          const motivatedParams = market.lead_scraping_motivated_params?.[0]
+
           // Scrape Nextdoor
           if (keywordsBySource["nextdoor"]) {
             const nextdoorUrl = `https://nextdoor.com/search/?query=${encodeURIComponent(
@@ -271,12 +307,70 @@ export async function GET(request: Request) {
 
           // Scrape Facebook Groups
           if (keywordsBySource["facebook"]) {
-            // Similar pattern for Facebook groups...
+            const groupUrls: string[] = motivatedParams?.facebook_group_urls?.length
+              ? motivatedParams.facebook_group_urls
+              : [`https://www.facebook.com/groups/${market.city.toLowerCase().replace(/\s+/g, '')}realestate`]
+
+            const fbResult = await zenrows.scrapeFacebookGroups({ groupUrls, keywords: keywordsBySource["facebook"] })
+              .catch(() => ({ success: false, posts: [], cost: 0 }))
+
+            for (const post of fbResult.posts) {
+              const matched = keywords.find(
+                (kw) =>
+                  kw.sources?.includes("facebook") &&
+                  post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
+              )
+              if (matched && (matched.weight ?? 1) >= 3) {
+                await supabase
+                  .from("raw_scraped_leads")
+                  .insert({
+                    brokerage_id: market.brokerage_id,
+                    source: "facebook_group",
+                    raw_data: { post, matched_keyword: matched.keyword, market_id: market.id },
+                    processing_status: "pending",
+                  })
+                  .catch(() => {})
+                socialLeadsCreated++
+              }
+            }
           }
 
           // Scrape Reddit
           if (keywordsBySource["reddit"]) {
-            // Similar pattern for Reddit...
+            const { scrapeRedditPosts } = await import("@/lib/external/apify-client")
+            const subreddits: string[] = motivatedParams?.reddit_subreddits?.length
+              ? motivatedParams.reddit_subreddits
+              : [
+                  `${market.city.toLowerCase().replace(/\s+/g, "")}realestate`,
+                  "FirstTimeHomeBuyer",
+                  "moving",
+                ]
+
+            const redditResult = await scrapeRedditPosts({
+              subreddits,
+              keywords: keywordsBySource["reddit"],
+              limit: 50,
+            }).catch(() => ({ posts: [], cost: 0 }))
+
+            for (const post of redditResult.posts) {
+              const matched = keywords.find(
+                (kw) =>
+                  kw.sources?.includes("reddit") &&
+                  `${post.title ?? ""} ${post.body ?? ""}`.toLowerCase().includes(kw.keyword.toLowerCase()),
+              )
+              if (matched && (matched.weight ?? 1) >= 2) {
+                await supabase
+                  .from("raw_scraped_leads")
+                  .insert({
+                    brokerage_id: market.brokerage_id,
+                    source: "reddit_intent",
+                    raw_data: { post, matched_keyword: matched.keyword, market_id: market.id },
+                    processing_status: "pending",
+                  })
+                  .catch(() => {})
+                socialLeadsCreated++
+              }
+            }
           }
 
           // Scrape Craigslist
@@ -366,8 +460,8 @@ async function enrichLeadPipeline(
   },
   clients: {
     peopledata: PeopleDataClient
-    osint: OSINTClient
-    validation: ContactValidationClient
+    osint: { searchPerson: (params: Record<string, string | undefined>) => Promise<any> }
+    validation: { validateContact: (params: { email?: string | null; phone?: string | null }) => Promise<any> }
   },
   results: { leads_validated: number; leads_enriched: number; osint_searches: number },
 ): Promise<any | null> {

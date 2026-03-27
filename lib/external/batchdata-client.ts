@@ -12,6 +12,17 @@ export class BatchDataClient {
   async getPropertyDetails(propertyId: string) {
     return enrichPropertyWithBatchData(propertyId).then(r => r)
   }
+  /**
+   * Alias used by the lead-scraping cron.
+   * Accepts a "City, State" string, splits it, and delegates to fetchMotivatedSellers.
+   * Returns the records array directly so callers can iterate without unwrapping.
+   */
+  async getMotivatedSellerData(location: string): Promise<BatchDataRecord[]> {
+    const [city, state] = location.includes(',')
+      ? location.split(',').map(s => s.trim())
+      : [location, '']
+    return fetchMotivatedSellers({ state: state || location }).then(r => r.records)
+  }
 }
 
 const BATCHDATA_API_KEY = process.env.BATCHDATA_API_KEY!
