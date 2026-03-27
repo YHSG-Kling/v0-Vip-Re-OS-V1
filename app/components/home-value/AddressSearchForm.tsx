@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select"
 import { ArrowRight, ArrowLeft, Loader2, Home, ClipboardList, User, Shield, CheckCircle2 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Checkbox } from "@/components/ui/checkbox"
 
 interface ActiveQuestions {
   sellTimeline?: boolean
@@ -115,6 +116,7 @@ export function AddressSearchForm({
   const [lastName, setLastName] = useState("")
   const [email, setEmail] = useState("")
   const [phone, setPhone] = useState("")
+  const [tcpaConsent, setTcpaConsent] = useState(false)
 
   // City OR zip is sufficient (seller may only know one)
   const hasCityOrZip = city.trim() !== "" || zipCode.trim() !== ""
@@ -165,9 +167,13 @@ export function AddressSearchForm({
         email,
         phone,
         agentSlug,
-        brokerageId,
-        utmSource,
-        qualificationData: {
+          brokerageId,
+          utmSource,
+          tcpaConsent,
+          tcpaConsentText: tcpaConsent
+            ? "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase. Message and data rates may apply."
+            : undefined,
+          qualificationData: {
           sellTimeline,
           motivation,
           hasAgent,
@@ -593,6 +599,26 @@ export function AddressSearchForm({
                 onChange={(e) => setPhone(e.target.value)}
               />
             </div>
+
+            {/* TCPA consent — governs channel permission, not lead creation */}
+            <label className="flex items-start gap-2 mt-1 cursor-pointer">
+              <Checkbox
+                id="tcpa-hv"
+                checked={tcpaConsent}
+                onCheckedChange={(v) => setTcpaConsent(!!v)}
+                className="mt-0.5 shrink-0"
+              />
+              <span className="text-xs text-muted-foreground leading-relaxed">
+                I agree to receive calls, texts, and emails from this brokerage and its agents regarding
+                real estate services. Consent is not required for purchase. Message and data rates may apply.
+              </span>
+            </label>
+
+            {!tcpaConsent && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                Without consent, we can only contact you by email.
+              </p>
+            )}
 
             <div className="flex items-start gap-2 text-sm text-muted-foreground bg-muted/50 p-3 rounded-lg">
               <Shield className="h-4 w-4 mt-0.5 shrink-0 text-primary" />

@@ -19,10 +19,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ success: false, error: 'Missing slug or data' }, { status: 400 })
     }
 
-    if (!tcpaConsent) {
-      return NextResponse.json({ success: false, error: 'TCPA consent is required' }, { status: 400 })
-    }
-
+    // Per TCPA corrected rule: do not block lead creation when consent is absent.
+    // Only suppress phone/SMS channel when tcpaConsent is false.
+    const consentGiven = tcpaConsent === true
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
     const userAgent = req.headers.get('user-agent') ?? null
 
@@ -49,7 +48,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         submission_data: data,
         ip_address: ip,
         user_agent: userAgent,
-        tcpa_consent_given: true,
+        tcpa_consent_given: consentGiven,
       })
       .select('id')
       .single()
@@ -70,6 +69,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const phone = (data['phone'] ?? '') as string
 
     // ── Step 5: captureContact ────────────────────────────────────────────────
+    const consentNow = new Date().toISOString()
     const { contactId, action } = await captureContact({
       brokerageId: form.brokerage_id,
       agentUserId: null,
@@ -77,9 +77,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       first_name: first_name || null,
       last_name: last_name || null,
       email: email || null,
-      phone: phone || null,
-      tcpa_consent: true,
-      tcpa_consent_date: new Date().toISOString(),
+      // Only store phone when TCPA consent given; omit to prevent calling
+      phone: consentGiven ? (phone || null) : null,
+      preferred_channel: consentGiven ? 'phone' : 'email',
+      tcpa_consent: consentGiven,
+      tcpa_consent_date: consentGiven ? consentNow : null,
       rawPayload: data,
     })
 

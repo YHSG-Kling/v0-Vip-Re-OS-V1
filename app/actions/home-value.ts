@@ -174,10 +174,6 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     qualificationData,
   } = formData
 
-  if (!tcpaConsent) {
-    return { success: false, error: "TCPA consent is required before we can contact you." }
-  }
-
     // Step 1: Resolve agent from slug if provided, else get default brokerage agent
     let resolvedAgentId: string | null = null
     let resolvedBrokerageId = brokerageId
@@ -224,6 +220,8 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     let contactId: string
 
     // Step 3: If no match, INSERT new contact FIRST
+    // Per TCPA rules: create lead regardless of consent, but only store phone
+    // and enable phone/SMS channels when consent is explicitly given.
     if (!existingContact) {
       const consentNow = new Date().toISOString()
       const { data: newContact, error: contactError } = await supabase
@@ -232,18 +230,20 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
           first_name: firstName,
           last_name: lastName,
           email,
-          phone,
-          phone_digits: normalizedPhone,
+          // Only store phone if TCPA consent given; otherwise omit to prevent calling
+          phone: tcpaConsent ? phone : null,
+          phone_digits: tcpaConsent ? normalizedPhone : null,
+          preferred_channel: tcpaConsent ? "phone" : "email",
           contact_type: "seller",
           source: "home_value_tool",
           buyer_stage: "BUYER_CONTACT_CREATED",
           agent_id: resolvedAgentId,
           brokerage_id: resolvedBrokerageId,
-          tcpa_consent: true,
-          tcpa_consent_at: consentNow,
-          tcpa_consent_date: consentNow,
-          tcpa_consent_text: tcpaConsentText ?? null,
-          tcpa_consent_source: "home_value_tool",
+          tcpa_consent: tcpaConsent,
+          tcpa_consent_at: tcpaConsent ? consentNow : null,
+          tcpa_consent_date: tcpaConsent ? consentNow : null,
+          tcpa_consent_text: tcpaConsent ? (tcpaConsentText ?? null) : null,
+          tcpa_consent_source: tcpaConsent ? "home_value_tool" : null,
         })
         .select("id")
         .single()

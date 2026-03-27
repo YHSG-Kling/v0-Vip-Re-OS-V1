@@ -65,6 +65,7 @@ interface ShowingRequestInput {
   preferredDateTime: string
   notes?: string
   sessionToken?: string
+  tcpaConsent?: boolean
 }
 
 // ============================================================================
@@ -442,17 +443,31 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
       .eq("id", input.listingId)
       .single()
 
+    // Per TCPA rules: always create the lead, but only store phone and enable
+    // phone/SMS channels when explicit consent is given.
+    const consentGiven = input.tcpaConsent === true
+    const consentNow = new Date().toISOString()
+
     const { data: newContact, error: contactError } = await supabase
       .from("contacts")
       .insert({
         first_name: input.firstName,
         last_name: input.lastName,
         email: input.email,
-        phone: input.phone,
+        phone: consentGiven ? input.phone : null,
+        phone_digits: consentGiven ? input.phone.replace(/\D/g, "") : null,
+        preferred_channel: consentGiven ? "phone" : "email",
         source: "listing_landing_page",
         contact_type: "buyer",
         brokerage_id: listing?.brokerage_id,
         agent_id: listing?.agent_id,
+        tcpa_consent: consentGiven,
+        tcpa_consent_at: consentGiven ? consentNow : null,
+        tcpa_consent_date: consentGiven ? consentNow : null,
+        tcpa_consent_source: consentGiven ? "listing_landing_page" : null,
+        tcpa_consent_text: consentGiven
+          ? "I agree to receive calls, texts, and emails regarding real estate services. Consent is not required for purchase."
+          : null,
       })
       .select("id")
       .single()
