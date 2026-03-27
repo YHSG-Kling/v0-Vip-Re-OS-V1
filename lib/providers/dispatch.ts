@@ -51,6 +51,12 @@ export interface DispatchEmailParams extends DispatchActorContext {
   subject: string
   html: string
   text?: string
+  /**
+   * Override the channelPurpose passed to assembleEmail().
+   * When omitted, purpose is inferred from systemSource.
+   * Always set this explicitly when the caller knows the intent.
+   */
+  channelPurpose?: 'conversation' | 'campaign' | 'update' | 'transactional'
   metadata?: Record<string, unknown>
 }
 
@@ -65,11 +71,13 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
   })
 
   // ── Kernel OS: assemble body → signature → unsubscribe → legal ─────────────
-  const channelPurpose =
-    params.systemSource?.includes("campaign")     ? "campaign"
-    : params.systemSource?.includes("nurture")    ? "update"
-    : params.systemSource?.includes("transactional") ? "transactional"
-    : "conversation"
+  // Prefer an explicit channelPurpose from the caller; fall back to systemSource inference.
+  const channelPurpose: 'conversation' | 'campaign' | 'update' | 'transactional' =
+    params.channelPurpose ??
+    (params.systemSource?.includes("campaign")        ? "campaign"
+    : params.systemSource?.includes("nurture")        ? "update"
+    : params.systemSource?.includes("transactional")  ? "transactional"
+    : "conversation")
 
   const assembled = await assembleEmail({
     bodyHtml:       params.html ?? "",

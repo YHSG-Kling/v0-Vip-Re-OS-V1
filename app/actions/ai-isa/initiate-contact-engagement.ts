@@ -9,7 +9,6 @@ import {
 } from '@/lib/ai-isa/isa-outreach-logger'
 import { evaluateOutbound } from '@/lib/kernel'
 import { dispatchEmail } from '@/lib/providers/dispatch'
-import { assembleEmail } from '@/lib/kernel/communications/assemble-email'
 
 export async function initiateAIISAContactEngagement(contactId: string): Promise<{
   success: boolean
@@ -104,25 +103,18 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
 
     const { subject, body, fromName } = await generatePersonalizedEmail(emailContext)
 
-    // Assemble email (signature + unsubscribe + legal) then dispatch
-    const assembled = await assembleEmail({
-      bodyHtml:       body,
-      bodyText:       body.replace(/<[^>]+>/g, ''),
-      userId:         contact.agent_id ?? '',
-      brokerageId:    contact.brokerage_id,
-      contactId,
-      channelPurpose: 'campaign',
-    })
-
+    // assembleEmail() runs inside dispatchEmail() — do NOT pre-assemble.
     await dispatchEmail({
-      brokerageId: contact.brokerage_id,
-      agentId:     contact.agent_id,
-      from:        fromName,
-      to:          contact.email,
+      brokerageId:    contact.brokerage_id,
+      agentId:        contact.agent_id,
+      from:           fromName,
+      to:             contact.email,
       subject,
-      html:        assembled.html,
-      text:        assembled.text,
-      metadata:    { contactId, source: 'ai_isa_contact_reengage' },
+      html:           body,
+      channelPurpose: 'campaign',
+      systemSource:   'ai_isa',
+      leadId:         contactId,
+      metadata:       { contactId, source: 'ai_isa_contact_reengage' },
     })
 
     // Log outreach on the CONTACT entity (not lead)

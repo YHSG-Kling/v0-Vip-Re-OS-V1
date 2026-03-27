@@ -13,7 +13,6 @@ import {
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail, dispatchVideo, dispatchDirectMail } from "@/lib/providers/dispatch"
-import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -599,25 +598,18 @@ export async function triggerGhostRecovery(params: {
     return { success: false, error: `Contact in blocked lifecycle state: ${contact.lifecycle_state}` }
   }
 
-  // Step 3: Assemble then dispatch
+  // Step 3: Dispatch — assembleEmail() runs inside dispatchEmail(), do NOT pre-assemble.
   const ghostBodyHtml = `<p>Hi ${contact.first_name ?? "there"},</p><p>We wanted to check in and see if we can still help you on your real estate journey. No pressure — just here when you're ready.</p>`
-  const ghostAssembled = await assembleEmail({
-    bodyHtml:       ghostBodyHtml,
-    userId:         user.id,
-    brokerageId:    params.brokerageId,
-    contactId:      params.contactId,
-    channelPurpose: "campaign",
-  })
   const dispatchResult = await dispatchEmail({
-    brokerageId:  params.brokerageId,
-    userId:       user.id,
-    from:         "noreply@platform.com",
-    to:           contact.email ?? "",
-    subject:      "Following up — are you still interested?",
-    html:         ghostAssembled.html,
-    text:         ghostAssembled.text,
-    systemSource: "ghost_recovery",
-    leadId:       params.contactId,
+    brokerageId:    params.brokerageId,
+    userId:         user.id,
+    from:           "noreply@platform.com",
+    to:             contact.email ?? "",
+    subject:        "Following up — are you still interested?",
+    html:           ghostBodyHtml,
+    channelPurpose: "campaign",
+    systemSource:   "ghost_recovery",
+    leadId:         params.contactId,
   })
 
   if (!dispatchResult.success) return { success: false, error: dispatchResult.error }
@@ -687,24 +679,18 @@ export async function retryGhostContact(params: {
 
   // Dispatch based on channel
   if (params.channel === "email" && contact.email) {
+    // assembleEmail() runs inside dispatchEmail() — do NOT pre-assemble.
     const retryBodyHtml = `<p>Hi ${contact.first_name ?? "there"},</p><p>Just checking in to see if you're still looking for help with your real estate needs. Let me know!</p>`
-    const retryAssembled = await assembleEmail({
-      bodyHtml:       retryBodyHtml,
-      userId:         user.id,
-      brokerageId:    params.brokerageId,
-      contactId:      params.contactId,
-      channelPurpose: "campaign",
-    })
     const result = await dispatchEmail({
-      brokerageId: params.brokerageId,
-      userId:      user.id,
-      from:        "noreply@platform.com",
-      to:          contact.email,
-      subject:     "Quick follow-up",
-      html:        retryAssembled.html,
-      text:        retryAssembled.text,
-      systemSource: "ghost_recovery",
-      leadId:      params.contactId,
+      brokerageId:    params.brokerageId,
+      userId:         user.id,
+      from:           "noreply@platform.com",
+      to:             contact.email,
+      subject:        "Quick follow-up",
+      html:           retryBodyHtml,
+      channelPurpose: "campaign",
+      systemSource:   "ghost_recovery",
+      leadId:         params.contactId,
     })
     if (!result.success) return { success: false, error: result.error }
   }

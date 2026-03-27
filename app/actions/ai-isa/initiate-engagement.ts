@@ -36,7 +36,6 @@ import {
 import { handleISAQualificationStarted } from '@/lib/kernel/lead-acquisition-handlers'
 import { evaluateOutbound } from '@/lib/kernel'
 import { dispatchEmail, dispatchSms } from '@/lib/providers/dispatch'
-import { assembleEmail } from '@/lib/kernel/communications/assemble-email'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
 import type { MessageType, Persona } from '@/lib/kernel/types'
 
@@ -314,23 +313,18 @@ async function dispatchToChannel(
       }
     }
 
-    const assembled = await assembleEmail({
-      bodyHtml: finalEmailBody,
-      bodyText: finalEmailBody.replace(/<[^>]+>/g, ''),
-      userId: lead.agent_id ?? '',
-      brokerageId: lead.brokerage_id,
-      contactId: leadId,
-      channelPurpose: 'campaign',
-    })
-
+    // assembleEmail() runs inside dispatchEmail() — do NOT pre-assemble.
     await dispatchEmail({
-      brokerageId: lead.brokerage_id,
-      from: fromName,
-      to: lead.email,
+      brokerageId:    lead.brokerage_id,
+      agentId:        lead.agent_id ?? undefined,
+      from:           fromName,
+      to:             lead.email,
       subject,
-      html: assembled.html,
-      text: assembled.text,
-      metadata: { leadId, source: 'ai_isa', channel: 'email' },
+      html:           finalEmailBody,
+      channelPurpose: 'campaign',
+      systemSource:   'ai_isa',
+      leadId,
+      metadata: { source: 'ai_isa', channel: 'email' },
     })
 
     await logISAOutreach({

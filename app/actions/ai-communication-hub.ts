@@ -8,9 +8,7 @@ import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
-import { dispatchEmail } from "@/lib/providers/dispatch"
-import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
-import { dispatchSms } from "@/lib/providers/dispatch"
+import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
 
 /**
  * AI Communication Hub
@@ -103,23 +101,17 @@ export async function sendMessage(params: {
           .eq("id", params.agentId)
           .single()
 
-        const assembled = await assembleEmail({
-          bodyHtml:       `<p>${params.body}</p>`,
-          userId:         params.agentId,
-          brokerageId:    agent?.brokerage_id ?? "",
-          contactId:      params.contactId,
-          channelPurpose: 'conversation',
-        })
-
+        // assembleEmail() runs inside dispatchEmail() — do NOT call it here.
         dispatchResult = await dispatchEmail({
-          brokerageId:  agent?.brokerage_id ?? "",
-          agentId:      params.agentId,
-          from:         "noreply@platform.com",
-          to:           contact.email,
-          subject:      params.subject ?? "(No Subject)",
-          html:         assembled.html,
-          text:         assembled.text,
-          systemSource: "inbox",
+          brokerageId:    agent?.brokerage_id ?? "",
+          agentId:        params.agentId,
+          from:           "noreply@platform.com",
+          to:             contact.email,
+          subject:        params.subject ?? "(No Subject)",
+          html:           `<p>${params.body}</p>`,
+          channelPurpose: "conversation",
+          systemSource:   "inbox",
+          leadId:         params.contactId,
         })
       }
     } else if (params.channel === "sms") {
