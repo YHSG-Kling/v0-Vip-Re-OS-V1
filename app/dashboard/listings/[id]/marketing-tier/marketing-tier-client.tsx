@@ -223,13 +223,15 @@ export function MarketingTierClient({
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="summary">Summary</TabsTrigger>
-          <TabsTrigger value="budgets">Budgets</TabsTrigger>
-          <TabsTrigger value="distributions">Requirements</TabsTrigger>
-          <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
-          {isAdmin && <TabsTrigger value="settings">Settings</TabsTrigger>}
-        </TabsList>
+        <div className="overflow-x-auto">
+          <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-5">
+            <TabsTrigger value="summary" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Summary</TabsTrigger>
+            <TabsTrigger value="budgets" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Budgets</TabsTrigger>
+            <TabsTrigger value="distributions" className="min-h-[44px] sm:min-h-0 min-w-[110px] sm:min-w-0">Requirements</TabsTrigger>
+            <TabsTrigger value="campaigns" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Campaigns</TabsTrigger>
+            {isAdmin && <TabsTrigger value="settings" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Settings</TabsTrigger>}
+          </TabsList>
+        </div>
 
         {/* SUMMARY TAB */}
         <TabsContent value="summary" className="space-y-4 mt-4">

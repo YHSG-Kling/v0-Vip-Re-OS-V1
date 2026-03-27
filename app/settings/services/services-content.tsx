@@ -80,13 +80,15 @@ export default function ServicesSettingsContent({
 }: ServicesSettingsContentProps) {
   return (
     <Tabs defaultValue="services" className="space-y-4">
-      <TabsList className="grid w-full grid-cols-5">
-        <TabsTrigger value="services">Services Registry</TabsTrigger>
-        <TabsTrigger value="agents">AI Agent Templates</TabsTrigger>
-        <TabsTrigger value="assistants">My AI Assistants</TabsTrigger>
-        <TabsTrigger value="playbooks">Playbooks</TabsTrigger>
-        <TabsTrigger value="stages">Stage Rules</TabsTrigger>
-      </TabsList>
+      <div className="overflow-x-auto">
+        <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-5">
+          <TabsTrigger value="services" className="min-h-[44px] sm:min-h-0 min-w-[130px] sm:min-w-0">Services Registry</TabsTrigger>
+          <TabsTrigger value="agents" className="min-h-[44px] sm:min-h-0 min-w-[140px] sm:min-w-0">AI Agent Templates</TabsTrigger>
+          <TabsTrigger value="assistants" className="min-h-[44px] sm:min-h-0 min-w-[130px] sm:min-w-0">My AI Assistants</TabsTrigger>
+          <TabsTrigger value="playbooks" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Playbooks</TabsTrigger>
+          <TabsTrigger value="stages" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Stage Rules</TabsTrigger>
+        </TabsList>
+      </div>
 
       {/* TAB 1: Services Registry */}
       <TabsContent value="services">

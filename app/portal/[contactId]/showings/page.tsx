@@ -154,11 +154,13 @@ export default async function ShowingsPage({
 
       {/* Tabs for individual showings */}
       <Tabs defaultValue="upcoming" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="upcoming">Upcoming ({upcomingItems.length})</TabsTrigger>
-          <TabsTrigger value="completed">Completed ({completedItems.length})</TabsTrigger>
-          <TabsTrigger value="all">All ({allItems.length})</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+          <TabsList className="flex min-w-max sm:w-full">
+            <TabsTrigger value="upcoming" className="min-h-[44px] flex-1">Upcoming ({upcomingItems.length})</TabsTrigger>
+            <TabsTrigger value="completed" className="min-h-[44px] flex-1">Completed ({completedItems.length})</TabsTrigger>
+            <TabsTrigger value="all" className="min-h-[44px] flex-1">All ({allItems.length})</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="upcoming" className="space-y-4">
           {upcomingItems.length === 0 ? (

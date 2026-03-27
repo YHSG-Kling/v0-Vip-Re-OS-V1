@@ -224,13 +224,15 @@ export default function BuyerPropertiesDashboard({
 
       {/* Main Content Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-        <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="matches">Smart Matches</TabsTrigger>
-          <TabsTrigger value="saved">Saved ({savedProperties.length})</TabsTrigger>
-          <TabsTrigger value="mortgage">Mortgage</TabsTrigger>
-          <TabsTrigger value="neighborhood">Neighborhoods</TabsTrigger>
-          <TabsTrigger value="activity">Activity</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+          <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-5">
+            <TabsTrigger value="matches" className="min-h-[44px] sm:min-h-0 min-w-[110px] sm:min-w-0">Smart Matches</TabsTrigger>
+            <TabsTrigger value="saved" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Saved ({savedProperties.length})</TabsTrigger>
+            <TabsTrigger value="mortgage" className="min-h-[44px] sm:min-h-0 min-w-[95px] sm:min-w-0">Mortgage</TabsTrigger>
+            <TabsTrigger value="neighborhood" className="min-h-[44px] sm:min-h-0 min-w-[120px] sm:min-w-0">Neighborhoods</TabsTrigger>
+            <TabsTrigger value="activity" className="min-h-[44px] sm:min-h-0 min-w-[85px] sm:min-w-0">Activity</TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Smart Matches Tab */}
         <TabsContent value="matches" className="space-y-6">

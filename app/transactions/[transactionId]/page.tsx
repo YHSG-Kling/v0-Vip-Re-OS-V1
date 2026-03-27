@@ -260,14 +260,16 @@ export default function AgentTransactionDetailPage() {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-        <TabsList className="grid w-full grid-cols-6">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="timeline">Timeline</TabsTrigger>
-          <TabsTrigger value="tasks">Tasks</TabsTrigger>
-          <TabsTrigger value="documents">Documents</TabsTrigger>
-          <TabsTrigger value="communications">Comms</TabsTrigger>
-          <TabsTrigger value="financials">Financials</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto">
+          <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-6">
+            <TabsTrigger value="overview" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Overview</TabsTrigger>
+            <TabsTrigger value="timeline" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Timeline</TabsTrigger>
+            <TabsTrigger value="tasks" className="min-h-[44px] sm:min-h-0 min-w-[80px] sm:min-w-0">Tasks</TabsTrigger>
+            <TabsTrigger value="documents" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Documents</TabsTrigger>
+            <TabsTrigger value="communications" className="min-h-[44px] sm:min-h-0 min-w-[80px] sm:min-w-0">Comms</TabsTrigger>
+            <TabsTrigger value="financials" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Financials</TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Overview Tab */}
         <TabsContent value="overview" className="space-y-6">

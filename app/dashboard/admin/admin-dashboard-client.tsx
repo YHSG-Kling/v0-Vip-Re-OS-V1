@@ -294,13 +294,15 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
 
         {/* Existing Tabs - Preserved for backward compatibility */}
         <Tabs defaultValue="overview" className="space-y-4 mt-8">
-          <TabsList className="grid w-full grid-cols-5 lg:w-1/3">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="agents">Agents</TabsTrigger>
-            <TabsTrigger value="transactions">Deals</TabsTrigger>
-            <TabsTrigger value="listings">Listings</TabsTrigger>
-            <TabsTrigger value="leads">Leads</TabsTrigger>
-          </TabsList>
+          <div className="overflow-x-auto">
+            <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-5 lg:w-1/3">
+              <TabsTrigger value="overview" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Overview</TabsTrigger>
+              <TabsTrigger value="agents" className="min-h-[44px] sm:min-h-0 min-w-[80px] sm:min-w-0">Agents</TabsTrigger>
+              <TabsTrigger value="transactions" className="min-h-[44px] sm:min-h-0 min-w-[80px] sm:min-w-0">Deals</TabsTrigger>
+              <TabsTrigger value="listings" className="min-h-[44px] sm:min-h-0 min-w-[85px] sm:min-w-0">Listings</TabsTrigger>
+              <TabsTrigger value="leads" className="min-h-[44px] sm:min-h-0 min-w-[75px] sm:min-w-0">Leads</TabsTrigger>
+            </TabsList>
+          </div>
 
           {/* Overview Tab */}
           <TabsContent value="overview" className="space-y-6 mt-6">

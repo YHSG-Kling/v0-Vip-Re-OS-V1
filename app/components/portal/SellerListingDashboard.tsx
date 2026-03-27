@@ -231,13 +231,15 @@ export default function SellerListingDashboard({
 
       {/* Main Content Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-        <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="marketing">Marketing</TabsTrigger>
-          <TabsTrigger value="feedback">Feedback</TabsTrigger>
-          <TabsTrigger value="offers">Offers ({offers.length})</TabsTrigger>
-          <TabsTrigger value="market">Market</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+          <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-5">
+            <TabsTrigger value="overview" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Overview</TabsTrigger>
+            <TabsTrigger value="marketing" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Marketing</TabsTrigger>
+            <TabsTrigger value="feedback" className="min-h-[44px] sm:min-h-0 min-w-[95px] sm:min-w-0">Feedback</TabsTrigger>
+            <TabsTrigger value="offers" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Offers ({offers.length})</TabsTrigger>
+            <TabsTrigger value="market" className="min-h-[44px] sm:min-h-0 min-w-[80px] sm:min-w-0">Market</TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Overview Tab */}
         <TabsContent value="overview" className="space-y-6">

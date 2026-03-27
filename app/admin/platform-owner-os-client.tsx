@@ -181,13 +181,15 @@ export function PlatformOwnerOSClient({
 
       {/* Main Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-5">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="tenants">Tenants</TabsTrigger>
-          <TabsTrigger value="billing">Billing</TabsTrigger>
-          <TabsTrigger value="ai-audit">AI Audit</TabsTrigger>
-          <TabsTrigger value="operations">Operations</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto">
+          <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-5">
+            <TabsTrigger value="overview" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Overview</TabsTrigger>
+            <TabsTrigger value="tenants" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Tenants</TabsTrigger>
+            <TabsTrigger value="billing" className="min-h-[44px] sm:min-h-0 min-w-[85px] sm:min-w-0">Billing</TabsTrigger>
+            <TabsTrigger value="ai-audit" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">AI Audit</TabsTrigger>
+            <TabsTrigger value="operations" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Operations</TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Overview Tab */}
         <TabsContent value="overview" className="space-y-6">

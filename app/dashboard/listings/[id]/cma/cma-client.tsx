@@ -54,23 +54,23 @@ export function CMAClient({ listing, cmaData, netSheetData, pricingData }: Props
 
       <div className="flex-1 flex flex-col">
         <Tabs value={tab} onValueChange={setTab} className="flex-1 flex flex-col">
-          <div className="border-b border-border px-6">
-            <TabsList className="h-10 bg-transparent p-0 gap-6">
+          <div className="border-b border-border overflow-x-auto">
+            <TabsList className="flex min-w-max h-10 bg-transparent p-0 gap-4 sm:gap-6 px-4 sm:px-6">
               <TabsTrigger
                 value="cma"
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-foreground text-muted-foreground px-0 h-10 bg-transparent"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-foreground text-muted-foreground px-0 h-10 bg-transparent whitespace-nowrap min-h-[44px]"
               >
                 CMA Report
               </TabsTrigger>
               <TabsTrigger
                 value="netsheet"
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-foreground text-muted-foreground px-0 h-10 bg-transparent"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-foreground text-muted-foreground px-0 h-10 bg-transparent whitespace-nowrap min-h-[44px]"
               >
                 Net Sheet
               </TabsTrigger>
               <TabsTrigger
                 value="pricing"
-                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-foreground text-muted-foreground px-0 h-10 bg-transparent"
+                className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:text-foreground text-muted-foreground px-0 h-10 bg-transparent whitespace-nowrap min-h-[44px]"
               >
                 Pricing Intelligence
               </TabsTrigger>

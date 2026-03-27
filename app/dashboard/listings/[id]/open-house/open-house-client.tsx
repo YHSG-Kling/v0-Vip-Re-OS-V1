@@ -42,24 +42,26 @@ export function OpenHouseClient({ listingId, initialData }: Props) {
       </div>
 
       <Tabs defaultValue="marketing" className="w-full">
-        <TabsList className="grid w-full max-w-xl grid-cols-4">
-          <TabsTrigger value="marketing" className="flex items-center gap-1.5">
-            <Megaphone className="h-3.5 w-3.5" />
-            Marketing
-          </TabsTrigger>
-          <TabsTrigger value="event-day" className="flex items-center gap-1.5">
-            <CalendarDays className="h-3.5 w-3.5" />
-            Event Day
-          </TabsTrigger>
-          <TabsTrigger value="intelligence" className="flex items-center gap-1.5">
-            <Sparkles className="h-3.5 w-3.5" />
-            Intelligence
-          </TabsTrigger>
-          <TabsTrigger value="analytics" className="flex items-center gap-1.5">
-            <BarChart3 className="h-3.5 w-3.5" />
-            Analytics
-          </TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto">
+          <TabsList className="flex min-w-max sm:grid sm:w-full sm:max-w-xl sm:grid-cols-4">
+            <TabsTrigger value="marketing" className="flex items-center gap-1.5 min-h-[44px] sm:min-h-0 min-w-[110px] sm:min-w-0">
+              <Megaphone className="h-3.5 w-3.5" />
+              Marketing
+            </TabsTrigger>
+            <TabsTrigger value="event-day" className="flex items-center gap-1.5 min-h-[44px] sm:min-h-0 min-w-[110px] sm:min-w-0">
+              <CalendarDays className="h-3.5 w-3.5" />
+              Event Day
+            </TabsTrigger>
+            <TabsTrigger value="intelligence" className="flex items-center gap-1.5 min-h-[44px] sm:min-h-0 min-w-[110px] sm:min-w-0">
+              <Sparkles className="h-3.5 w-3.5" />
+              Intelligence
+            </TabsTrigger>
+            <TabsTrigger value="analytics" className="flex items-center gap-1.5 min-h-[44px] sm:min-h-0 min-w-[110px] sm:min-w-0">
+              <BarChart3 className="h-3.5 w-3.5" />
+              Analytics
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="marketing" className="mt-6">
           <MarketingTab listingId={listingId} data={data} onRefresh={setData} />
