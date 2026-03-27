@@ -493,6 +493,9 @@ export function ContactDetail({
             <Button variant="outline" className="w-full justify-start" onClick={onEdit}>
               <Edit className="w-4 h-4 mr-2" /> Edit Contact
             </Button>
+            <Button variant="outline" className="w-full justify-start" onClick={onSendEmail}>
+              <Send className="w-4 h-4 mr-2" /> Compose Email
+            </Button>
 
             <Separator className="my-2" />
 
