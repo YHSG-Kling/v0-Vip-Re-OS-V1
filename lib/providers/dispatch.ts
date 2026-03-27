@@ -18,6 +18,7 @@ import {
   placeCall as messagingPlaceCall,
 } from "@/lib/providers/messaging"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
+import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
 
@@ -63,15 +64,37 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     },
   })
 
+  // ── Kernel OS: assemble body → signature → unsubscribe → legal ─────────────
+  const channelPurpose =
+    params.systemSource?.includes("campaign")     ? "campaign"
+    : params.systemSource?.includes("nurture")    ? "update"
+    : params.systemSource?.includes("transactional") ? "transactional"
+    : "conversation"
+
+  const assembled = await assembleEmail({
+    bodyHtml:       params.html ?? "",
+    bodyText:       params.text,
+    userId:         params.agentId ?? params.userId ?? params.brokerageId ?? "",
+    brokerageId:    params.brokerageId,
+    contactId:      params.leadId ?? (params as any).contactId ?? null,
+    channelPurpose,
+  }).catch(() => ({
+    html:                 params.html ?? "",
+    text:                 params.text ?? "",
+    signatureIncluded:    false,
+    unsubscribeIncluded:  false,
+    disclosuresIncluded:  false,
+  }))
+
   let result: DispatchResult
 
   if (providerKey === "sendgrid") {
     const raw = await messagingSendEmail({
-      from: params.from,
-      to: params.to,
+      from:    params.from,
+      to:      params.to,
       subject: params.subject,
-      html: params.html,
-      text: params.text,
+      html:    assembled.html,
+      text:    assembled.text,
     })
     result = {
       success: raw.success,
@@ -82,11 +105,11 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     // Future: SMTP relay via global_settings (smtp_host / smtp_port / smtp_username / smtp_password)
     // For now fall through to sendgrid default until SMTP relay is wired
     const raw = await messagingSendEmail({
-      from: params.from,
-      to: params.to,
+      from:    params.from,
+      to:      params.to,
       subject: params.subject,
-      html: params.html,
-      text: params.text,
+      html:    assembled.html,
+      text:    assembled.text,
     })
     result = {
       success: raw.success,
