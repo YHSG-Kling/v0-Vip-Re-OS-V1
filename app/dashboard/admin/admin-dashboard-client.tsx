@@ -18,8 +18,24 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Link as LinkIcon, Building2, Users, FileText, Target, TrendingUp, AlertCircle } from 'lucide-react'
+import {
+  Link as LinkIcon,
+  Building2,
+  Users,
+  FileText,
+  Target,
+  TrendingUp,
+  AlertCircle,
+  BrainCircuit,
+  Rocket,
+  RefreshCw,
+  DollarSign,
+  Megaphone,
+  Plug,
+  ArrowRight,
+} from 'lucide-react'
 import Link from 'next/link'
+import type { OperationalSnapshot } from './page'
 
 // Helper function for currency formatting
 function formatCurrency(value: number): string {
@@ -33,9 +49,25 @@ function formatCurrency(value: number): string {
 
 interface AdminDashboardClientProps {
   brokerageId: string
+  operationalSnapshot?: OperationalSnapshot
 }
 
-export function AdminDashboardClient({ brokerageId }: AdminDashboardClientProps) {
+// ── Operational health card config ────────────────────────────────────────────
+type HealthStatus = 'green' | 'amber' | 'red'
+
+function resolveStatus(value: number, thresholds: { amber: number; red: number }): HealthStatus {
+  if (value >= thresholds.red)   return 'red'
+  if (value >= thresholds.amber) return 'amber'
+  return 'green'
+}
+
+const STATUS_STYLES: Record<HealthStatus, { card: string; badge: string; dot: string }> = {
+  green: { card: 'border-green-200  bg-green-50/40',  badge: 'bg-green-100  text-green-800',  dot: 'bg-green-500' },
+  amber: { card: 'border-amber-200  bg-amber-50/40',  badge: 'bg-amber-100  text-amber-800',  dot: 'bg-amber-500' },
+  red:   { card: 'border-red-200    bg-red-50/40',    badge: 'bg-red-100    text-red-800',     dot: 'bg-red-500'   },
+}
+
+export function AdminDashboardClient({ brokerageId, operationalSnapshot }: AdminDashboardClientProps) {
   const [stats, setStats] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -101,6 +133,104 @@ export function AdminDashboardClient({ brokerageId }: AdminDashboardClientProps)
             Real-time operations intelligence and management dashboard
           </p>
         </div>
+
+        {/* ── Operational Health Grid ──────────────────────────────────────── */}
+        {operationalSnapshot && (() => {
+          const snap = operationalSnapshot
+          const degraded = snap.degradedProviders
+
+          const cards = [
+            {
+              label:    'AI-ISA Active Leads',
+              value:    snap.aiIsaActiveLeads,
+              href:     '/dashboard/isa',
+              icon:     BrainCircuit,
+              status:   snap.aiIsaActiveLeads > 0 ? 'green' : 'amber',
+              hint:     snap.aiIsaActiveLeads > 0 ? 'AI pipeline active' : 'No active AI-ISA leads',
+            },
+            {
+              label:    'Listings Ready to Launch',
+              value:    snap.listingsReadyToLaunch,
+              href:     '/dashboard/listings',
+              icon:     Rocket,
+              status:   resolveStatus(snap.listingsReadyToLaunch, { amber: 1, red: 10 }),
+              hint:     snap.listingsReadyToLaunch > 0 ? 'Awaiting launch' : 'Nothing queued',
+            },
+            {
+              label:    'Stalled Transactions',
+              value:    snap.transactionsStalled,
+              href:     '/dashboard/transactions',
+              icon:     RefreshCw,
+              status:   resolveStatus(snap.transactionsStalled, { amber: 1, red: 5 }),
+              hint:     snap.transactionsStalled > 0 ? 'No update in 7+ days' : 'All deals moving',
+            },
+            {
+              label:    'Pending Commissions',
+              value:    snap.pendingCommissions,
+              href:     '/dashboard/financials',
+              icon:     DollarSign,
+              status:   resolveStatus(snap.pendingCommissions, { amber: 1, red: 10 }),
+              hint:     snap.pendingCommissions > 0 ? 'Distributions unpaid' : 'Fully disbursed',
+            },
+            {
+              label:    'Failed Publishes',
+              value:    snap.failedPublishes,
+              href:     '/dashboard/marketing/ops',
+              icon:     Megaphone,
+              status:   resolveStatus(snap.failedPublishes, { amber: 1, red: 5 }),
+              hint:     snap.failedPublishes > 0 ? 'Social posts failed' : 'All posts published',
+            },
+            {
+              label:    'Degraded Providers',
+              value:    degraded.length,
+              href:     '/settings/integrations',
+              icon:     Plug,
+              status:   degraded.length > 0 ? 'red' : 'green',
+              hint:     degraded.length > 0 ? degraded.join(', ') : 'All providers healthy',
+            },
+          ] as const
+
+          return (
+            <div className="space-y-3">
+              {/* Degraded provider alert strip */}
+              {degraded.length > 0 && (
+                <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-red-600" />
+                  <span className="font-medium">Degraded integrations:</span>
+                  <span className="truncate">{degraded.join(', ')}</span>
+                  <Link
+                    href="/settings/integrations"
+                    className="ml-auto flex shrink-0 items-center gap-1 font-semibold underline underline-offset-2 hover:opacity-80"
+                  >
+                    Fix now <ArrowRight className="h-3.5 w-3.5" />
+                  </Link>
+                </div>
+              )}
+
+              {/* Metric card grid */}
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+                {cards.map(({ label, value, href, icon: Icon, status, hint }) => {
+                  const s = STATUS_STYLES[status as HealthStatus]
+                  return (
+                    <Link key={label} href={href} className="group">
+                      <div className={`relative flex flex-col gap-2 rounded-lg border p-4 transition-shadow hover:shadow-md ${s.card}`}>
+                        <div className="flex items-center justify-between">
+                          <Icon className="h-4 w-4 text-muted-foreground" />
+                          <span className={`h-2 w-2 rounded-full ${s.dot}`} />
+                        </div>
+                        <p className="text-2xl font-bold tabular-nums text-foreground">{value}</p>
+                        <div>
+                          <p className="text-xs font-medium text-foreground leading-snug">{label}</p>
+                          <p className="mt-0.5 text-xs text-muted-foreground leading-snug line-clamp-1">{hint}</p>
+                        </div>
+                      </div>
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })()}
 
         {/* OS Command Strip */}
         <AdminCommandStrip brokerageId={brokerageId} stats={stats} />
