@@ -266,6 +266,156 @@ export async function isNetSheetValid(listingId: string): Promise<boolean> {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Seller Portal: Share net sheet as a transparency update
+// ─────────────────────────────────────────────────────────────────────────────
+
+function formatCurrency(n: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n)
+}
+
+export interface NetSheetPortalData {
+  estimatedSalePrice: number
+  mortgagePayoff: number
+  agentCommission: number
+  closingCosts: number
+  estimatedNet: number
+  notes?: string
+}
+
+export async function shareNetSheetToPortal(params: {
+  listingId: string
+  contactId: string
+  netSheetData: NetSheetPortalData
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    if (!isValidUUID(params.listingId)) return { success: false, error: "Invalid listing ID" }
+    if (!isValidUUID(params.contactId)) return { success: false, error: "Invalid contact ID" }
+
+    const supabase = await createClient()
+
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Not authenticated" }
+
+    const { data: agent } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+
+    const message =
+      `Based on a sale price of ${formatCurrency(params.netSheetData.estimatedSalePrice)}, ` +
+      `your estimated net proceeds are ${formatCurrency(params.netSheetData.estimatedNet)}. ` +
+      `This includes ${formatCurrency(params.netSheetData.agentCommission)} in commission, ` +
+      `${formatCurrency(params.netSheetData.closingCosts)} in closing costs, and a ` +
+      `${formatCurrency(params.netSheetData.mortgagePayoff)} mortgage payoff. ` +
+      `Review the full breakdown in your portal.`
+
+    const { error } = await supabase.from("transparency_updates").insert({
+      listing_id: params.listingId,
+      contact_id: params.contactId,
+      agent_id: user.id,
+      update_type: "net_sheet",
+      title: "Your Estimated Net Proceeds",
+      message,
+      is_visible_to_client: true,
+      metadata: {
+        net_sheet: params.netSheetData,
+        generated_at: new Date().toISOString(),
+      },
+    })
+
+    if (error) return { success: false, error: error.message }
+
+    // Log an activity so the timeline reflects this action
+    await supabase.from("activities").insert({
+      activity_type: "net_sheet_shared_to_portal",
+      contact_id: params.contactId,
+      agent_id: user.id,
+      brokerage_id: agent?.brokerage_id ?? null,
+      title: "Net sheet shared to seller portal",
+      description: `Estimated net: ${formatCurrency(params.netSheetData.estimatedNet)}`,
+    })
+
+    return { success: true }
+  } catch (err: any) {
+    console.error("[System 5.3] shareNetSheetToPortal error:", err)
+    return { success: false, error: err.message || "Failed to share net sheet" }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI: Generate plain-language net sheet explanation for the seller
+// Uses Vercel AI Gateway (no provider package needed)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function generateNetSheetExplanation(params: {
+  netSheetData: NetSheetPortalData
+  agentName: string
+}): Promise<string> {
+  const { generateText } = await import("ai")
+
+  const { text } = await generateText({
+    model: "anthropic/claude-opus-4-6" as any,
+    prompt: `Write a warm, plain-language explanation of a seller net sheet for a real estate client.
+Keep it conversational, reassuring, and under 150 words.
+
+Net sheet details:
+- Sale price: ${formatCurrency(params.netSheetData.estimatedSalePrice)}
+- Mortgage payoff: ${formatCurrency(params.netSheetData.mortgagePayoff)}
+- Commission: ${formatCurrency(params.netSheetData.agentCommission)}
+- Closing costs: ${formatCurrency(params.netSheetData.closingCosts)}
+- Estimated net: ${formatCurrency(params.netSheetData.estimatedNet)}
+
+Agent's name: ${params.agentName}
+
+Write as if ${params.agentName} is explaining this to their seller client.
+No jargon. No fine print. Just clarity and confidence.`,
+  })
+
+  return text
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Save draft explanation to ai_message_drafts for email follow-up
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function saveNetSheetEmailDraft(params: {
+  contactId: string
+  listingId: string
+  draftBody: string
+}): Promise<{ success: boolean; error?: string }> {
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Not authenticated" }
+
+    const { data: agent } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+
+    const { error } = await supabase.from("ai_message_drafts").insert({
+      agent_user_id: user.id,
+      contact_id: params.contactId,
+      listing_id: params.listingId,
+      brokerage_id: agent?.brokerage_id ?? null,
+      channel: "email",
+      draft_subject: "Your Estimated Net Proceeds",
+      draft_body: params.draftBody,
+      trigger_event: "net_sheet_generated",
+      status: "pending",
+      context_summary: "AI-generated plain-language explanation of seller net sheet",
+    })
+
+    if (error) return { success: false, error: error.message }
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err.message || "Failed to save draft" }
+  }
+}
+
 /**
  * Get net sheet expiration status
  */
