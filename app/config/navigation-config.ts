@@ -8,6 +8,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing', icon: 'Sparkles' },
       { id: 'dashboard', label: 'Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
+      { id: 'operations', label: 'Operations', href: '/dashboard/operations', icon: 'Activity' },
       { id: 'leads', label: 'My Leads', href: '/dashboard/buyers', icon: 'Zap', badge: { count: 5, color: 'red' } },
       { id: 'contacts', label: 'My Contacts', href: '/crm', icon: 'Users' },
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
@@ -99,6 +100,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'ai-briefing', label: 'Daily Briefing', href: '/dashboard/briefing' },
         ],
       },
+      { id: 'reporting-center', label: 'Reporting Center', href: '/dashboard/reporting', icon: 'BarChart3' },
       { id: 'coaching', label: 'Training & Coaching', href: '/dashboard/coaching', icon: 'Award' },
       { id: 'motivation', label: 'Motivation', href: '/dashboard/motivation', icon: 'Trophy' },
       { id: 'diagnosis', label: 'Business Diagnosis', href: '/dashboard/diagnosis', icon: 'Stethoscope' },
@@ -158,6 +160,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing', icon: 'Sparkles' },
       { id: 'dashboard', label: 'Broker Dashboard', href: '/dashboard/brokerage', icon: 'LayoutGrid' },
+      { id: 'operations', label: 'Operations', href: '/dashboard/operations', icon: 'Activity' },
       { id: 'team', label: 'My Team', href: '/dashboard/team', icon: 'Users' },
       { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },

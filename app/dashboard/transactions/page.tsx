@@ -80,11 +80,11 @@ export default async function TransactionsPage() {
       {/* Command Strip */}
       <TransactionCommandStrip />
 
-      <div className="px-6 space-y-6">
+      <div className="px-4 sm:px-6 space-y-6">
         {/* Page Header */}
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Transaction Command Center</h1>
-          <p className="text-muted-foreground">Monitor deal progress and pipeline health</p>
+          <h1 className="text-xl sm:text-2xl font-bold text-foreground text-balance">Transaction Command Center</h1>
+          <p className="text-muted-foreground text-sm">Monitor deal progress and pipeline health</p>
         </div>
 
         {/* Status Radar */}

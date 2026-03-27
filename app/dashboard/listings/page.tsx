@@ -61,36 +61,36 @@ export default async function ListingsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Command Strip */}
-      <div className="flex items-center gap-2 px-6 py-3 border-b border-border bg-muted/30">
+      {/* Command Strip — wraps cleanly on mobile */}
+      <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 py-3 border-b border-border bg-muted/30">
         <Link href="/dashboard/listings?action=new">
-          <Button size="sm" className="gap-2">
+          <Button size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <Plus className="h-4 w-4" />
             New Listing
           </Button>
         </Link>
         <Link href="/dashboard/listings/analytics">
-          <Button variant="outline" size="sm" className="gap-2">
+          <Button variant="outline" size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <BarChart3 className="h-4 w-4" />
-            Analytics
+            <span className="hidden sm:inline">Analytics</span>
           </Button>
         </Link>
         <Link href="/dashboard/listings/marketing">
-          <Button variant="outline" size="sm" className="gap-2">
+          <Button variant="outline" size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <Share2 className="h-4 w-4" />
-            Marketing Hub
+            <span className="hidden sm:inline">Marketing Hub</span>
           </Button>
         </Link>
-        <div className="flex-1" />
+        <div className="flex-1 hidden sm:block" />
         <Link href="/dashboard/listings/ai-pricing">
-          <Button variant="ghost" size="sm" className="gap-2 text-primary">
+          <Button variant="ghost" size="sm" className="gap-2 text-primary min-h-[44px] sm:min-h-0">
             <Sparkles className="h-4 w-4" />
-            AI Price Analysis
+            <span className="hidden sm:inline">AI Price Analysis</span>
           </Button>
         </Link>
       </div>
 
-      <div className="px-6 space-y-6">
+      <div className="px-4 sm:px-6 space-y-6">
         {/* Page Header */}
         <div>
           <h1 className="text-2xl font-bold text-foreground">Listing Command Center</h1>

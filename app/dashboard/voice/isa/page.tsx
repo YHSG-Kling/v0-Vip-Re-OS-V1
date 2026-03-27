@@ -209,18 +209,18 @@ export default async function VoiceISAPage() {
     .single()
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col gap-4 sm:gap-6 p-4 sm:p-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Voice ISA Dashboard</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-balance">Voice ISA Dashboard</h1>
           <p className="text-sm text-muted-foreground">
             AI Inside Sales Agent call management and monitoring
           </p>
         </div>
       </div>
 
-      {/* Summary KPI Row */}
-      <div className="grid gap-4 md:grid-cols-4">
+      {/* Summary KPI Row — 2 columns on mobile, 4 on md+ */}
+      <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Calls Today</CardTitle>
@@ -266,14 +266,16 @@ export default async function VoiceISAPage() {
         </Card>
       </div>
 
-      {/* Main Tabs */}
+      {/* Main Tabs — horizontally scrollable on mobile, 4-col on sm+ */}
       <Tabs defaultValue="active" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="active">Active / Queued</TabsTrigger>
-          <TabsTrigger value="today">Today&apos;s Calls</TabsTrigger>
-          <TabsTrigger value="completed">Completed</TabsTrigger>
-          <TabsTrigger value="failed">Failed / No Answer</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+          <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-4">
+            <TabsTrigger value="active" className="min-w-[120px] sm:min-w-0 min-h-[44px]">Active / Queued</TabsTrigger>
+            <TabsTrigger value="today" className="min-w-[120px] sm:min-w-0 min-h-[44px]">Today&apos;s Calls</TabsTrigger>
+            <TabsTrigger value="completed" className="min-w-[110px] sm:min-w-0 min-h-[44px]">Completed</TabsTrigger>
+            <TabsTrigger value="failed" className="min-w-[140px] sm:min-w-0 min-h-[44px]">Failed / No Answer</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="active" className="mt-4">
           <ISACampaignsPanel 
@@ -320,6 +322,7 @@ export default async function VoiceISAPage() {
           />
         </TabsContent>
       </Tabs>
+      {/* Spacer closes the overflow-x wrapper above */}
 
       {/* Bottom Panels */}
       <div className="grid gap-6 lg:grid-cols-2">
