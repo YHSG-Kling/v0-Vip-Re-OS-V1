@@ -371,6 +371,7 @@ export default async function AIISAOperationsConsolePage() {
         pendingDrafts={pendingDrafts}
         userId={user.id}
         brokerageId={brokerageId}
+        vapiConfigured={vapiConfigured}
       />
 
       {/* VAPI configuration warning — shown only when AI calling is not set up */}

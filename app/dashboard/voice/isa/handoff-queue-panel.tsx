@@ -143,7 +143,7 @@ export function HandoffQueuePanel({ queue: initialQueue, brokerageId, agentId }:
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <UserCheck className="h-5 w-5" />
-          Handoff Queue
+          Human Handoff Required
           {localQueue.length > 0 && (
             <Badge variant="secondary" className="ml-auto">
               {localQueue.length} ready
@@ -213,7 +213,7 @@ export function HandoffQueuePanel({ queue: initialQueue, brokerageId, agentId }:
                   ) : (
                     <>
                       <ArrowRight className="h-3 w-3 mr-1" />
-                      <span className="text-xs">Take</span>
+                      <span className="text-xs">Hand Off to Human Agent</span>
                     </>
                   )}
                 </Button>

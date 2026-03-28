@@ -78,7 +78,7 @@ const STATE_BADGE_MAP: Record<AIISAState, { label: string; className: string }> 
   ai_nurturing:           { label: 'AI Nurturing',           className: 'bg-indigo-100 text-indigo-800 border-indigo-200' },
   awaiting_approval:      { label: 'Awaiting Approval',      className: 'bg-amber-100 text-amber-800 border-amber-200' },
   handoff_ready:          { label: 'Handoff Ready',          className: 'bg-yellow-100 text-yellow-800 border-yellow-200' },
-  agent_handoff_required: { label: 'Agent Takeover Required', className: 'bg-red-100 text-red-800 border-red-200' },
+  agent_handoff_required: { label: 'Human Handoff Required',  className: 'bg-red-100 text-red-800 border-red-200' },
   compliance_hold:        { label: 'Compliance Hold',        className: 'bg-gray-100 text-gray-700 border-gray-300' },
   handoff_complete:       { label: 'Handoff Complete',       className: 'bg-green-100 text-green-800 border-green-200' },
 }
@@ -136,19 +136,20 @@ interface AIISAConsoleClientProps {
   pendingDrafts: any[]
   userId: string
   brokerageId: string
+  vapiConfigured?: boolean
 }
 
 const TAB_FILTERS: { label: string; value: string; states: AIISAState[] | 'all' }[] = [
   { label: 'All',                    value: 'all',              states: 'all' },
   { label: 'AI Active',              value: 'ai_active',        states: ['ai_active', 'ai_nurturing'] },
   { label: 'Handoff Ready',          value: 'handoff_ready',    states: ['handoff_ready'] },
-  { label: 'Agent Takeover',         value: 'takeover',         states: ['agent_handoff_required'] },
+  { label: 'Human Handoff Required', value: 'takeover',         states: ['agent_handoff_required'] },
   { label: 'Awaiting Approval',      value: 'approval',         states: ['awaiting_approval'] },
   { label: 'Compliance Hold',        value: 'compliance',       states: ['compliance_hold'] },
   { label: 'Completed',              value: 'completed',        states: ['handoff_complete'] },
 ]
 
-export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId }: AIISAConsoleClientProps) {
+export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId, vapiConfigured = false }: AIISAConsoleClientProps) {
   const router = useRouter()
   const supabase = createClient()
   const [activeTab, setActiveTab] = useState('all')
@@ -332,7 +333,7 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
     }
   }
 
-  // ── AI Call Now ────────────────────────────────────────────
+  // ── AI Call Now ───────────────────────��────────────────────
   async function handleAICallNow(record: any) {
     const phone = record.phone
     if (!phone) { toast.error('No phone number on this record'); return }
@@ -351,7 +352,12 @@ export function AIISAConsoleClient({ records, pendingDrafts, userId, brokerageId
       })
       const data = await res.json()
       if (!res.ok) {
-        if (data.blocked) {
+        if (data.vapiNotConfigured) {
+          toast.error('Configure VAPI to enable AI calling', {
+            description: 'Go to Settings → AI-ISA to add your VAPI assistant ID.',
+            action: { label: 'Configure', onClick: () => router.push('/settings?tab=ai-isa') },
+          })
+        } else if (data.blocked) {
           toast.error(`Call blocked: ${data.reason}`)
         } else {
           toast.error(data.error ?? 'Failed to initiate call')

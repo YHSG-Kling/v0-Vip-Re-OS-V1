@@ -194,7 +194,7 @@ export default async function ISACallingPage() {
         <CardContent>
           {!contacts || contacts.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">
-              No leads in calling queue
+              No leads in AI-ISA queue
             </p>
           ) : (
             <div className="space-y-2">
