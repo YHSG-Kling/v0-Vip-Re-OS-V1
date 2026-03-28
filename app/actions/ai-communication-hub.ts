@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "ai"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -264,7 +265,7 @@ export async function analyzeMessageSentiment(params: {
 }) {
   try {
     const { object: analysis } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: SentimentSchema,
       prompt: `Analyze the sentiment and intent of this real estate communication:
 
@@ -305,12 +306,12 @@ export async function generateSmartResponse(params: {
   const supabase = await createClient()
 
   try {
-    // Get contact context
+    // Get contact context — maybeSingle() prevents PGRST116 if contact is missing
     const { data: contact } = await supabase
       .from("contacts")
-      .select("*, transactions(*), interactions(*)")
+      .select("first_name, last_name, contact_type, contact_persona")
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
 
     // Get agent's communication style
     const { data: agentProfile } = await supabase
@@ -330,7 +331,7 @@ export async function generateSmartResponse(params: {
     const charLimit = params.channel === "sms" ? 160 : params.channel === "chat" ? 500 : 2000
 
     const { text: response } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `Generate a ${params.tone || "professional"} response for this ${params.channel} message.
 
 INCOMING MESSAGE: "${params.incomingMessage}"
@@ -339,18 +340,16 @@ CONTACT CONTEXT:
 - Name: ${contact?.first_name} ${contact?.last_name}
 - Type: ${contact?.contact_type || "Unknown"}
 - Persona: ${contact?.contact_persona || "General"}
-- Stage: ${contact?.pipeline_stage || "Unknown"}
-- Active Transactions: ${contact?.transactions?.filter((t: any) => t.status === "active").length || 0}
 
 AGENT VOICE:
 ${agentProfile ? `
 - Tone: ${agentProfile.tone}
-- Style: ${agentProfile.writing_style}
-- Signature phrases: ${agentProfile.signature_phrases?.join(", ")}
+- Preferred words: ${agentProfile.preferred_words?.join(", ") || "none specified"}
+- Key messages: ${agentProfile.key_brand_messages?.join("; ") || "none specified"}
 ` : "Use professional, friendly tone"}
 
 RECENT CONVERSATION:
-${recentMessages?.map(m => `${m.direction === "inbound" ? "Client" : "Agent"}: ${m.content?.substring(0, 100)}`).join("\n") || "No history"}
+${recentMessages?.map(m => `${m.direction === "inbound" ? "Client" : "Agent"}: ${(m.body ?? m.content ?? "").substring(0, 100)}`).join("\n") || "No history"}
 
 REQUIREMENTS:
 - Channel: ${params.channel} (max ${charLimit} characters)
@@ -405,7 +404,7 @@ export async function analyzeConversationHealth(params: {
     const avgResponseTime = calculateAvgResponseTime(messages)
 
     const { object: health } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         overallHealth: z.enum(["excellent", "good", "fair", "poor", "critical"]),
         healthScore: z.number().min(0).max(100),
@@ -537,7 +536,7 @@ export async function generateCommunicationSummary(params: {
     }
 
     const { text: summary } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Summarize this client communication history for an agent's quick reference:
 
 MESSAGES (${messages.length} total):

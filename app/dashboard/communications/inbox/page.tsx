@@ -27,7 +27,7 @@ export default async function InboxPage() {
       .from("users")
       .select("id, brokerage_id, user_type, assistant_wake_name")
       .eq("id", user.id)
-      .single(),
+      .maybeSingle(),
     service
       .from("agents")
       .select("id")
