@@ -58,7 +58,7 @@ export async function initiateAIISAEngagement(
         `*, preferred_channel, call_stop_flag, contact_id`
       )
       .eq('id', leadId)
-      .single()
+      .maybeSingle()
 
     if (leadError || !lead) {
       throw new Error(`Lead not found: ${leadId}`)
@@ -89,7 +89,7 @@ export async function initiateAIISAEngagement(
            preferred_channel, social_handles, call_stop_flag`
         )
         .eq('id', lead.contact_id)
-        .single()
+        .maybeSingle()
       contactRow = data
     }
 
