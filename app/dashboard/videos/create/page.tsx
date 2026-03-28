@@ -271,8 +271,12 @@ export default function VideoCreatePage() {
           heygen_avatar_id: selectedAvatar || null,
           heygen_voice_id: selectedVoice || null,
           video_provider: "heygen",
-          // Canonical data contract fields
-          listing_id: selectedContextType === "listing" ? selectedContextId || null : null,
+          // listing_id is only relevant when the user explicitly selected a listing as the
+          // video context. Other context types (contact, homeowner, market, none) do not
+          // involve a listing and must leave this null.
+          listing_id: selectedContextType === "listing" && selectedContextId
+            ? selectedContextId
+            : null,
           provider_metadata: {
             quality_preset: qualityPreset,
             output_orientation: outputOrientation,
@@ -413,7 +417,9 @@ export default function VideoCreatePage() {
         videoType,
         tone: "professional",
         targetDurationSeconds: 60,
-        listingContext: selectedContextData?.address
+        // listingContext is only injected when the user actually selected a listing —
+        // other context types (contact, homeowner, market) don't carry listing data.
+        listingContext: selectedContextType === "listing" && selectedContextData?.address
           ? {
               address: selectedContextData.address,
               city: selectedContextData.city ?? "",
@@ -456,7 +462,8 @@ export default function VideoCreatePage() {
         videoType: aiScriptVideoType as any,
         tone: aiScriptTone,
         targetDurationSeconds: aiScriptDuration,
-        listingContext: selectedContextData?.address
+        // Only pass listing context if the Step 0 context was a listing selection
+        listingContext: selectedContextType === "listing" && selectedContextData?.address
           ? {
               address: selectedContextData.address,
               city: selectedContextData.city ?? "",

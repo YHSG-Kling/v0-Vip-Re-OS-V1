@@ -1,13 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText } from "ai"
-import { createAnthropic } from "@ai-sdk/anthropic"
+import { generateAIResponse } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { isValidUUID } from "@/lib/utils/validation"
-
-const anthropic = createAnthropic()
 
 export interface GenerateVideoScriptParams {
   brokerageId: string
@@ -204,12 +200,20 @@ ${bvp.prohibited_words?.length ? `- NEVER use: ${bvp.prohibited_words.join(", ")
 
   let script: string
   try {
-    const { text } = await generateText({
-      model: anthropic("claude-sonnet-4-20250514"),
+    const { text } = await generateAIResponse({
+      // Feature key maps to video_script_generation → claude-sonnet in AI_TASK_ROUTING.
+      // resolveAIModel inside generateAIResponse applies brokerage tier caps automatically.
+      model: "claude-sonnet",
       system: systemPrompt,
       prompt: userPrompt,
       maxTokens: 1024,
       temperature: 0.7,
+      metadata: {
+        feature: "video_script_generation",
+        userId: params.userId,
+        agentId: params.agentId,
+        brokerageId: params.brokerageId,
+      },
     })
     script = text.trim()
   } catch (err: any) {
@@ -277,18 +281,8 @@ ${bvp.prohibited_words?.length ? `- NEVER use: ${bvp.prohibited_words.join(", ")
     savedScriptId = saved?.id
   }
 
-  // ── Log AI usage ─────────────────────────────────────────────────────────────
-  await supabase.from("ai_tool_usage").insert({
-    user_id: params.userId,
-    agent_id: params.agentId,
-    brokerage_id: params.brokerageId,
-    tool_name: "generate_video_script",
-    feature: "video_creation",
-    model_used: "claude-sonnet-4-20250514",
-    input_text: userPrompt.slice(0, 1000),
-    output_text: script.slice(0, 1000),
-    tokens_used: Math.round(wordCount * 1.5),
-  })
+  // Note: generateAIResponse already writes to ai_usage_logs via logAIUsage internally.
+  // No separate insert needed here.
 
   return {
     success: true,
