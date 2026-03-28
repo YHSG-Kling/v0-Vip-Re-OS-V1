@@ -208,6 +208,10 @@ interface CommunicationHealthPanelProps {
   agentId: string
   contactId: string
   onLoadDraft?: (conversationId: string) => void
+  /** When the parent generates an AI draft it passes the text here to pre-fill the compose area */
+  initialDraft?: string | null
+  /** Called after the compose area consumes the initial draft so the parent can clear it */
+  onDraftConsumed?: () => void
 }
 
 export function CommunicationHealthPanel({
@@ -215,12 +219,22 @@ export function CommunicationHealthPanel({
   agentId,
   contactId,
   onLoadDraft,
+  initialDraft,
+  onDraftConsumed,
 }: CommunicationHealthPanelProps) {
   const [messages, setMessages] = useState<any[]>([])
   const [loadingMessages, setLoadingMessages] = useState(true)
   const [compose, setCompose] = useState("")
   const [draftLoading, setDraftLoading] = useState(false)
   const [sending, setSending] = useState(false)
+
+  // Sync initialDraft from parent into compose area whenever it changes
+  useEffect(() => {
+    if (initialDraft) {
+      setCompose(initialDraft)
+      onDraftConsumed?.()
+    }
+  }, [initialDraft]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadMessages = useCallback(async () => {
     setLoadingMessages(true)

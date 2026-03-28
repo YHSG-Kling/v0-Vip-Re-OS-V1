@@ -81,8 +81,9 @@ interface Contact {
   lead_source?: string
   created_at?: string
   engagement_score?: number
-  last_contact_date?: string
-  referral_potential?: "high" | "medium" | "low"
+  /** DB column: last_contacted_at */
+  last_contacted_at?: string | null
+  referral_potential?: "high" | "medium" | "low" | null
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -231,6 +232,8 @@ export default function CRMPage() {
   const [fatigueData, setFatigueData] = useState<any>(null)
   const [referralGenerating, setReferralGenerating] = useState(false)
   const [noteSaving, setNoteSaving] = useState(false)
+  /** Lifted AI draft text — passed to CommunicationHealthPanel to pre-fill compose */
+  const [pendingDraftText, setPendingDraftText] = useState<string | null>(null)
 
   // AI Priority Insights state
   const [contactInsights, setContactInsights] = useState<ContactInsight[]>([])
@@ -508,13 +511,18 @@ export default function CRMPage() {
     })
   }
 
-  const handleLoadDraft = async (conversationId: string) => {
+  const handleLoadDraft = async (conversationId?: string) => {
     if (!selectedContactId || !agentId) return
-    await generateAIDraft({
+    const result = await generateAIDraft({
       contactId: selectedContactId,
       agentId,
       conversationId,
     })
+    if (result.success && result.draft) {
+      setPendingDraftText(result.draft)
+    } else if (result.error) {
+      toast.error(result.error)
+    }
   }
 
   const handleGenerateReferralAsk = async () => {
@@ -569,9 +577,9 @@ export default function CRMPage() {
       selectedContact.contact_type?.toLowerCase().includes("buyer") ||
       !!selectedContact.buyer_stage
 
-    const daysSinceContact = selectedContact.last_contact_date
+    const daysSinceContact = selectedContact.last_contacted_at
       ? Math.floor(
-          (Date.now() - new Date(selectedContact.last_contact_date).getTime()) /
+          (Date.now() - new Date(selectedContact.last_contacted_at).getTime()) /
             (1000 * 60 * 60 * 24)
         )
       : null
@@ -606,7 +614,7 @@ export default function CRMPage() {
               contact={selectedContact}
               copilotPlan={copilotPlan}
               portalStatus={portalInviteStatus}
-              lastTouch={selectedContact.last_contact_date ?? null}
+              lastTouch={selectedContact.last_contacted_at ?? null}
               onMessageClick={() =>
                 router.push(`/dashboard/inbox?contact=${selectedContactId}`)
               }
@@ -657,6 +665,8 @@ export default function CRMPage() {
                   agentId={agentId || ""}
                   contactId={selectedContactId}
                   onLoadDraft={handleLoadDraft}
+                  initialDraft={pendingDraftText}
+                  onDraftConsumed={() => setPendingDraftText(null)}
                 />
 
                 <SmartNoteComposer
@@ -910,8 +920,8 @@ export default function CRMPage() {
 
                 {/* AI-ISA stale contact takeover */}
                 {(() => {
-                  const daysSince = selectedContact.last_contact_date
-                    ? Math.floor((Date.now() - new Date(selectedContact.last_contact_date).getTime()) / (1000 * 60 * 60 * 24))
+                  const daysSince = selectedContact.last_contacted_at
+                    ? Math.floor((Date.now() - new Date(selectedContact.last_contacted_at).getTime()) / (1000 * 60 * 60 * 24))
                     : null
                   if (daysSince == null || daysSince <= 14) return null
                   const currentPlan = autopilotPlans.find((p: any) => p.contact_id === selectedContactId || p.lead_id === selectedContactId)
