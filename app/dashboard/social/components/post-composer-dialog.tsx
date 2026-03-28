@@ -180,7 +180,7 @@ function PlatformPreview({ platform, content, hashtags, mediaUrl }: {
   )
 }
 
-// ── Main Component ────────────────────────────────────────────────────────────
+// ── Main Component ────────────────���───────────────────────────────────────────
 
 export function PostComposerDialog({
   open,
@@ -367,6 +367,7 @@ export function PostComposerDialog({
             ? new Date(scheduledFor).toISOString()
             : new Date(Date.now() + 60 * 60 * 1000).toISOString(),
           socialAccountId: accountId,
+          requiresBrokerApproval,
         })
       }
 

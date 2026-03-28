@@ -147,11 +147,12 @@ export function SocialDashboardClient({
   }, [posts, platformFilter])
 
   const counts = useMemo(() => ({
-    draft:      posts.filter(p => p.status === "draft").length,
-    scheduled:  posts.filter(p => p.status === "scheduled").length,
-    publishing: posts.filter(p => p.status === "publishing").length,
-    published:  posts.filter(p => p.status === "published").length,
-    failed:     posts.filter(p => p.status === "failed").length,
+    draft:            posts.filter(p => p.status === "draft").length,
+    pending_approval: posts.filter(p => p.status === "pending_approval").length,
+    scheduled:        posts.filter(p => p.status === "scheduled").length,
+    publishing:       posts.filter(p => p.status === "publishing").length,
+    published:        posts.filter(p => p.status === "published").length,
+    failed:           posts.filter(p => p.status === "failed").length,
   }), [posts])
 
   // ── Handlers ──────────────────────────────────────────────────────────────
@@ -270,12 +271,13 @@ export function SocialDashboardClient({
 
   function getStatusBadge(status: string) {
     const map: Record<string, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
-      draft:      { variant: "secondary",   label: "Draft" },
-      scheduled:  { variant: "default",     label: "Scheduled" },
-      publishing: { variant: "outline",     label: "Publishing" },
-      published:  { variant: "default",     label: "Published" },
-      failed:     { variant: "destructive", label: "Failed" },
-      cancelled:  { variant: "secondary",   label: "Cancelled" },
+      draft:            { variant: "secondary",   label: "Draft" },
+      pending_approval: { variant: "outline",     label: "Pending Approval" },
+      scheduled:        { variant: "default",     label: "Scheduled" },
+      publishing:       { variant: "outline",     label: "Publishing" },
+      published:        { variant: "default",     label: "Published" },
+      failed:           { variant: "destructive", label: "Failed" },
+      cancelled:        { variant: "secondary",   label: "Cancelled" },
     }
     const c = map[status] || { variant: "secondary", label: status }
     return <Badge variant={c.variant}>{c.label}</Badge>
@@ -318,13 +320,14 @@ export function SocialDashboardClient({
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
         {[
-          { label: "Drafts",     count: counts.draft,      color: "" },
-          { label: "Scheduled",  count: counts.scheduled,  color: "text-blue-600" },
-          { label: "Publishing", count: counts.publishing, color: "text-yellow-600" },
-          { label: "Published",  count: counts.published,  color: "text-green-600" },
-          { label: "Failed",     count: counts.failed,     color: "text-red-600" },
+          { label: "Drafts",          count: counts.draft,            color: "" },
+          { label: "Pending Approval", count: counts.pending_approval, color: "text-amber-600" },
+          { label: "Scheduled",       count: counts.scheduled,        color: "text-blue-600" },
+          { label: "Publishing",      count: counts.publishing,       color: "text-yellow-600" },
+          { label: "Published",       count: counts.published,        color: "text-green-600" },
+          { label: "Failed",          count: counts.failed,           color: "text-red-600" },
         ].map(s => (
           <Card key={s.label}>
             <CardContent className="pt-4">
@@ -360,6 +363,9 @@ export function SocialDashboardClient({
             <Calendar className="h-4 w-4" />Calendar
           </TabsTrigger>
           <TabsTrigger value="draft">Draft ({counts.draft})</TabsTrigger>
+          <TabsTrigger value="pending_approval" className={counts.pending_approval > 0 ? "text-amber-700" : ""}>
+            Pending Approval ({counts.pending_approval})
+          </TabsTrigger>
           <TabsTrigger value="scheduled">Scheduled ({counts.scheduled})</TabsTrigger>
           <TabsTrigger value="publishing">Publishing ({counts.publishing})</TabsTrigger>
           <TabsTrigger value="published">Published ({counts.published})</TabsTrigger>
@@ -389,7 +395,7 @@ export function SocialDashboardClient({
         </TabsContent>
 
         {/* Post list tabs */}
-        {(["draft", "scheduled", "publishing", "published", "failed"] as const).map(tabValue => (
+        {(["draft", "pending_approval", "scheduled", "publishing", "published", "failed"] as const).map(tabValue => (
           <TabsContent key={tabValue} value={tabValue} className="space-y-3">
             {getFilteredPosts(tabValue).length === 0 ? (
               <Card>
@@ -630,7 +636,7 @@ export function SocialDashboardClient({
       {/* Post Composer Dialog */}
       <PostComposerDialog
         open={composerOpen}
-        onOpenChange={v => { setComposerOpen(v); if (!v) setEditingPost(null) }}
+        onOpenChange={setComposerOpen}
         userId={userId}
         agentId={userId}
         brokerageId={brokerageId}
@@ -638,7 +644,12 @@ export function SocialDashboardClient({
         accounts={accounts}
         initialPost={editingPost ?? undefined}
         requiresBrokerApproval={requiresBrokerApproval}
-        onSaved={handlePostSaved}
+        onSaved={(post) => {
+          handlePostSaved(post)
+          if (requiresBrokerApproval && post?.status === "pending_approval") {
+            setActiveTab("pending_approval")
+          }
+        }}
       />
 
       {/* Delete confirmation */}
