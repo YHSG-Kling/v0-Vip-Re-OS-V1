@@ -73,12 +73,12 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       return { success: false, error: "Agent profile not found" }
     }
 
-    // Validate access to this contact
+    // Validate access to this contact — maybeSingle() so missing rows don't throw PGRST116
     const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select("id, agent_id, brokerage_id")
       .eq("id", contactId)
-      .single()
+      .maybeSingle()
 
     if (contactError || !contact) {
       return { success: false, error: "Contact not found" }
@@ -91,7 +91,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
         .from("agents")
         .select("brokerage_id")
         .eq("id", agentId)
-        .single()
+        .maybeSingle()
 
       if (!agent || agent.brokerage_id !== contact.brokerage_id) {
         return { success: false, error: "No access to this contact" }
@@ -268,12 +268,12 @@ export async function generateAIDraft(params: {
 
     const { contactId, transactionId } = params
 
-    // Get contact info
+    // Get contact info — use maybeSingle() so missing rows return null instead of PGRST116
     const { data: contact } = await supabase
       .from("contacts")
       .select("first_name, contact_type, buyer_stage")
       .eq("id", contactId)
-      .single()
+      .maybeSingle()
 
     if (!contact) {
       return { success: false, error: "Contact not found" }
