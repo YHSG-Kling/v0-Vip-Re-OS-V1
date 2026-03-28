@@ -60,6 +60,16 @@ export default async function SocialDashboardPage({
     .order("scheduled_for", { ascending: true })
     .limit(100)
 
+  // Check broker approval setting from global_settings.additional_settings
+  const { data: globalSettings } = await supabase
+    .from("global_settings")
+    .select("additional_settings")
+    .eq("brokerage_id", profile.brokerage_id)
+    .maybeSingle()
+
+  const requiresBrokerApproval =
+    (globalSettings?.additional_settings as any)?.social_requires_broker_approval === true
+
   // Get publish logs for failed posts
   const failedPostIds = posts?.filter((p) => p.status === "failed").map((p) => p.id) || []
   let publishLogs: any[] = []
@@ -84,6 +94,7 @@ export default async function SocialDashboardPage({
       initialPosts={posts || []}
       publishLogs={publishLogs}
       openCreate={openCreate}
+      requiresBrokerApproval={requiresBrokerApproval}
     />
   )
 }

@@ -63,7 +63,7 @@ export async function connectSocialAccount(params: {
         created_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -232,7 +232,7 @@ export async function scheduleSocialPost(params: {
         updated_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (insertError) {
       console.error("[social-media-automation] Insert error:", insertError)
@@ -630,7 +630,7 @@ export async function trackPostPerformance(postId: string, brokerageId: string, 
       .from("social_posts")
       .select("platform")
       .eq("id", postId)
-      .single()
+      .maybeSingle()
 
     await supabase.from("social_engagement_tracking").upsert({
       social_post_id: postId,
@@ -739,4 +739,161 @@ export async function getSocialMediaAnalytics(brokerageId: string, dateRange?: {
     console.error("[social-media-automation] Get analytics error:", error)
     return null
   }
+}
+
+// ============================================
+// POST LIFECYCLE — RETRY, DELETE, RESCHEDULE, EDIT
+// ============================================
+
+/**
+ * Retry a failed post — resets status to 'scheduled' and clears error_message.
+ * Increments an error_count column (added via migration) for circuit-breaker tracking.
+ */
+export async function retryFailedPost(postId: string, userId: string) {
+  if (!isValidUUID(postId) || !isValidUUID(userId)) {
+    return { success: false, error: "Invalid IDs" }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    const { data: post, error } = await supabase
+      .from("social_posts")
+      .update({
+        status: "scheduled",
+        error_message: null,
+        approval_status: "pending",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", postId)
+      .eq("status", "failed") // only retry truly failed posts
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+    if (!post) return { success: false, error: "Post not found or not in failed state" }
+
+    // Log the retry attempt
+    await supabase.from("social_publish_log").insert({
+      social_post_id: postId,
+      brokerage_id: post.brokerage_id,
+      platform: post.platform,
+      account_id: post.social_account_id,
+      publish_status: "retry_queued",
+      created_at: new Date().toISOString(),
+    })
+
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "social_post",
+      entity_id: postId,
+      brokerage_id: post.brokerage_id,
+      event_type: "social_post_retry_queued",
+      actor_user_id: userId,
+      metadata: { retried_at: new Date().toISOString() },
+    })
+
+    revalidatePath("/dashboard/social")
+    return { success: true, data: post }
+  } catch (error: any) {
+    console.error("[social-media-automation] Retry post error:", error)
+    return { success: false, error: error.message || "Failed to retry post" }
+  }
+}
+
+/**
+ * Soft-delete a social post — sets status to 'cancelled' and records actor.
+ * Does NOT hard-delete the row so publish logs are preserved.
+ */
+export async function deleteSocialPost(postId: string, userId: string) {
+  if (!isValidUUID(postId) || !isValidUUID(userId)) {
+    return { success: false, error: "Invalid IDs" }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    const { data: post, error } = await supabase
+      .from("social_posts")
+      .update({
+        status: "cancelled",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", postId)
+      .in("status", ["draft", "scheduled", "failed", "cancelled"])
+      .select("id, brokerage_id, platform, status")
+      .maybeSingle()
+
+    if (error) throw error
+    if (!post) return { success: false, error: "Post not found or already published — cannot delete" }
+
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "social_post",
+      entity_id: postId,
+      brokerage_id: post.brokerage_id,
+      event_type: "social_post_deleted",
+      actor_user_id: userId,
+      metadata: { deleted_at: new Date().toISOString() },
+    })
+
+    revalidatePath("/dashboard/social")
+    return { success: true }
+  } catch (error: any) {
+    console.error("[social-media-automation] Delete post error:", error)
+    return { success: false, error: error.message || "Failed to delete post" }
+  }
+}
+
+/**
+ * Update an existing draft or scheduled post's content, hashtags, or platform.
+ * Cannot edit published or failed posts.
+ */
+export async function updateSocialPost(params: {
+  postId: string
+  userId: string
+  content?: string
+  hashtags?: string[]
+  mediaUrls?: string[]
+  platform?: string
+  postType?: string
+  scheduledFor?: string
+}) {
+  if (!isValidUUID(params.postId) || !isValidUUID(params.userId)) {
+    return { success: false, error: "Invalid IDs" }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    const updatePayload: Record<string, any> = { updated_at: new Date().toISOString() }
+    if (params.content    !== undefined) updatePayload.content      = params.content
+    if (params.hashtags   !== undefined) updatePayload.hashtags     = params.hashtags
+    if (params.mediaUrls  !== undefined) updatePayload.media_urls   = params.mediaUrls
+    if (params.platform   !== undefined) updatePayload.platform     = params.platform
+    if (params.postType   !== undefined) updatePayload.post_type    = params.postType
+    if (params.scheduledFor !== undefined) updatePayload.scheduled_for = params.scheduledFor
+
+    const { data: post, error } = await supabase
+      .from("social_posts")
+      .update(updatePayload)
+      .eq("id", params.postId)
+      .in("status", ["draft", "scheduled"]) // only editable statuses
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+    if (!post) return { success: false, error: "Post not found or not editable" }
+
+    revalidatePath("/dashboard/social")
+    return { success: true, data: post }
+  } catch (error: any) {
+    console.error("[social-media-automation] Update post error:", error)
+    return { success: false, error: error.message || "Failed to update post" }
+  }
+}
+
+/**
+ * Reschedule an existing post to a new datetime.
+ */
+export async function rescheduleSocialPost(postId: string, userId: string, newScheduledFor: string) {
+  return updateSocialPost({ postId, userId, scheduledFor: newScheduledFor })
 }

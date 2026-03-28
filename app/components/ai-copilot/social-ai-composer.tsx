@@ -25,6 +25,8 @@ interface SocialAiComposerProps {
   agentId: string
   brokerageId: string
   connectedPlatforms: string[]
+  /** Full account objects so we can look up the account ID for the selected platform */
+  accounts?: Array<{ id: string; platform: string; account_name: string }>
   onPostScheduled?: () => void
 }
 
@@ -51,6 +53,7 @@ export function SocialAiComposer({
   agentId,
   brokerageId,
   connectedPlatforms,
+  accounts = [],
   onPostScheduled,
 }: SocialAiComposerProps) {
   const [contentType, setContentType] = useState("")
@@ -63,6 +66,7 @@ export function SocialAiComposer({
   const [scheduling, setScheduling] = useState(false)
   const [copied, setCopied] = useState(false)
   const [hashtags, setHashtags] = useState<string[]>([])
+  const [complianceViolations, setComplianceViolations] = useState<string[]>([])
 
   async function handleGenerate() {
     if (!contentType || !topic) {
@@ -71,6 +75,7 @@ export function SocialAiComposer({
     }
 
     setGenerating(true)
+    setComplianceViolations([])
     try {
       const platform = selectedPlatforms[0] ?? "instagram"
       const result = await generateSocialPostContent({
@@ -82,9 +87,13 @@ export function SocialAiComposer({
         agentId,
       })
 
-      if (result.success && result.data) {
+      if (result.complianceBlocked) {
+        setComplianceViolations(result.complianceViolations ?? [])
+        toast.error("Content blocked by compliance")
+      } else if (result.success && result.data) {
         setGeneratedContent(result.data.content)
         setHashtags(result.data.hashtags ?? [])
+        toast.success("Content generated")
       } else {
         toast.error(result.error ?? "Failed to generate content")
       }
@@ -113,16 +122,24 @@ export function SocialAiComposer({
         ? `${generatedContent}\n\n${hashtags.map(h => `#${h}`).join(" ")}`
         : generatedContent
 
+      // Resolve the social_media_accounts.id for the selected platform
+      const account = accounts.find(a => a.platform === platform) ?? accounts[0]
+      if (!account) {
+        toast.error("No connected account found for the selected platform")
+        setScheduling(false)
+        return
+      }
+
       await scheduleSocialPost({
         agentId,
         brokerageId,
-        userId: agentId, // composer operates as the agent
+        userId: agentId,
         platform,
         postType: contentType || "custom",
         content: contentWithHashtags,
         hashtags,
         scheduledFor: scheduledTime || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-        socialAccountId: connectedPlatforms[0] ?? "", // use first connected account
+        socialAccountId: account.id,
       })
 
       toast.success("Post scheduled successfully!")
@@ -234,6 +251,19 @@ export function SocialAiComposer({
             </>
           )}
         </Button>
+
+        {/* Compliance violations */}
+        {complianceViolations.length > 0 && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-1">
+            <p className="text-sm font-medium text-destructive flex items-center gap-1">
+              <span className="inline-block w-4 h-4 rounded-full border border-destructive text-[10px] font-bold flex items-center justify-center">!</span>
+              Content blocked by compliance
+            </p>
+            <ul className="text-xs text-destructive list-disc list-inside space-y-0.5">
+              {complianceViolations.map((v, i) => <li key={i}>{v}</li>)}
+            </ul>
+          </div>
+        )}
 
         {/* Step 2: Review & Edit */}
         {generatedContent && (
