@@ -427,13 +427,14 @@ async function dispatchToChannel(
         assistantOverrides: {
           name:         callContext.assistantName,
           firstMessage: callContext.firstMessage,
-          ...(callContext.voiceConfig?.elevenlabs_voice_id
+          // voiceConfig shape from buildCallContext: { provider, voiceId, stability, similarityBoost }
+          ...(callContext.voiceConfig?.voiceId
             ? {
                 voice: {
-                  provider:        'elevenlabs',
-                  voiceId:         callContext.voiceConfig.elevenlabs_voice_id,
-                  stability:       callContext.voiceConfig.voice_stability        ?? undefined,
-                  similarityBoost: callContext.voiceConfig.voice_similarity_boost ?? undefined,
+                  provider:        callContext.voiceConfig.provider ?? 'elevenlabs',
+                  voiceId:         callContext.voiceConfig.voiceId,
+                  stability:       callContext.voiceConfig.stability        ?? 0.7,
+                  similarityBoost: callContext.voiceConfig.similarityBoost  ?? 0.8,
                 },
               }
             : {}),
@@ -474,14 +475,18 @@ async function dispatchToChannel(
       contact_id:    contactRow.id,
     }).catch(() => {})
 
-    // ai_isa_calls with correct build34 columns
+    // ai_isa_calls — use callPurpose as script_used (not raw systemPrompt)
     await supabase.from('ai_isa_calls').insert({
       voice_call_id:   voiceCallRow?.id ?? null,
       brokerage_id:    lead.brokerage_id,
       contact_id:      contactRow.id,
+      lead_id:         null, // contact path — lead already promoted
       isa_campaign_id: null,
-      script_used:     callContext.systemPrompt?.substring(0, 500) ?? null,
-    }).catch(() => {})
+      script_used:     'isa_qualification',
+      appointment_set: false,
+    }).catch((err: any) => {
+      console.error('[AI-ISA] ai_isa_calls insert error (phone path):', err?.message)
+    })
 
     await logISAOutreach({
       brokerageId: lead.brokerage_id,

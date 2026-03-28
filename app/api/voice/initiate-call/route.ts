@@ -151,7 +151,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID
 
   if (!vapiKey || !phoneNumberId) {
-    return NextResponse.json({ error: "VAPI environment variables not configured" }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: "VAPI not configured",
+        vapiNotConfigured: true,
+        ctaMessage: "Configure VAPI to enable AI calling",
+        ctaLink: "/admin/integrations",
+      },
+      { status: 503 }
+    )
   }
 
   let vapiResponse: { id: string; status: string; createdAt?: string }
@@ -201,11 +209,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Failed to reach VAPI" }, { status: 502 })
   }
 
-  // ── 4. INSERT voice_calls ──────────────────────────────────────────────────
+  // ── 4. INSERT voice_calls ─────────────────────────────────────────���────────
   // contact_id and lead_id are mutually exclusive per call origin:
   //   contact_id set → call from a contact record
   //   lead_id set    → call from a lead with no contact yet
-  const { data: voiceCallRow } = await supabase
+  const { data: voiceCallRow, error: vcInsertError } = await supabase
     .from("voice_calls")
     .insert({
       brokerage_id: brokerageId,
@@ -221,8 +229,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     .select("id")
     .single()
 
-  // ── 5. INSERT ai_isa_calls row (brokerage_id, contact_id, voice_call_id) ──
-  await supabase.from("ai_isa_calls").insert({
+  if (vcInsertError) {
+    console.error("[initiate-call] voice_calls insert error:", vcInsertError.message)
+  }
+
+  // ── 5. INSERT ai_isa_calls row — schema: brokerage_id, contact_id, lead_id, voice_call_id, script_used, appointment_set
+  const { error: isaInsertError } = await supabase.from("ai_isa_calls").insert({
     brokerage_id: brokerageId,
     contact_id: contactId ?? null,
     lead_id: resolvedLeadId ?? null,
@@ -230,6 +242,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     script_used: callPurpose,
     appointment_set: false,
   })
+
+  if (isaInsertError) {
+    // Non-fatal: the VAPI call is already live; log but do not abort
+    console.error("[initiate-call] ai_isa_calls insert error:", isaInsertError.message)
+  }
 
   return NextResponse.json({ callId: vapiResponse.id, status: "initiated" }, { status: 200 })
 }
