@@ -25,7 +25,7 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
       .from('contacts')
       .select('id, first_name, last_name, email, agent_id, brokerage_id, status, dnc_status, isa_reengage_allowed, tcpa_consent, contact_type, engagement_score')
       .eq('id', contactId)
-      .single()
+      .maybeSingle()
 
     if (contactError || !contact) {
       return { success: false, reason: 'Contact not found' }

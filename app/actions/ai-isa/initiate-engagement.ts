@@ -671,7 +671,7 @@ export async function getAIISAEngagementStatus(leadId: string) {
     .from('leads')
     .select('lead_stage, lead_score, agent_id')
     .eq('id', leadId)
-    .single()
+    .maybeSingle()
 
   return {
     activities: activities ?? [],

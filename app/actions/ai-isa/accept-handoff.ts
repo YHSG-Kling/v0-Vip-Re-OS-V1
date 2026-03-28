@@ -15,7 +15,7 @@ export async function acceptAIISAHandoff(params: {
     .from('leads')
     .select('id, brokerage_id, agent_id, contact_id, lifecycle_state')
     .eq('id', params.leadId)
-    .single()
+    .maybeSingle()
 
   if (leadErr || !lead) {
     return { success: false, error: 'Lead not found' }

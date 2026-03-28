@@ -14,6 +14,7 @@
  */
 
 import { generateTextRouted as generateText } from '@/lib/ai/models'
+import { resolveModel } from '@/lib/ai/resolve-model'
 import { createServiceClient } from '@/lib/supabase/service'
 import { shouldStopAutoResponding, haltEngagementForNegativeReply } from '@/lib/ai-isa/conversation-handler'
 import { evaluateLeadQualification, persistQualificationSignals } from '@/lib/ai-isa'
@@ -68,7 +69,7 @@ export async function processInboundEmail(params: {
        contact_id, preferred_channel, call_stop_flag`
     )
     .eq('id', params.leadId)
-    .single()
+    .maybeSingle()
 
   if (!lead) {
     return { success: false, responded: false, error: 'Lead not found' }
@@ -85,7 +86,7 @@ export async function processInboundEmail(params: {
            isa_reengage_allowed, dnc_status, brokerage_id, team_id, agent_id`
         )
         .eq('id', lead.contact_id)
-        .single()
+        .maybeSingle()
     : { data: null }
 
   // ── Guard 2: kernel compliance gate — correct EvaluateOutboundParams ──────
@@ -167,7 +168,7 @@ export async function processInboundEmail(params: {
 
   // ── Generate AI reply via AI SDK ──────────────────────────────────────────
   const { text: replyBody } = await generateText({
-    model: 'openai/gpt-4o-mini',
+    model: resolveModel('openai/gpt-4o-mini'),
     system: systemPrompt,
     messages: [
       {

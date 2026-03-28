@@ -32,7 +32,7 @@ export async function scheduleAppointment(
     .from('user_profiles')
     .select('id, brokerage_id, user_type')
     .eq('user_id', user.id)
-    .single()
+    .maybeSingle()
 
   if (profileError || !profile) {
     return { success: false, error: 'User profile not found' }
