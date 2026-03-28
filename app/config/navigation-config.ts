@@ -9,7 +9,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing', icon: 'Sparkles' },
       { id: 'dashboard', label: 'Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
       { id: 'operations', label: 'Operations', href: '/dashboard/operations', icon: 'Activity' },
-      { id: 'leads', label: 'My Leads', href: '/dashboard/buyers', icon: 'Zap', badge: { count: 5, color: 'red' } },
+      // NOTE: agents work contacts — "My Leads", "Lead Acquisition", and "Lead Intelligence"
+      // are intentionally excluded. Lead intake is admin/system; ISA qualification is system.
       { id: 'contacts', label: 'My Contacts', href: '/crm', icon: 'Users' },
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
@@ -68,8 +69,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'handoff-cockpit', label: 'Handoff Cockpit', href: '/dashboard/communications/handoffs' },
         ],
       },
-      { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },
-      { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'market-insights', label: 'Market Insights', href: '/dashboard/market-insights', icon: 'TrendingUp' },
       { id: 'patterns', label: 'Behavioral Patterns', href: '/dashboard/patterns', icon: 'Activity' },
       { id: 'financials', label: 'My Financials', href: '/dashboard/financials/agent', icon: 'DollarSign' },
@@ -135,12 +134,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
     topNavItems: [
       { id: 'search', label: 'Search', icon: 'Search' },
-      { id: 'notifications', label: 'Notifications', icon: 'Bell', badge: { count: 3, color: 'red' } },
+      { id: 'notifications', label: 'Notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
       { id: 'dashboard', label: 'Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
-      { id: 'leads', label: 'Leads', href: '/dashboard/buyers', icon: 'Zap' },
       { id: 'contacts', label: 'Contacts', href: '/crm', icon: 'Users' },
       { id: 'listings', label: 'Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'more', label: 'More', href: '/dashboard', icon: 'Menu' },
@@ -167,7 +165,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
       { id: 'transactions', label: 'All Transactions', href: '/dashboard/transactions', icon: 'FileText' },
-      { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badge: { count: 3, color: 'red' } },
+      { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badgeKey: 'pending_approvals' },
       { id: 'divider1', divider: true },
       {
         id: 'intel',
@@ -259,7 +257,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
     topNavItems: [
       { id: 'search', label: 'Search', icon: 'Search' },
-      { id: 'alerts', label: 'Alerts', icon: 'AlertCircle', badge: { count: 2, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'AlertCircle', badgeKey: 'pending_approvals' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -282,7 +280,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   isa: {
     sidebarItems: [
       { id: 'dashboard', label: 'AI-ISA Console', href: '/dashboard/isa', icon: 'LayoutGrid' },
-      { id: 'calling', label: 'Calling Queue', href: '/dashboard/isa/calling', icon: 'Phone', badge: { count: 12, color: 'red' } },
+      { id: 'calling', label: 'Calling Queue', href: '/dashboard/isa/calling', icon: 'Phone', badgeKey: 'isa_queue_count' },
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Zap' },
       { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach', icon: 'Send' },
       { id: 'sequences', label: 'Drip Sequences', href: '/dashboard/communications/sequences', icon: 'Repeat' },
@@ -304,7 +302,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'notifications', label: 'Notifications', icon: 'Bell', badge: { count: 5, color: 'red' } },
+      { id: 'notifications', label: 'Notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -331,7 +329,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       { id: 'forms', label: 'Forms Manager', href: '/dashboard/admin/forms', icon: 'FileText' },
       { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/admin/knowledge', icon: 'BookOpen' },
-      { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badge: { count: 5, color: 'red' } },
+      { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badgeKey: 'pending_approvals' },
       { id: 'divider1', divider: true },
       {
         id: 'intelligence',
@@ -370,7 +368,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'settings', label: 'Settings', href: '/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'AlertTriangle', badge: { count: 1, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'AlertTriangle', badgeKey: 'pending_approvals' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -393,13 +391,13 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   vendor: {
     sidebarItems: [
       { id: 'dashboard', label: 'Dashboard', href: '/vendor/dashboard', icon: 'LayoutGrid' },
-      { id: 'jobs', label: 'Jobs', href: '/vendor/jobs', icon: 'Briefcase', badge: { count: 2, color: 'blue' } },
+      { id: 'jobs', label: 'Jobs', href: '/vendor/jobs', icon: 'Briefcase', badgeKey: 'vendor_pending_jobs' },
       { id: 'portfolio', label: 'Portfolio', href: '/vendor/portfolio', icon: 'Image' },
       { id: 'earnings', label: 'Earnings', href: '/vendor/earnings', icon: 'DollarSign' },
       { id: 'settings', label: 'Settings', href: '/vendor/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'notifications', label: 'Notifications', icon: 'Bell', badge: { count: 1, color: 'blue' } },
+      { id: 'notifications', label: 'Notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -441,7 +439,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   compliance_officer: {
     sidebarItems: [
       { id: 'dashboard', label: 'Compliance Command', href: '/dashboard/compliance', icon: 'LayoutGrid' },
-      { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badge: { count: 2, color: 'red' } },
+      { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badgeKey: 'compliance_violations' },
       { id: 'audits', label: 'Audit Logs', href: '/compliance/audits', icon: 'Eye' },
       { id: 'policies', label: 'Policies', href: '/compliance/policies', icon: 'FileText' },
       { id: 'reports', label: 'Reports', href: '/compliance/reports', icon: 'BarChart3' },
@@ -453,7 +451,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'settings', label: 'Settings', href: '/compliance/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'AlertTriangle', badge: { count: 2, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'AlertTriangle', badgeKey: 'compliance_violations' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -473,14 +471,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   tc: {
     sidebarItems: [
       { id: 'dashboard', label: 'Coordinator Command', href: '/dashboard/coordinator', icon: 'LayoutGrid' },
-      { id: 'deals', label: 'Active Deals', href: '/transaction/deals', icon: 'Handshake', badge: { count: 8, color: 'red' } },
+      { id: 'deals', label: 'Active Deals', href: '/transaction/deals', icon: 'Handshake', badgeKey: 'active_deals' },
       { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
       { id: 'documents', label: 'Documents', href: '/transaction/documents', icon: 'Folder' },
       { id: 'vendors', label: 'Vendor Coordination', href: '/transaction/vendors', icon: 'Users' },
       { id: 'settings', label: 'Settings', href: '/transaction/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'Bell', badge: { count: 4, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -499,14 +497,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   lender: {
     sidebarItems: [
       { id: 'dashboard', label: 'Lender Dashboard', href: '/lender/dashboard', icon: 'LayoutGrid' },
-      { id: 'pipeline', label: 'Loan Pipeline', href: '/lender/pipeline', icon: 'TrendingUp', badge: { count: 12, color: 'blue' } },
+      { id: 'pipeline', label: 'Loan Pipeline', href: '/lender/pipeline', icon: 'TrendingUp', badgeKey: 'lender_pipeline_count' },
       { id: 'approvals', label: 'Approvals', href: '/lender/approvals', icon: 'CheckCircle' },
       { id: 'underwriting', label: 'Underwriting', href: '/lender/underwriting', icon: 'FileCheck' },
       { id: 'documents', label: 'Documents', href: '/lender/documents', icon: 'Folder' },
       { id: 'settings', label: 'Settings', href: '/lender/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'Bell', badge: { count: 3, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -525,14 +523,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   title_agent: {
     sidebarItems: [
       { id: 'dashboard', label: 'Title Dashboard', href: '/title/dashboard', icon: 'LayoutGrid' },
-      { id: 'orders', label: 'Title Orders', href: '/title/orders', icon: 'Package', badge: { count: 5, color: 'blue' } },
+      { id: 'orders', label: 'Title Orders', href: '/title/orders', icon: 'Package', badgeKey: 'title_open_orders' },
       { id: 'status', label: 'Order Status', href: '/title/status', icon: 'Clock' },
       { id: 'documents', label: 'Title Documents', href: '/title/documents', icon: 'FileText' },
       { id: 'closing', label: 'Closing Schedule', href: '/title/closing', icon: 'Calendar' },
       { id: 'settings', label: 'Settings', href: '/title/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'Bell', badge: { count: 2, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -662,7 +660,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'Bell', badge: { count: 3, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [

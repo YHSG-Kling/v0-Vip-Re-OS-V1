@@ -4,7 +4,7 @@ import React, { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
-import { NavigationConfig, NavItem } from '@/app/types/navigation'
+import { NavigationConfig, NavItem, BadgeCounts } from '@/app/types/navigation'
 import { UserContext } from '@/app/types/roles'
 import { ChevronDown } from 'lucide-react'
 import * as Icons from 'lucide-react'
@@ -12,9 +12,11 @@ import * as Icons from 'lucide-react'
 interface SidebarProps {
   navigation: NavigationConfig
   userContext: UserContext
+  /** Live badge counts resolved from the DB — show badge only when count > 0 */
+  badgeCounts?: Partial<BadgeCounts>
 }
 
-export function Sidebar({ navigation, userContext }: SidebarProps) {
+export function Sidebar({ navigation, userContext, badgeCounts = {} }: SidebarProps) {
   const pathname = usePathname()
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set())
 
@@ -34,6 +36,18 @@ export function Sidebar({ navigation, userContext }: SidebarProps) {
     return IconComponent ? <IconComponent className="w-4 h-4" /> : null
   }
 
+  /**
+   * Returns the live count for a nav item, or null if there is nothing to show.
+   * Only renders a badge when the resolved count is > 0.
+   */
+  const getItemBadgeCount = (item: NavItem): number | null => {
+    if (item.badgeKey) {
+      const count = badgeCounts[item.badgeKey] ?? 0
+      return count > 0 ? count : null
+    }
+    return null
+  }
+
   const renderNavItem = (item: NavItem, depth = 0) => {
     if (item.divider) {
       return <div key={item.id} className="my-2 border-t border-gray-200" />
@@ -42,6 +56,7 @@ export function Sidebar({ navigation, userContext }: SidebarProps) {
     const isActive = item.href && pathname === item.href
     const hasChildren = item.children && item.children.length > 0
     const isExpanded = expandedItems.has(item.id)
+    const badgeCount = getItemBadgeCount(item)
 
     return (
       <div key={item.id}>
@@ -62,14 +77,17 @@ export function Sidebar({ navigation, userContext }: SidebarProps) {
             >
               {getIcon(item.icon)}
               <span>{item.label}</span>
-              {item.badge && (
-                <span className={cn('ml-auto px-2 py-1 rounded text-xs font-semibold', item.badge.color === 'red' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700')}>
-                  {item.badge.count}
+              {badgeCount !== null && (
+                <span className="ml-auto px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700 tabular-nums">
+                  {badgeCount > 99 ? '99+' : badgeCount}
                 </span>
               )}
             </Link>
           ) : (
-            <button onClick={() => toggleExpanded(item.id)} className="flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors text-gray-700 hover:bg-gray-100">
+            <button
+              onClick={() => toggleExpanded(item.id)}
+              className="flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors text-gray-700 hover:bg-gray-100"
+            >
               {getIcon(item.icon)}
               <span>{item.label}</span>
             </button>
