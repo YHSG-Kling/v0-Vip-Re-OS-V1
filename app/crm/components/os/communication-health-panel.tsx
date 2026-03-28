@@ -1,12 +1,14 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { MessageSquare, Mail, Phone, Globe, Loader2 } from "lucide-react"
-import Link from "next/link"
+import { Textarea } from "@/components/ui/textarea"
+import { MessageSquare, Mail, Phone, Globe, Loader2, Sparkles, Send } from "lucide-react"
 import { formatDistanceToNow } from "date-fns"
+import { sendPortalMessage } from "@/app/actions/portal-messages"
+import { toast } from "sonner"
 
 interface Conversation {
   id: string
@@ -21,7 +23,11 @@ interface CommunicationHealthPanelProps {
   conversations: Conversation[]
   agentId: string
   contactId: string
-  onLoadDraft: (conversationId: string) => Promise<void>
+  onLoadDraft: (conversationId?: string) => Promise<void>
+  /** AI-generated draft text lifted from parent — pre-fills compose area */
+  initialDraft?: string | null
+  /** Called after the draft has been consumed so the parent can clear it */
+  onDraftConsumed?: () => void
 }
 
 const CHANNEL_ICONS: Record<string, React.ReactNode> = {
@@ -51,20 +57,54 @@ export function CommunicationHealthPanel({
   agentId,
   contactId,
   onLoadDraft,
+  initialDraft,
+  onDraftConsumed,
 }: CommunicationHealthPanelProps) {
-  const [loadingDraft, setLoadingDraft] = useState<string | null>(null)
+  const [loadingDraft, setLoadingDraft] = useState(false)
+  const [composeText, setComposeText] = useState("")
+  const [isSending, startSend] = useTransition()
+  // Thread messages added optimistically after send
+  const [sentMessages, setSentMessages] = useState<{ body: string; at: string }[]>([])
+
+  // When parent lifts a new AI draft, populate the compose area
+  useEffect(() => {
+    if (initialDraft) {
+      setComposeText(initialDraft)
+      onDraftConsumed?.()
+    }
+  }, [initialDraft, onDraftConsumed])
 
   const sorted = [...conversations].sort(
     (a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
   )
 
-  const handleLoadDraft = async (conversationId: string) => {
-    setLoadingDraft(conversationId)
+  const handleLoadDraft = async () => {
+    setLoadingDraft(true)
     try {
-      await onLoadDraft(conversationId)
+      await onLoadDraft(undefined)
+      // initialDraft effect will pick up the draft text
     } finally {
-      setLoadingDraft(null)
+      setLoadingDraft(false)
     }
+  }
+
+  const handleSend = () => {
+    const body = composeText.trim()
+    if (!body) return
+    startSend(async () => {
+      const result = await sendPortalMessage({
+        contactId,
+        messageBody: body,
+        direction: "agent_to_client",
+      })
+      if (result.success) {
+        setSentMessages((prev) => [...prev, { body, at: new Date().toISOString() }])
+        setComposeText("")
+        toast.success("Message sent")
+      } else {
+        toast.error(result.error ?? "Failed to send message")
+      }
+    })
   }
 
   return (
@@ -75,20 +115,25 @@ export function CommunicationHealthPanel({
           Communications
         </CardTitle>
       </CardHeader>
-      <CardContent>
-        {sorted.length === 0 ? (
-          <div className="text-center py-6">
+      <CardContent className="space-y-4">
+        {/* Recent thread */}
+        {sorted.length === 0 && sentMessages.length === 0 ? (
+          <div className="text-center py-4">
             <MessageSquare className="h-8 w-8 text-gray-300 mx-auto mb-2" />
             <p className="text-sm text-muted-foreground">No conversations yet</p>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2">
             {sorted.slice(0, 3).map((conv) => (
               <div
                 key={conv.id}
                 className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg"
               >
-                <Badge className={`flex items-center gap-1 ${CHANNEL_COLORS[conv.channel] || "bg-gray-100 text-gray-600"}`}>
+                <Badge
+                  className={`flex items-center gap-1 shrink-0 ${
+                    CHANNEL_COLORS[conv.channel] || "bg-gray-100 text-gray-600"
+                  }`}
+                >
                   {CHANNEL_ICONS[conv.channel] || <MessageSquare className="h-3.5 w-3.5" />}
                   {conv.channel.toUpperCase()}
                 </Badge>
@@ -108,36 +153,77 @@ export function CommunicationHealthPanel({
                     )}
                     {conv.sentiment && (
                       <span
-                        className={`h-2 w-2 rounded-full ${SENTIMENT_COLORS[conv.sentiment] || "bg-gray-400"}`}
+                        className={`h-2 w-2 rounded-full ${
+                          SENTIMENT_COLORS[conv.sentiment] || "bg-gray-400"
+                        }`}
                         title={conv.sentiment}
                       />
                     )}
                   </div>
                 </div>
-                <div className="flex flex-col gap-1">
-                  <Link href="/crm">
-                    <Button variant="outline" size="sm" className="text-xs">
-                      Open
-                    </Button>
-                  </Link>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-xs"
-                    onClick={() => handleLoadDraft(conv.id)}
-                    disabled={loadingDraft === conv.id}
-                  >
-                    {loadingDraft === conv.id ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : (
-                      "Load AI Draft"
-                    )}
-                  </Button>
+              </div>
+            ))}
+
+            {/* Optimistic sent messages */}
+            {sentMessages.map((m, i) => (
+              <div key={`sent-${i}`} className="flex justify-end">
+                <div className="max-w-[80%] bg-blue-600 text-white rounded-lg px-3 py-2 text-sm">
+                  <p>{m.body}</p>
+                  <p className="text-xs text-blue-200 mt-0.5 text-right">
+                    {formatDistanceToNow(new Date(m.at), { addSuffix: true })}
+                  </p>
                 </div>
               </div>
             ))}
           </div>
         )}
+
+        {/* Compose area */}
+        <div className="space-y-2 border-t pt-3">
+          <Textarea
+            value={composeText}
+            onChange={(e) => setComposeText(e.target.value)}
+            placeholder="Write a message..."
+            className="min-h-[80px] text-sm resize-none"
+            disabled={isSending}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault()
+                handleSend()
+              }
+            }}
+          />
+          <div className="flex items-center justify-between gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs"
+              onClick={handleLoadDraft}
+              disabled={loadingDraft || isSending}
+            >
+              {loadingDraft ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Sparkles className="h-3 w-3 text-indigo-500" />
+              )}
+              Generate Follow-Up
+            </Button>
+            <Button
+              size="sm"
+              className="gap-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white"
+              onClick={handleSend}
+              disabled={!composeText.trim() || isSending}
+            >
+              {isSending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Send className="h-3 w-3" />
+              )}
+              Send
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">Cmd+Enter to send</p>
+        </div>
       </CardContent>
     </Card>
   )

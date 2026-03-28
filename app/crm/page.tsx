@@ -300,8 +300,7 @@ export default function CRMPage() {
   // Load contact detail and OS data
   const loadContactDetail = useCallback(
     async (contactId: string) => {
-      if (!agentId) return
-
+      // agentId may still be resolving — don't block; the server action resolves identity itself
       setDetailLoading(true)
       setIsaHandoffContext(null)
       setBuyerInsights(null)
@@ -384,10 +383,10 @@ export default function CRMPage() {
   }, [authLoading, user?.id, role])
 
   useEffect(() => {
-    if (selectedContactId && agentId) {
+    if (selectedContactId) {
       loadContactDetail(selectedContactId)
     }
-  }, [selectedContactId, agentId, loadContactDetail])
+  }, [selectedContactId, loadContactDetail])
 
   // Fetch portal invite status when a contact is selected — non-blocking
   useEffect(() => {
@@ -436,9 +435,11 @@ export default function CRMPage() {
       contacts.filter(
         (c) =>
           `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
-          c.email.toLowerCase().includes(q) ||
-          c.phone?.includes(q) ||
-          c.city?.toLowerCase().includes(q)
+          (c.email ?? "").toLowerCase().includes(q) ||
+          (c.phone ?? "").includes(q) ||
+          (c.city ?? "").toLowerCase().includes(q) ||
+          (c.status ?? "").toLowerCase().includes(q) ||
+          (c.contact_type ?? "").toLowerCase().includes(q)
       )
     )
   }, [search, contacts])
@@ -571,7 +572,21 @@ export default function CRMPage() {
     )
   }
 
-  // Contact Detail View
+  // Contact Detail View — show spinner immediately when a contact is selected, even before data loads
+  if (selectedContactId && !selectedContact && detailLoading) {
+    return (
+      <div className="p-6">
+        <Button variant="ghost" size="sm" onClick={handleBackToList} className="mb-6">
+          <ArrowLeft className="h-4 w-4 mr-2" />
+          Back to Contacts
+        </Button>
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+        </div>
+      </div>
+    )
+  }
+
   if (selectedContactId && selectedContact) {
     const isBuyerContact =
       selectedContact.contact_type?.toLowerCase().includes("buyer") ||
