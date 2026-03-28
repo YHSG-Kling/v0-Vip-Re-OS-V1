@@ -419,9 +419,10 @@ export function GhostRecoveryPanel({
         {ghosts.length} silent lead{ghosts.length !== 1 ? "s" : ""} awaiting re-engagement
       </p>
       {ghosts.map((ghost) => {
-        const name = ghost.contactName
-          ?? `${ghost.first_name ?? ""} ${ghost.last_name ?? ""}`.trim()
-          || "Unknown Lead"
+        const name =
+          (ghost.contactName ??
+            `${ghost.first_name ?? ""} ${ghost.last_name ?? ""}`.trim()) ||
+          "Unknown Lead"
         const leadId = ghost.lead_id ?? ghost.id
 
         return (

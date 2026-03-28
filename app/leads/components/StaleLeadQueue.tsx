@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
-import { assignLead } from "@/app/actions/leads"
+import { assignLeadToAgent } from "@/app/actions/leads"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -110,7 +110,7 @@ export function StaleLeadQueue({ brokerageId }: StaleLeadQueueProps) {
     const newAgentId = reassignTarget[lead.id]
     if (!newAgentId) return
     setReassigning(lead.id)
-    const result = await assignLead(lead.id, newAgentId)
+      const result = await assignLeadToAgent(lead.id, newAgentId)
     setReassigning(null)
     if (result.success) {
       toast({ title: "Lead reassigned" })
