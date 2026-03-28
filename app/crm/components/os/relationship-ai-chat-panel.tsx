@@ -22,7 +22,7 @@ import {
   getChatTemplates,
 } from "@/app/actions/ai-chat"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
+import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 
 interface RelationshipAiChatPanelProps {
   contactId: string

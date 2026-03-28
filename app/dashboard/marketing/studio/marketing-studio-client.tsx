@@ -71,7 +71,7 @@ import {
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
-import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
+import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
 import {
   CampaignLauncherPanel,
   CompetitorWatchPanel,

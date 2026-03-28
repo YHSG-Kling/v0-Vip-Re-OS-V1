@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { aiRecommendGift, aiGenerateThankYouNote } from "@/app/actions/ai-client-gifting"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
+import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 
 type Occasion = "closing" | "anniversary" | "referral" | "holiday"

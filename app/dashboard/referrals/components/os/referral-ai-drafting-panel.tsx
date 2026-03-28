@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { aiOptimizeReferralAsk, aiGenerateTouchpoint } from "@/app/actions/ai-sphere-management"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
+import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 
 interface ReferralAiDraftingPanelProps {

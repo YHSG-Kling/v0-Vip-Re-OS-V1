@@ -5,9 +5,8 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Sparkles, Check, AlertCircle, Copy, RotateCcw } from "lucide-react"
-import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
+import { generateContextualDraft, generateSocialPostContent } from "@/app/actions/social/generate-social-post"
 import { toast } from "sonner"
 
 interface ContextualAiAssistBarProps {
@@ -33,39 +32,37 @@ export function ContextualAiAssistBar({
     passes: boolean
     message?: string
   } | null>(null)
-  const [brandVoice, setBrandVoice] = useState<any>(null)
 
   const handleDraftForMe = async () => {
     setLoading(true)
     try {
-      const profile = await getBrandVoiceProfile(agentId)
-      setBrandVoice(profile)
-
-      const prompt = `Write a ${context.type} for ${context.contactName || "a contact"}.${
-        context.propertyAddress ? ` Property: ${context.propertyAddress}.` : ""
-      }
-      Make it professional, authentic, and personable.
-      Tone: ${profile?.tone || "professional"}.
-      Style: ${profile?.style || "clear"}.`
-
-      const result = await generateSmartResponse({
-        userMessage: prompt,
-        brandVoice: profile,
-      })
-
-      setDraft(result)
-
-      // Check compliance for customer-facing content
-      if (
-        context.type === "email" ||
-        context.type === "seller_update" ||
-        context.type === "referral_ask"
-      ) {
-        const compliance = await checkThemFirstCompliance(result)
-        setComplianceResult({
-          passes: compliance.passes,
-          message: compliance.message,
+      let text = ""
+      if (context.type === "social_post") {
+        const res = await generateSocialPostContent({
+          brief: context.propertyAddress ? `Social post about ${context.propertyAddress}` : "Real estate social post",
+          platform: "instagram",
+          contentType: "market_update",
+          agentId,
+          brokerageId: "",
         })
+        text = res.success
+          ? `${res.data?.content ?? ""}\n\n${(res.data?.hashtags ?? []).map((h: string) => `#${h}`).join(" ")}`
+          : ""
+      } else {
+        const res = await generateContextualDraft({
+          agentId,
+          contentType: context.type,
+          contactName: context.contactName,
+          propertyAddress: context.propertyAddress,
+        })
+        text = res.draft ?? ""
+      }
+
+      setDraft(text)
+
+      if (text && (context.type === "email" || context.type === "seller_update" || context.type === "referral_ask")) {
+        const compliance = await checkThemFirstCompliance(text)
+        setComplianceResult({ passes: compliance.passes, message: compliance.message })
       }
     } catch (error) {
       console.error("Error generating draft:", error)
@@ -77,17 +74,16 @@ export function ContextualAiAssistBar({
 
   const handleImprove = async () => {
     if (!context.currentContent) return
-
     setLoading(true)
     try {
-      const profile = await getBrandVoiceProfile(agentId)
-
-      const result = await generateSmartResponse({
-        userMessage: `Improve this ${context.type}: "${context.currentContent}"`,
-        brandVoice: profile,
+      const res = await generateContextualDraft({
+        agentId,
+        contentType: context.type,
+        contactName: context.contactName,
+        propertyAddress: context.propertyAddress,
+        currentContent: context.currentContent,
       })
-
-      setDraft(result)
+      setDraft(res.draft ?? "")
     } catch (error) {
       console.error("Error improving content:", error)
       toast.error("Failed to improve content")

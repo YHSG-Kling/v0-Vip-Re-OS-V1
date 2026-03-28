@@ -51,11 +51,11 @@ import {
 import {
   getContentPerformanceStats,
   getHashtagPerformance,
-} from "@/app/actions/ai-content-generation.tsx"
+} from "@/app/actions/ai-content-generation"
 import { getSocialQueue } from "@/app/actions/social-media-automation"
 import { getReferralROI } from "@/app/actions/referral-management"
 import { getWorkflowStats } from "@/app/actions/workflow-monitoring"
-import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
+import { generateContextualDraft } from "@/app/actions/social/generate-social-post"
 
 interface ReportsClientProps {
   agentId: string
@@ -291,15 +291,13 @@ Focus on actionable team-level insights.`
 Focus on scalable, brokerage-level insights.`
       }
 
-      const result = await generateSmartResponse({
+      const result = await generateContextualDraft({
         agentId,
-        contactId: userId,
-        message: `Please analyze my ${tab} performance data: ${context}`,
-        conversationHistory: [],
-        systemPrompt,
+        contentType: "note",
+        currentContent: `${systemPrompt}\n\nData: ${context.slice(0, 1200)}`,
       })
 
-      const summaryText = result.response || result.message || "Unable to generate summary"
+      const summaryText = result.draft || "Unable to generate summary"
 
       if (tab === "agent") setAiSummary(summaryText)
       else if (tab === "social") setSocialSummary(summaryText)

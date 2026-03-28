@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Sparkles, ThumbsUp, ThumbsDown, Loader2, Copy } from "lucide-react"
 import { generateAIReplyDraft, acceptDraft, rejectDraft, loadConversationDrafts } from "@/app/actions/ai-reply-coach"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
+import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { toast } from "sonner"
 
 interface InlineAiReplyCoachProps {

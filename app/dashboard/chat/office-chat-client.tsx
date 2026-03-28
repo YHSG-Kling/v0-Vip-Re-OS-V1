@@ -11,7 +11,7 @@ import { Send, Copy, ExternalLink, Search, MessageCircle, ArrowRight } from "luc
 import Link from "next/link"
 import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
+import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { toast } from "sonner"
 
 interface Message {

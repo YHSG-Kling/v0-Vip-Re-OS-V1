@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { FileText, Sparkles, Loader2, Save, MessageSquare, Wand2 } from "lucide-react"
 import { generateSmartResponse, generateCommunicationSummary } from "@/app/actions/ai-communication-hub"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
+import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 
 interface SmartNoteComposerProps {
   contactId: string

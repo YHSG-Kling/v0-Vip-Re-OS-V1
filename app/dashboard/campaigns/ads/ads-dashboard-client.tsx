@@ -61,7 +61,7 @@ import {
   Rocket,
 } from "lucide-react"
 import { predictPerformanceAction } from "@/app/actions/content-prediction"
-import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
+import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
 import { toast } from "sonner"
 import {
   createAdCampaign,

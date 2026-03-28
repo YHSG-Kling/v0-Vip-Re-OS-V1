@@ -157,6 +157,50 @@ For each day provide: the day name, content type, best platform, hook (opening l
   }
 }
 
+/**
+ * Generic contextual draft generator for notes, emails, seller updates,
+ * referral asks, review requests, etc.  Used by ContextualAiAssistBar.
+ */
+export async function generateContextualDraft(params: {
+  agentId: string
+  contentType: "note" | "message" | "email" | "social_post" | "seller_update" | "referral_ask" | "review_request"
+  contactName?: string
+  propertyAddress?: string
+  currentContent?: string
+}): Promise<{ success: boolean; draft?: string; error?: string }> {
+  try {
+    const supabase = await createClient()
+    const { data: brandVoice } = await supabase
+      .from("brand_voice_profile")
+      .select("tone, formality_level, preferred_words, prohibited_words, custom_instructions")
+      .eq("agent_id", params.agentId)
+      .eq("is_active", true)
+      .maybeSingle()
+
+    const DraftSchema = z.object({ draft: z.string() })
+
+    const instruction = params.currentContent
+      ? `Improve the following ${params.contentType}: "${params.currentContent.slice(0, 800)}"`
+      : `Write a short ${params.contentType} for ${params.contactName ?? "a client"}.${
+          params.propertyAddress ? ` Property: ${params.propertyAddress}.` : ""
+        }`
+
+    const { object } = await generateObject({
+      model: resolveModel("openai/gpt-4o-mini"),
+      schema: DraftSchema,
+      system: `You are a professional real estate agent communication assistant. Use "Them First" principles.
+Tone: ${brandVoice?.tone ?? "professional and warm"}.
+${brandVoice?.prohibited_words?.length ? `Never use: ${brandVoice.prohibited_words.join(", ")}.` : ""}
+${brandVoice?.custom_instructions ?? ""}`,
+      prompt: `${instruction}\n\nKeep it concise, authentic, and human. Do not add subject lines unless this is an email.`,
+    })
+
+    return { success: true, draft: object.draft }
+  } catch (error: any) {
+    return { success: false, error: error?.message ?? "Failed to generate draft" }
+  }
+}
+
 /** Suggest hashtags for a given post and platform */
 export async function suggestHashtags(params: {
   content: string

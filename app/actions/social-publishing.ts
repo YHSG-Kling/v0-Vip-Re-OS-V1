@@ -149,7 +149,7 @@ export async function connectSocialAccount(params: {
       },
     )
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) throw error
 
@@ -260,7 +260,7 @@ export async function createSocialPost(params: {
         approval_status: "pending",
       })
       .select("id")
-      .single()
+      .maybeSingle()
 
     revalidatePath("/content-studio")
     return {
@@ -291,7 +291,7 @@ export async function createSocialPost(params: {
       approval_status: gate.requiresHumanReview ? "pending" : "approved",
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) throw error
 
@@ -327,7 +327,7 @@ export async function updateSocialPost(
     .eq("id", postId)
     .eq("user_id", effectiveUserId)
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) throw error
 
