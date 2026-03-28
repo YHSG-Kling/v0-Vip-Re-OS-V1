@@ -65,6 +65,12 @@ export function useAuth(): AuthState {
       return
     }
 
+    // 8-second hard timeout — guarantees loading always terminates.
+    const timeoutId = setTimeout(() => {
+      setError(new Error('Auth session timed out. Please try again.'))
+      setLoading(false)
+    }, 8000)
+
     try {
       const { data: { user: authUser } } = await client.auth.getUser()
 
@@ -75,18 +81,25 @@ export function useAuth(): AuthState {
         return
       }
 
-      // Fetch extended profile + roles in parallel.
-      // Use maybeSingle() so a missing `users` row returns null instead of throwing PGRST116.
+      // Fetch specific columns only (not *) to avoid pulling sensitive fields.
+      // Use maybeSingle() so a missing `users` row returns null (no PGRST116 throw).
+      // Source priority: users.user_type > role_assignments.role > auth metadata > 'agent'
       const [{ data: userData }, { data: rolesData }] = await Promise.all([
-        client.from('users').select('*').eq('id', authUser.id).maybeSingle(),
-        client.from('user_role_assignments').select('role, brokerage_id, team_id, agent_id, vendor_id').eq('user_id', authUser.id),
+        client.from('users')
+          .select('id, first_name, last_name, brokerage_id, user_type, team_id')
+          .eq('id', authUser.id)
+          .maybeSingle(),
+        client.from('user_role_assignments')
+          .select('role, brokerage_id, team_id, agent_id, vendor_id')
+          .eq('user_id', authUser.id),
       ])
 
-      // Priority: auth metadata > role assignments > users table > default
-      const rawRole: string = authUser.user_metadata?.user_type
-        || rolesData?.[0]?.role
-        || userData?.user_type
-        || 'agent'
+      // Source priority: users.user_type > role_assignments.role > auth metadata > 'agent'
+      const rawRole: string =
+        userData?.user_type ||
+        rolesData?.[0]?.role ||
+        (authUser.user_metadata?.user_type as string | undefined) ||
+        'agent'
       
       const canonicalRole = toCanonicalRoleOrDefault(rawRole, 'agent')
       const persona: string | null = authUser.user_metadata?.contact_persona ?? null
@@ -127,6 +140,7 @@ export function useAuth(): AuthState {
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Auth error'))
     } finally {
+      clearTimeout(timeoutId)
       setLoading(false)
     }
   }, [])

@@ -120,3 +120,18 @@ export { findStuckAgentsAndNotify } from "./onboarding-reminders"
 
 export { resolveAIModel } from "./ai-model"
 export type { ResolveAIModelParams } from "./ai-model"
+
+export {
+  determineVisibleNavigation,
+  enforceLifecycle,
+  enforceCompliance,
+  emitLifecycleEvent,
+  resolvePageCapability,
+  isStaffRole,
+} from "./helpers"
+export type {
+  NavigationResult,
+  LifecycleEnforcement,
+  PageCapability,
+  EmitEventParams,
+} from "./helpers"

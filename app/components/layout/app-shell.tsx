@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth/client'
 import { Sidebar } from './sidebar'
@@ -9,6 +9,23 @@ import { MobileBottomNav } from './mobile-bottom-nav'
 import { getNavigationForRole } from '@/app/config/navigation-config'
 import { Loader2 } from 'lucide-react'
 import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
+
+// Staff roles that are allowed to see the internal AI assistant.
+// Contacts, vendor-portal-only, and unknown roles must NOT see it.
+const STAFF_AI_ROLES = new Set([
+  'agent',
+  'broker',
+  'admin',
+  'tc',
+  'transaction_coordinator',
+  'lender',
+  'vendor',
+  'title',
+  'coordinator',
+  'staff',
+])
+
+const AUTH_TIMEOUT_MS = 8_000
 
 interface AppShellProps {
   children: React.ReactNode
@@ -19,19 +36,33 @@ export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname()
   const router = useRouter()
 
+  // Track whether the 8-second auth timeout has fired
+  const [authTimedOut, setAuthTimedOut] = useState(false)
+
   // Routes that have their own layout - bypass AppShell completely
   const bypassRoutes = ['/auth', '/login', '/signup', '/portal', '/settings', '/open-house', '/qr']
   const shouldBypass = bypassRoutes.some(route => pathname.startsWith(route))
 
+  // 8-second timeout: if still loading after 8s, surface an actionable error
+  // instead of spinning forever.
+  useEffect(() => {
+    if (!isLoading) {
+      setAuthTimedOut(false)
+      return
+    }
+    const timer = setTimeout(() => setAuthTimedOut(true), AUTH_TIMEOUT_MS)
+    return () => clearTimeout(timer)
+  }, [isLoading])
+
   // Handle redirect in useEffect to avoid setState during render
   const needsAuth = !isLoading && !user && !userContext && !shouldBypass && !pathname.startsWith('/login')
-  
+
   useEffect(() => {
     if (needsAuth) {
       router.push('/login')
     }
   }, [needsAuth, router])
-  
+
   if (shouldBypass) {
     return <>{children}</>
   }
@@ -41,6 +72,21 @@ export function AppShell({ children }: AppShellProps) {
 
   // Show loading state while auth is being determined
   if (isLoading) {
+    // Auth has taken too long — show actionable fallback instead of infinite spinner
+    if (authTimedOut) {
+      return (
+        <div className="flex flex-col items-center justify-center h-screen gap-4 bg-background">
+          <p className="text-sm text-muted-foreground">Taking longer than expected&hellip;</p>
+          <button
+            onClick={() => router.push('/login')}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            Back to Login
+          </button>
+        </div>
+      )
+    }
+
     return (
       <div className="flex items-center justify-center h-screen bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -59,6 +105,9 @@ export function AppShell({ children }: AppShellProps) {
 
   const primaryRole = userContext.roles[0]
   const navigation = getNavigationForRole(primaryRole)
+
+  // Only staff roles may see the Internal AI Assistant
+  const showAIAssistant = STAFF_AI_ROLES.has(primaryRole?.toLowerCase?.() ?? '')
 
   return (
     <div className="flex h-screen bg-white">
@@ -80,8 +129,8 @@ export function AppShell({ children }: AppShellProps) {
         )}
       </div>
 
-      {/* Internal AI Assistant — rendered for agent/broker/admin/coordinator roles */}
-      <InternalAIAssistant role={primaryRole} />
+      {/* Internal AI Assistant — staff roles only */}
+      {showAIAssistant && <InternalAIAssistant role={primaryRole} />}
     </div>
   )
 }

@@ -2,60 +2,97 @@
 
 import { createClient } from "@/lib/supabase/server"
 
+export interface AgentContext {
+  userId: string
+  agentId: string | null
+  brokerageId: string | null
+  /** Source priority: users.user_type > user_role_assignments.role > auth metadata > 'agent' */
+  userType: string
+  /** Alias for userType — backward compat for all callers that reference .role */
+  role: string
+  isAuthenticated: boolean
+}
+
+/** Safe default returned when the user is not authenticated. Never throws. */
+const UNAUTHENTICATED_CONTEXT: AgentContext = {
+  userId: "",
+  agentId: null,
+  brokerageId: null,
+  userType: "agent",
+  role: "agent",
+  isAuthenticated: false,
+}
+
 /**
- * Resolves authenticated user to context with userId, agentId (if applicable), and brokerageId.
+ * Resolves authenticated user to a fully typed AgentContext.
  * Works for all user types (agent, broker, admin, tc, compliance_officer, vendor, etc.)
- * agentId will be null for non-agent users.
- * brokerageId may be null if user profile is incomplete - callers should handle this case.
+ * NEVER throws — returns safe defaults on any failure including unauthenticated.
+ * Source priority: users.user_type > user_role_assignments.role > auth metadata > 'agent'
  */
-export async function getAgentContext() {
-  const supabase = await createClient()
-  
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  
-  if (!user) {
-    throw new Error("Not authenticated")
-  }
+export async function getAgentContext(): Promise<AgentContext> {
+  try {
+    const supabase = await createClient()
 
-  // Get the user record for brokerage_id and user_type
-  const { data: userData } = await supabase
-    .from("users")
-    .select("id, brokerage_id, user_type")
-    .eq("id", user.id)
-    .single()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
 
-  // Also check user_role_assignments for brokerage_id as fallback
-  const { data: roleData } = await supabase
-    .from("user_role_assignments")
-    .select("brokerage_id, role, agent_id")
-    .eq("user_id", user.id)
-    .limit(1)
-    .single()
+    if (!user) {
+      return UNAUTHENTICATED_CONTEXT
+    }
 
-  // Determine userType from multiple sources
-  const userType = userData?.user_type ?? roleData?.role ?? user.user_metadata?.user_type ?? "agent"
-  
-  // brokerageId - check users table, then role assignments, then auth metadata
-  const brokerageId = userData?.brokerage_id ?? roleData?.brokerage_id ?? user.user_metadata?.brokerage_id ?? null
+    // Fetch users row + role assignments in parallel.
+    // Both use maybeSingle() / array — never throw on missing rows.
+    const [{ data: userData }, { data: rolesData }] = await Promise.all([
+      supabase
+        .from("users")
+        .select("id, brokerage_id, user_type, team_id")
+        .eq("id", user.id)
+        .maybeSingle(),
+      supabase
+        .from("user_role_assignments")
+        .select("brokerage_id, role, agent_id")
+        .eq("user_id", user.id)
+        .limit(1),
+    ])
 
-  // Try to get agent record if user is an agent type
-  let agentId: string | null = roleData?.agent_id ?? null
-  if (!agentId && userType === "agent") {
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("id")
-      .eq("user_id", user.id)
-      .single()
-    
-    agentId = agent?.id ?? null
-  }
+    const firstRole = rolesData?.[0]
 
-  return {
-    userId: user.id,
-    agentId,
-    brokerageId,
-    userType,
+    // Source priority: users.user_type > role_assignments.role > auth metadata > 'agent'
+    const userType: string =
+      userData?.user_type ??
+      firstRole?.role ??
+      (user.user_metadata?.user_type as string | undefined) ??
+      "agent"
+
+    // brokerageId: users table > role assignments > auth metadata > null
+    const brokerageId: string | null =
+      userData?.brokerage_id ??
+      firstRole?.brokerage_id ??
+      (user.user_metadata?.brokerage_id as string | undefined) ??
+      null
+
+    // agentId: role assignments > agents table lookup (only for agent-type users)
+    let agentId: string | null = firstRole?.agent_id ?? null
+    if (!agentId && userType === "agent") {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", user.id)
+        .maybeSingle()
+      agentId = agentRow?.id ?? null
+    }
+
+    return {
+      userId: user.id,
+      agentId,
+      brokerageId,
+      userType,
+      role: userType, // alias — same value, different key name
+      isAuthenticated: true,
+    }
+  } catch {
+    // Never propagate — return safe defaults so callers don't need try/catch
+    return UNAUTHENTICATED_CONTEXT
   }
 }
