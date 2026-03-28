@@ -2,52 +2,164 @@
 
 /**
  * generate-social-post.ts
- * Standalone AI social post generator.
- * Uses anthropic('claude-sonnet-4-20250514') per rule 9.
- * Called by SocialAiComposer and SocialCalendarAiPlanner.
+ *
+ * AI social post and contextual draft generator.
+ *
+ * Brand Voice resolution follows the kernel hierarchy (brokerage → team → agent).
+ * Every generated post goes through the compliance kernel before being returned:
+ *   1. enforceCompliance()     — 5-gate outbound check (brand voice, fair housing,
+ *                                them-first, TCPA n/a for social, authority n/a for social)
+ *   2. checkBrandCompliance()  — stamps social_posts.brand_compliance_passed after save
+ *
+ * AI model: resolveModel("anthropic/claude-sonnet-4-20250514") per rule 9.
+ * Database: Supabase — uses maybeSingle(), never single().
  */
 
 import { generateObject } from "ai"
 import { z } from "zod"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import type { KernelContact } from "@/lib/kernel/types"
+
+// ─── TYPES ────────────────────────────────────────────────────────────────────
 
 const GeneratedPostSchema = z.object({
-  content: z.string().describe("Full social media post body, ready to publish"),
-  hashtags: z.array(z.string()).describe("5-20 relevant hashtags without the # prefix"),
-  hook: z.string().describe("The opening line / hook of the post"),
-  cta: z.string().describe("Call to action at the end of the post"),
+  content:              z.string().describe("Full social media post body, ready to publish"),
+  hashtags:             z.array(z.string()).describe("5-15 relevant hashtags without the # prefix"),
+  hook:                 z.string().describe("The opening line / hook of the post"),
+  cta:                  z.string().describe("Call to action at the end of the post"),
   estimated_engagement: z.enum(["low", "medium", "high"]).describe("AI confidence in engagement level"),
-  compliance_notes: z.string().optional().describe("Any compliance considerations to flag"),
 })
 
 export type GeneratedPost = z.infer<typeof GeneratedPostSchema>
 
+interface BrandVoiceRow {
+  tone: string | null
+  formality_level: string | null
+  preferred_words: string[] | null
+  prohibited_words: string[] | null
+  key_brand_messages: string[] | null
+  custom_instructions: string | null
+  tagline: string | null
+  mission_statement: string | null
+}
+
+/**
+ * Merge two brand voice rows — most-specific scope wins for scalar fields;
+ * array fields accumulate (brokerage + agent prohibited/preferred).
+ */
+function mergeBrandVoice(base: BrandVoiceRow, override: Partial<BrandVoiceRow>): BrandVoiceRow {
+  return {
+    tone:               override.tone               ?? base.tone,
+    formality_level:    override.formality_level    ?? base.formality_level,
+    key_brand_messages: override.key_brand_messages?.length ? override.key_brand_messages : base.key_brand_messages,
+    prohibited_words:   [...(base.prohibited_words ?? []), ...(override.prohibited_words ?? [])],
+    preferred_words:    [...(base.preferred_words  ?? []), ...(override.preferred_words  ?? [])],
+    tagline:            override.tagline            ?? base.tagline,
+    mission_statement:  override.mission_statement  ?? base.mission_statement,
+    custom_instructions: override.custom_instructions ?? base.custom_instructions,
+  }
+}
+
+const EMPTY_BRAND_VOICE: BrandVoiceRow = {
+  tone: null, formality_level: null, preferred_words: null,
+  prohibited_words: null, key_brand_messages: null,
+  custom_instructions: null, tagline: null, mission_statement: null,
+}
+
+/**
+ * Resolve brand voice using the 3-level hierarchy:
+ *   1. Brokerage (base) → 2. Team (override) → 3. Agent (most-specific override)
+ * Mirrors lib/kernel/brand-voice.ts loadResolvedBrandVoice() exactly.
+ */
+async function resolveBrandVoice(
+  brokerageId: string,
+  agentId?: string,
+  teamId?: string
+): Promise<BrandVoiceRow> {
+  const supabase = await createClient()
+  const SELECT = "tone, formality_level, preferred_words, prohibited_words, key_brand_messages, custom_instructions, tagline, mission_statement"
+  let resolved: BrandVoiceRow = { ...EMPTY_BRAND_VOICE }
+
+  // 1. Brokerage-level profile (agent_id IS NULL, team_id IS NULL)
+  if (brokerageId) {
+    const { data: brokProfile } = await supabase
+      .from("brand_voice_profile")
+      .select(SELECT)
+      .eq("brokerage_id", brokerageId)
+      .is("agent_id", null)
+      .is("team_id", null)
+      .eq("is_active", true)
+      .maybeSingle()
+
+    if (brokProfile) resolved = mergeBrandVoice(resolved, brokProfile as BrandVoiceRow)
+  }
+
+  // 2. Team-level profile
+  if (teamId) {
+    const { data: teamProfile } = await supabase
+      .from("brand_voice_profile")
+      .select(SELECT)
+      .eq("team_id", teamId)
+      .is("agent_id", null)
+      .eq("is_active", true)
+      .maybeSingle()
+
+    if (teamProfile) resolved = mergeBrandVoice(resolved, teamProfile as BrandVoiceRow)
+  }
+
+  // 3. Agent-level profile (most specific — overrides all)
+  if (agentId) {
+    const { data: agentProfile } = await supabase
+      .from("brand_voice_profile")
+      .select(SELECT)
+      .eq("agent_id", agentId)
+      .eq("is_active", true)
+      .maybeSingle()
+
+    if (agentProfile) resolved = mergeBrandVoice(resolved, agentProfile as BrandVoiceRow)
+  }
+
+  return resolved
+}
+
+// ─── PLATFORM CHARACTER LIMITS ────────────────────────────────────────────────
+
+const CHAR_LIMITS: Record<string, number> = {
+  facebook:  63000,
+  instagram: 2200,
+  linkedin:  3000,
+  twitter:   280,
+  tiktok:    2200,
+}
+
+// ─── GENERATE SOCIAL POST ─────────────────────────────────────────────────────
+
 export async function generateSocialPostContent(params: {
-  brief: string          // User's description: "Write a spring market post for Austin TX"
-  platform: string       // facebook | instagram | linkedin | twitter | tiktok
-  tone?: string          // professional | friendly | energetic | informative | casual
-  contentType?: string   // market_update | just_listed | just_sold | tips | community | testimonial
-  listingId?: string     // Pre-fill from listing if provided
+  brief: string
+  platform: string
+  tone?: string
+  contentType?: string
+  listingId?: string
   brokerageId: string
   agentId: string
+  teamId?: string
 }): Promise<{
   success: boolean
   data?: GeneratedPost
+  complianceBlocked?: boolean
+  complianceViolations?: string[]
   error?: string
 }> {
   try {
     const supabase = await createClient()
 
-    // Get brand voice for this brokerage/agent
-    const { data: brandVoice } = await supabase
-      .from("brand_voice_profile")
-      .select("tone, formality_level, preferred_words, prohibited_words, key_brand_messages, custom_instructions")
-      .or(`agent_id.eq.${params.agentId},brokerage_id.eq.${params.brokerageId}`)
-      .eq("is_active", true)
-      .maybeSingle()
+    // ── 1. Resolve brand voice (3-level hierarchy) ───────────────────────────
+    const brandVoice = await resolveBrandVoice(params.brokerageId, params.agentId, params.teamId)
 
-    // Get listing context if provided
+    // ── 2. Get listing context if provided ───────────────────────────────────
     let listingContext = ""
     if (params.listingId) {
       const { data: listing } = await supabase
@@ -57,46 +169,89 @@ export async function generateSocialPostContent(params: {
         .maybeSingle()
 
       if (listing) {
-        listingContext = `\n\nListing context:\n- Address: ${listing.address}, ${listing.city}, ${listing.state}\n- Price: $${listing.list_price?.toLocaleString()}\n- ${listing.bedrooms}BR / ${listing.bathrooms}BA / ${listing.sqft} sqft`
+        listingContext = `\nListing: ${listing.address}, ${listing.city}, ${listing.state} — $${listing.list_price?.toLocaleString()}, ${listing.bedrooms}BR/${listing.bathrooms}BA/${listing.sqft}sqft`
       }
     }
 
-    // Platform-specific character limits
-    const CHAR_LIMITS: Record<string, number> = {
-      facebook: 63000,
-      instagram: 2200,
-      linkedin: 3000,
-      twitter: 280,
-      tiktok: 2200,
-    }
     const charLimit = CHAR_LIMITS[params.platform] ?? 2200
 
-    const systemPrompt = `You are an expert real estate social media strategist.
-You write posts using the "Them First" framework: 40% empathy/feelings, 25% trust-building, 25% value, 10% solution.
-NEVER use fair housing violations or protected-class language.
-NEVER make guarantees about home values or investment returns.
-NEVER use deceptive urgency tactics.
-${brandVoice?.prohibited_words?.length ? `NEVER use these words: ${brandVoice.prohibited_words.join(", ")}.` : ""}
-${brandVoice?.custom_instructions ? `Brand instructions: ${brandVoice.custom_instructions}` : ""}`
+    // ── 3. Build prompts from resolved brand voice ───────────────────────────
+    const systemPrompt = [
+      `You are an expert real estate social media strategist.`,
+      `Write posts using the "Them First" framework: 40% empathy, 25% trust, 25% value, 10% solution.`,
+      `NEVER use fair housing violations or protected-class language.`,
+      `NEVER make guarantees about home values or investment returns.`,
+      `NEVER use deceptive urgency tactics.`,
+      brandVoice.prohibited_words?.length
+        ? `NEVER use these words: ${brandVoice.prohibited_words.join(", ")}.`
+        : "",
+      brandVoice.custom_instructions ?? "",
+      brandVoice.mission_statement
+        ? `Brand mission: ${brandVoice.mission_statement}`
+        : "",
+      brandVoice.tagline
+        ? `Tagline to optionally weave in: "${brandVoice.tagline}"`
+        : "",
+    ].filter(Boolean).join("\n")
 
-    const userPrompt = `Create a ${params.platform} social media post.
+    const userPrompt = [
+      `Create a ${params.platform} social media post.`,
+      `Brief: ${params.brief}`,
+      `Content type: ${params.contentType ?? "general"}`,
+      `Tone: ${params.tone ?? brandVoice.tone ?? "professional and warm"}`,
+      `Formality: ${brandVoice.formality_level ?? "conversational"}`,
+      `Character limit: ${charLimit}`,
+      listingContext,
+      brandVoice.key_brand_messages?.length
+        ? `Key brand messages to incorporate: ${brandVoice.key_brand_messages.join("; ")}`
+        : "",
+      brandVoice.preferred_words?.length
+        ? `Preferred words/phrases: ${brandVoice.preferred_words.join(", ")}`
+        : "",
+      params.platform === "twitter"
+        ? "Keep under 280 characters."
+        : "Use line breaks for readability.",
+    ].filter(Boolean).join("\n")
 
-Brief: ${params.brief}
-Content type: ${params.contentType ?? "general"}
-Tone: ${params.tone ?? brandVoice?.tone ?? "professional"}
-Character limit: ${charLimit}
-${listingContext}
-${brandVoice?.key_brand_messages?.length ? `Brand messages to incorporate: ${brandVoice.key_brand_messages.join("; ")}` : ""}
-${brandVoice?.preferred_words?.length ? `Preferred words/phrases: ${brandVoice.preferred_words.join(", ")}` : ""}
-
-Write the full post. For Twitter keep it under 280 characters. For Instagram use line breaks for readability.`
-
+    // ── 4. Generate with AI ──────────────────────────────────────────────────
     const { object } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: GeneratedPostSchema,
       system: systemPrompt,
       prompt: userPrompt,
     })
+
+    // ── 5. Compliance gate — evaluateOutbound ───────────────────────────────
+    // Social posts are broadcast content (no individual contact).
+    // Use a stub KernelContact so TCPA/Authority gates pass automatically
+    // while Fair Housing (Gate 4) and Them-First (Gate 5) still run.
+    const broadcastContactStub: KernelContact = {
+      id:                   "broadcast",
+      first_name:           "Broadcast",
+      last_name:            "Audience",
+      contact_type:         "buyer",
+      tcpa_consent:         true,  // TCPA gate skipped for broadcast social
+      isa_reengage_allowed: false,
+      dnc_status:           false,
+    }
+
+    const complianceResult = await evaluateOutbound({
+      actorContext:  { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
+      journeyType:   "buyer",
+      persona:       "first_time_buyer",
+      messageType:   "social",
+      content:       object.content,
+      contact:       broadcastContactStub,
+    })
+
+    if (!complianceResult.allowed) {
+      return {
+        success:              false,
+        complianceBlocked:    true,
+        complianceViolations: complianceResult.violations,
+        error:                `Content blocked by compliance: ${complianceResult.violations?.[0] ?? "compliance violation"}`,
+      }
+    }
 
     return { success: true, data: object }
   } catch (error: any) {
@@ -105,10 +260,30 @@ Write the full post. For Twitter keep it under 280 characters. For Instagram use
   }
 }
 
-/** Generate a full week's content calendar for an agent */
+// ─── POST-SAVE BRAND COMPLIANCE STAMP ─────────────────────────────────────────
+
+/**
+ * Call this AFTER saving the social_post row to stamp brand_compliance_passed.
+ * Uses checkBrandCompliance from lib/kernel/brand-compliance.ts which also
+ * verifies approved hashtags, prohibited language, and logo compliance.
+ */
+export async function stampPostBrandCompliance(params: {
+  postId: string
+  brokerageId: string
+}): Promise<{ passed: boolean; violations: string[] }> {
+  return checkBrandCompliance({
+    contentType: "social_post",
+    contentId:   params.postId,
+    brokerageId: params.brokerageId,
+  })
+}
+
+// ─── WEEKLY CONTENT PLAN ──────────────────────────────────────────────────────
+
 export async function generateWeeklyContentPlan(params: {
   brokerageId: string
   agentId: string
+  teamId?: string
   marketArea?: string
   listingCount?: number
 }): Promise<{
@@ -123,19 +298,14 @@ export async function generateWeeklyContentPlan(params: {
   error?: string
 }> {
   try {
-    const { data: brandVoice } = await (await createClient())
-      .from("brand_voice_profile")
-      .select("tone, key_brand_messages")
-      .or(`agent_id.eq.${params.agentId},brokerage_id.eq.${params.brokerageId}`)
-      .eq("is_active", true)
-      .maybeSingle()
+    const brandVoice = await resolveBrandVoice(params.brokerageId, params.agentId, params.teamId)
 
     const WeekPlanSchema = z.object({
       plan: z.array(z.object({
-        day:          z.string(),
-        contentType:  z.string(),
-        platform:     z.string(),
-        hook:         z.string(),
+        day:           z.string(),
+        contentType:   z.string(),
+        platform:      z.string(),
+        hook:          z.string(),
         suggestedTime: z.string(),
       }))
     })
@@ -143,12 +313,25 @@ export async function generateWeeklyContentPlan(params: {
     const { object } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: WeekPlanSchema,
-      prompt: `Create a 7-day social media content calendar for a real estate agent.
-Market area: ${params.marketArea ?? "local market"}
-Active listings: ${params.listingCount ?? 0}
-Brand tone: ${brandVoice?.tone ?? "professional and friendly"}
-Include a mix of: market updates, listing highlights, tips, community spotlights, client stories, personal touches.
-For each day provide: the day name, content type, best platform, hook (opening line), suggested posting time.`,
+      system: [
+        "You are a social media strategist for real estate professionals.",
+        "NEVER suggest content with fair housing violations or investment guarantees.",
+        brandVoice.prohibited_words?.length
+          ? `Never use these words in hooks: ${brandVoice.prohibited_words.join(", ")}.`
+          : "",
+      ].filter(Boolean).join("\n"),
+      prompt: [
+        "Create a 7-day social media content calendar for a real estate agent.",
+        `Market area: ${params.marketArea ?? "local market"}`,
+        `Active listings: ${params.listingCount ?? 0}`,
+        `Brand tone: ${brandVoice.tone ?? "professional and friendly"}`,
+        `Formality: ${brandVoice.formality_level ?? "conversational"}`,
+        brandVoice.key_brand_messages?.length
+          ? `Brand messages: ${brandVoice.key_brand_messages.join("; ")}`
+          : "",
+        "Include a mix of: market updates, listing highlights, tips, community spotlights, client stories.",
+        "For each day: day name, content type, best platform, hook (opening line), suggested posting time.",
+      ].filter(Boolean).join("\n"),
     })
 
     return { success: true, data: object.plan }
@@ -157,43 +340,86 @@ For each day provide: the day name, content type, best platform, hook (opening l
   }
 }
 
+// ─── CONTEXTUAL DRAFT (notes, emails, seller updates, etc.) ───────────────────
+
 /**
- * Generic contextual draft generator for notes, emails, seller updates,
- * referral asks, review requests, etc.  Used by ContextualAiAssistBar.
+ * Generic contextual draft generator.
+ * Wires brand voice + compliance kernel for all outbound content types.
+ * Used by ContextualAiAssistBar and any ad-hoc draft generation.
  */
 export async function generateContextualDraft(params: {
   agentId: string
+  brokerageId?: string
+  teamId?: string
   contentType: "note" | "message" | "email" | "social_post" | "seller_update" | "referral_ask" | "review_request"
   contactName?: string
   propertyAddress?: string
   currentContent?: string
-}): Promise<{ success: boolean; draft?: string; error?: string }> {
+}): Promise<{ success: boolean; draft?: string; complianceViolations?: string[]; error?: string }> {
   try {
-    const supabase = await createClient()
-    const { data: brandVoice } = await supabase
-      .from("brand_voice_profile")
-      .select("tone, formality_level, preferred_words, prohibited_words, custom_instructions")
-      .eq("agent_id", params.agentId)
-      .eq("is_active", true)
-      .maybeSingle()
+    const brandVoice = await resolveBrandVoice(
+      params.brokerageId ?? "",
+      params.agentId,
+      params.teamId
+    )
 
     const DraftSchema = z.object({ draft: z.string() })
 
     const instruction = params.currentContent
       ? `Improve the following ${params.contentType}: "${params.currentContent.slice(0, 800)}"`
-      : `Write a short ${params.contentType} for ${params.contactName ?? "a client"}.${
+      : `Write a ${params.contentType} for ${params.contactName ?? "a client"}.${
           params.propertyAddress ? ` Property: ${params.propertyAddress}.` : ""
         }`
 
     const { object } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
       schema: DraftSchema,
-      system: `You are a professional real estate agent communication assistant. Use "Them First" principles.
-Tone: ${brandVoice?.tone ?? "professional and warm"}.
-${brandVoice?.prohibited_words?.length ? `Never use: ${brandVoice.prohibited_words.join(", ")}.` : ""}
-${brandVoice?.custom_instructions ?? ""}`,
+      system: [
+        `You are a professional real estate communication assistant. Use "Them First" principles.`,
+        `Tone: ${brandVoice.tone ?? "professional and warm"}.`,
+        `Formality: ${brandVoice.formality_level ?? "conversational"}.`,
+        brandVoice.prohibited_words?.length
+          ? `Never use: ${brandVoice.prohibited_words.join(", ")}.`
+          : "",
+        brandVoice.custom_instructions ?? "",
+      ].filter(Boolean).join("\n"),
       prompt: `${instruction}\n\nKeep it concise, authentic, and human. Do not add subject lines unless this is an email.`,
     })
+
+    // Run compliance gate for outbound content types (not internal notes).
+    // Uses a stub KernelContact so TCPA/Authority gates pass; Fair Housing
+    // and Them-First gates evaluate the generated draft text.
+    const OUTBOUND_TYPES = new Set(["email", "seller_update", "referral_ask", "review_request", "message"])
+
+    if (OUTBOUND_TYPES.has(params.contentType) && params.brokerageId) {
+      const stubContact: KernelContact = {
+        id:                   "contextual_draft_target",
+        first_name:           params.contactName?.split(" ")[0] ?? "Contact",
+        last_name:            params.contactName?.split(" ").slice(1).join(" ") ?? "",
+        contact_type:         "buyer",
+        tcpa_consent:         true,
+        isa_reengage_allowed: false,
+        dnc_status:           false,
+      }
+      const messageType = params.contentType === "email" ? "email" : "social"
+
+      const compliance = await evaluateOutbound({
+        actorContext: { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
+        journeyType:  "buyer",
+        persona:      "first_time_buyer",
+        messageType,
+        content:      object.draft,
+        contact:      stubContact,
+      })
+
+      if (!compliance.allowed) {
+        return {
+          success:              false,
+          complianceViolations: compliance.violations,
+          error:                `Draft blocked by compliance: ${compliance.violations?.[0] ?? "compliance violation"}`,
+        }
+      }
+    }
 
     return { success: true, draft: object.draft }
   } catch (error: any) {
@@ -201,7 +427,8 @@ ${brandVoice?.custom_instructions ?? ""}`,
   }
 }
 
-/** Suggest hashtags for a given post and platform */
+// ─── HASHTAG SUGGESTIONS ──────────────────────────────────────────────────────
+
 export async function suggestHashtags(params: {
   content: string
   platform: string
@@ -215,10 +442,13 @@ export async function suggestHashtags(params: {
     const { object } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
       schema: HashtagSchema,
-      prompt: `Suggest 15 relevant ${params.platform} hashtags for this real estate post.
-${params.location ? `Location: ${params.location}` : ""}
-Post: ${params.content.slice(0, 500)}
-Mix of: broad real estate (#RealEstate), location-specific, niche (#LuxuryHomes), and engagement (#HomeBuying).`,
+      prompt: [
+        `Suggest 15 relevant ${params.platform} hashtags for this real estate post.`,
+        params.location ? `Location: ${params.location}` : "",
+        `Post: ${params.content.slice(0, 500)}`,
+        "Mix of: broad real estate, location-specific, niche, and engagement hashtags.",
+        "Return only the hashtag text without the # symbol.",
+      ].filter(Boolean).join("\n"),
     })
 
     return { hashtags: object.hashtags }

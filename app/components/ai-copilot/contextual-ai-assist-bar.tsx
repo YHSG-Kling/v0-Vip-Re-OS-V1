@@ -31,6 +31,7 @@ export function ContextualAiAssistBar({
   const [complianceResult, setComplianceResult] = useState<{
     passes: boolean
     message?: string
+    violations?: string[]
   } | null>(null)
 
   const handleDraftForMe = async () => {
@@ -45,9 +46,20 @@ export function ContextualAiAssistBar({
           agentId,
           brokerageId: "",
         })
-        text = res.success
-          ? `${res.data?.content ?? ""}\n\n${(res.data?.hashtags ?? []).map((h: string) => `#${h}`).join(" ")}`
-          : ""
+        if (res.complianceBlocked) {
+          setComplianceResult({
+            passes: false,
+            message: `Compliance violation: ${res.complianceViolations?.join("; ") ?? "content blocked"}`,
+            violations: res.complianceViolations,
+          })
+          toast.error("Draft blocked by compliance rules")
+          return
+        }
+        if (!res.success) {
+          toast.error(res.error ?? "Failed to generate post")
+          return
+        }
+        text = `${res.data?.content ?? ""}\n\n${(res.data?.hashtags ?? []).map((h: string) => `#${h}`).join(" ")}`
       } else {
         const res = await generateContextualDraft({
           agentId,
@@ -55,6 +67,19 @@ export function ContextualAiAssistBar({
           contactName: context.contactName,
           propertyAddress: context.propertyAddress,
         })
+        if (!res.success) {
+          if (res.complianceViolations?.length) {
+            setComplianceResult({
+              passes: false,
+              message: `Compliance violation: ${res.complianceViolations.join("; ")}`,
+              violations: res.complianceViolations,
+            })
+            toast.error("Draft blocked by compliance rules")
+          } else {
+            toast.error(res.error ?? "Failed to generate draft")
+          }
+          return
+        }
         text = res.draft ?? ""
       }
 
@@ -83,6 +108,19 @@ export function ContextualAiAssistBar({
         propertyAddress: context.propertyAddress,
         currentContent: context.currentContent,
       })
+      if (!res.success) {
+        if (res.complianceViolations?.length) {
+          setComplianceResult({
+            passes: false,
+            message: `Compliance violation: ${res.complianceViolations.join("; ")}`,
+            violations: res.complianceViolations,
+          })
+          toast.error("Improved draft blocked by compliance rules")
+        } else {
+          toast.error(res.error ?? "Failed to improve content")
+        }
+        return
+      }
       setDraft(res.draft ?? "")
     } catch (error) {
       console.error("Error improving content:", error)
@@ -174,7 +212,16 @@ export function ContextualAiAssistBar({
               ) : (
                 <AlertCircle className="h-4 w-4 flex-shrink-0 mt-0.5" />
               )}
-              <span>{complianceResult.message}</span>
+              <div className="flex flex-col gap-1">
+                <span>{complianceResult.message}</span>
+                {!complianceResult.passes && complianceResult.violations && complianceResult.violations.length > 1 && (
+                  <ul className="list-disc list-inside space-y-0.5">
+                    {complianceResult.violations.map((v, i) => (
+                      <li key={i}>{v}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
           )}
 
