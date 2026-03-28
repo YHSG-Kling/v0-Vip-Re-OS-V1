@@ -10,6 +10,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
 import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
+import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 
 /**
  * AI Communication Hub
@@ -118,25 +119,48 @@ export async function sendMessage(params: {
     } else if (params.channel === "sms") {
       const { data: contact } = await supabase
         .from("contacts")
-        .select("phone")
+        .select("phone, tcpa_consent, brokerage_id")
         .eq("id", params.contactId)
-        .single()
+        .maybeSingle()
 
-      if (contact?.phone) {
-        const { data: agent } = await supabase
-          .from("agents")
-          .select("brokerage_id")
-          .eq("id", params.agentId)
-          .single()
-
-        dispatchResult = await dispatchSms({
-          brokerageId: agent?.brokerage_id ?? "",
-          agentId:     params.agentId,
-          to:          contact.phone,
-          message:     params.body,
-          systemSource: "inbox",
-        })
+      if (!contact?.phone) {
+        return { success: false, error: "Contact has no phone number on file." }
       }
+
+      // ── TCPA hard gate: contacts must have explicit opt-in before SMS dispatch ──
+      if (!contact.tcpa_consent) {
+        return {
+          success: false,
+          error: "TCPA: This contact has not opted in to SMS. Obtain written consent before sending.",
+          tcpaBlocked: true,
+        }
+      }
+
+      // Suppression check (DNC registry, opt-out list)
+      const suppression = await checkSuppression({
+        brokerageId: contact.brokerage_id,
+        contactId: params.contactId,
+        channel: "sms",
+        phone: contact.phone,
+      })
+      if (suppression.suppressed) {
+        return { success: false, error: `SMS suppressed: ${suppression.reason}`, suppressed: true }
+      }
+
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("brokerage_id")
+        .eq("id", params.agentId)
+        .maybeSingle()
+
+      dispatchResult = await dispatchSms({
+        brokerageId: agent?.brokerage_id ?? contact.brokerage_id ?? "",
+        agentId:     params.agentId,
+        to:          contact.phone,
+        message:     params.body,
+        systemSource: "inbox",
+        contactId:   params.contactId,
+      })
     }
 
     // Step 4: Fire-and-forget message_provider_logs
@@ -185,8 +209,9 @@ export async function getConversations(params: {
       .from("conversations")
       .select(`
         *,
-        contacts(id, first_name, last_name, email, phone, lifecycle_state, lead_score),
-        agents(id, user_id, users(first_name, last_name))
+        contacts(id, first_name, last_name, email, phone, lifecycle_state, lead_score, tcpa_consent, preferred_channel, call_stop_flag),
+        agents(id, user_id, users(first_name, last_name)),
+        messages!messages_conversation_id_fkey(body, content, created_at, direction)
       `)
       .eq("brokerage_id", params.brokerageId)
       .order("last_message_at", { ascending: false })
@@ -208,10 +233,20 @@ export async function getConversations(params: {
 
     if (error) throw error
 
+    // Derive last_message_preview from the joined messages array (newest first)
+    const mapped = (conversations ?? []).map((c: any) => {
+      const msgs: any[] = c.messages ?? []
+      const sorted = [...msgs].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      )
+      const preview = sorted[0]?.body ?? sorted[0]?.content ?? null
+      return { ...c, last_message_preview: preview, messages: undefined }
+    })
+
     return {
       success: true,
-      conversations: conversations ?? [],
-      total: conversations?.length ?? 0,
+      conversations: mapped,
+      total: mapped.length,
     }
   } catch (error) {
     return handleError(error, "getConversations")

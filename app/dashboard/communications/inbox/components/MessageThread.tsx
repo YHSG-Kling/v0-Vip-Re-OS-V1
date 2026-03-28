@@ -6,12 +6,14 @@ import { cn } from "@/lib/utils"
 
 type Message = {
   id: string
+  body?: string
   content?: string
   message_content?: string
   direction?: "inbound" | "outbound"
   sender_type?: string
   created_at: string
   channel?: string
+  type?: string
 }
 
 interface MessageThreadProps {
@@ -90,8 +92,11 @@ export default function MessageThread({ messages, contactName, loading }: Messag
           <div className="space-y-2">
             {group.msgs.map(msg => {
               const isOutbound = msg.direction === "outbound" || msg.sender_type === "agent" || msg.sender_type === "ai_assistant"
-              const text = msg.content ?? msg.message_content ?? ""
+              // body is the primary column written by sendMessage; content/message_content are fallbacks
+              const text = msg.body ?? msg.content ?? msg.message_content ?? ""
               const isAI = msg.sender_type === "ai_assistant"
+              // Resolve channel for icon: prefer msg.channel, fall back to msg.type
+              const msgChannel = msg.channel ?? msg.type
 
               return (
                 <div key={msg.id} className={cn("flex gap-2", isOutbound ? "justify-end" : "justify-start")}>
@@ -118,7 +123,7 @@ export default function MessageThread({ messages, contactName, loading }: Messag
                     <div className={cn("flex items-center gap-1 text-[10px] text-muted-foreground", isOutbound ? "flex-row-reverse" : "flex-row")}>
                       <span>{formatTime(msg.created_at)}</span>
                       {isAI && <span className="bg-indigo-100 text-indigo-700 px-1 rounded text-[9px] font-medium">AI</span>}
-                      {msg.channel && CHANNEL_ICON[msg.channel]}
+                      {msgChannel && CHANNEL_ICON[msgChannel]}
                     </div>
                   </div>
                 </div>
