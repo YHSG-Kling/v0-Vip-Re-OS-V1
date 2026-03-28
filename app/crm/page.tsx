@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useTransition } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
-import { getContacts, getContactById } from "@/app/actions/contacts"
+import { getContacts, getContactById, createContact, addContactNote } from "@/app/actions/contacts"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence, getPredictiveLeadScore } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
@@ -21,6 +21,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Users,
   Search,
@@ -430,6 +440,54 @@ export default function CRMPage() {
     )
   }, [search, contacts])
 
+  // ── Add Contact dialog state ────────────────────────────────────────────────
+  const [addDialogOpen, setAddDialogOpen] = useState(false)
+  const [addForm, setAddForm] = useState({
+    first_name: "",
+    last_name: "",
+    email: "",
+    phone: "",
+    contact_type: "buyer" as "buyer" | "seller" | "both" | "investor",
+    status: "new",
+  })
+  const [addFormError, setAddFormError] = useState<string | null>(null)
+  const [addFormSubmitting, setAddFormSubmitting] = useState(false)
+
+  const handleOpenAddDialog = () => {
+    setAddForm({ first_name: "", last_name: "", email: "", phone: "", contact_type: "buyer", status: "new" })
+    setAddFormError(null)
+    setAddDialogOpen(true)
+  }
+
+  const handleSubmitAddContact = async () => {
+    setAddFormError(null)
+    if (!addForm.first_name.trim()) { setAddFormError("First name is required"); return }
+    if (!addForm.last_name.trim()) { setAddFormError("Last name is required"); return }
+    setAddFormSubmitting(true)
+    try {
+      const result = await createContact({
+        first_name: addForm.first_name.trim(),
+        last_name: addForm.last_name.trim(),
+        email: addForm.email.trim() || undefined,
+        phone: addForm.phone.trim() || undefined,
+        contact_type: addForm.contact_type,
+        status: addForm.status,
+      })
+      if (!result.success) {
+        setAddFormError(result.error ?? "Failed to create contact")
+        return
+      }
+      setAddDialogOpen(false)
+      toast.success(`${addForm.first_name} ${addForm.last_name} added`)
+      await loadContacts()
+      if (result.contact?.id) handleSelectContact(result.contact.id)
+    } catch {
+      setAddFormError("Unexpected error. Please try again.")
+    } finally {
+      setAddFormSubmitting(false)
+    }
+  }
+
   // Handlers for OS components
   const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive") => {
     if (!selectedContactId || !agentId) return
@@ -470,10 +528,17 @@ export default function CRMPage() {
   }
 
   const handleSaveNote = async (note: string) => {
-    if (!selectedContactId || !agentId) return
+    if (!selectedContactId) return
     setNoteSaving(true)
     try {
-      // Note saving wired via contact activity actions
+      const result = await addContactNote(selectedContactId, note)
+      if (result.success) {
+        toast.success("Note saved")
+      } else {
+        toast.error(result.error ?? "Failed to save note")
+      }
+    } catch {
+      toast.error("Failed to save note")
     } finally {
       setNoteSaving(false)
     }
@@ -943,12 +1008,10 @@ export default function CRMPage() {
           <Button
             size="sm"
             className="bg-blue-600 hover:bg-blue-700 text-white"
-            asChild
+            onClick={handleOpenAddDialog}
           >
-            <Link href="/crm?action=new">
-              <Plus className="h-4 w-4 mr-2" />
-              Add Contact
-            </Link>
+            <Plus className="h-4 w-4 mr-2" />
+            Add Contact
           </Button>
         </div>
       </div>
@@ -1103,12 +1166,10 @@ export default function CRMPage() {
             <Button
               size="sm"
               className="bg-blue-600 hover:bg-blue-700 text-white"
-              asChild
+              onClick={handleOpenAddDialog}
             >
-              <Link href="/crm?action=new">
-                <Plus className="h-4 w-4 mr-2" />
-                Add Contact
-              </Link>
+              <Plus className="h-4 w-4 mr-2" />
+              Add Contact
             </Button>
           )}
         </div>
@@ -1192,6 +1253,111 @@ export default function CRMPage() {
           ))}
         </div>
       )}
+
+      {/* ── Add Contact Dialog ──────────────────────────────────────────────── */}
+      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Contact</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="add-first-name">First Name *</Label>
+                <Input
+                  id="add-first-name"
+                  value={addForm.first_name}
+                  onChange={(e) => setAddForm((f) => ({ ...f, first_name: e.target.value }))}
+                  placeholder="Jane"
+                  disabled={addFormSubmitting}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="add-last-name">Last Name *</Label>
+                <Input
+                  id="add-last-name"
+                  value={addForm.last_name}
+                  onChange={(e) => setAddForm((f) => ({ ...f, last_name: e.target.value }))}
+                  placeholder="Smith"
+                  disabled={addFormSubmitting}
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="add-email">Email</Label>
+              <Input
+                id="add-email"
+                type="email"
+                value={addForm.email}
+                onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))}
+                placeholder="jane@example.com"
+                disabled={addFormSubmitting}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="add-phone">Phone</Label>
+              <Input
+                id="add-phone"
+                type="tel"
+                value={addForm.phone}
+                onChange={(e) => setAddForm((f) => ({ ...f, phone: e.target.value }))}
+                placeholder="(555) 000-0000"
+                disabled={addFormSubmitting}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Contact Type</Label>
+                <Select
+                  value={addForm.contact_type}
+                  onValueChange={(v) => setAddForm((f) => ({ ...f, contact_type: v as typeof f.contact_type }))}
+                  disabled={addFormSubmitting}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="buyer">Buyer</SelectItem>
+                    <SelectItem value="seller">Seller</SelectItem>
+                    <SelectItem value="both">Buyer &amp; Seller</SelectItem>
+                    <SelectItem value="investor">Investor</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Status</Label>
+                <Select
+                  value={addForm.status}
+                  onValueChange={(v) => setAddForm((f) => ({ ...f, status: v }))}
+                  disabled={addFormSubmitting}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="new">New</SelectItem>
+                    <SelectItem value="contacted">Contacted</SelectItem>
+                    <SelectItem value="qualified">Qualified</SelectItem>
+                    <SelectItem value="nurture">Nurture</SelectItem>
+                    <SelectItem value="active">Active</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            {addFormError && (
+              <p className="text-sm text-red-600">{addFormError}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddDialogOpen(false)} disabled={addFormSubmitting}>
+              Cancel
+            </Button>
+            <Button onClick={handleSubmitAddContact} disabled={addFormSubmitting}>
+              {addFormSubmitting ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Saving...</> : "Add Contact"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

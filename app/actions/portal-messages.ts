@@ -246,6 +246,9 @@ export async function getPortalMessages(contactId: string): Promise<{
 export async function generateAIDraft(params: {
   contactId: string
   transactionId?: string
+  /** Optional: passed from CRM page — used for agent context but not required for draft generation */
+  agentId?: string
+  conversationId?: string
 }): Promise<{
   success: boolean
   draft?: string
@@ -308,11 +311,12 @@ export async function generateAIDraft(params: {
     const contactName = contact.first_name || "there"
     const contactStage = contact.buyer_stage || contact.contact_type || "client"
 
-    // Generate draft using AI SDK
+    // Generate draft using AI SDK v6 — must use provider-package format, not string model ID
     const { generateText } = await import("ai")
+    const { anthropic } = await import("@ai-sdk/anthropic")
 
     const { text: draft } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: anthropic("claude-sonnet-4-20250514"),
       system: `You are a helpful real estate assistant drafting a professional, warm message for an agent to send to their client. 
 Keep messages concise (2-3 sentences), friendly, and action-oriented.
 Never include placeholder text like [AGENT NAME] - the agent will personalize.
