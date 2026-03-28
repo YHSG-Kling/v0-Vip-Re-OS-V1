@@ -14,19 +14,24 @@ import type { BadgeCounts } from '@/app/types/navigation'
 
 const badgeFetcher = (url: string) => fetch(url).then((r) => r.json())
 
-// Staff roles that are allowed to see the internal AI assistant.
+// Staff roles that may see the internal AI assistant.
+// This MUST stay in sync with STAFF_ROLES in lib/kernel/helpers.ts.
 // Contacts, vendor-portal-only, and unknown roles must NOT see it.
 const STAFF_AI_ROLES = new Set([
   'agent',
   'broker',
+  'broker_admin',
   'admin',
+  'superadmin',
   'tc',
   'transaction_coordinator',
+  'compliance_officer',
+  'team_lead',
+  'team_member',
   'lender',
   'vendor',
   'title',
-  'coordinator',
-  'staff',
+  'isa',
 ])
 
 const AUTH_TIMEOUT_MS = 8_000

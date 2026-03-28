@@ -193,26 +193,30 @@ export async function emitLifecycleEvent(params: EmitEventParams): Promise<void>
     const now = new Date().toISOString()
 
     // Parallel writes — one to activities, one to lifecycle_events.
+    // Guard: uuid columns must not receive empty strings — use null for anonymous actors.
+    const actorUuid  = params.actorId?.trim()    || null
+    const entityUuid = params.entityId?.trim()   || null
+    const brokerUuid = params.brokerageId?.trim() || null
+
     await Promise.all([
       supabase.from("activities").insert({
-        activity_type: params.eventType,
-        entity_type:   params.entityType,
-        // activities.contact_id = uuid FK — use contactId when available
-        contact_id:    params.contactId ?? null,
+        activity_type:  params.eventType,
+        entity_type:    params.entityType,
+        contact_id:     params.contactId     ?? null,
         transaction_id: params.transactionId ?? null,
-        agent_id:      params.actorId,
-        brokerage_id:  params.brokerageId,
-        title:         params.eventType.replace(/_/g, " ").toLowerCase(),
-        description:   JSON.stringify(params.metadata ?? {}),
-        status:        "completed",
-        created_at:    now,
+        agent_id:       actorUuid,
+        brokerage_id:   brokerUuid,
+        title:          params.eventType.replace(/_/g, " ").toLowerCase(),
+        description:    JSON.stringify(params.metadata ?? {}),
+        status:         "completed",
+        created_at:     now,
       }),
       supabase.from("lifecycle_events").insert({
         event_type:    params.eventType,
         entity_type:   params.entityType,
-        entity_id:     params.entityId,
-        actor_user_id: params.actorId,
-        brokerage_id:  params.brokerageId,
+        entity_id:     entityUuid,
+        actor_user_id: actorUuid,
+        brokerage_id:  brokerUuid,
         metadata:      params.metadata ?? {},
         created_at:    now,
       }),
