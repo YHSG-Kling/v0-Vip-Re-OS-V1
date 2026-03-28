@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
+import useSWR from 'swr'
 import { useAuth } from '@/lib/auth/client'
 import { Sidebar } from './sidebar'
 import { Header } from './header'
@@ -9,6 +10,9 @@ import { MobileBottomNav } from './mobile-bottom-nav'
 import { getNavigationForRole } from '@/app/config/navigation-config'
 import { Loader2 } from 'lucide-react'
 import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
+import type { BadgeCounts } from '@/app/types/navigation'
+
+const badgeFetcher = (url: string) => fetch(url).then((r) => r.json())
 
 // Staff roles that are allowed to see the internal AI assistant.
 // Contacts, vendor-portal-only, and unknown roles must NOT see it.
@@ -38,6 +42,14 @@ export function AppShell({ children }: AppShellProps) {
 
   // Track whether the 8-second auth timeout has fired
   const [authTimedOut, setAuthTimedOut] = useState(false)
+
+  // Fetch live badge counts — only after auth resolves and user has a session.
+  // Refreshes on each navigation (revalidateOnFocus) and every 60 seconds.
+  const { data: badgeCounts } = useSWR<Partial<BadgeCounts>>(
+    user ? '/api/dashboard/badge-counts' : null,
+    badgeFetcher,
+    { refreshInterval: 60_000, revalidateOnFocus: true }
+  )
 
   // Routes that have their own layout - bypass AppShell completely
   const bypassRoutes = ['/auth', '/login', '/signup', '/portal', '/settings', '/open-house', '/qr']
@@ -112,7 +124,7 @@ export function AppShell({ children }: AppShellProps) {
   return (
     <div className="flex h-screen bg-white">
       <div className="hidden lg:flex w-64 border-r border-gray-200 bg-white">
-        <Sidebar navigation={navigation} userContext={userContext} />
+        <Sidebar navigation={navigation} userContext={userContext} badgeCounts={badgeCounts} />
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
