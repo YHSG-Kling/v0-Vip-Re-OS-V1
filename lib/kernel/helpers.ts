@@ -10,8 +10,9 @@
 //
 // All functions handle missing rows gracefully (maybeSingle / try-catch).
 // All DB writes use the server client from @/lib/supabase/server.
-
-"use server"
+// NOTE: No "use server" directive here — these are plain utilities and async
+// helpers, not Next.js Server Actions. Files that call createClient() are
+// already running server-side via RSC / Route Handlers.
 
 import { createClient } from "@/lib/supabase/server"
 import { transitionLifecycle } from "./lifecycle"
