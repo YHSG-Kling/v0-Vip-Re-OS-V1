@@ -1,11 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useTransition } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { CheckCircle2, Edit3, AlertCircle, Sparkles } from "lucide-react"
+import { CheckCircle2, Edit3, AlertCircle, Sparkles, Loader2 } from "lucide-react"
+import { saveDescriptionToListing } from "@/app/actions/ai-content-generation"
+import { toast } from "@/hooks/use-toast"
 
 interface DescriptionApprovalCardProps {
   description: {
@@ -24,13 +26,17 @@ interface DescriptionApprovalCardProps {
     }
     approval_status?: string
   }
+  /** Required to write back to listings.public_remarks */
+  listingId?: string
   onApprove?: (id: string) => void
   onEdit?: (id: string, newText: string) => void
 }
 
-export function DescriptionApprovalCard({ description, onApprove, onEdit }: DescriptionApprovalCardProps) {
+export function DescriptionApprovalCard({ description, listingId, onApprove, onEdit }: DescriptionApprovalCardProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editedText, setEditedText] = useState("")
+  const [approved, setApproved] = useState(description.approval_status === "approved")
+  const [isPending, startTransition] = useTransition()
 
   const themFirstScore = description.metadata?.them_first_score || 0
   const validation = description.metadata?.them_first_validation
@@ -59,9 +65,29 @@ export function DescriptionApprovalCard({ description, onApprove, onEdit }: Desc
   }
 
   const handleApprove = () => {
-    if (onApprove) {
-      onApprove(description.id)
-    }
+    const textToSave = isEditing ? editedText : generatedText
+    startTransition(async () => {
+      // Write back to listings.public_remarks when listingId is provided
+      if (listingId) {
+        const result = await saveDescriptionToListing({
+          listingId,
+          contentId: description.id,
+          approvedText: textToSave,
+        })
+        if (!result.success) {
+          toast({
+            title: "Failed to save description",
+            description: result.error,
+            variant: "destructive",
+          })
+          return
+        }
+        toast({ title: "Description saved to listing" })
+        setApproved(true)
+        setIsEditing(false)
+      }
+      onApprove?.(description.id)
+    })
   }
 
   const getScoreBadge = () => {
@@ -179,9 +205,17 @@ export function DescriptionApprovalCard({ description, onApprove, onEdit }: Desc
             <Edit3 className="mr-2 h-4 w-4" />
             Edit
           </Button>
-          <Button className="flex-1" onClick={handleApprove} disabled={isEditing}>
-            <CheckCircle2 className="mr-2 h-4 w-4" />
-            Approve & Publish
+          <Button
+            className="flex-1"
+            onClick={handleApprove}
+            disabled={isPending || approved}
+          >
+            {isPending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <CheckCircle2 className="mr-2 h-4 w-4" />
+            )}
+            {approved ? "Saved to Listing" : "Approve & Save to Listing"}
           </Button>
         </div>
       </CardContent>

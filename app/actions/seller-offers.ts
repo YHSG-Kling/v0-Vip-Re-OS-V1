@@ -78,6 +78,17 @@ export async function acceptOffer(params: {
     return { success: false, error: "Invalid ID" }
   }
 
+  // ── COMPLIANCE GATE (System 7.1B — ABSOLUTE) ─────────────────────────────
+  // No offer may be accepted without a prior buyer.offer.compliance.passed event.
+  const { checkCompliancePassed } = await import("@/lib/buyer-offer/compliance-gate")
+  const complianceCheck = await checkCompliancePassed(offerId)
+  if (!complianceCheck.passed) {
+    return {
+      success: false,
+      error: `Compliance gate: offer ${offerId} has not passed compliance review. ${complianceCheck.error ?? ""}`.trim(),
+    }
+  }
+
   // Mark this offer as winner; set all others to not winning
   const { error: winnerError } = await supabase
     .from("offers")
@@ -128,39 +139,67 @@ export async function acceptOffer(params: {
     metadata:    { winning_offer_id: offerId },
   })
 
-  // Automatically create the transaction shell from the accepted offer
-  // This is the core Session D requirement: accept → transaction shell created automatically
-  try {
-    const { data: acceptedOffer } = await supabase
-      .from("offers")
-      .select("offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money, earnest_money_amount, contact_id")
-      .eq("id", offerId)
-      .single()
+  // ── CREATE TRANSACTION SHELL (HARD-REQUIRED) ─────────────────────────────
+  // Accepted offer MUST always produce a transaction record.
+  // This is a hard failure: if the transaction cannot be created, the entire
+  // accept is rolled back by returning an error (offer status update already
+  // happened, so we also revert it before returning).
+  const { data: acceptedOffer } = await supabase
+    .from("offers")
+    .select("offer_price, closing_date, inspection_period_days, financing_contingency_days, appraisal_contingency_days, earnest_money, earnest_money_amount, contact_id")
+    .eq("id", offerId)
+    .single()
 
-    if (acceptedOffer) {
-      const { createTransactionFromOffer } = await import("@/lib/transactions/offer-bridge")
-      await createTransactionFromOffer({
-        offerId,
-        brokerageId,
-        contractDate: new Date().toISOString().split("T")[0],
-        compliancePassedAt: new Date().toISOString(),
-        contractTerms: {
-          closingDate: acceptedOffer.closing_date ?? undefined,
-          inspectionDeadline: acceptedOffer.inspection_period_days
-            ? new Date(Date.now() + acceptedOffer.inspection_period_days * 86400000).toISOString().split("T")[0]
-            : undefined,
-          financingDeadline: acceptedOffer.financing_contingency_days
-            ? new Date(Date.now() + acceptedOffer.financing_contingency_days * 86400000).toISOString().split("T")[0]
-            : undefined,
-          appraisalDeadline: acceptedOffer.appraisal_contingency_days
-            ? new Date(Date.now() + acceptedOffer.appraisal_contingency_days * 86400000).toISOString().split("T")[0]
-            : undefined,
-        },
-      })
-    }
+  if (!acceptedOffer) {
+    // Revert: clear winning status so offer is not stranded
+    await supabase
+      .from("offers")
+      .update({ is_winning_offer: false, winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
+      .eq("id", offerId)
+    return { success: false, error: "[acceptOffer] Could not load offer data — acceptance rolled back." }
+  }
+
+  try {
+    const { createTransactionFromOffer } = await import("@/lib/transactions/offer-bridge")
+    await createTransactionFromOffer({
+      offerId,
+      brokerageId,
+      contractDate: new Date().toISOString().split("T")[0],
+      // Use the already-verified compliance timestamp from the gate above
+      compliancePassedAt: complianceCheck.complianceTimestamp ?? new Date().toISOString(),
+      contractTerms: {
+        closingDate: acceptedOffer.closing_date ?? undefined,
+        inspectionDeadline: acceptedOffer.inspection_period_days
+          ? new Date(Date.now() + acceptedOffer.inspection_period_days * 86400000).toISOString().split("T")[0]
+          : undefined,
+        financingDeadline: acceptedOffer.financing_contingency_days
+          ? new Date(Date.now() + acceptedOffer.financing_contingency_days * 86400000).toISOString().split("T")[0]
+          : undefined,
+        appraisalDeadline: acceptedOffer.appraisal_contingency_days
+          ? new Date(Date.now() + acceptedOffer.appraisal_contingency_days * 86400000).toISOString().split("T")[0]
+          : undefined,
+        earnestMoneyDue: acceptedOffer.earnest_money
+          ? new Date(Date.now() + 3 * 86400000).toISOString().split("T")[0]
+          : undefined,
+      },
+    })
   } catch (err) {
-    // Non-fatal: log but do not block the accept response
-    console.error("[acceptOffer] createTransactionFromOffer failed:", err)
+    // HARD FAIL — revert the offer status so it is not stranded as "accepted"
+    // with no corresponding transaction.
+    console.error("[acceptOffer] createTransactionFromOffer HARD FAIL — reverting offer:", err)
+    await supabase
+      .from("offers")
+      .update({ is_winning_offer: false, winning_offer: false, status: "submitted", responded_at: null, updated_at: new Date().toISOString() })
+      .eq("id", offerId)
+    // Also clear winning_offer flag on sibling offers we may have cleared
+    await supabase
+      .from("offers")
+      .update({ is_winning_offer: false, winning_offer: false, updated_at: new Date().toISOString() })
+      .eq("listing_id", listingId)
+    return {
+      success: false,
+      error: `[acceptOffer] Transaction creation failed — offer acceptance rolled back. ${err instanceof Error ? err.message : String(err)}`,
+    }
   }
 
   revalidatePath(`/dashboard/listings/${listingId}/offers`)

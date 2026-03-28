@@ -2617,3 +2617,58 @@ export async function getContentInsights(agentId: string) {
     recommendations,
   }
 }
+
+// ============================================
+// DESCRIPTION SAVE-BACK — writes approved text to listings.public_remarks
+// ============================================
+
+/**
+ * Save an approved AI-generated description into listings.public_remarks.
+ * This is the single write-path that closes the loop between AI generation
+ * (ai_generated_content) and the listing record (listings.public_remarks).
+ *
+ * Call this from the "Approve & Publish" button in DescriptionApprovalCard.
+ */
+export async function saveDescriptionToListing(params: {
+  listingId: string
+  contentId: string
+  approvedText: string
+}): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(params.listingId)) return { success: false, error: "Invalid listing ID" }
+  if (!isValidUUID(params.contentId)) return { success: false, error: "Invalid content ID" }
+  if (!params.approvedText?.trim()) return { success: false, error: "Approved text cannot be empty" }
+
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
+
+  // 1. Write the approved text to the listing's public_remarks field
+  const { error: listingError } = await supabase
+    .from("listings")
+    .update({
+      public_remarks: params.approvedText.trim(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.listingId)
+
+  if (listingError) {
+    console.error("[saveDescriptionToListing] Failed to update listing:", listingError)
+    return { success: false, error: listingError.message }
+  }
+
+  // 2. Mark the ai_generated_content record as approved
+  await supabase
+    .from("ai_generated_content")
+    .update({
+      compliance_approved: true,
+      status: "approved",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.contentId)
+
+  revalidatePath(`/dashboard/listings/${params.listingId}`)
+  revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)
+
+  return { success: true }
+}
