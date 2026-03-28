@@ -118,7 +118,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .maybeSingle(),
     supabase
       .from("transaction_coordinators")
-      .select("id, display_name, active_transactions_count, max_active_deals")
+      .select("id, display_name, max_active_deals")
       .eq("brokerage_id", brokerageId)
       .eq("is_active", true)
       .order("display_name"),

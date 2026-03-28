@@ -13,8 +13,10 @@ import {
   ArrowRight,
   Calendar,
   TrendingUp,
+  Plus,
 } from "lucide-react"
 import { TransactionCommandStrip } from "./components/transaction-command-strip"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
 export const dynamic = "force-dynamic"
 
@@ -192,6 +194,7 @@ export default async function TransactionsPage() {
                       const health = Array.isArray(tx.deal_health) ? tx.deal_health[0] : tx.deal_health
                       const healthScore = health?.overall_score
                       const riskLevel = health?.risk_level
+                      const isAtRisk = riskLevel === "high" || riskLevel === "critical" || riskLevel === "medium" || riskLevel === "at_risk"
 
                       return (
                         <tr key={tx.id} className="hover:bg-muted/50 group">
@@ -216,15 +219,35 @@ export default async function TransactionsPage() {
                           </td>
                           <td className="px-4 py-3">
                             {healthScore !== undefined ? (
-                              <div className="flex items-center gap-2">
-                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
-                                  riskLevel === "low" ? "bg-green-100 text-green-700" :
-                                  riskLevel === "medium" ? "bg-amber-100 text-amber-700" :
-                                  "bg-red-100 text-red-700"
-                                }`}>
-                                  {healthScore}
-                                </div>
-                              </div>
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <div className="flex items-center gap-1.5 cursor-help w-fit">
+                                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
+                                        riskLevel === "low" || riskLevel === "healthy" ? "bg-green-100 text-green-700" :
+                                        isAtRisk && !(riskLevel === "critical" || riskLevel === "high") ? "bg-amber-100 text-amber-700" :
+                                        (riskLevel === "critical" || riskLevel === "high") ? "bg-red-100 text-red-700" :
+                                        "bg-gray-100 text-gray-600"
+                                      }`}>
+                                        {healthScore}
+                                      </div>
+                                      {isAtRisk && (
+                                        <AlertTriangle className={`h-3 w-3 ${(riskLevel === "critical" || riskLevel === "high") ? "text-red-500" : "text-amber-500"}`} />
+                                      )}
+                                    </div>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" className="max-w-xs text-xs">
+                                    <p className="font-semibold mb-1">
+                                      Health Score: {healthScore}/100 · {riskLevel?.replace(/_/g, " ") ?? "unknown"}
+                                    </p>
+                                    {isAtRisk && (
+                                      <p className="text-muted-foreground">
+                                        This deal has risk factors. Open to view full report.
+                                      </p>
+                                    )}
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
                             ) : (
                               <span className="text-xs text-muted-foreground">--</span>
                             )}
@@ -242,9 +265,25 @@ export default async function TransactionsPage() {
                     })
                   ) : (
                     <tr>
-                      <td colSpan={7} className="px-4 py-8 text-center">
-                        <FileText className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
-                        <p className="text-muted-foreground mb-4">No transactions found. Use the New Transaction button above to track your deals.</p>
+                      <td colSpan={7} className="px-4 py-12 text-center">
+                        <FileText className="h-12 w-12 mx-auto text-muted-foreground/40 mb-4" />
+                        <p className="text-base font-medium text-foreground mb-1">No active transactions</p>
+                        <p className="text-sm text-muted-foreground mb-6">
+                          Start tracking your deals by creating a transaction.
+                        </p>
+                        <div className="flex items-center justify-center gap-3">
+                          <Link href="/dashboard/transactions/new">
+                            <Button>
+                              <Plus className="h-4 w-4 mr-2" />
+                              Create Manually
+                            </Button>
+                          </Link>
+                          <Link href="/dashboard/offers">
+                            <Button variant="outline">
+                              Convert from Offer
+                            </Button>
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                   )}

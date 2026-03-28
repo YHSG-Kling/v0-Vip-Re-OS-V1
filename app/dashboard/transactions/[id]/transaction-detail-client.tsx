@@ -339,7 +339,6 @@ interface TransactionDetailClientProps {
   availableTCs?: Array<{
     id: string
     display_name: string | null
-    active_transactions_count: number | null
     max_active_deals: number | null
   }>
   // Lender assignment
@@ -1077,29 +1076,46 @@ export function TransactionDetailClient({
               </CardHeader>
               <CardContent>
                 {healthScore ? (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
+                    {/* Score bar */}
                     <div className="h-2 bg-muted rounded-full overflow-hidden">
                       <div
                         className={cn(
                           "h-full transition-all",
                           healthScore.risk_level === "healthy" && "bg-green-500",
-                          healthScore.risk_level === "at_risk" && "bg-amber-500",
-                          healthScore.risk_level === "critical" && "bg-red-500"
+                          (healthScore.risk_level === "at_risk" || healthScore.risk_level === "medium") && "bg-amber-500",
+                          (healthScore.risk_level === "critical" || healthScore.risk_level === "high") && "bg-red-500"
                         )}
                         style={{ width: `${healthScore.overall_score}%` }}
                       />
                     </div>
-                    {healthScore.flags && healthScore.flags.length > 0 && (
-                      <div className="space-y-1">
-                        <ul className="space-y-1">
-                          {healthScore.flags.slice(0, 3).map((issue, i) => (
-                            <li key={i} className="flex items-start gap-1">
-                              <CircleDot className="h-3 w-3 mt-0.5 shrink-0" />
-                              {issue}
-                            </li>
+
+                    {/* At-risk / critical tooltip with risk factors */}
+                    {(healthScore.risk_level === "at_risk" || healthScore.risk_level === "critical" ||
+                      healthScore.risk_level === "high" || healthScore.risk_level === "medium") && healthScore.flags && healthScore.flags.length > 0 && (
+                      <div className={cn(
+                        "rounded-md border p-3 text-xs space-y-1",
+                        (healthScore.risk_level === "critical" || healthScore.risk_level === "high")
+                          ? "border-red-200 bg-red-50 text-red-800"
+                          : "border-amber-200 bg-amber-50 text-amber-800"
+                      )}>
+                        <TooltipProvider>
+                          <p className="font-semibold flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            {(healthScore.risk_level === "critical" || healthScore.risk_level === "high") ? "Critical Risk Factors" : "Risk Factors"}
+                          </p>
+                        </TooltipProvider>
+                        <ul className="space-y-0.5 list-disc list-inside">
+                          {healthScore.flags.slice(0, 5).map((flag, i) => (
+                            <li key={i}>{flag}</li>
                           ))}
                         </ul>
                       </div>
+                    )}
+
+                    {/* No flags but has score */}
+                    {(!healthScore.flags || healthScore.flags.length === 0) && (
+                      <p className="text-xs text-green-600 font-medium">No risk flags detected</p>
                     )}
                   </div>
                 ) : (
@@ -1553,27 +1569,78 @@ export function TransactionDetailClient({
                     </TooltipProvider>
                   </div>
                   <div className="space-y-2">
-                    {localMilestones.map((m) => (
+                    {localMilestones.map((m) => {
+                      const isOverdue = m.status !== "completed" && m.milestone_date
+                        ? new Date(m.milestone_date) < new Date()
+                        : false
+                      return (
                       <div key={m.id} className="flex items-center justify-between py-2 border-b last:border-0">
                         <div className="flex items-center gap-3">
                           <div
                             className={cn(
                               "w-3 h-3 rounded-full flex-shrink-0",
                               m.status === "completed" && "bg-green-500",
-                              m.status === "pending" && "bg-amber-500",
+                              isOverdue && "bg-red-500",
+                              !isOverdue && m.status === "pending" && "bg-amber-500",
                               m.status === "overdue" && "bg-red-500"
                             )}
                           />
-                          <span className="text-sm">{m.milestone_name.replace(/_/g, " ")}</span>
+                          <span className="text-sm font-medium">{m.milestone_name.replace(/_/g, " ")}</span>
                         </div>
-                        <div className="flex items-center gap-4">
-                          <span className="text-sm text-muted-foreground">
+                        <div className="flex items-center gap-3">
+                          {/* Date — red if overdue, green if complete */}
+                          <span className={cn(
+                            "text-sm",
+                            m.completed_at ? "text-green-600 font-medium" : isOverdue ? "text-red-600 font-semibold" : "text-muted-foreground"
+                          )}>
                             {m.completed_at
-                              ? `Completed ${new Date(m.completed_at).toLocaleDateString()}`
+                              ? `Completed ${format(new Date(m.completed_at), "MMM d")}`
                               : m.milestone_date
-                              ? new Date(m.milestone_date).toLocaleDateString()
+                              ? `${isOverdue ? "Overdue: " : ""}${format(new Date(m.milestone_date), "MMM d, yyyy")}`
                               : "No date set"}
                           </span>
+
+                          {/* Mark Complete button — only for non-completed milestones */}
+                          {m.status !== "completed" && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs px-2"
+                              disabled={isPending}
+                              onClick={() => {
+                                startTransition(async () => {
+                                  const supabase = createClient()
+                                  const now = new Date().toISOString()
+                                  const { error } = await supabase
+                                    .from("transaction_milestones")
+                                    .update({ status: "completed", completed_at: now })
+                                    .eq("id", m.id)
+                                  if (!error) {
+                                    // Log timeline activity
+                                    await supabase.from("transaction_timeline").insert({
+                                      transaction_id: transaction.id,
+                                      brokerage_id: brokerageId,
+                                      activity_type: "milestone_completed",
+                                      description: `Milestone completed: ${m.milestone_name.replace(/_/g, " ")}`,
+                                      performed_by: userId,
+                                      created_at: now,
+                                    })
+                                    setLocalMilestones((prev) =>
+                                      prev.map((row) =>
+                                        row.id === m.id ? { ...row, status: "completed", completed_at: now } : row
+                                      )
+                                    )
+                                    toast.success("Milestone marked complete")
+                                  } else {
+                                    toast.error("Failed to update milestone")
+                                  }
+                                })
+                              }}
+                            >
+                              Complete
+                            </Button>
+                          )}
+
                           <div className="flex items-center gap-2">
                             <span className="text-xs text-muted-foreground whitespace-nowrap">
                               {m.is_client_visible ? "Client sees this" : "Agent only"}
@@ -1581,7 +1648,6 @@ export function TransactionDetailClient({
                             <Switch
                               checked={m.is_client_visible ?? false}
                               onCheckedChange={async (visible) => {
-                                // Optimistic update
                                 setLocalMilestones((prev) =>
                                   prev.map((row) =>
                                     row.id === m.id ? { ...row, is_client_visible: visible } : row
@@ -1593,7 +1659,6 @@ export function TransactionDetailClient({
                                   .update({ is_client_visible: visible })
                                   .eq("id", m.id)
                                 if (error) {
-                                  // Revert on failure
                                   setLocalMilestones((prev) =>
                                     prev.map((row) =>
                                       row.id === m.id ? { ...row, is_client_visible: !visible } : row
@@ -1612,7 +1677,8 @@ export function TransactionDetailClient({
                           </div>
                         </div>
                       </div>
-                    ))}
+                      )
+                    })}
                     {localMilestones.length === 0 && (
                       <p className="text-sm text-muted-foreground">No milestones defined.</p>
                     )}
@@ -1668,7 +1734,21 @@ export function TransactionDetailClient({
             {/* Lender Tab */}
             <TabsContent value="lender" className="mt-4">
               <Card>
-                <CardContent className="pt-4">
+                <CardContent className="pt-4 space-y-4">
+                  {/* CTC Green Banner */}
+                  {lenderInfo?.clear_to_close_date && (
+                    <div className="flex items-center gap-3 rounded-lg border border-green-300 bg-green-50 px-4 py-3">
+                      <CheckCircle2 className="h-5 w-5 text-green-600 shrink-0" />
+                      <div>
+                        <p className="text-sm font-bold text-green-800">Clear to Close</p>
+                        <p className="text-xs text-green-700">
+                          Issued {new Date(lenderInfo.clear_to_close_date).toLocaleDateString()}
+                          {lenderInfo.lender_name ? ` by ${lenderInfo.lender_name}` : ""}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {lenderInfo ? (
                     <div className="grid grid-cols-2 gap-4 text-sm">
                       <div>
@@ -1679,6 +1759,14 @@ export function TransactionDetailClient({
                         <p className="text-muted-foreground">Loan Officer</p>
                         <p className="font-medium">{lenderInfo.loan_officer_name ?? "Not set"}</p>
                       </div>
+                      {lenderInfo.loan_officer_email && (
+                        <div className="col-span-2">
+                          <p className="text-muted-foreground">Contact</p>
+                          <p className="font-medium">{lenderInfo.loan_officer_email}
+                            {lenderInfo.loan_officer_phone ? ` · ${lenderInfo.loan_officer_phone}` : ""}
+                          </p>
+                        </div>
+                      )}
                       <div>
                         <p className="text-muted-foreground">Loan Type</p>
                         <p className="font-medium">{lenderInfo.loan_type ?? "Not set"}</p>
@@ -1696,10 +1784,22 @@ export function TransactionDetailClient({
                         </p>
                       </div>
                       <div>
+                        <p className="text-muted-foreground">Underwriting</p>
+                        <p className="font-medium capitalize">
+                          {lenderInfo.underwriting_status?.replace(/_/g, " ") ?? "Not started"}
+                        </p>
+                      </div>
+                      {lenderInfo.appraisal_value && (
+                        <div>
+                          <p className="text-muted-foreground">Appraisal Value</p>
+                          <p className="font-medium">${lenderInfo.appraisal_value.toLocaleString()}</p>
+                        </div>
+                      )}
+                      <div>
                         <p className="text-muted-foreground">Clear to Close</p>
-                        <p className="font-medium">
-{lenderInfo.clear_to_close_date
-                        ? new Date(lenderInfo.clear_to_close_date).toLocaleDateString()
+                        <p className={cn("font-medium", lenderInfo.clear_to_close_date ? "text-green-600" : "text-muted-foreground")}>
+                          {lenderInfo.clear_to_close_date
+                            ? new Date(lenderInfo.clear_to_close_date).toLocaleDateString()
                             : "Pending"}
                         </p>
                       </div>
@@ -2861,26 +2961,90 @@ export function TransactionDetailClient({
             {/* Commissions Tab */}
             <TabsContent value="commissions" className="mt-4">
               <Card>
-                <CardContent className="pt-4">
-{commissions.length > 0 ? (
-                <div className="space-y-3">
-                  {commissions.map((c) => (
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <DollarSign className="h-4 w-4" />
+                    Commission Summary
+                  </CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs h-7"
+                    disabled={isPending}
+                    onClick={() => {
+                      startTransition(async () => {
+                        const { calculateCommissions } = await import("@/app/actions/transactions")
+                        const result = await calculateCommissions(transaction.id)
+                        if (result?.success) {
+                          toast.success("Commissions recalculated")
+                          router.refresh()
+                        } else {
+                          toast.error("Recalculation failed")
+                        }
+                      })
+                    }}
+                  >
+                    {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                    Recalculate
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {/* CLOSED: show commission summary banner */}
+                  {currentStage === "CLOSED" && commissions.length > 0 && (
+                    <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-4">
+                      <p className="text-sm font-bold text-green-800 mb-2 flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4" />
+                        Transaction Closed — Final Commission Summary
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 text-xs text-green-700">
+                        <span>Gross Commission</span>
+                        <span className="font-semibold text-right">
+                          ${(transaction.purchase_price * (transaction.commission_percentage ?? 3) / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        </span>
+                        <span>Total Distributed</span>
+                        <span className="font-semibold text-right">
+                          ${commissions.reduce((s, c) => s + (c.calculated_amount ?? c.flat_amount ?? 0), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {commissions.length > 0 ? (
+                    <div className="space-y-2">
+                      {commissions.map((c) => (
                         <div key={c.id} className="flex items-center justify-between py-2 border-b last:border-0">
                           <div>
                             <p className="text-sm font-medium">{c.recipient_name}</p>
-                            <p className="text-xs text-muted-foreground">{c.recipient_type}</p>
+                            <p className="text-xs text-muted-foreground capitalize">{c.recipient_type} · {c.commission_type?.replace(/_/g, " ") ?? "split"}</p>
                           </div>
                           <div className="text-right">
-                            <p className="text-sm font-medium">{c.rate_percentage ?? c.split_percentage ?? 0}%</p>
-{(c.calculated_amount || c.flat_amount) && (
-                            <p className="text-xs text-muted-foreground">${(c.calculated_amount ?? c.flat_amount ?? 0).toLocaleString()}</p>
+                            <p className="text-sm font-medium">
+                              {c.rate_percentage ?? c.split_percentage
+                                ? `${(c.rate_percentage ?? c.split_percentage ?? 0).toFixed(2)}%`
+                                : c.flat_amount ? `$${c.flat_amount.toLocaleString()}` : "—"}
+                            </p>
+                            {(c.calculated_amount || c.flat_amount) && (
+                              <p className="text-xs text-muted-foreground">
+                                ${(c.calculated_amount ?? c.flat_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                              </p>
+                            )}
+                            {c.status && (
+                              <Badge variant={c.status === "paid" ? "default" : "secondary"} className="mt-1 text-[10px] px-1 h-4">
+                                {c.status}
+                              </Badge>
                             )}
                           </div>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground">No commission splits defined.</p>
+                    <div className="py-6 text-center space-y-2">
+                      <p className="text-sm text-muted-foreground">No commission splits defined yet.</p>
+                      <p className="text-xs text-muted-foreground">
+                        Commission splits are calculated automatically when the transaction advances to Closing Prep.
+                        Click Recalculate to trigger manually.
+                      </p>
+                    </div>
                   )}
                 </CardContent>
               </Card>

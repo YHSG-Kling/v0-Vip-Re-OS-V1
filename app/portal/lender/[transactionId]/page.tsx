@@ -74,7 +74,7 @@ export default async function LenderTransactionDetailPage({
   // Get lender profile
   const { data: lender } = await supabase
     .from("lender_portal_users")
-    .select("id, email, company_name")
+    .select("id, user_id, lender_company")
     .eq("user_id", user.id)
     .single()
 
@@ -138,7 +138,7 @@ export default async function LenderTransactionDetailPage({
             </Link>
           </Button>
           <h1 className="text-2xl font-bold">{transaction.property_address || "Transaction Details"}</h1>
-          <p className="text-muted-foreground">{lender.company_name}</p>
+          <p className="text-muted-foreground">{lender.lender_company}</p>
         </div>
         <Badge variant="secondary" className={`${statusConfig.color} text-sm px-3 py-1`}>
           {statusConfig.label}

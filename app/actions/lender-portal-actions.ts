@@ -18,24 +18,34 @@ export async function getLenderTransactionDetail(transactionId: string, lenderId
 
   const { data: lender } = await supabase
     .from("lender_portal_users")
-    .select("id, email, company_name, assigned_transactions")
-    .eq("id", lenderId)
+    .select("id, user_id, lender_company, brokerage_id")
+    .eq("id", data.lenderId)
     .single()
 
   if (!lender) throw new Error("Lender not found")
 
+  // Auth: lender is authorized if they are directly assigned to this transaction
+  // via lender_portal_users.transaction_id OR via transactions.lender_id
+  const isDirectlyAssigned = lender.transaction_id === transactionId
+
+  const { data: txnLenderCheck } = await supabase
+    .from("transactions")
+    .select("lender_id")
+    .eq("id", transactionId)
+    .maybeSingle()
+
+  const isTransactionLender = txnLenderCheck?.lender_id === lenderId
+
+  if (!isDirectlyAssigned && !isTransactionLender) {
+    throw new Error("Unauthorized: Lender not assigned to this transaction")
+  }
+
+  // Get lender details from transaction_lenders for loan specifics
   const { data: lenderAssignment } = await supabase
     .from("transaction_lenders")
     .select("*")
     .eq("transaction_id", transactionId)
-    .eq("lender_email", lender.email)
-    .single()
-
-  const isAssignedViaArray = lender.assigned_transactions?.includes(transactionId)
-
-  if (!lenderAssignment && !isAssignedViaArray) {
-    throw new Error("Unauthorized: Lender not assigned to this transaction")
-  }
+    .maybeSingle()
 
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
@@ -157,7 +167,7 @@ export async function issueClearToClose(data: {
     .from("transaction_milestones")
     .update({
       status: "completed",
-      completed_date: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
     })
     .eq("transaction_id", data.transactionId)
     .in("milestone_name", ["clear_to_close", "clear_to_close_received"])
@@ -168,22 +178,22 @@ export async function issueClearToClose(data: {
       milestone_name: "clear_to_close_received",
       milestone_type: "lender",
       status: "completed",
-      completed_date: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
     })
   }
 
+  // Update transaction_lenders by transaction_id (no lender_email column)
   await supabase
     .from("transaction_lenders")
-    .update({ loan_status: "clear_to_close" })
+    .update({ underwriting_status: "approved", clear_to_close_date: new Date().toISOString().split("T")[0] })
     .eq("transaction_id", data.transactionId)
-    .eq("lender_email", lender.email)
 
   if (transaction.buyer_contact_id) {
     await supabase.from("client_portal_messages").insert({
       contact_id: transaction.buyer_contact_id,
       direction: "outbound",
       channel: "portal",
-      body: `Great news! ${lender.company_name || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
+      body: `Great news! ${lender.lender_company || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
       created_at: new Date().toISOString(),
     })
   }
@@ -195,7 +205,7 @@ export async function issueClearToClose(data: {
     entity_id: data.transactionId,
     metadata: {
       milestone_name: "clear_to_close_received",
-      issued_by: lender.email,
+      issued_by_lender_id: lender.id,
       issued_by_type: "lender",
     },
     created_at: new Date().toISOString(),
@@ -218,7 +228,7 @@ export async function flagLenderIssue(data: {
 
   const { data: lender } = await supabase
     .from("lender_portal_users")
-    .select("id, email, company_name")
+    .select("id, user_id, lender_company, brokerage_id")
     .eq("id", data.lenderId)
     .single()
 
@@ -236,11 +246,10 @@ export async function flagLenderIssue(data: {
     contact_id: transaction.agent_id,
     direction: "outbound",
     channel: "portal",
-    body: `[LENDER ISSUE] ${lender.company_name || "Lender"} has flagged an issue for ${transaction.property_address || "transaction"}:\n\n${data.issueDescription}`,
+    body: `[LENDER ISSUE] ${lender.lender_company || "Lender"} has flagged an issue for ${transaction.property_address || "transaction"}:\n\n${data.issueDescription}`,
     metadata: {
       type: "lender_issue",
       lender_id: data.lenderId,
-      lender_email: lender.email,
       transaction_id: data.transactionId,
     },
     created_at: new Date().toISOString(),
@@ -255,7 +264,7 @@ export async function flagLenderIssue(data: {
     entity_id: data.transactionId,
     metadata: {
       module: "lender_issue",
-      issued_by: lender.email,
+      issued_by_lender_id: lender.id,
       issue_description: data.issueDescription,
     },
     created_at: new Date().toISOString(),
@@ -275,20 +284,20 @@ export async function updateLenderLoanStatus(data: {
 
   const { data: lender } = await supabase
     .from("lender_portal_users")
-    .select("id, email")
+    .select("id, user_id, lender_company")
     .eq("id", data.lenderId)
     .single()
 
   if (!lender) throw new Error("Lender not found")
 
+  // transaction_lenders has no lender_email — update by transaction_id only
   const { error } = await supabase
     .from("transaction_lenders")
     .update({
-      loan_status: data.newStatus,
+      underwriting_status: data.newStatus,
       updated_at: new Date().toISOString(),
     })
     .eq("transaction_id", data.transactionId)
-    .eq("lender_email", lender.email)
 
   if (error) throw error
 
