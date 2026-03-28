@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateAIResponse } from "@/lib/ai/models"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { isValidUUID } from "@/lib/utils/validation"
+import { isValidUUID } from "@/lib/validations"
 
 export interface GenerateVideoScriptParams {
   brokerageId: string

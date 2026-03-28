@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { isValidUUID } from "@/lib/utils/validation"
+import { isValidUUID } from "@/lib/validations"
 
 export type DistributeVideoAction =
   | "post_now"
