@@ -50,12 +50,12 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   // Load listing — auth scope: agent=own, team_lead=team, broker/admin=any
   let listingQuery = supabase
     .from("listings")
-    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, assigned_agent_id, brokerage_id, list_price, seller_contact_id")
+    .select("id, address, city, state, zip, lifecycle_stage, go_live_date, open_house_marketing_date, open_house_event_date, agent_id, brokerage_id, list_price, seller_contact_id, marketing_tier_id, status")
     .eq("id", listingId)
     .eq("brokerage_id", userRow.brokerage_id)
 
   if (userRow.role === "agent") {
-    listingQuery = listingQuery.eq("assigned_agent_id", user.id)
+    listingQuery = listingQuery.eq("agent_id", user.id)
   }
 
   const { data: listing } = await listingQuery.single()
@@ -120,11 +120,13 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
       getListingMedia(listingId),
       getVideoProjects(listingId),
       getOpenHouseDashboard(listingId),
-      supabase
-        .from("listing_marketing_tiers")
-        .select("id, tier_name, description")
-        .eq("id", listing.marketing_tier_id ?? "00000000-0000-0000-0000-000000000000")
-        .maybeSingle(),
+      listing.marketing_tier_id
+        ? supabase
+            .from("listing_marketing_tiers")
+            .select("id, tier_name, description")
+            .eq("id", listing.marketing_tier_id)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
       supabase
         .from("neighborhood_reports")
         .select("id, neighborhood_name, market_trend, median_home_price, ai_summary")
@@ -143,7 +145,8 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const videos = videosResult.data ?? []
   const photoCount = media.filter((m: any) => m.media_type === "photo").length
   const videoCount = videos.length
-  const mediaReady = photoCount >= 10
+  // Spec: minimum 5 photos to launch
+  const mediaReady = photoCount >= 5
 
   const currentTier = tierResult.data
   const marketingReady = !!currentTier
@@ -191,9 +194,9 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
 
   // Blockers
   const blockers: string[] = []
-  if (!mediaReady) blockers.push("Need 10+ photos")
-  if (!publishReady) blockers.push("Missing required fields")
-  if (!marketingReady) blockers.push("No marketing tier")
+  if (!mediaReady) blockers.push(`Need at least 5 photos (${photoCount} uploaded)`)
+  if (!publishReady) blockers.push("Missing required listing fields")
+  if (!marketingReady) blockers.push("No marketing tier selected")
 
   const currentStage = (listing.lifecycle_stage ?? "LEAD") as ListingStage
   const allStages = getAllStages()
@@ -361,8 +364,8 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
               brokerageId={userRow.brokerage_id}
               role={userRow.role as "agent" | "team_lead" | "admin" | "broker"}
               currentStage={currentStage}
-              listingAddress={`${listing.address}, ${listing.city} ${listing.state}`}
-              listingStatus={listing.status ?? ""}
+              listingAddress={`${listing.address}, ${listing.city}, ${listing.state}`}
+              listingStatus={(listing as any).status ?? ""}
               mediaApproved={mediaApproved}
               transactionId={transactionId}
             />

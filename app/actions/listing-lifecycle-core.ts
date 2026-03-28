@@ -167,35 +167,54 @@ async function evaluateLaunchBlockers(
 ): Promise<string[]> {
   const blockers: string[] = []
 
-  const [listingResult, photoCountResult] = await Promise.all([
+  const [listingResult, photoCountResult, mediaCountResult] = await Promise.all([
     supabase
       .from("listings")
-      .select("address, list_price, public_remarks, assigned_agent_id, seller_contact_id")
+      .select("address, list_price, seller_contact_id")
       .eq("id", listingId)
       .maybeSingle(),
     supabase
       .from("listing_photos")
       .select("id", { count: "exact", head: true })
       .eq("listing_id", listingId),
+    // Also check listing_media table (photos stored there in some flows)
+    supabase
+      .from("listing_media")
+      .select("id", { count: "exact", head: true })
+      .eq("listing_id", listingId)
+      .eq("media_type", "photo"),
   ])
 
   const listing = listingResult.data
   if (!listing) return ["Listing record not found"]
 
   if (!listing.seller_contact_id) {
-    blockers.push("No seller contact attached")
+    blockers.push("No seller contact linked")
   }
   if (!listing.list_price) {
     blockers.push("No list price set")
   }
 
-  const photoCount = photoCountResult.count ?? 0
+  // Count photos from both tables and take the max
+  const photoCountA = photoCountResult.count ?? 0
+  const photoCountB = mediaCountResult.count ?? 0
+  const photoCount = Math.max(photoCountA, photoCountB)
+  // Minimum 5 photos per spec
   if (photoCount < 5) {
     blockers.push(`Photos: need at least 5 (${photoCount} uploaded)`)
   }
 
-  if (!listing.public_remarks || listing.public_remarks.length < 50) {
-    blockers.push("Public remarks missing or too short (minimum 50 characters)")
+  // Check public_remarks from listings table
+  const { data: remarkRow } = await supabase
+    .from("listings")
+    .select("public_remarks" as any)
+    .eq("id", listingId)
+    .maybeSingle()
+    .then(r => r as { data: { public_remarks?: string } | null })
+
+  const publicRemarks = (remarkRow as any)?.public_remarks
+  if (!publicRemarks || publicRemarks.length < 50) {
+    blockers.push("Listing description missing or too short (minimum 50 characters)")
   }
 
   return blockers

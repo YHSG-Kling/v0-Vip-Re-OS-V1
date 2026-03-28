@@ -40,13 +40,28 @@ export default async function ListingsPage() {
     redirect("/login")
   }
 
-  // Fetch listings with expanded data
+  // Fetch listings with correct schema columns
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, address, city, state, price, status, lifecycle_stage, beds, baths, sqft, created_at, days_on_market, views_count")
+    .select("id, address, city, state, list_price, status, lifecycle_stage, bedrooms, bathrooms, sqft, created_at, stage_updated_at, showing_count")
     .eq("agent_id", user.id)
     .order("created_at", { ascending: false })
     .limit(50)
+
+  // Fetch pending offer counts per listing (for badge)
+  const listingIds = listings?.map(l => l.id) ?? []
+  const { data: offerCounts } = listingIds.length > 0
+    ? await supabase
+        .from("offers")
+        .select("listing_id")
+        .in("listing_id", listingIds)
+        .in("status", ["submitted", "pending", "received"])
+    : { data: [] }
+
+  const offerCountByListing: Record<string, number> = {}
+  for (const offer of offerCounts ?? []) {
+    offerCountByListing[offer.listing_id] = (offerCountByListing[offer.listing_id] ?? 0) + 1
+  }
 
   // Calculate stats
   const activeListings = listings?.filter(l => l.status === "active") || []
@@ -54,9 +69,16 @@ export default async function ListingsPage() {
   const comingSoonListings = listings?.filter(
     l => l.lifecycle_stage === "COMING_SOON_PREP" || l.lifecycle_stage === "COMING_SOON_ACTIVE"
   ) || []
-  const totalVolume = activeListings.reduce((sum, l) => sum + (l.price || 0), 0)
-  const avgDaysOnMarket = activeListings.length > 0 
-    ? Math.round(activeListings.reduce((sum, l) => sum + (l.days_on_market || 0), 0) / activeListings.length)
+  const totalVolume = activeListings.reduce((sum, l) => sum + (l.list_price || 0), 0)
+  // Derive DOM from stage_updated_at as a proxy (no days_on_market column)
+  const avgDaysOnMarket = activeListings.length > 0
+    ? Math.round(
+        activeListings.reduce((sum, l) => {
+          const entered = l.stage_updated_at ? new Date(l.stage_updated_at) : null
+          const dom = entered ? Math.floor((Date.now() - entered.getTime()) / 86_400_000) : 0
+          return sum + dom
+        }, 0) / activeListings.length
+      )
     : 0
 
   return (
@@ -129,7 +151,11 @@ export default async function ListingsPage() {
                 <div>
                   <p className="text-sm text-muted-foreground">Total Volume</p>
                   <p className="text-2xl font-bold text-foreground">
-                    ${(totalVolume / 1000000).toFixed(1)}M
+                    {totalVolume >= 1_000_000
+                      ? `$${(totalVolume / 1_000_000).toFixed(1)}M`
+                      : totalVolume >= 1_000
+                      ? `$${(totalVolume / 1_000).toFixed(0)}K`
+                      : totalVolume > 0 ? `$${totalVolume.toLocaleString()}` : "—"}
                   </p>
                 </div>
                 <DollarSign className="h-8 w-8 text-blue-500 opacity-50" />
@@ -187,10 +213,14 @@ export default async function ListingsPage() {
                     const statusConfig = isComingSoon
                       ? STATUS_CONFIG.coming_soon
                       : STATUS_CONFIG[listing.status] || STATUS_CONFIG.active
+                    const pendingOffers = offerCountByListing[listing.id] ?? 0
+                    const dom = listing.stage_updated_at
+                      ? Math.floor((Date.now() - new Date(listing.stage_updated_at).getTime()) / 86_400_000)
+                      : null
                     return (
                       <div key={listing.id} className="flex items-stretch border-b last:border-b-0 border-border hover:bg-muted/50 transition-colors">
                         <Link
-                          href={isComingSoon ? `/dashboard/listings/${listing.id}/lifecycle` : `/listings/${listing.id}`}
+                          href={`/dashboard/listings/${listing.id}/lifecycle`}
                           className="flex-1 p-4 flex items-center gap-4 min-w-0"
                         >
                           <div className="flex-shrink-0 w-16 h-16 bg-muted rounded-lg flex items-center justify-center">
@@ -208,28 +238,34 @@ export default async function ListingsPage() {
                                 )}
                                 {statusConfig.label}
                               </Badge>
+                              {/* Offer received badge */}
+                              {pendingOffers > 0 && (
+                                <Badge className="bg-blue-100 text-blue-700 text-xs">
+                                  {pendingOffers} Offer{pendingOffers !== 1 ? "s" : ""}
+                                </Badge>
+                              )}
                             </div>
                             <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground">
                               <MapPin className="h-3 w-3" />
                               <span>{listing.city}, {listing.state}</span>
-                              {listing.beds && <span className="ml-2">{listing.beds} bd</span>}
-                              {listing.baths && <span>{listing.baths} ba</span>}
+                              {listing.bedrooms && <span className="ml-2">{listing.bedrooms} bd</span>}
+                              {listing.bathrooms && <span>{listing.bathrooms} ba</span>}
                               {listing.sqft && <span>{listing.sqft.toLocaleString()} sqft</span>}
                             </div>
                           </div>
                           <div className="flex-shrink-0 text-right">
                             <p className="text-lg font-bold text-foreground">
-                              ${listing.price?.toLocaleString() || "N/A"}
+                              ${listing.list_price?.toLocaleString() || "N/A"}
                             </p>
                             <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
-                              {listing.views_count !== undefined && (
+                              {listing.showing_count != null && listing.showing_count > 0 && (
                                 <span className="flex items-center gap-1">
                                   <Eye className="h-3 w-3" />
-                                  {listing.views_count}
+                                  {listing.showing_count} showings
                                 </span>
                               )}
-                              {listing.days_on_market !== undefined && (
-                                <span>{listing.days_on_market} DOM</span>
+                              {dom != null && (
+                                <span>{dom} DOM</span>
                               )}
                             </div>
                           </div>
