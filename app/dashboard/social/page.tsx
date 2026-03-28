@@ -13,10 +13,11 @@ export const metadata = {
 export default async function SocialDashboardPage({
   searchParams,
 }: {
-  searchParams: { action?: string }
+  searchParams: Promise<{ action?: string }>
 }) {
   const supabase = await createClient()
-  const openCreate = searchParams.action === "create"
+  const { action } = await searchParams
+  const openCreate = action === "create"
 
   // Get current user
   const {
