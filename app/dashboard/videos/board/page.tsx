@@ -38,6 +38,10 @@ import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
+import { distributeVideo } from "@/app/actions/video/distribute-video"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -106,12 +110,37 @@ export default function VideoKanbanBoard() {
   const [refreshing, setRefreshing] = useState(false)
   const [pollingVideoIds, setPollingVideoIds] = useState<Set<string>>(new Set())
 
-  // Preview/Publish Dialog
+  // Preview/Distribute Dialog
   const [previewDialog, setPreviewDialog] = useState<{ open: boolean; video: VideoProject | null }>({
     open: false,
     video: null,
   })
   const [publishing, setPublishing] = useState(false)
+
+  // Distribution state
+  const [distributing, setDistributing] = useState(false)
+  const [distPlatform, setDistPlatform] = useState("instagram")
+  const [distAccountId, setDistAccountId] = useState("")
+  const [distScheduledFor, setDistScheduledFor] = useState("")
+  const [socialAccounts, setSocialAccounts] = useState<any[]>([])
+
+  // Load social accounts when dialog opens
+  useEffect(() => {
+    if (!previewDialog.open || !brokerage?.id) return
+    supabase
+      .from("social_media_accounts")
+      .select("id, platform, account_name, is_active")
+      .eq("brokerage_id", brokerage.id)
+      .eq("is_active", true)
+      .order("platform")
+      .then(({ data }) => {
+        setSocialAccounts(data ?? [])
+        if (data?.[0]) {
+          setDistAccountId(data[0].id)
+          setDistPlatform(data[0].platform)
+        }
+      })
+  }, [previewDialog.open, brokerage?.id, supabase])
 
   // ─── LOAD VIDEOS ────────────────────────────────────────────────────────────
 
@@ -305,6 +334,46 @@ export default function VideoKanbanBoard() {
     }
   }
 
+  async function handleDistribute(
+    video: VideoProject,
+    action: "post_now" | "schedule" | "draft" | "copy_link",
+    opts?: { scheduledFor?: string }
+  ) {
+    if (!brokerage?.id || !user?.id) return
+    setDistributing(true)
+    try {
+      const result = await distributeVideo({
+        videoProjectId: video.id,
+        brokerageId: brokerage.id,
+        userId: user.id,
+        action,
+        platform: distPlatform || "instagram",
+        socialAccountId: distAccountId || undefined,
+        scheduledFor: opts?.scheduledFor,
+      })
+      if (!result.success) {
+        toast.error(result.error ?? "Distribution failed")
+        return
+      }
+      if (action === "copy_link" && result.shareableLink) {
+        await navigator.clipboard.writeText(result.shareableLink)
+        toast.success("Link copied to clipboard")
+      } else if (action === "post_now") {
+        toast.success("Video scheduled for immediate posting")
+        setPreviewDialog({ open: false, video: null })
+      } else if (action === "schedule") {
+        toast.success("Video scheduled")
+        setPreviewDialog({ open: false, video: null })
+      } else if (action === "draft") {
+        toast.success("Saved to drafts")
+      }
+    } catch (err: any) {
+      toast.error(err.message ?? "Distribution failed")
+    } finally {
+      setDistributing(false)
+    }
+  }
+
   async function handleDelete(videoId: string) {
     if (!confirm("Are you sure you want to delete this video?")) return
 
@@ -420,8 +489,12 @@ export default function VideoKanbanBoard() {
                                   <DropdownMenuSeparator />
                                 </>
                               )}
-                              {video.status === "published" && video.video_url && (
+                              {(video.status === "published" || video.status === "preview_ready" || video.status === "ready" || video.status === "completed") && video.video_url && (
                                 <>
+                                  <DropdownMenuItem onClick={() => setPreviewDialog({ open: true, video })}>
+                                    <Share2 className="mr-2 h-4 w-4" />
+                                    Distribute
+                                  </DropdownMenuItem>
                                   <DropdownMenuItem asChild>
                                     <a href={video.video_url} target="_blank" rel="noopener noreferrer">
                                       <Play className="mr-2 h-4 w-4" />
@@ -434,9 +507,14 @@ export default function VideoKanbanBoard() {
                                       Download
                                     </a>
                                   </DropdownMenuItem>
-                                  <DropdownMenuItem>
-                                    <Share2 className="mr-2 h-4 w-4" />
-                                    Share
+                                  <DropdownMenuItem
+                                    onClick={async () => {
+                                      await navigator.clipboard.writeText(video.video_url!)
+                                      toast.success("Link copied")
+                                    }}
+                                  >
+                                    <ExternalLink className="mr-2 h-4 w-4" />
+                                    Copy Link
                                   </DropdownMenuItem>
                                   <DropdownMenuSeparator />
                                 </>
@@ -587,12 +665,97 @@ export default function VideoKanbanBoard() {
                 </div>
               </div>
 
+              {/* Distribution Options */}
+              <div className="space-y-3 border rounded-lg p-4">
+                <p className="text-sm font-medium">Distribute this video</p>
+
+                {socialAccounts.length > 0 && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Account</Label>
+                      <Select value={distAccountId} onValueChange={(v) => {
+                        setDistAccountId(v)
+                        const acc = socialAccounts.find(a => a.id === v)
+                        if (acc) setDistPlatform(acc.platform)
+                      }}>
+                        <SelectTrigger className="h-8 text-xs">
+                          <SelectValue placeholder="Select account" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {socialAccounts.map(acc => (
+                            <SelectItem key={acc.id} value={acc.id} className="text-xs">
+                              {acc.account_name} ({acc.platform})
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs text-muted-foreground">Schedule for</Label>
+                      <Input
+                        type="datetime-local"
+                        value={distScheduledFor}
+                        onChange={(e) => setDistScheduledFor(e.target.value)}
+                        className="h-8 text-xs"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <Button
+                    size="sm"
+                    disabled={distributing || !previewDialog.video?.video_url}
+                    onClick={() => previewDialog.video && handleDistribute(previewDialog.video, "post_now")}
+                  >
+                    {distributing ? <Loader2 className="mr-2 h-3 w-3 animate-spin" /> : <Send className="mr-2 h-3 w-3" />}
+                    Post Now
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={distributing || !distScheduledFor || !previewDialog.video?.video_url}
+                    onClick={() => previewDialog.video && handleDistribute(previewDialog.video, "schedule", { scheduledFor: distScheduledFor })}
+                  >
+                    Schedule
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={distributing || !previewDialog.video?.video_url}
+                    onClick={() => previewDialog.video && handleDistribute(previewDialog.video, "draft")}
+                  >
+                    Add to Drafts
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!previewDialog.video?.video_url}
+                    onClick={() => previewDialog.video && handleDistribute(previewDialog.video, "copy_link")}
+                  >
+                    <ExternalLink className="mr-2 h-3 w-3" />
+                    Copy Link
+                  </Button>
+                </div>
+
+                {previewDialog.video?.video_url && (
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="ghost" className="flex-1" asChild>
+                      <a href={previewDialog.video.video_url} download>
+                        <Download className="mr-2 h-3 w-3" />
+                        Download
+                      </a>
+                    </Button>
+                  </div>
+                )}
+              </div>
+
               {/* Kernel Governance Notice */}
               <Alert>
                 <Shield className="h-4 w-4" />
                 <AlertTitle>Kernel Governance</AlertTitle>
                 <AlertDescription>
-                  By publishing this video, you confirm it meets compliance requirements and branding guidelines.
+                  Distribution is subject to compliance review. Ensure your video meets Fair Housing and brand guidelines before posting.
                 </AlertDescription>
               </Alert>
             </div>
@@ -600,23 +763,7 @@ export default function VideoKanbanBoard() {
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setPreviewDialog({ open: false, video: null })}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => previewDialog.video && handlePublish(previewDialog.video)}
-              disabled={publishing}
-            >
-              {publishing ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Publishing...
-                </>
-              ) : (
-                <>
-                  <Send className="mr-2 h-4 w-4" />
-                  Approve & Publish
-                </>
-              )}
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

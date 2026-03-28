@@ -50,6 +50,7 @@ import {
   SellerUpdateVideoModeCard,
 } from "../components/business-context"
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
+import { generateVideoScript } from "@/app/actions/video/generate-script"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -139,6 +140,14 @@ export default function VideoCreatePage() {
   const [selectedScript, setSelectedScript] = useState<string>("")
   const [customScript, setCustomScript] = useState<string>("")
   const [scriptTitle, setScriptTitle] = useState<string>("")
+
+  // AI Script generation (Step 1 custom tab)
+  const [aiScriptDescription, setAiScriptDescription] = useState<string>("")
+  const [aiScriptVideoType, setAiScriptVideoType] = useState<string>("custom")
+  const [aiScriptTone, setAiScriptTone] = useState<"professional" | "friendly" | "luxury" | "educational">("professional")
+  const [aiScriptDuration, setAiScriptDuration] = useState<number>(60)
+  const [isAiGenerating, setIsAiGenerating] = useState(false)
+  const [aiScriptError, setAiScriptError] = useState<string | null>(null)
 
   // Step 2: Avatar & Voice
   const [selectedAvatar, setSelectedAvatar] = useState<string>("")
@@ -252,19 +261,24 @@ export default function VideoCreatePage() {
         .insert({
           agent_id: user.id,
           brokerage_id: brokerage.id,
-          title: scriptTitle || `Video - ${new Date().toLocaleDateString()}`,
+          title: scriptTitle || `Video — ${new Date().toLocaleDateString()}`,
           script_content: script,
-          video_type: scripts.find(s => s.id === selectedScript)?.script_type || "custom",
+          video_type: scriptSource === "library"
+            ? scripts.find(s => s.id === selectedScript)?.script_type ?? "custom"
+            : aiScriptVideoType ?? "custom",
           status: "pending",
           heygen_status: "pending",
-          heygen_avatar_id: selectedAvatar,
-          heygen_voice_id: selectedVoice,
+          heygen_avatar_id: selectedAvatar || null,
+          heygen_voice_id: selectedVoice || null,
           video_provider: "heygen",
+          // Canonical data contract fields
+          listing_id: selectedContextType === "listing" ? selectedContextId || null : null,
           provider_metadata: {
             quality_preset: qualityPreset,
             output_orientation: outputOrientation,
             background_style: backgroundStyle,
             branding_preset_id: brandingPresetId || null,
+            aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect ?? "16:9",
           },
         })
         .select()
@@ -339,7 +353,11 @@ export default function VideoCreatePage() {
       case 1:
         return scriptSource === "library" ? !!selectedScript : customScript.trim().length > 20
       case 2:
-        return !!selectedAvatar && !!selectedVoice
+        // Voice is required only if profiles exist; if none are configured the user
+        // can still proceed (HeyGen will use its default voice).
+        if (!selectedAvatar) return false
+        if (voiceProfiles.length > 0 && !selectedVoice) return false
+        return true
       case 3:
         return !!backgroundStyle && !!qualityPreset && !!outputOrientation
       default:
@@ -361,34 +379,110 @@ export default function VideoCreatePage() {
     )
   }
 
-  // Generate script based on purpose and context
+  // Generate script from Step 0 context — calls Claude via server action
   const handleGenerateScript = async () => {
-    if (!selectedPurpose || !selectedContextData) return
+    if (!selectedPurpose || !brokerage?.id || !user?.id) return
     setIsGenerating(true)
+    setError(null)
     try {
-      // Generate appropriate script based on purpose
-      let generatedScript = ""
-      
-      if (selectedPurpose === "listing_launch" && selectedContextData) {
-        generatedScript = `Welcome to ${selectedContextData.address}. This stunning property in ${selectedContextData.city} is now available at $${selectedContextData.list_price?.toLocaleString()}. Let me show you what makes this home special.`
-      } else if (selectedPurpose === "seller_update" && selectedContextData) {
-        generatedScript = `Hi! I wanted to give you a quick update on your listing at ${selectedContextData.address}. Here's what's been happening in the market and with buyer interest in your property.`
-      } else if (selectedPurpose === "market_update") {
-        generatedScript = `Let's talk about what's happening in the ${selectedContextId} real estate market. Here are the trends you need to know about.`
-      } else {
-        generatedScript = `Thank you for watching. I'm excited to share some valuable information with you today.`
+      const purposeToVideoType: Record<string, string> = {
+        listing_launch: "property_tour",
+        seller_update: "seller_update",
+        market_update: "market_update",
+        agent_brand: "agent_intro",
+        portal_video: "tips",
+        homeowner_update: "seller_update",
+        just_sold: "tips",
+        farming: "tips",
+      }
+      const videoType = (purposeToVideoType[selectedPurpose] ?? "custom") as any
+
+      let description = `Create a ${selectedPurpose.replace(/_/g, " ")} video`
+      if (selectedContextData?.address) {
+        description += ` for the property at ${selectedContextData.address}, ${selectedContextData.city ?? ""}`
+      }
+      if (selectedContextId && selectedContextType === "market") {
+        description += ` covering the ${selectedContextId} market area`
       }
 
-      setCustomScript(generatedScript)
+      const result = await generateVideoScript({
+        brokerageId: brokerage.id,
+        agentId: user.id,
+        userId: user.id,
+        description,
+        videoType,
+        tone: "professional",
+        targetDurationSeconds: 60,
+        listingContext: selectedContextData?.address
+          ? {
+              address: selectedContextData.address,
+              city: selectedContextData.city ?? "",
+              state: selectedContextData.state ?? "",
+              listPrice: selectedContextData.list_price ?? 0,
+              bedrooms: selectedContextData.bedrooms,
+              bathrooms: selectedContextData.bathrooms,
+              sqft: selectedContextData.sqft,
+            }
+          : undefined,
+      })
+
+      if (!result.success) {
+        setError(result.error ?? "Failed to generate script")
+        return
+      }
+
+      setCustomScript(result.script!)
       setScriptSource("custom")
-      setScriptTitle(`${selectedPurpose.replace(/_/g, " ")} - ${new Date().toLocaleDateString()}`)
-      
-      // Auto-advance to script step
+      setScriptTitle(`${selectedPurpose.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`)
       setCurrentStep(1)
-    } catch (err) {
-      console.error("Error generating script:", err)
+    } catch (err: any) {
+      setError(err.message ?? "Script generation failed")
     } finally {
       setIsGenerating(false)
+    }
+  }
+
+  // Generate AI script from Step 1 custom tab inputs
+  const handleAiGenerateFromStep1 = async () => {
+    if (!brokerage?.id || !user?.id || !aiScriptDescription.trim()) return
+    setIsAiGenerating(true)
+    setAiScriptError(null)
+    try {
+      const result = await generateVideoScript({
+        brokerageId: brokerage.id,
+        agentId: user.id,
+        userId: user.id,
+        description: aiScriptDescription,
+        videoType: aiScriptVideoType as any,
+        tone: aiScriptTone,
+        targetDurationSeconds: aiScriptDuration,
+        listingContext: selectedContextData?.address
+          ? {
+              address: selectedContextData.address,
+              city: selectedContextData.city ?? "",
+              state: selectedContextData.state ?? "",
+              listPrice: selectedContextData.list_price ?? 0,
+              bedrooms: selectedContextData.bedrooms,
+              bathrooms: selectedContextData.bathrooms,
+              sqft: selectedContextData.sqft,
+            }
+          : undefined,
+        saveToLibrary: false,
+      })
+
+      if (!result.success) {
+        setAiScriptError(result.error ?? "Generation failed")
+        return
+      }
+
+      setCustomScript(result.script!)
+      if (!scriptTitle) {
+        setScriptTitle(`AI Script — ${aiScriptVideoType.replace(/_/g, " ")} — ${new Date().toLocaleDateString()}`)
+      }
+    } catch (err: any) {
+      setAiScriptError(err.message ?? "Script generation failed")
+    } finally {
+      setIsAiGenerating(false)
     }
   }
 
@@ -613,11 +707,99 @@ export default function VideoCreatePage() {
                   </TabsContent>
 
                   <TabsContent value="custom" className="mt-4 space-y-4">
+                    {/* AI Script Generation Panel */}
+                    <Card className="border border-primary/20 bg-primary/5">
+                      <CardContent className="p-4 space-y-3">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Sparkles className="h-4 w-4 text-primary" />
+                          <span className="font-medium text-sm">Generate Script with AI</span>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-xs text-muted-foreground">What is this video about?</Label>
+                          <Textarea
+                            value={aiScriptDescription}
+                            onChange={(e) => setAiScriptDescription(e.target.value)}
+                            placeholder="e.g. Introduce myself to first-time buyers, explain the offer process, and invite them to schedule a call"
+                            rows={2}
+                            className="text-sm"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">Video type</Label>
+                            <Select value={aiScriptVideoType} onValueChange={setAiScriptVideoType}>
+                              <SelectTrigger className="h-8 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {SCRIPT_TYPES.map(t => (
+                                  <SelectItem key={t.id} value={t.id} className="text-xs">{t.label}</SelectItem>
+                                ))}
+                                <SelectItem value="tips" className="text-xs">Tips</SelectItem>
+                                <SelectItem value="testimonial" className="text-xs">Testimonial</SelectItem>
+                                <SelectItem value="custom" className="text-xs">Custom</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">Tone</Label>
+                            <Select value={aiScriptTone} onValueChange={(v) => setAiScriptTone(v as any)}>
+                              <SelectTrigger className="h-8 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="professional" className="text-xs">Professional</SelectItem>
+                                <SelectItem value="friendly" className="text-xs">Friendly</SelectItem>
+                                <SelectItem value="luxury" className="text-xs">Luxury</SelectItem>
+                                <SelectItem value="educational" className="text-xs">Educational</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-1">
+                            <Label className="text-xs text-muted-foreground">Duration</Label>
+                            <Select
+                              value={String(aiScriptDuration)}
+                              onValueChange={(v) => setAiScriptDuration(Number(v))}
+                            >
+                              <SelectTrigger className="h-8 text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="15" className="text-xs">15 sec</SelectItem>
+                                <SelectItem value="30" className="text-xs">30 sec</SelectItem>
+                                <SelectItem value="60" className="text-xs">60 sec</SelectItem>
+                                <SelectItem value="90" className="text-xs">90 sec</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+
+                        {aiScriptError && (
+                          <p className="text-xs text-destructive">{aiScriptError}</p>
+                        )}
+
+                        <Button
+                          onClick={handleAiGenerateFromStep1}
+                          disabled={isAiGenerating || !aiScriptDescription.trim()}
+                          size="sm"
+                          className="w-full"
+                        >
+                          {isAiGenerating ? (
+                            <><Loader2 className="h-3 w-3 mr-2 animate-spin" />Generating with Claude...</>
+                          ) : (
+                            <><Sparkles className="h-3 w-3 mr-2" />Generate Script</>
+                          )}
+                        </Button>
+                      </CardContent>
+                    </Card>
+
                     <Alert>
                       <Shield className="h-4 w-4" />
-                      <AlertTitle>Custom Script Notice</AlertTitle>
+                      <AlertTitle>Script Compliance</AlertTitle>
                       <AlertDescription>
-                        Custom scripts bypass the approval workflow. Ensure your content meets compliance requirements.
+                        All scripts (AI and manual) are checked against Fair Housing and brand compliance before video generation.
                       </AlertDescription>
                     </Alert>
 
@@ -640,7 +822,7 @@ export default function VideoCreatePage() {
                       <Textarea
                         value={customScript}
                         onChange={(e) => setCustomScript(e.target.value)}
-                        placeholder="Write your video script here..."
+                        placeholder="Write your video script here... or generate one above."
                         rows={10}
                         className="font-mono text-sm"
                       />
