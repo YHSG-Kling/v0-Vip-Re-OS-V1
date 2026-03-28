@@ -59,7 +59,7 @@ import {
 } from "@/app/actions/social-media-automation"
 import { shareListingPost } from "@/app/actions/social-share"
 import { predictPerformanceAction } from "@/app/actions/content-prediction"
-import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
+import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
 import { BarChart3, Sparkles } from "lucide-react"
 import { SocialAiComposer } from "@/app/components/ai-copilot/social-ai-composer"
 import { SocialCalendarAiPlanner } from "@/app/components/ai-copilot/social-calendar-ai-planner"

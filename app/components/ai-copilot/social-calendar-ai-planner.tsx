@@ -5,8 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Calendar, Sparkles, Loader2 } from "lucide-react"
-import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
+import { generateWeeklyContentPlan } from "@/app/actions/social/generate-social-post"
 import { toast } from "sonner"
 
 interface SocialCalendarAiPlannerProps {
@@ -40,20 +39,17 @@ export function SocialCalendarAiPlanner({
   const handleBuildWeekPlan = async () => {
     setGenerating(true)
     try {
-      const profile = await getBrandVoiceProfile(agentId)
-      
-      const plan = await generateSmartResponse({
-        userMessage: `Create a weekly social media calendar for a real estate agent.
-Generate 7 days with 2-3 posts each.
-Include content types: market updates, listings, testimonials, educational content, community spotlights.
-Brand voice: ${profile?.tone || "professional"}.
-Format as: Day | Post Type | Content Hook | Platform | Suggested Time`,
-        brandVoice: profile,
-        systemPrompt: "You are a social media strategist. Create a diverse, engaging weekly content calendar.",
+      const result = await generateWeeklyContentPlan({
+        brokerageId,
+        agentId,
       })
 
-      setSuggestedPlan(plan)
-      toast.success("Weekly plan generated!")
+      if (result.success) {
+        setSuggestedPlan(result.data ?? [])
+        toast.success("Weekly plan generated!")
+      } else {
+        toast.error(result.error ?? "Failed to generate plan")
+      }
     } catch (error) {
       console.error("Error generating plan:", error)
       toast.error("Failed to generate plan")

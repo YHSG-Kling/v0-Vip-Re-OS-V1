@@ -17,8 +17,7 @@ import {
 } from "@/components/ui/select"
 import { Sparkles, Loader2, Copy, Check, Calendar, Send, Wand2, RefreshCw } from "lucide-react"
 import { scheduleSocialPost } from "@/app/actions/social-media-automation"
-import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
-import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation.tsx"
+import { generateSocialPostContent } from "@/app/actions/social/generate-social-post"
 import { toast } from "sonner"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 
@@ -73,40 +72,21 @@ export function SocialAiComposer({
 
     setGenerating(true)
     try {
-      // Get brand voice for consistency
-      const brandVoice = await getBrandVoiceProfile({ agentId }).catch(() => null)
-      
-      const prompt = `Generate a social media post for a real estate agent.
-Content Type: ${contentType}
-Topic: ${topic}
-Tone: ${tone}
-${brandVoice ? `Brand Voice Guidelines: ${brandVoice.voice_description}` : ""}
-
-Requirements:
-- Keep it concise and engaging (under 280 characters for Twitter compatibility)
-- Include a call to action
-- Be authentic and personable
-- Suggest 3-5 relevant hashtags at the end
-
-Generate ONLY the post content, no explanations.`
-
-      const result = await generateSmartResponse({
+      const platform = selectedPlatforms[0] ?? "instagram"
+      const result = await generateSocialPostContent({
+        brief: topic,
+        platform,
+        tone,
+        contentType,
+        brokerageId,
         agentId,
-        context: prompt,
-        channel: "social",
       })
 
-      if (result.response) {
-        // Extract hashtags from the response
-        const hashtagMatch = result.response.match(/#\w+/g)
-        if (hashtagMatch) {
-          setHashtags(hashtagMatch)
-          // Remove hashtags from main content for cleaner display
-          const contentWithoutHashtags = result.response.replace(/#\w+\s*/g, "").trim()
-          setGeneratedContent(contentWithoutHashtags)
-        } else {
-          setGeneratedContent(result.response)
-        }
+      if (result.success && result.data) {
+        setGeneratedContent(result.data.content)
+        setHashtags(result.data.hashtags ?? [])
+      } else {
+        toast.error(result.error ?? "Failed to generate content")
       }
     } catch (error) {
       console.error("Error generating content:", error)
@@ -128,15 +108,21 @@ Generate ONLY the post content, no explanations.`
 
     setScheduling(true)
     try {
-      const contentWithHashtags = `${generatedContent}\n\n${hashtags.join(" ")}`
-      
+      const platform = selectedPlatforms[0] ?? "facebook"
+      const contentWithHashtags = hashtags.length
+        ? `${generatedContent}\n\n${hashtags.map(h => `#${h}`).join(" ")}`
+        : generatedContent
+
       await scheduleSocialPost({
         agentId,
         brokerageId,
-        platforms: selectedPlatforms,
+        userId: agentId, // composer operates as the agent
+        platform,
+        postType: contentType || "custom",
         content: contentWithHashtags,
-        postType: contentType as any,
-        scheduledFor: scheduledTime || undefined,
+        hashtags,
+        scheduledFor: scheduledTime || new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        socialAccountId: connectedPlatforms[0] ?? "", // use first connected account
       })
 
       toast.success("Post scheduled successfully!")

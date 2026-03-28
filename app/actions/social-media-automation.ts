@@ -230,7 +230,6 @@ export async function scheduleSocialPost(params: {
         brand_compliance_passed: null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        compliance_approved: false,
       })
       .select()
       .single()
@@ -315,7 +314,7 @@ export async function approveSocialPost(postId: string, approverUserId: string) 
       })
       .eq("id", postId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -348,7 +347,7 @@ export async function rejectSocialPost(postId: string, rejectorUserId: string, r
       })
       .eq("id", postId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -480,9 +479,9 @@ export async function createListingPosts(params: {
   try {
     const { data: property } = await supabase
       .from("listings")
-      .select("*")
+      .select("address, city, list_price, bedrooms, bathrooms, sqft, primary_image_url")
       .eq("id", params.propertyId)
-      .single()
+      .maybeSingle()
 
     if (!property) {
       return { success: false, error: "Property not found" }

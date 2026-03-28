@@ -32,7 +32,7 @@ export default async function SocialDashboardPage({
     .from("users")
     .select("id, brokerage_id, role, first_name, last_name")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!profile?.brokerage_id) {
     redirect("/dashboard/onboarding")

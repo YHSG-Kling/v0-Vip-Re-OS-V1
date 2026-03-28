@@ -2,6 +2,8 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
+import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
 
 // =====================================================
@@ -78,12 +80,13 @@ export async function handleContentApproved(payload: any) {
 
   // Notify creator
   await supabase.from("notifications").insert({
-    recipient_id: user_id,
-    notification_type: "content_approved",
+    user_id,
+    type: "content_approved",
     title: "Content Approved",
-    message: "Your social media content has been approved and is ready to publish.",
-    related_entity_type: "social_post",
-    related_entity_id: content_id,
+    body: "Your social media content has been approved and is ready to publish.",
+    entity_type: "social_post",
+    entity_id: content_id,
+    created_at: new Date().toISOString(),
   })
 
   return { success: true }
@@ -120,9 +123,7 @@ export async function connectSocialAccount(params: {
   accessToken: string
   refreshToken?: string
   tokenExpiresAt?: string
-  scope?: string[]
-  profilePictureUrl?: string
-  followerCount?: number
+  scope?: string
   userId?: string
 }) {
   const supabase = createServiceClient()
@@ -140,10 +141,8 @@ export async function connectSocialAccount(params: {
         refresh_token: params.refreshToken,
         token_expires_at: params.tokenExpiresAt,
         scope: params.scope,
-        profile_picture_url: params.profilePictureUrl,
-        follower_count: params.followerCount,
         is_active: true,
-        last_synced_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       },
       {
         onConflict: "user_id,platform,account_id",
@@ -229,7 +228,7 @@ export async function createSocialPost(params: {
   const effectiveUserId = params.userId || "system"
 
   // Get user's brokerage
-  const { data: userData } = await supabase.from("users").select("brokerage_id, user_type").eq("id", effectiveUserId).single()
+  const { data: userData } = await supabase.from("users").select("brokerage_id, user_type").eq("id", effectiveUserId).maybeSingle()
 
   // Compliance gate — hard stop if content violates real-estate rules
   const gate = await runComplianceGate({
@@ -248,15 +247,14 @@ export async function createSocialPost(params: {
         user_id: effectiveUserId,
         brokerage_id: userData?.brokerage_id,
         content: params.content,
-        media_urls: params.mediaUrls,
-        media_types: params.mediaTypes,
-        hashtags: params.hashtags,
+        media_urls: params.mediaUrls ?? [],
+        hashtags: params.hashtags ?? [],
         scheduled_for: params.scheduledFor,
-        platforms: params.platforms,
-        content_type: params.contentType,
-        linked_listing_id: params.linkedListingId,
-        generated_by_ai: params.generatedByAi || false,
-        ai_prompt: params.aiPrompt,
+        platform: params.platforms?.[0] ?? "facebook",
+        post_type: params.contentType ?? "custom",
+        listing_id: params.linkedListingId ?? null,
+        ai_generated: params.generatedByAi ?? false,
+        post_brief: params.aiPrompt ?? null,
         status: "compliance_review",
         brand_compliance_passed: false,
         approval_status: "pending",
@@ -280,15 +278,14 @@ export async function createSocialPost(params: {
       user_id: effectiveUserId,
       brokerage_id: userData?.brokerage_id,
       content: params.content,
-      media_urls: params.mediaUrls,
-      media_types: params.mediaTypes,
-      hashtags: params.hashtags,
+      media_urls: params.mediaUrls ?? [],
+      hashtags: params.hashtags ?? [],
       scheduled_for: params.scheduledFor,
-      platforms: params.platforms,
-      content_type: params.contentType,
-      linked_listing_id: params.linkedListingId,
-      generated_by_ai: params.generatedByAi || false,
-      ai_prompt: params.aiPrompt,
+      platform: params.platforms?.[0] ?? "facebook",
+      post_type: params.contentType ?? "custom",
+      listing_id: params.linkedListingId ?? null,
+      ai_generated: params.generatedByAi ?? false,
+      post_brief: params.aiPrompt ?? null,
       status: "scheduled",
       brand_compliance_passed: true,
       approval_status: gate.requiresHumanReview ? "pending" : "approved",
@@ -413,24 +410,22 @@ export async function generateSocialContent(params: {
   if (params.listingId) {
     const { data: listing } = await supabase
       .from("listings")
-      .select("address, price, bedrooms, bathrooms, square_feet, description")
+      .select("address, list_price, bedrooms, bathrooms, sqft")
       .eq("id", params.listingId)
-      .single()
+      .maybeSingle()
 
     if (listing) {
-      listingContext = `Listing Details: ${listing.address}, $${listing.price}, ${listing.bedrooms}BR/${listing.bathrooms}BA, ${listing.square_feet}sqft. ${listing.description}`
+      listingContext = `Listing Details: ${listing.address}, $${listing.list_price?.toLocaleString()}, ${listing.bedrooms}BR/${listing.bathrooms}BA, ${listing.sqft}sqft.`
     }
   }
 
   // Use AI to generate content
-  const { generateText } = await import("ai")
-
   const prompt =
     params.customPrompt ||
     `Generate a social media post for ${params.contentType}. ${listingContext} Target persona: ${params.personaTarget || "general"}. Use the "Them First" approach: 40% feelings/empathy, 25% trust-building, 25% value, 10% solution. Include relevant hashtags.`
 
   const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
+    model: resolveModel("openai/gpt-4o-mini"),
     prompt,
   })
 
