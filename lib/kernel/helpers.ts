@@ -57,11 +57,11 @@ export interface EmitEventParams {
 
 // ─── STAFF ROLES ─────────────────────────────────────────────────────────────
 // Roles that get the internal AI assistant and full dashboard navigation.
-const STAFF_ROLES = new Set([
+  const STAFF_ROLES = new Set([
   "agent", "broker", "broker_admin", "admin", "tc", "transaction_coordinator",
   "compliance_officer", "team_lead", "team_member", "lender", "vendor",
-  "title", "superadmin",
-])
+  "title", "superadmin", "isa",
+  ])
 
 // ─── ROUTE → REQUIRED ROLE MAP ───────────────────────────────────────────────
 // Maps route prefix → minimum required role (checked against userContext.roles).
@@ -74,9 +74,10 @@ const ROUTE_ROLE_REQUIREMENTS: Record<string, string[]> = {
   "/dashboard/recruiting":   ["broker", "broker_admin", "admin", "superadmin"],
   "/dashboard/compliance":   ["broker", "broker_admin", "admin", "compliance_officer", "superadmin"],
   "/dashboard/transactions": ["agent", "tc", "transaction_coordinator", "broker", "broker_admin", "admin", "superadmin"],
+  "/dashboard/isa":          ["isa", "broker", "broker_admin", "admin", "superadmin"],
   "/dashboard":              [...STAFF_ROLES],
   "/crm":                    ["agent", "broker", "broker_admin", "admin", "superadmin"],
-  "/leads":                  ["agent", "broker", "broker_admin", "admin", "superadmin"],
+  "/leads":                  ["isa", "broker", "broker_admin", "admin", "superadmin"],
   "/portal":                 ["contact", "buyer", "seller", "lifetime"],
 }
 
