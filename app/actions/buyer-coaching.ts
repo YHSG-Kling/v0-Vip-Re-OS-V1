@@ -8,7 +8,8 @@
  * cache miss → Anthropic generate → INSERT as system-default row.
  */
 
-import { generateText }        from "ai"
+import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export interface BuyerCoachingResult {
@@ -86,7 +87,7 @@ export async function getBuyerCoaching(params: {
   const personaCtx = persona ? ` The buyer has a "${persona}" persona.` : ""
 
   const { text: raw } = await generateText({
-    model:  "anthropic/claude-opus-4.6",
+    model: resolveModel("anthropic/claude-opus-4.6"),
     prompt: `You are a real estate coaching expert. Generate agent coaching content for a buyer at stage: "${stageLabel}".${personaCtx}
 
 Return ONLY valid JSON matching this structure exactly:

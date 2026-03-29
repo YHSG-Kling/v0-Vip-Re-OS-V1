@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { generateText } from 'ai'
+import { resolveModel } from '@/lib/ai/resolve-model'
 
 export async function POST(req: Request) {
   const supabase = await createClient()
@@ -40,7 +41,7 @@ ${contactData?.notes ? `Context about this person: ${contactData.notes}` : ''}
 The referral has converted, so express genuine appreciation and mention I look forward to continuing to be a resource for them.`
 
   const { text: draft } = await generateText({
-    model: 'openai/gpt-4o-mini',
+    model: resolveModel('openai/gpt-4o-mini'),
     system: systemPrompt,
     prompt: userPrompt,
   })

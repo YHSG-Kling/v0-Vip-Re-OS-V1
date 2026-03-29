@@ -1,4 +1,5 @@
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateContentCompliance } from "@/lib/compliance-rules"
 import { validateThemFirstContent } from "@/lib/them-first"
@@ -322,41 +323,23 @@ async function executeModelCall(
     throw new Error(`Unknown model: ${model}`)
   }
   
-  let modelInstance: any
+  // Build the namespaced string and resolve to a provider instance
+  let modelInstance: ReturnType<typeof resolveModel>
   
-  switch (config.provider) {
-    case "anthropic": {
-      const { anthropic } = await import("@ai-sdk/anthropic")
-      modelInstance = anthropic(config.modelId)
-      break
-    }
-    
-    case "openai": {
-      const { openai } = await import("@ai-sdk/openai")
-      modelInstance = openai(config.modelId)
-      break
-    }
-    
-    case "google": {
-      const { google } = await import("@ai-sdk/google")
-      modelInstance = google(config.modelId)
-      break
-    }
-    
-    case "perplexity": {
-      const { createOpenAI } = await import("@ai-sdk/openai")
-      const perplexity = createOpenAI({
-        apiKey: process.env.PERPLEXITY_API_KEY || "",
-        baseURL: "https://api.perplexity.ai"
-      })
-      modelInstance = perplexity(config.modelId)
-      break
-    }
-    
-    default:
-      throw new Error(`Unsupported provider: ${config.provider}`)
+  if (config.provider === "perplexity") {
+    // Perplexity uses a custom OpenAI-compatible base URL — handle separately
+    const { createOpenAI } = await import("@ai-sdk/openai")
+    const perplexity = createOpenAI({
+      apiKey: process.env.PERPLEXITY_API_KEY || "",
+      baseURL: "https://api.perplexity.ai"
+    })
+    modelInstance = perplexity(config.modelId)
+  } else {
+    // All other providers: build "provider/modelId" and resolve via utility
+    const modelStr = `${config.provider}/${config.modelId}` as Parameters<typeof resolveModel>[0]
+    modelInstance = resolveModel(modelStr)
   }
-  
+
   const result = await generateText({
     model: modelInstance,
     system,
@@ -546,34 +529,31 @@ export async function generateTextRouted(
   const feature = request.feature ?? 'unspecified'
   const { model: routedModel, fallback } = selectModelForTask(feature)
 
-  // Apply kernel governance: tier caps, team overrides, brokerage overrides
-  const resolvedModel = await resolveAIModel(routedModel, {
-    brokerageId: request.brokerageId,
-    userId: request.userId,
-  })
-
-  const config = MODEL_CONFIG[resolvedModel] ?? MODEL_CONFIG['claude-sonnet']
-  const modelString = `${config.provider}/${config.modelId}`
+  // Resolve primary model to provider instance via resolveModel utility
+  const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
+  const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
+  const primaryInstance = resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0])
 
   try {
     const result = await generateText({
-      model: modelString as any,
+      model: primaryInstance,
       prompt: request.prompt,
       system: request.system,
-      maxTokens: request.maxTokens,
+      maxOutputTokens: request.maxTokens,
       temperature: request.temperature,
       messages: request.messages as any,
     })
     return { text: result.text }
   } catch {
-    // Automatic fallback to secondary model
+    // Automatic fallback to secondary model via resolveModel
     const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
-    const fallbackString = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
+    const fallbackModelStr = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
+    const fallbackInstance = resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0])
     const result = await generateText({
-      model: fallbackString as any,
+      model: fallbackInstance,
       prompt: request.prompt,
       system: request.system,
-      maxTokens: request.maxTokens,
+      maxOutputTokens: request.maxTokens,
       temperature: request.temperature,
       messages: request.messages as any,
     })

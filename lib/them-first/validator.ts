@@ -1,4 +1,5 @@
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 export type ContentType = "email" | "sms" | "video_script" | "social_post"
 
@@ -82,7 +83,7 @@ export async function validateThemFirstContent(
 async function analyzeContentStructure(content: string) {
   try {
     const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Analyze this content and categorize each sentence into one of four categories:
 
 FEELINGS: Sentences that acknowledge emotions, pain points, or empathy
@@ -123,7 +124,7 @@ Return ONLY valid JSON with percentage breakdown (must sum to 100):
 async function analyzeSentiment(content: string) {
   try {
     const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Analyze the empathy and sentiment of this content:
 
 Content: "${content}"
