@@ -6,7 +6,6 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
@@ -56,14 +55,6 @@ export async function generateBlogPost(
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
 
-  // ── 2. Resolve AI provider ──────────────────────────────────────────────────
-  const aiProvider = await resolveProvider({
-    brokerageId: params.brokerageId,
-    agentUserId: params.agentUserId,
-    teamId: undefined,
-    providerType: "ai",
-  })
-
   // ── 3. Apply brand voice ────────────────────────────────────────────────────
   const brandVoice = await applyBrandVoice({
     brokerageId: params.brokerageId,
@@ -97,10 +88,12 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   let blogResult: BlogPostResult
   try {
     const { text } = await generateText({
-      model: aiProvider.modelId || "anthropic/claude-sonnet-4-20250514",
+      feature: "blog_generation",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.7,
+      brokerageId: params.brokerageId,
+      userId,
     })
 
     // Parse JSON response
@@ -119,7 +112,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
       brokerageId: params.brokerageId,
     },
     journeyType: "buyer",
-    persona: "first_time_buyer",
+    persona: "first_time",
     messageType: "email",
     content: blogResult.content,
     contact: {
@@ -136,7 +129,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   if (!complianceResult.allowed) {
     return {
       success: false,
-      error: `Compliance check failed: ${complianceResult.violations?.map((v) => v.rule).join(", ")}`,
+      error: `Compliance check failed: ${complianceResult.violations.join(", ")}`,
     }
   }
 
@@ -391,7 +384,7 @@ export async function publishToWordPress(
   }
 }
 
-// ─── getBlogPosts ──────────��────────────────────────────���─────────────────────
+// ─── getBlogPosts ──────────��────────────────────────────�����─────────────────────
 
 export async function getBlogPosts(
   brokerageId: string,

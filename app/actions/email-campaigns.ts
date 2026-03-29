@@ -17,7 +17,6 @@ import { handleError } from "@/lib/errors"
 import {
   canAccessFeature,
   incrementFeatureUsage,
-  resolveProvider,
   processKernelEvent,
   KernelEvent,
 } from "@/lib/kernel"
@@ -256,14 +255,6 @@ export async function aiComposeEmail(params: AiComposeEmailParams) {
       return { success: false, error: "Invalid brokerage ID" }
     }
 
-    // Resolve AI provider
-    const aiProvider = await resolveProvider({
-      brokerageId: params.brokerageId,
-      agentUserId: params.agentId,
-      teamId: undefined,
-      providerType: "ai",
-    })
-
     // Apply brand voice
     const brandVoice = await applyBrandVoice({
       brokerageId: params.brokerageId,
@@ -288,10 +279,11 @@ Return ONLY valid JSON with NO markdown:
 }`
 
     const { text } = await generateText({
-      model: aiProvider.modelId || "anthropic/claude-sonnet-4-20250514",
+      feature: "email_generation",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.7,
+      brokerageId: params.brokerageId,
     })
 
     const cleaned = text.replace(/```json\n?|\n?```/g, "").trim()
@@ -332,14 +324,6 @@ export async function sendEmailCampaign(campaignId: string, actorUserId: string,
     if (!campaign) return { success: false, error: "Campaign not found" }
     if (campaign.status === "sent") return { success: false, error: "Campaign already sent" }
     if (!campaign.content) return { success: false, error: "Campaign has no content to send" }
-
-    // Resolve email provider
-    await resolveProvider({
-      brokerageId,
-      agentUserId: actorUserId,
-      teamId: undefined,
-      providerType: "email",
-    })
 
     // Count active subscribers
     const { count } = await supabase
