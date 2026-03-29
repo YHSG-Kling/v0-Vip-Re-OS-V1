@@ -8,11 +8,11 @@ export const metadata = {
 }
 
 interface BlogEditorPageProps {
-  params: Promise<{ postId: string }>
+  params: Promise<{ id: string }>
 }
 
 export default async function BlogEditorPage({ params }: BlogEditorPageProps) {
-  const { postId } = await params
+  const { id: postId } = await params
   const supabase = await createClient()
 
   const {
