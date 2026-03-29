@@ -267,9 +267,11 @@ export enum KernelEvent {
   BLOG_POST_GENERATED                = 'blog_post_generated',
   BLOG_POST_PUBLISHED                = 'blog_post_published',
 
-  // ── Layer 9.7 — Newsletter ───────────────────────────────────────────────
+  // ── Layer 9.7 — Newsletter / Email Campaigns ─────────────────────────────
   NEWSLETTER_SCHEDULED               = 'newsletter_scheduled',
   NEWSLETTER_SENT                    = 'newsletter_sent',
+  EMAIL_CAMPAIGN_CREATED             = 'email_campaign_created',
+  EMAIL_CAMPAIGN_SENT                = 'email_campaign_sent',
 
   // ── Layer 9.8 — Podcast ──────────────────────────────────────────────────
   PODCAST_EPISODE_GENERATED          = 'podcast_episode_generated',
