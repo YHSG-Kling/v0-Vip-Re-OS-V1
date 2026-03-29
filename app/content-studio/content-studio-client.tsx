@@ -56,9 +56,11 @@ import { toast } from "sonner"
 interface ContentStudioClientProps {
   userId?: string
   userRole?: string
+  /** Pre-resolved by the server page — avoids a client-side roundtrip */
+  brokerageId?: string
 }
 
-export default function ContentStudioClient({ userId, userRole }: ContentStudioClientProps) {
+export default function ContentStudioClient({ userId, userRole, brokerageId: brokerageIdProp }: ContentStudioClientProps) {
   const router = useRouter()
 
   const [activeTab, setActiveTab] = useState("link-to-video")
@@ -120,10 +122,15 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
   const [generatingVideo, setGeneratingVideo] = useState<string | null>(null)
   const [agentSettings, setAgentSettings] = useState<any>(null)
 
-  // Resolved brokerage id — fetched from users table once on mount
-  const [brokerageId, setBrokerageId] = useState("")
+  // Brokerage id — seed from server-resolved prop, fall back to client fetch if missing
+  const [brokerageId, setBrokerageId] = useState(brokerageIdProp ?? "")
 
   useEffect(() => {
+    if (brokerageIdProp) {
+      setBrokerageId(brokerageIdProp)
+      return
+    }
+    // Fallback: fetch from client if page was not rendered as a server component
     const supabase = createClient()
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return
@@ -131,12 +138,12 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
         .from("users")
         .select("brokerage_id")
         .eq("id", user.id)
-        .single()
+        .maybeSingle()
         .then(({ data }) => {
           if (data?.brokerage_id) setBrokerageId(data.brokerage_id)
         })
     })
-  }, [])
+  }, [brokerageIdProp])
 
   const [bulkContentPeriod, setBulkContentPeriod] = useState<"week" | "month" | "year">("month")
   const [isBulkGenerating, setIsBulkGenerating] = useState(false)
