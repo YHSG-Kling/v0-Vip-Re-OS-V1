@@ -83,7 +83,7 @@ export function useAuth(): AuthState {
 
       // Fetch specific columns only (not *) to avoid pulling sensitive fields.
       // Use maybeSingle() so a missing `users` row returns null (no PGRST116 throw).
-      // Source priority: users.user_type > role_assignments.role > auth metadata > 'agent'
+      // Source priority: users.user_type > role_assignments.role > agents row > auth metadata > 'agent'
       const [{ data: userData }, { data: rolesData }] = await Promise.all([
         client.from('users')
           .select('id, first_name, last_name, brokerage_id, user_type, team_id')
@@ -94,10 +94,22 @@ export function useAuth(): AuthState {
           .eq('user_id', authUser.id),
       ])
 
-      // Source priority: users.user_type > role_assignments.role > auth metadata > 'agent'
+      // If users row is missing, check the agents table as a fallback
+      let agentFallback: { id: string; brokerage_id: string } | null = null
+      if (!userData) {
+        const { data: agentRow } = await client
+          .from('agents')
+          .select('id, brokerage_id')
+          .eq('user_id', authUser.id)
+          .maybeSingle()
+        agentFallback = agentRow
+      }
+
+      // Source priority: users.user_type > role_assignments.role > agents row > auth metadata > 'agent'
       const rawRole: string =
         userData?.user_type ||
         rolesData?.[0]?.role ||
+        (agentFallback ? 'agent' : null) ||
         (authUser.user_metadata?.user_type as string | undefined) ||
         'agent'
       
@@ -114,12 +126,12 @@ export function useAuth(): AuthState {
       const ctx: UserContext = {
         id: authUser.id,
         email: authUser.email ?? '',
-        firstName: userData?.first_name ?? '',
-        lastName: userData?.last_name ?? '',
+        firstName: userData?.first_name ?? (authUser.user_metadata?.first_name as string | undefined) ?? '',
+        lastName: userData?.last_name ?? (authUser.user_metadata?.last_name as string | undefined) ?? '',
         roles: resolvedRoles,
-        brokerageId: rolesData?.[0]?.brokerage_id ?? userData?.brokerage_id,
+        brokerageId: rolesData?.[0]?.brokerage_id ?? userData?.brokerage_id ?? agentFallback?.brokerage_id,
         teamId: rolesData?.[0]?.team_id ?? userData?.team_id,
-        agentId: rolesData?.[0]?.agent_id ?? undefined,
+        agentId: rolesData?.[0]?.agent_id ?? agentFallback?.id ?? undefined,
         vendorId: rolesData?.[0]?.vendor_id ?? undefined,
       }
 

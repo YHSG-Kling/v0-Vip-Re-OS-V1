@@ -19,33 +19,39 @@ export default async function OnboardingPage() {
   }
 
   // Get user details including type
-  const { data: userData, error: userError } = await supabase
+  const { data: userData } = await supabase
     .from('users')
     .select('brokerage_id, user_type')
     .eq('id', user.id)
-    .single()
+    .maybeSingle()
 
-  if (userError || !userData?.brokerage_id) {
-    return (
-      <div className="p-6">
-        <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4">
-          <p className="text-destructive">Failed to load user data. Please try again.</p>
-        </div>
-      </div>
-    )
+  // If no users row, fall back to agents table to get brokerage_id
+  let brokerageId = userData?.brokerage_id
+  if (!brokerageId) {
+    const { data: agentRow } = await supabase
+      .from('agents')
+      .select('brokerage_id')
+      .eq('user_id', user.id)
+      .maybeSingle()
+    brokerageId = agentRow?.brokerage_id
+  }
+
+  if (!brokerageId) {
+    redirect('/dashboard/agent')
   }
 
   // Get agent ID - for agents it's their own ID, for admin viewing they may pass a different ID
   let agentId = user.id
 
   // For agents, get their agent record
-  if (userData.user_type === 'agent') {
+  const userType = userData?.user_type ?? 'agent'
+  if (userType === 'agent') {
     const { data: agent } = await supabase
       .from('agents')
       .select('id')
       .eq('user_id', user.id)
-      .eq('brokerage_id', userData.brokerage_id)
-      .single()
+      .eq('brokerage_id', brokerageId)
+      .maybeSingle()
 
     if (agent) {
       agentId = agent.id

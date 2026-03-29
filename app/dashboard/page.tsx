@@ -65,9 +65,10 @@ function DashboardContent() {
       setRedirected(true)
       router.replace("/login")
     } else {
-      // Authenticated but no users table row yet (new signup) — go to onboarding
+      // Authenticated but userContext not yet resolved — default to agent dashboard.
+      // Onboarding is only triggered via explicit invitation flow, not as a catch-all.
       setRedirected(true)
-      router.replace("/dashboard/onboarding")
+      router.replace("/dashboard/agent")
     }
   }, [userContext, authLoading, redirected, router, user])
 
