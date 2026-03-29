@@ -1,7 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { streamText, convertToModelMessages } from "ai"
+import { streamText, convertToModelMessages, tool, stepCountIs } from "ai"
 import { openai } from "@ai-sdk/openai"
+import { z } from "zod"
 import { NextRequest, NextResponse } from "next/server"
 
 // Roles that are permitted to use the internal AI assistant.
@@ -241,6 +242,15 @@ function buildSystemPrompt(role: string, ctx: Record<string, unknown>, identity?
 Role: ${role} | Tone: ${tone} | Formality: ${formality}
 Date: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
 
+You can take real actions on behalf of staff when asked. Available tools:
+- create_task: Create and assign a task
+- schedule_follow_up: Schedule a follow-up activity with a contact
+- send_portal_message: Send a message to a client through the portal
+- update_contact_status: Update a contact's CRM status
+- log_activity: Log a completed call, meeting, or interaction
+
+When staff asks you to DO something (not just explain), use the appropriate tool. Confirm back with the result. Only call a tool when the instruction is clear — ask for clarification if you need a contact name or date.
+
 CAPABILITIES:
 - Answer questions and summarize entities from the context below
 - Draft messages/emails for review (always label as DRAFT — never auto-send or auto-update records)
@@ -395,11 +405,171 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ── Kernel OS action tools ──────────────────────────────────────────────────
+  // Each tool writes to Supabase and returns a confirmation object.
+  // The AI uses these when the staff member asks it to complete a task.
+
+  const agentTools = {
+    create_task: tool({
+      description: "Create a task and assign it to the current agent. Use when staff asks to create or add a task.",
+      inputSchema: z.object({
+        title: z.string().describe("Short task title"),
+        description: z.string().nullable().describe("Optional longer description"),
+        priority: z.enum(["low", "normal", "high", "urgent"]).describe("Task priority"),
+        due_date: z.string().nullable().describe("ISO date string YYYY-MM-DD or null"),
+        contact_id: z.string().nullable().describe("UUID of related contact, or null"),
+        transaction_id: z.string().nullable().describe("UUID of related transaction, or null"),
+      }),
+      execute: async ({ title, description, priority, due_date, contact_id, transaction_id }) => {
+        const { data, error } = await service
+          .from("tasks")
+          .insert({
+            brokerage_id: brokerageId,
+            assigned_to_agent_id: user.id,
+            created_by_agent_id: user.id,
+            title,
+            description: description ?? undefined,
+            priority,
+            due_date: due_date ?? undefined,
+            contact_id: contact_id ?? undefined,
+            transaction_id: transaction_id ?? undefined,
+            status: "pending",
+          })
+          .select("id, title, due_date, priority")
+          .maybeSingle()
+
+        if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
+        return { success: true, task_id: data.id, title: data.title, due_date: data.due_date, priority: data.priority }
+      },
+    }),
+
+    schedule_follow_up: tool({
+      description: "Schedule a follow-up activity with a contact. Use when staff says to follow up, call, or check in.",
+      inputSchema: z.object({
+        contact_id: z.string().describe("UUID of the contact to follow up with"),
+        activity_type: z.enum(["call", "email", "text", "meeting", "check_in"]).describe("Type of follow-up"),
+        scheduled_at: z.string().describe("ISO datetime string for when to follow up"),
+        notes: z.string().nullable().describe("Optional notes about the follow-up"),
+        title: z.string().describe("Short title, e.g. 'Follow-up call with John'"),
+      }),
+      execute: async ({ contact_id, activity_type, scheduled_at, notes, title }) => {
+        const { data, error } = await service
+          .from("activities")
+          .insert({
+            brokerage_id: brokerageId,
+            agent_id: user.id,
+            contact_id,
+            activity_type,
+            scheduled_at,
+            notes: notes ?? undefined,
+            title,
+            status: "scheduled",
+          })
+          .select("id, title, scheduled_at")
+          .maybeSingle()
+
+        if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
+        return { success: true, activity_id: data.id, title: data.title, scheduled_at: data.scheduled_at }
+      },
+    }),
+
+    send_portal_message: tool({
+      description: "Send a message to a client via the portal. Use when staff asks to message or notify a client.",
+      inputSchema: z.object({
+        contact_id: z.string().describe("UUID of the contact"),
+        message_body: z.string().describe("The message to send"),
+      }),
+      execute: async ({ contact_id, message_body }) => {
+        // Verify contact belongs to this brokerage
+        const { data: contact } = await service
+          .from("contacts")
+          .select("id, brokerage_id, agent_id")
+          .eq("id", contact_id)
+          .eq("brokerage_id", brokerageId)
+          .maybeSingle()
+
+        if (!contact) return { success: false, error: "Contact not found" }
+
+        const { data, error } = await service
+          .from("client_portal_messages")
+          .insert({
+            contact_id,
+            agent_id: contact.agent_id ?? user.id,
+            brokerage_id: brokerageId,
+            direction: "agent_to_client",
+            channel: "portal",
+            read: false,
+            body: message_body,
+            read_at: null,
+          })
+          .select("id")
+          .maybeSingle()
+
+        if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
+        return { success: true, message_id: data.id, preview: message_body.slice(0, 80) }
+      },
+    }),
+
+    update_contact_status: tool({
+      description: "Update a contact's status in the CRM. Use when staff says to mark, update, or change a contact's status.",
+      inputSchema: z.object({
+        contact_id: z.string().describe("UUID of the contact"),
+        status: z.string().describe("New status value, e.g. 'active', 'inactive', 'closed', 'prospect'"),
+        notes: z.string().nullable().describe("Optional reason for the status change"),
+      }),
+      execute: async ({ contact_id, status, notes }) => {
+        const { data, error } = await service
+          .from("contacts")
+          .update({ status, notes: notes ?? undefined, updated_at: new Date().toISOString() })
+          .eq("id", contact_id)
+          .eq("brokerage_id", brokerageId)
+          .select("id, first_name, last_name, status")
+          .maybeSingle()
+
+        if (error || !data) return { success: false, error: error?.message ?? "Update failed" }
+        return { success: true, contact_id: data.id, name: `${data.first_name ?? ""} ${data.last_name ?? ""}`.trim(), new_status: data.status }
+      },
+    }),
+
+    log_activity: tool({
+      description: "Log a completed activity or interaction. Use when staff reports a call outcome, meeting result, or any completed action.",
+      inputSchema: z.object({
+        contact_id: z.string().nullable().describe("UUID of related contact, or null"),
+        transaction_id: z.string().nullable().describe("UUID of related transaction, or null"),
+        activity_type: z.string().describe("Type: call, email, meeting, note, showing, etc."),
+        title: z.string().describe("Brief title of the activity"),
+        notes: z.string().describe("What happened — the outcome or result"),
+      }),
+      execute: async ({ contact_id, transaction_id, activity_type, title, notes }) => {
+        const { data, error } = await service
+          .from("activities")
+          .insert({
+            brokerage_id: brokerageId,
+            agent_id: user.id,
+            contact_id: contact_id ?? undefined,
+            transaction_id: transaction_id ?? undefined,
+            activity_type,
+            title,
+            notes,
+            status: "completed",
+            completed_at: new Date().toISOString(),
+          })
+          .select("id, title")
+          .maybeSingle()
+
+        if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
+        return { success: true, activity_id: data.id, title: data.title }
+      },
+    }),
+  }
+
   const result = streamText({
     model: openai("gpt-4o-mini"),
     system: systemPrompt,
     messages: await convertToModelMessages(messages),
     maxOutputTokens: 1024,
+    tools: agentTools,
+    stopWhen: stepCountIs(5),
     onFinish: async ({ text }) => {
       if (!sessionId) return
       await service.from("chat_messages").insert({

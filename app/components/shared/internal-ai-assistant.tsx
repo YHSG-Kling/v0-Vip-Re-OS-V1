@@ -3,7 +3,7 @@
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { useEffect, useRef, useState, useCallback } from "react"
-import { X, Send, Minimize2, Sparkles, ChevronDown, FileText, StickyNote, CheckCircle2, AlertTriangle, Loader2 } from "lucide-react"
+import { X, Send, Minimize2, Sparkles, ChevronDown, FileText, StickyNote, CheckCircle2, AlertTriangle, Loader2, Zap } from "lucide-react"
 
 // ─── Suggested questions by role ─────────────────────────────────────────────
 
@@ -766,10 +766,44 @@ export function InternalAIAssistant({ role }: InternalAIAssistantProps) {
                 {messages.length === 0 && drafts.filter((d) => !d.dismissed).length === 0 && (
                   <div>
                     <p style={{ fontSize: "13px", color: "#64748b", marginBottom: "12px", lineHeight: "1.5" }}>
-                      Ask me anything about your active work. I can summarize data, suggest next steps, and draft messages for your review. Type{" "}
+                      Ask me anything or tell me to take action. I can summarize data, create tasks, schedule follow-ups, send portal messages, and log activities. Type{" "}
                       <code style={{ background: "#f1f5f9", padding: "1px 4px", borderRadius: "3px", fontSize: "11px" }}>note: your text</code>
                       {" "}to save a note.
                     </p>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
+                      <Zap style={{ width: "12px", height: "12px", color: "#7c3aed" }} />
+                      <span style={{ fontSize: "11px", fontWeight: 600, color: "#7c3aed", textTransform: "uppercase", letterSpacing: "0.05em" }}>Actions</span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "12px" }}>
+                      {[
+                        "Create a task to follow up with my top lead tomorrow",
+                        "Schedule a follow-up call with my most engaged contact",
+                        "Log a completed showing for my active buyer",
+                        "Send a portal message to a client with a status update",
+                      ].map((q) => (
+                        <button
+                          key={q}
+                          onClick={() => sendMessage({ text: q })}
+                          style={{
+                            textAlign: "left",
+                            padding: "8px 12px",
+                            fontSize: "12px",
+                            color: "#6d28d9",
+                            background: "#f5f3ff",
+                            border: "1px solid #ddd6fe",
+                            borderRadius: "8px",
+                            cursor: "pointer",
+                            lineHeight: "1.4",
+                          }}
+                        >
+                          {q}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px" }}>
+                      <FileText style={{ width: "12px", height: "12px", color: "#0284c7" }} />
+                      <span style={{ fontSize: "11px", fontWeight: 600, color: "#0284c7", textTransform: "uppercase", letterSpacing: "0.05em" }}>Insights</span>
+                    </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                       {suggestions.map((q) => (
                         <button
@@ -800,36 +834,110 @@ export function InternalAIAssistant({ role }: InternalAIAssistantProps) {
                   </div>
                 )}
 
-                {/* Message + note draft rendering */}
+                {/* Message + tool result + note draft rendering */}
                 {messages.map((msg) => {
                   const rawText = getUIMessageText(msg as Parameters<typeof getUIMessageText>[0])
                   const displayText = stripNoteDraftSignal(rawText)
-                  if (!displayText) return null
                   const isUser = msg.role === "user"
+
+                  // Tool invocation parts from this message
+                  const toolParts = (msg.parts ?? []).filter(
+                    (p: { type: string }) => p.type === "tool-invocation"
+                  ) as Array<{
+                    type: "tool-invocation"
+                    toolInvocation: {
+                      toolCallId: string
+                      toolName: string
+                      state: string
+                      input?: Record<string, unknown>
+                      output?: unknown
+                    }
+                  }>
 
                   // Auto-drafts that appear after this message
                   const afterDrafts = drafts.filter((d) => d.afterMessageId === msg.id && !d.dismissed)
 
+                  const hasContent = displayText || toolParts.length > 0
+                  if (!hasContent) return null
+
                   return (
-                    <div key={msg.id}>
-                      <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
-                        <div
-                          style={{
-                            maxWidth: "84%",
-                            padding: "9px 13px",
-                            borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
-                            background: isUser ? "#1a1a2e" : "#f8fafc",
-                            border: isUser ? "none" : "1px solid #e2e8f0",
-                            fontSize: "13px",
-                            lineHeight: "1.55",
-                            color: isUser ? "#f1f5f9" : "#1e293b",
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                          }}
-                        >
-                          {displayText}
+                    <div key={msg.id} style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                      {displayText && (
+                        <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
+                          <div
+                            style={{
+                              maxWidth: "84%",
+                              padding: "9px 13px",
+                              borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+                              background: isUser ? "#1a1a2e" : "#f8fafc",
+                              border: isUser ? "none" : "1px solid #e2e8f0",
+                              fontSize: "13px",
+                              lineHeight: "1.55",
+                              color: isUser ? "#f1f5f9" : "#1e293b",
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                            }}
+                          >
+                            {displayText}
+                          </div>
                         </div>
-                      </div>
+                      )}
+
+                      {/* Tool invocation result cards */}
+                      {toolParts.map((p) => {
+                        const inv = p.toolInvocation
+                        const isPending = inv.state === "input-available" || inv.state === "input-streaming"
+                        const isError = inv.state === "output-error"
+                        const output = inv.output as Record<string, unknown> | undefined
+                        const succeeded = output?.success === true
+
+                        const TOOL_LABELS: Record<string, string> = {
+                          create_task: "Task Created",
+                          schedule_follow_up: "Follow-Up Scheduled",
+                          send_portal_message: "Message Sent",
+                          update_contact_status: "Contact Updated",
+                          log_activity: "Activity Logged",
+                        }
+                        const label = TOOL_LABELS[inv.toolName] ?? inv.toolName.replace(/_/g, " ")
+
+                        return (
+                          <div
+                            key={inv.toolCallId}
+                            style={{
+                              display: "flex",
+                              alignItems: "flex-start",
+                              gap: "8px",
+                              padding: "10px 12px",
+                              borderRadius: "10px",
+                              background: isPending ? "#f8fafc" : succeeded ? "#f0fdf4" : isError ? "#fef2f2" : "#fef9c3",
+                              border: `1px solid ${isPending ? "#e2e8f0" : succeeded ? "#86efac" : isError ? "#fca5a5" : "#fde68a"}`,
+                              fontSize: "12px",
+                              color: isPending ? "#64748b" : succeeded ? "#166534" : "#991b1b",
+                            }}
+                          >
+                            {isPending ? (
+                              <Loader2 style={{ width: "14px", height: "14px", flexShrink: 0, animation: "spin 1s linear infinite" }} />
+                            ) : succeeded ? (
+                              <CheckCircle2 style={{ width: "14px", height: "14px", flexShrink: 0 }} />
+                            ) : (
+                              <AlertTriangle style={{ width: "14px", height: "14px", flexShrink: 0 }} />
+                            )}
+                            <div>
+                              <div style={{ fontWeight: 600, marginBottom: "2px" }}>
+                                {isPending ? `Running: ${label}...` : succeeded ? label : `Failed: ${label}`}
+                              </div>
+                              {!isPending && output && (
+                                <div style={{ opacity: 0.8 }}>
+                                  {succeeded
+                                    ? (output.title as string ?? output.name as string ?? output.preview as string ?? "Done")
+                                    : (output.error as string ?? "Something went wrong")}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+
                       {afterDrafts.map((d) => (
                         <NoteDraftCard
                           key={d.cardId}
