@@ -22,11 +22,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "direction must be 'agent_to_client' or 'client_to_agent'" }, { status: 400 })
     }
 
-    // Call server action
+    // Call server action — channel defaults to 'portal' if not provided
     const result = await sendPortalMessage({
       contactId,
       messageBody,
       direction: direction as "agent_to_client" | "client_to_agent",
+      channel: channel || "portal",
       transactionId,
     })
 

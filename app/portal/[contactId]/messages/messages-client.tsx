@@ -101,6 +101,8 @@ export function MessagesClient({
         brokerage_id: "",
         body: messageBody,
         direction,
+        channel,
+        read: false,
         created_at: new Date().toISOString(),
         read_at: null,
       }
@@ -185,11 +187,13 @@ export function MessagesClient({
                       direction={msg.direction}
                       createdAt={msg.created_at}
                       readAt={msg.read_at}
+                      read={msg.read}
+                      channel={msg.channel}
                       senderName={
                         msg.direction === "agent_to_client" ? agentCard.name : "You"
                       }
                       isUnread={
-                        msg.direction === "client_to_agent" && !msg.read_at && !isAgent
+                        msg.direction === "client_to_agent" && !msg.read && !msg.read_at && !isAgent
                       }
                     />
                   ))}

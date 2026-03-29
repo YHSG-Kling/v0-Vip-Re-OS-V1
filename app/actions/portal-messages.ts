@@ -15,6 +15,8 @@ export interface PortalMessage {
   brokerage_id: string
   body: string
   direction: "agent_to_client" | "client_to_agent"
+  channel: string
+  read: boolean
   created_at: string
   read_at: string | null
   transaction_id?: string | null
@@ -24,6 +26,8 @@ export interface SendMessageParams {
   contactId: string
   messageBody: string
   direction: "agent_to_client" | "client_to_agent"
+  /** Communication channel — used for unified inbox filtering. Defaults to 'portal'. */
+  channel?: string
   transactionId?: string
 }
 
@@ -57,7 +61,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       return { success: false, error: "Unauthorized" }
     }
 
-    const { contactId, messageBody, direction, transactionId } = params
+    const { contactId, messageBody, direction, channel = "portal", transactionId } = params
 
     // Validate message body
     if (!messageBody || messageBody.trim().length === 0) {
@@ -107,13 +111,15 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
         brokerage_id: contact.brokerage_id,
         body: messageBody.trim(),
         direction,
+        channel,
+        read: false,
         transaction_id: transactionId || null,
         read_at: null,
       })
       .select()
-      .single()
+      .maybeSingle()
 
-    if (insertError) {
+    if (insertError || !message) {
       console.error("[Portal Messages] Insert error:", insertError)
       return { success: false, error: "Failed to send message" }
     }
@@ -168,10 +174,10 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
     // Update unread messages
     const { data, error: updateError } = await supabase
       .from("client_portal_messages")
-      .update({ read_at: new Date().toISOString() })
+      .update({ read: true, read_at: new Date().toISOString() })
       .eq("contact_id", contactId)
       .eq("direction", direction)
-      .is("read_at", null)
+      .eq("read", false)
       .select("id")
 
     if (updateError) {

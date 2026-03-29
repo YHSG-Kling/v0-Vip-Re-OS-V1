@@ -135,6 +135,8 @@ export async function submitReferral(data: {
     agent_id: contact.agent_id,
     brokerage_id: contact.brokerage_id,
     direction: "client_to_agent",
+    channel: "portal",
+    read: false,
     body: `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}`,
   })
 
