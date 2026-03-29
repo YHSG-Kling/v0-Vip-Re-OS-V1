@@ -1,5 +1,6 @@
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -137,8 +138,8 @@ export async function generateWeeklyCoachingReport(
 
   // Generate report with AI
   const { text } = await generateText({
-    model: "anthropic/claude-sonnet-4-20250514",
-    maxTokens: 800,
+    model: resolveModel("anthropic/claude-sonnet-4-20250514"),
+    maxOutputTokens: 800,
     system:
       "You are a real estate sales coach. Generate a weekly coaching report as JSON only. " +
       "Keys: overall_score (0-100), headline (string), wins (array of 2-3 strings), " +
@@ -272,7 +273,7 @@ async function generateBuyerCoachingWithAI(
   const stageLabel = buyerStage.replace(/_/g, " ").toLowerCase()
 
   const { text } = await generateText({
-    model: "anthropic/claude-sonnet-4-20250514",
+    model: resolveModel("anthropic/claude-sonnet-4-20250514"),
     system:
       "You are a real estate coaching AI. Generate coaching for a buyer's agent at a specific " +
       "stage of the buyer journey. Return JSON only with keys: " +

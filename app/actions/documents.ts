@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { put, del } from "@vercel/blob"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { handleError } from "@/lib/errors"
@@ -72,13 +73,13 @@ export async function analyzeDocument(documentId: string) {
       .from("transaction_documents")
       .select("*")
       .eq("id", documentId)
-      .single()
+      .maybeSingle()
 
-    if (error) throw error
+    if (error || !data) throw error ?? new Error("Document not found")
 
     // AI document analysis
     const { object: analysis } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         documentType: z.string(),
         keyInformation: z.array(z.string()),
@@ -225,7 +226,7 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
       .from("client_documents")
       .select("id, brokerage_id, contact_id")
       .eq("id", documentId)
-      .single()
+      .maybeSingle()
 
     // Step 1: Extract text and classify document
     const classificationResult = await generateText({

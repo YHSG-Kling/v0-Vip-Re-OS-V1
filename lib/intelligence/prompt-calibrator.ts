@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -75,7 +76,7 @@ export async function calibrateSystemPrompts(
 
     try {
       const { object: promptChanges } = await generateObject({
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: resolveModel("anthropic/claude-sonnet-4-20250514"),
         schema: CalibrationSchema,
         system: `You are an AI quality engineer. Based on the negative feedback themes, suggest specific system prompt improvements to increase quality. Return JSON with:
 - system_prompt_additions: A paragraph of guidance to add to the system prompt

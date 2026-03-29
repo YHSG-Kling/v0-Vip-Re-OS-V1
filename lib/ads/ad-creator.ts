@@ -13,6 +13,7 @@ import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -203,7 +204,7 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
   // ── 5. Generate variations via AI ───────────────────────────────────────────
   try {
     const { text } = await generateText({
-      model: provider.modelString || "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel((provider.modelString ?? "anthropic/claude-sonnet-4-20250514") as Parameters<typeof resolveModel>[0]),
       prompt,
       maxTokens: 1500,
     })

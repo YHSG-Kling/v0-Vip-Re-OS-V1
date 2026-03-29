@@ -5,6 +5,7 @@
  */
 
 import { generateObject } from 'ai'
+import { resolveModel } from '@/lib/ai/resolve-model'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -410,7 +411,7 @@ export async function generateMarketInsight(
 
   // STEP 4: Generate AI insight
   const { object: insight } = await generateObject({
-    model: 'anthropic/claude-sonnet-4-20250514',
+    model: resolveModel('anthropic/claude-sonnet-4-20250514'),
     schema: MarketInsightSchema,
     maxTokens: 600,
     system:

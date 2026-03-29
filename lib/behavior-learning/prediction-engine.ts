@@ -2,6 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 interface GenerateBuyerPredictionsParams {
   contactId:   string
@@ -90,7 +91,7 @@ export async function generateBuyerPredictions(
 
   try {
     const { text } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       system:
         "You are a real estate buyer behavior analyst. Based on buyer signals, predict what property " +
         "they're most likely to make an offer on. Return JSON only with these exact keys: " +

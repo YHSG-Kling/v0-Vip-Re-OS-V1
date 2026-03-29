@@ -9,7 +9,8 @@
  *   { pause_days, re_engagement_message, search_reset_suggestion, morale_boost }
  */
 
-import { generateText }        from "ai"
+import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
 import type { FatigueScore }   from "./fatigue-scorer"
 
@@ -27,7 +28,7 @@ export async function generateRecoveryPlan(
 
   try {
     const { text } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       system:
         "You are a real estate agent coach specializing in buyer fatigue recovery. " +
         "Generate a short, empathetic recovery plan for a fatigued buyer. " +

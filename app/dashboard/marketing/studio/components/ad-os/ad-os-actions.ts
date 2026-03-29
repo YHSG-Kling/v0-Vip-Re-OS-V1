@@ -7,6 +7,7 @@
 // ============================================================
 
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
 import { evaluateContentReadiness } from "@/app/actions/campaign-readiness"
@@ -27,7 +28,7 @@ export async function generateMarketingInsight(
 ): Promise<{ success: boolean; text?: string; error?: string }> {
   try {
     const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       system:
         systemPrompt ??
         "You are a real estate marketing expert helping agents create compelling, compliant marketing content. Be concise, actionable, and specific.",
