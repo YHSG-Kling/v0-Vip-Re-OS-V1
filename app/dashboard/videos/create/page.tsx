@@ -286,9 +286,9 @@ export default function VideoCreatePage() {
           },
         })
         .select()
-        .single()
+        .maybeSingle()
 
-      if (projectError) throw projectError
+      if (projectError || !project) throw projectError ?? new Error("Failed to create video project")
 
       // 2. Submit to HeyGen via API
       const response = await fetch("/api/heygen/generate-video", {

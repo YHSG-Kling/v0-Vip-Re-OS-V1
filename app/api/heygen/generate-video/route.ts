@@ -15,7 +15,7 @@ async function validateScriptApproval(supabase: any, scriptId: string | null): P
     .from("video_scripts_library")
     .select("approval_status, compliance_review_notes")
     .eq("id", scriptId)
-    .single()
+    .maybeSingle()
 
   if (error || !script) {
     return { valid: false, error: "Script not found" }
@@ -35,9 +35,8 @@ async function validateBrandingAssets(supabase: any, presetId: string | null, br
       .from("brokerages")
       .select("id")
       .eq("id", brokerageId)
-      .single()
+      .maybeSingle()
 
-    // For now, allow without preset but log warning
     if (brokerage) {
       console.warn(`[HeyGen] Video generation without branding preset for brokerage ${brokerageId}`)
     }
@@ -48,7 +47,7 @@ async function validateBrandingAssets(supabase: any, presetId: string | null, br
     .from("video_branding_presets")
     .select("logo_url, preset_name")
     .eq("id", presetId)
-    .single()
+    .maybeSingle()
 
   if (error || !preset) {
     return { valid: false, error: "Branding preset not found" }

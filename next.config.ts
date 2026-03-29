@@ -1,5 +1,6 @@
 import type { NextConfig } from 'next'
 
+// Route tree uses [id] as the universal dynamic segment throughout app/dashboard/**
 // Widget CORS headers applied to /widget/* iframe pages and /api/widget/* routes.
 // X-Frame-Options is intentionally omitted so any brokerage site can embed the iframe.
 // Content-Security-Policy frame-ancestors '*' achieves the same for modern browsers.

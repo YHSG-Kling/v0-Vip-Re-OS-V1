@@ -306,25 +306,21 @@ export default function VideoKanbanBoard() {
     setPublishing(true)
 
     try {
-      const response = await fetch(`/api/heygen/check-status/${video.id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          user_id: user?.id,
-          publish_metadata: {
+      const { error } = await supabase
+        .from("ai_video_projects")
+        .update({
+          status: "published",
+          video_metadata: {
             published_by: user?.id,
             published_at: new Date().toISOString(),
           },
-        }),
-      })
+        })
+        .eq("id", video.id)
 
-      const result = await response.json()
-
-      if (!response.ok) {
-        throw new Error(result.error || "Failed to publish video")
-      }
+      if (error) throw error
 
       setPreviewDialog({ open: false, video: null })
+      toast.success("Video published")
       await loadVideos()
     } catch (error: any) {
       console.error("Error publishing video:", error)

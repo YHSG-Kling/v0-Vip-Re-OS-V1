@@ -22,7 +22,7 @@ export default async function VideoSnippetsPage() {
     .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!profile?.brokerage_id) {
     redirect("/dashboard/onboarding")

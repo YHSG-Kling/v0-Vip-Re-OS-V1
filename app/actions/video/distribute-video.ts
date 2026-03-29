@@ -53,7 +53,8 @@ export async function distributeVideo(
     return { success: false, error: "Video project not found" }
   }
 
-  if (project.status !== "ready" && project.status !== "completed") {
+  const readyStatuses = ["ready", "completed", "preview_ready", "published"]
+  if (!readyStatuses.includes(project.status)) {
     return { success: false, error: "Video is not ready for distribution. Please wait for generation to complete." }
   }
 

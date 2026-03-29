@@ -34,7 +34,7 @@ export async function GET(
         agent_voice_profiles(id, profile_name, training_status, heygen_voice_clone_id, quality_score)
       `)
       .eq("id", training_id)
-      .single()
+      .maybeSingle()
 
     if (fetchError || !trainingJob) {
       return NextResponse.json(

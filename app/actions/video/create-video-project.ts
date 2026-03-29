@@ -127,20 +127,33 @@ Return only the script text.`
   }).catch(() => raw.text)
 
   // Compliance check
+  const scriptContent = typeof withVoice === "string" ? withVoice : raw.text
   const compliance = await evaluateOutbound({
-    content: typeof withVoice === "string" ? withVoice : raw.text,
-    brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    actorRole: "agent",
-    messageType: "marketing",
-    entityType: "video_script",
-  }).catch(() => ({ allowed: true, violations: [] }))
+    actorContext: {
+      userId: params.agentId,
+      role: "agent",
+      brokerageId: params.brokerageId,
+    },
+    journeyType: "buyer",
+    persona: "first_time_buyer",
+    messageType: "video_script",
+    content: scriptContent,
+    contact: {
+      id: "broadcast",
+      first_name: "Broadcast",
+      last_name: "Audience",
+      contact_type: "buyer",
+      tcpa_consent: true,
+      isa_reengage_allowed: false,
+      dnc_status: false,
+    },
+  }).catch(() => ({ allowed: true, violations: [] as string[] }))
 
   return {
-    script: typeof withVoice === "string" ? withVoice : raw.text,
-    wordCount: (typeof withVoice === "string" ? withVoice : raw.text).split(/\s+/).filter(Boolean).length,
+    script: scriptContent,
+    wordCount: scriptContent.split(/\s+/).filter(Boolean).length,
     complianceAllowed: compliance.allowed,
-    complianceViolations: compliance.allowed ? [] : (compliance as any).violations ?? [],
+    complianceViolations: compliance.allowed ? [] : (compliance.violations ?? []),
   }
 }
 
@@ -396,12 +409,12 @@ export async function pollVideoStatus(
       entity_type: "video_project",
       entity_id: projectId,
       brokerage_id: brokerageId,
-    event_type: KernelEvent.VIDEO_PREVIEW_READY,
+      event_type: KernelEvent.VIDEO_PREVIEW_READY,
       metadata: { video_url: heygenResult.videoUrl },
-  })
+    })
 
-  await processKernelEvent({
-    event: KernelEvent.VIDEO_PREVIEW_READY,
+    await processKernelEvent({
+      event: KernelEvent.VIDEO_PREVIEW_READY,
       brokerageId,
       entityType: "video_project",
       entityId: projectId,
@@ -471,7 +484,7 @@ export async function getVideoProjects(brokerageId: string, agentId?: string): P
   return (data ?? []) as VideoProject[]
 }
 
-// ─── RETRY VIDEO GENERATION ─────────────────────────────────────────────────
+// ─── RETRY VIDEO GENERATION ─���───────────────────────────────────────────────
 
 export async function retryVideoGeneration(
   projectId: string,
