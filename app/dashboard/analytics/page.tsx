@@ -14,7 +14,8 @@ import {
   Target,
   Activity,
   ArrowUpRight,
-  ArrowDownRight
+  ArrowDownRight,
+  Database,
 } from "lucide-react"
 
 export const dynamic = "force-dynamic"
@@ -30,9 +31,9 @@ export default async function AnalyticsPage() {
   // Get user profile
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, role")
+    .select("id, brokerage_id, user_type")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   // Fetch comprehensive stats
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
@@ -62,9 +63,9 @@ export default async function AnalyticsPage() {
       .select("lead_source")
       .eq("agent_id", user.id)
       .not("lead_source", "is", null),
-    supabase.from("activity_log")
-      .select("id, action, entity_type, created_at")
-      .eq("user_id", user.id)
+    supabase.from("activities")
+      .select("id, title, activity_type, created_at")
+      .eq("agent_id", user.id)
       .order("created_at", { ascending: false })
       .limit(10)
   ])
@@ -129,6 +130,12 @@ export default async function AnalyticsPage() {
               <Button size="sm" variant="outline" className="text-xs gap-1">
                 <PieChart className="h-3 w-3" />
                 Pattern Analysis
+              </Button>
+            </Link>
+            <Link href="/dashboard/analytics/source">
+              <Button size="sm" variant="outline" className="text-xs gap-1">
+                <Database className="h-3 w-3" />
+                Source Analytics
               </Button>
             </Link>
           </div>
@@ -291,7 +298,7 @@ export default async function AnalyticsPage() {
                     <div key={activity.id} className="flex items-start gap-2 p-2 rounded border border-border">
                       <div className="w-2 h-2 rounded-full bg-blue-500 mt-2 flex-shrink-0" />
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs text-foreground truncate">{activity.action}</p>
+                        <p className="text-xs text-foreground truncate">{activity.title ?? activity.activity_type}</p>
                         <p className="text-xs text-muted-foreground">
                           {new Date(activity.created_at).toLocaleDateString()}
                         </p>
@@ -307,6 +314,37 @@ export default async function AnalyticsPage() {
             </CardContent>
           </Card>
         </div>
+        {/* Source Performance Entry Card */}
+        <Card className="border-dashed">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Database className="h-5 w-5" />
+              Source Analytics
+            </CardTitle>
+            <CardDescription>Attribution and ROI by acquisition source family</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {[
+              { label: "Direct Contact", desc: "Website, QR, open house, referral", dot: "bg-emerald-500" },
+              { label: "Lead Sources", desc: "Manual entry, vendor feeds, paid", dot: "bg-blue-500" },
+              { label: "Raw Acquisition", desc: "Scraped, imported, purchased", dot: "bg-orange-500" },
+            ].map(item => (
+              <div key={item.label} className="flex items-center gap-3">
+                <div className={`w-2 h-2 rounded-full ${item.dot} shrink-0`} />
+                <div>
+                  <p className="text-sm font-medium text-foreground">{item.label}</p>
+                  <p className="text-xs text-muted-foreground">{item.desc}</p>
+                </div>
+              </div>
+            ))}
+            <Link href="/dashboard/analytics/source">
+              <Button size="sm" variant="outline" className="w-full mt-2 text-xs gap-1.5">
+                <BarChart3 className="h-3.5 w-3.5" />
+                Open Source Analytics
+              </Button>
+            </Link>
+          </CardContent>
+        </Card>
       </div>
     </div>
   )
