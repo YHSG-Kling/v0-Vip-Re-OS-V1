@@ -168,7 +168,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
       const settings = await getAgentSettings(userId)
       setAgentSettings(settings)
     } catch (error) {
-      console.error("[v0] Failed to load agent settings:", error)
+      console.error("Failed to load agent settings:", error)
       setAgentSettings({
         avatarId: null,
         voiceId: null,
@@ -197,7 +197,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
       setDirectMail([])
       setLongVideos([])
     } catch (error) {
-      console.error("[v0] Failed to load Content Studio data:", error)
+      console.error("Failed to load Content Studio data:", error)
       setContentIdeas([])
       setSavedIdeas([])
       setCompetitors([])
@@ -476,7 +476,7 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
         toast.error(result.error)
       }
     } catch (error) {
-      console.error("[v0] Video generation error:", error)
+      console.error("Video generation error:", error)
       toast.error("Video generation failed")
     } finally {
       setGeneratingVideo(null)
