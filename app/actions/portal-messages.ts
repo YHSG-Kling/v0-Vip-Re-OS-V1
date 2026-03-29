@@ -311,12 +311,12 @@ export async function generateAIDraft(params: {
     const contactName = contact.first_name || "there"
     const contactStage = contact.buyer_stage || contact.contact_type || "client"
 
-    // Generate draft using AI SDK v6 — must use provider-package format, not string model ID
+    // Generate draft using AI SDK v6 via Vercel AI Gateway
     const { generateText } = await import("ai")
-    const { anthropic } = await import("@ai-sdk/anthropic")
+    const { gateway } = await import("@ai-sdk/gateway")
 
     const { text: draft } = await generateText({
-      model: anthropic("claude-sonnet-4-20250514"),
+      model: gateway("anthropic/claude-sonnet-4-5"),
       system: `You are a helpful real estate assistant drafting a professional, warm message for an agent to send to their client. 
 Keep messages concise (2-3 sentences), friendly, and action-oriented.
 Never include placeholder text like [AGENT NAME] - the agent will personalize.

@@ -108,7 +108,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     .from("contacts")
     .select("id, first_name, last_name, name, contact_type")
     .eq("id", contactId)
-    .single()
+    .maybeSingle()
 
   if (!contact || contactError) {
     redirect("/portal?error=contact_not_found")
@@ -231,7 +231,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
     .from("contacts")
     .select("*, listings(*)")
     .eq("id", contactId)
-    .single()
+    .maybeSingle()
 
   if (!contactWithListings?.listings || contactWithListings.listings.length === 0) {
     return (
