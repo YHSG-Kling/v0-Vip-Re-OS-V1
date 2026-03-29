@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition, useCallback } from "react"
+import { useState, useTransition, useCallback, useEffect } from "react"
 import { format, formatDistanceToNow } from "date-fns"
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
@@ -47,6 +47,7 @@ import {
   aiGenerateCampaignCopy,
   addCampaignTask,
   updateCampaignTaskStatus,
+  getMarketingCampaign,
   type CampaignWithROI,
 } from "@/app/actions/marketing-campaigns"
 
@@ -463,6 +464,19 @@ function CampaignDetailPanel({
   const [isAddingTask, startTaskTransition] = useTransition()
   const [editBudgetSpent, setEditBudgetSpent] = useState("")
   const [isSavingBudget, startBudgetTransition] = useTransition()
+  const [tasks, setTasks] = useState<Array<{ id: string; title: string; status: string; due_at: string | null }>>([])
+  const [isLoadingTasks, setIsLoadingTasks] = useState(false)
+
+  // Load real tasks when tasks tab is activated
+  useEffect(() => {
+    if (activeTab !== "tasks") return
+    setIsLoadingTasks(true)
+    getMarketingCampaign(campaign.id).then((result) => {
+      if (result.success && result.campaign) {
+        setTasks(result.campaign.tasks ?? [])
+      }
+    }).finally(() => setIsLoadingTasks(false))
+  }, [activeTab, campaign.id])
 
   const status = STATUS_CONFIG[campaign.status] ?? STATUS_CONFIG.draft
 
@@ -484,16 +498,29 @@ function CampaignDetailPanel({
 
   const handleAddTask = useCallback(() => {
     if (!newTask.trim()) return
+    const title = newTask.trim()
+    setNewTask("")
     startTaskTransition(async () => {
-      await addCampaignTask({
+      const result = await addCampaignTask({
         brokerageId,
         campaignId: campaign.id,
-        title: newTask.trim(),
+        title,
       })
-      setNewTask("")
+      if (result.success && result.taskId) {
+        setTasks((prev) => [{ id: result.taskId!, title, status: "pending", due_at: null }, ...prev])
+      }
       onRefresh()
     })
   }, [brokerageId, campaign.id, newTask, onRefresh])
+
+  const handleToggleTask = useCallback((taskId: string, currentStatus: string) => {
+    const next = currentStatus === "done" ? "pending" : "done"
+    setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, status: next } : t))
+    updateCampaignTaskStatus(taskId, next as "pending" | "in_progress" | "done").catch(() => {
+      // revert on failure
+      setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, status: currentStatus } : t))
+    })
+  }, [])
 
   const handleSaveBudgetSpent = useCallback(() => {
     if (!editBudgetSpent) return
@@ -779,27 +806,40 @@ function CampaignDetailPanel({
                 </Button>
               </div>
 
-              {/* Tasks would be fetched via getMarketingCampaign — simplified here */}
-              <div className="space-y-1.5">
-                {[
-                  "Define target audience segments",
-                  "Create channel-specific assets",
-                  "Set up tracking pixels and UTMs",
-                  "Schedule launch date",
-                  "Review compliance",
-                ].map((task, i) => (
-                  <div key={i} className="flex items-center gap-3 p-2.5 rounded-md hover:bg-muted text-sm">
-                    <div className={cn("w-4 h-4 rounded-full border-2 shrink-0",
-                      campaign.status === "ended" || campaign.status === "active"
-                        ? "border-green-500 bg-green-500"
-                        : "border-muted-foreground"
-                    )} />
-                    <span className={campaign.status === "ended" ? "line-through text-muted-foreground" : ""}>
-                      {task}
-                    </span>
-                  </div>
-                ))}
-              </div>
+              {isLoadingTasks ? (
+                <div className="flex items-center gap-2 py-4 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Loading tasks...
+                </div>
+              ) : tasks.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No tasks yet. Add your first task above.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {tasks.map((task) => (
+                    <div
+                      key={task.id}
+                      className="flex items-center gap-3 p-2.5 rounded-md hover:bg-muted text-sm cursor-pointer"
+                      onClick={() => handleToggleTask(task.id, task.status)}
+                    >
+                      <div className={cn(
+                        "w-4 h-4 rounded-full border-2 shrink-0 transition-colors",
+                        task.status === "done"
+                          ? "border-green-500 bg-green-500"
+                          : "border-muted-foreground hover:border-primary"
+                      )} />
+                      <span className={task.status === "done" ? "line-through text-muted-foreground" : ""}>
+                        {task.title}
+                      </span>
+                      {task.due_at && (
+                        <span className="ml-auto text-xs text-muted-foreground shrink-0">
+                          {format(new Date(task.due_at), "MMM d")}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </TabsContent>
           </div>
         </Tabs>
