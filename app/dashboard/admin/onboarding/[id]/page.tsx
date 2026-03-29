@@ -9,11 +9,11 @@ export const metadata = {
 }
 
 interface PageProps {
-  params: Promise<{ agentId: string }>
+  params: Promise<{ id: string }>
 }
 
 export default async function AdminAgentProgressPage({ params }: PageProps) {
-  const { agentId } = await params
+  const { id: agentId } = await params
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -25,7 +25,7 @@ export default async function AdminAgentProgressPage({ params }: PageProps) {
     .from("users")
     .select("brokerage_id, user_type")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!userData?.brokerage_id) {
     redirect("/dashboard")
@@ -41,7 +41,7 @@ export default async function AdminAgentProgressPage({ params }: PageProps) {
     .from("users")
     .select("first_name, last_name, brokerage_id")
     .eq("id", agentId)
-    .single()
+    .maybeSingle()
 
   // Verify agent is in the same brokerage
   if (!agentData || agentData.brokerage_id !== userData.brokerage_id) {
