@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft, Download, FileText, Calendar, DollarSign, TrendingUp } from "lucide-react"
 import Link from "next/link"
+import { ReportsClient } from "./reports-client"
 
 export const dynamic = "force-dynamic"
 
@@ -13,58 +14,51 @@ export default async function FinancialReportsPage() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  const service = createServiceClient()
-  const { data: profile } = await service
-    .from("users")
-    .select("id, brokerage_id, first_name, last_name")
-    .eq("id", user.id)
-    .single()
+  const context = await getAgentContext()
+  if (!context.isAuthenticated) redirect("/login")
+  if (!context.brokerageId) redirect("/dashboard/onboarding")
 
-  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
-
-  // Get financial summary for reports
+  const { agentId, brokerageId, userId, userType } = context
   const currentYear = new Date().getFullYear()
-  const { data: transactions } = await service
-    .from("transactions")
-    .select("id, sale_price, commission_amount, close_date, status")
-    .eq("brokerage_id", profile.brokerage_id)
-    .gte("close_date", `${currentYear}-01-01`)
-    .order("close_date", { ascending: false })
 
-  const closedTransactions = transactions?.filter(t => t.status === "closed") || []
-  const ytdCommissions = closedTransactions.reduce((sum, t) => sum + (t.commission_amount || 0), 0)
-  const ytdVolume = closedTransactions.reduce((sum, t) => sum + (t.sale_price || 0), 0)
+  // Fetch real transaction and commission data in parallel
+  const [earningsResult, commissionsResult, expensesResult] = await Promise.all([
+    // Agent YTD earnings
+    supabase
+      .from("agent_earnings")
+      .select("gross_commission, agent_net, total_fees, transaction_count, cap_status, cap_progress_pct")
+      .eq("agent_id", agentId)
+      .eq("period_type", "ytd")
+      .order("computed_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(r => r.data),
 
-  const reports = [
-    {
-      title: "Commission Statement",
-      description: "Detailed breakdown of all commissions earned",
-      icon: DollarSign,
-      color: "green",
-      period: "Year-to-Date",
-    },
-    {
-      title: "1099 Tax Document",
-      description: "Annual tax document for independent contractors",
-      icon: FileText,
-      color: "blue",
-      period: currentYear.toString(),
-    },
-    {
-      title: "Transaction Summary",
-      description: "Complete list of all closed transactions",
-      icon: TrendingUp,
-      color: "purple",
-      period: "Year-to-Date",
-    },
-    {
-      title: "Monthly Statement",
-      description: "Month-by-month financial breakdown",
-      icon: Calendar,
-      color: "amber",
-      period: "Last 12 Months",
-    },
-  ]
+    // Closed commissions for this agent
+    supabase
+      .from("agent_commissions")
+      .select("id, close_date, gross_commission, agent_commission, brokerage_commission, status, side, transaction_id")
+      .eq("agent_id", agentId)
+      .eq("brokerage_id", brokerageId)
+      .gte("close_date", `${currentYear}-01-01`)
+      .order("close_date", { ascending: false })
+      .limit(50)
+      .then(r => r.data ?? []),
+
+    // YTD expenses
+    supabase
+      .from("business_expenses")
+      .select("amount, category, expense_date")
+      .eq("agent_id", agentId)
+      .gte("expense_date", `${currentYear}-01-01`)
+      .then(r => r.data ?? []),
+  ])
+
+  const ytdCommissions = earningsResult?.gross_commission ?? 0
+  const ytdAgentNet = earningsResult?.agent_net ?? 0
+  const closedCount = earningsResult?.transaction_count ?? commissionsResult.filter((c: any) => c.status === "paid").length
+  const ytdVolume = commissionsResult.reduce((s: number, c: any) => s + (c.gross_commission ?? 0), 0)
+  const ytdExpenses = expensesResult.reduce((s: number, e: any) => s + (e.amount ?? 0), 0)
 
   return (
     <div className="space-y-6">
@@ -81,11 +75,11 @@ export default async function FinancialReportsPage() {
       <div className="px-6 space-y-6">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Financial Reports</h1>
-          <p className="text-muted-foreground">Download statements, 1099s, and transaction summaries</p>
+          <p className="text-muted-foreground">Download statements, commission history, and expense summaries</p>
         </div>
 
         {/* YTD Summary */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <Card>
             <CardContent className="pt-6">
               <div className="flex items-center gap-3">
@@ -93,8 +87,10 @@ export default async function FinancialReportsPage() {
                   <DollarSign className="h-5 w-5 text-green-500" />
                 </div>
                 <div>
-                  <p className="text-2xl font-bold">${ytdCommissions.toLocaleString()}</p>
-                  <p className="text-xs text-muted-foreground">YTD Commissions</p>
+                  <p className="text-2xl font-bold">
+                    {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(ytdCommissions)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">YTD GCI</p>
                 </div>
               </div>
             </CardContent>
@@ -106,8 +102,10 @@ export default async function FinancialReportsPage() {
                   <TrendingUp className="h-5 w-5 text-blue-500" />
                 </div>
                 <div>
-                  <p className="text-2xl font-bold">${(ytdVolume / 1000000).toFixed(1)}M</p>
-                  <p className="text-xs text-muted-foreground">YTD Volume</p>
+                  <p className="text-2xl font-bold">
+                    {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(ytdAgentNet)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">YTD Net Income</p>
                 </div>
               </div>
             </CardContent>
@@ -119,76 +117,39 @@ export default async function FinancialReportsPage() {
                   <FileText className="h-5 w-5 text-purple-500" />
                 </div>
                 <div>
-                  <p className="text-2xl font-bold">{closedTransactions.length}</p>
+                  <p className="text-2xl font-bold">{closedCount}</p>
                   <p className="text-xs text-muted-foreground">Closed Transactions</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-orange-500/10">
+                  <Calendar className="h-5 w-5 text-orange-500" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">
+                    {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(ytdExpenses)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">YTD Expenses</p>
                 </div>
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Available Reports */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Available Reports</CardTitle>
-            <CardDescription>Download or view your financial documents</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {reports.map((report) => {
-                const Icon = report.icon
-                return (
-                  <div key={report.title} className="flex items-center justify-between p-4 border rounded-lg hover:border-primary/50 transition-colors">
-                    <div className="flex items-center gap-4">
-                      <div className={`p-3 rounded-lg bg-${report.color}-500/10`}>
-                        <Icon className={`w-5 h-5 text-${report.color}-500`} />
-                      </div>
-                      <div>
-                        <p className="font-semibold">{report.title}</p>
-                        <p className="text-sm text-muted-foreground">{report.description}</p>
-                        <p className="text-xs text-muted-foreground mt-1">Period: {report.period}</p>
-                      </div>
-                    </div>
-                    <Button variant="outline" size="sm" className="gap-2">
-                      <Download className="h-4 w-4" />
-                      Download PDF
-                    </Button>
-                  </div>
-                )
-              })}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Recent Transactions for Reference */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent Closed Transactions</CardTitle>
-            <CardDescription>Included in your YTD reports</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {closedTransactions.length > 0 ? (
-              <div className="space-y-2">
-                {closedTransactions.slice(0, 5).map((tx) => (
-                  <div key={tx.id} className="flex items-center justify-between p-3 border rounded-lg text-sm">
-                    <div>
-                      <p className="font-medium">Transaction #{tx.id.slice(0, 8)}</p>
-                      <p className="text-xs text-muted-foreground">
-                        Closed: {tx.close_date ? new Date(tx.close_date).toLocaleDateString() : "N/A"}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-semibold text-green-600">+${(tx.commission_amount || 0).toLocaleString()}</p>
-                      <p className="text-xs text-muted-foreground">${(tx.sale_price || 0).toLocaleString()} sale</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground text-center py-6">No closed transactions this year</p>
-            )}
-          </CardContent>
-        </Card>
+        {/* Client component handles export/download actions */}
+        <ReportsClient
+          agentId={agentId}
+          brokerageId={brokerageId}
+          commissions={commissionsResult}
+          currentYear={currentYear}
+          ytdCommissions={ytdCommissions}
+          ytdAgentNet={ytdAgentNet}
+          ytdExpenses={ytdExpenses}
+        />
       </div>
     </div>
   )

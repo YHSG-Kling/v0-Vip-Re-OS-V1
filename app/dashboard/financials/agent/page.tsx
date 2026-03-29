@@ -64,12 +64,12 @@ export default async function AgentFinancialsPage() {
     commissionProfile,
     capTracking,
   ] = await Promise.all([
-    // Agent profile for cap info
+    // Agent profile for cap info — look up by user_id since agentId = user.id from getAgentContext
     supabase
       .from("agents")
-      .select("id, first_name, last_name, cap_amount, cap_progress, gamification_points")
-      .eq("id", agentId)
-      .single()
+      .select("id, cap_amount, cap_progress, gamification_points")
+      .eq("user_id", agentId)
+      .maybeSingle()
       .then((r) => r.data),
 
     // MTD earnings from agent_earnings
@@ -80,7 +80,7 @@ export default async function AgentFinancialsPage() {
       .eq("period_type", "mtd")
       .order("computed_at", { ascending: false })
       .limit(1)
-      .single()
+      .maybeSingle()
       .then((r) => r.data),
 
     // YTD earnings from agent_earnings
@@ -91,7 +91,7 @@ export default async function AgentFinancialsPage() {
       .eq("period_type", "ytd")
       .order("computed_at", { ascending: false })
       .limit(1)
-      .single()
+      .maybeSingle()
       .then((r) => r.data),
 
     // Earnings history for breakdown table
@@ -180,27 +180,9 @@ export default async function AgentFinancialsPage() {
     // Accounting sync status
     getProviderConnectionStatus(brokerageId).catch(() => null),
 
-    // Current period billing (latest record for this month)
-    supabase
-      .from("agent_billing")
-      .select("*")
-      .eq("agent_id", agentId)
-      .gte("billing_period_start", new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split("T")[0])
-      .order("billing_period_start", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then((r) => r.data),
-
-    // Existing budget for current year
-    supabase
-      .from("budgets")
-      .select("id, income_goal, budget_data")
-      .eq("agent_id", agentId)
-      .eq("year", currentYear)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then((r) => r.data),
+    // No agent_billing or budgets tables — return null placeholders
+    Promise.resolve(null),
+    Promise.resolve(null),
 
     // Active pipeline transactions for commission calculator
     supabase
@@ -589,9 +571,12 @@ export default async function AgentFinancialsPage() {
             expenseRatio: (ytdEarnings?.agent_net || 0) > 0 
               ? (totalExpensesYTD / (ytdEarnings?.agent_net || 1)) * 100 
               : 0,
+            // cap_progress on agents table is a 0-100 percentage value
             targetProgress: agentData?.cap_amount 
-              ? ((agentData?.cap_progress || 0) / agentData.cap_amount) * 100 
-              : undefined,
+              ? Math.min((agentData?.cap_progress || 0), 100)
+              : capTracking?.cap_amount
+                ? Math.min(((capTracking.cap_paid_to_date ?? 0) / capTracking.cap_amount) * 100, 100)
+                : undefined,
           }}
           period="ytd"
         />
