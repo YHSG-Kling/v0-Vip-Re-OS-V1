@@ -515,6 +515,25 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
 
   const resolvedWakeWord = (fetchedWakeWord ?? wakeWord ?? "").toLowerCase().trim()
 
+  // ── useChat — must be declared BEFORE any callback that references sendMessage ──
+  const normalizedRole = role?.toLowerCase() ?? "agent"
+  const suggestions = ROLE_SUGGESTIONS[normalizedRole] ?? ROLE_SUGGESTIONS.agent
+
+  const [sessionIdForTransport, setSessionIdForTransport] = useState<string | null>(null)
+  const { messages, sendMessage, status } = useChat({
+    transport: new DefaultChatTransport({
+      api: "/api/internal/ai-chat",
+      headers: sessionIdForTransport ? { "x-internal-session-id": sessionIdForTransport } : {},
+    }),
+  })
+
+  // Keep a stable ref to sendMessage so voice callbacks never go stale
+  const sendMessageRef = useRef(sendMessage)
+  useEffect(() => { sendMessageRef.current = sendMessage }, [sendMessage])
+
+  // Keep transport headers in sync with sessionId
+  useEffect(() => { setSessionIdForTransport(sessionId) }, [sessionId])
+
   // Speak text via SpeechSynthesis
   const speakText = useCallback((text: string) => {
     if (typeof window === "undefined") return
@@ -558,7 +577,7 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
       }
       // If the intent is general, also forward to text chat
       if (data.action === "forward_to_chat") {
-        sendMessage({ text: transcript })
+        sendMessageRef.current({ text: transcript })
       }
     } catch {
       const errMsg = "Sorry, I couldn't process that command. Please try again."
@@ -567,7 +586,7 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
     } finally {
       setVoiceProcessing(false)
     }
-  }, [sessionId, sendMessage, speakText])
+  }, [sessionId, speakText])
 
   // Start single-command voice capture
   const startVoiceCapture = useCallback(() => {
@@ -648,16 +667,6 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
       try { wakeRecognitionRef.current?.stop() } catch { /* ignore */ }
     }
   }, [resolvedWakeWord, startVoiceCapture])
-
-  const normalizedRole = role?.toLowerCase() ?? "agent"
-  const suggestions = ROLE_SUGGESTIONS[normalizedRole] ?? ROLE_SUGGESTIONS.agent
-
-  const { messages, sendMessage, status } = useChat({
-    transport: new DefaultChatTransport({
-      api: "/api/internal/ai-chat",
-      headers: sessionId ? { "x-internal-session-id": sessionId } : {},
-    }),
-  })
 
   const isStreaming = status === "streaming" || status === "submitted"
 
