@@ -25,6 +25,7 @@ import { AgentLifetimeCustomersPanel } from "./components/agent-lifetime-custome
 import { AgentSuperpowersPanel } from "./components/agent-superpowers-panel"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
+import { AgentStaleContactsPanel } from "./components/agent-stale-contacts-panel"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
@@ -390,6 +391,11 @@ export default function AgentDashboard() {
               </Card>
             )}
             <AgentSystemReadiness />
+
+            {/* Contacts Needing Touch */}
+            {agentId && brokerageId && (
+              <AgentStaleContactsPanel agentId={agentId} brokerageId={brokerageId} />
+            )}
 
             {/* My Source Performance */}
             <Card className="hover:shadow-md transition-shadow">

@@ -58,8 +58,17 @@ export default async function BrokerageDashboard({
 
   let brokerageId = params.brokerageId
   if (!brokerageId) {
-    const { data: brokerage } = await supabase.from("brokerages").select("id").eq("owner_id", user.id).single()
-    brokerageId = brokerage?.id
+    // Look up via users.brokerage_id — brokerages table has no owner_id column
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("brokerage_id, user_type")
+      .eq("id", user.id)
+      .maybeSingle()
+    // Guard: only broker/admin/superadmin may access this dashboard
+    if (!userRow?.brokerage_id || !["broker", "admin", "superadmin"].includes(userRow.user_type ?? "")) {
+      redirect("/dashboard")
+    }
+    brokerageId = userRow.brokerage_id
   }
 
   if (!brokerageId) {

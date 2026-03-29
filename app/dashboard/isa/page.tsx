@@ -59,9 +59,9 @@ export default async function AIISAOperationsConsolePage() {
 
   const { data: profile } = await supabase
     .from('users')
-    .select('brokerage_id, first_name, role')
+    .select('brokerage_id, first_name, user_type')
     .eq('id', user.id)
-    .single()
+    .maybeSingle()
 
   if (!profile?.brokerage_id) {
     return (
@@ -74,7 +74,7 @@ export default async function AIISAOperationsConsolePage() {
   const brokerageId = profile.brokerage_id
 
   // Role-based agent filter: agent sees own calls; broker/admin sees all brokerage calls
-  const isAgentOnly = profile?.role === 'agent'
+  const isAgentOnly = profile?.user_type === 'agent'
   const { data: agentRow } = isAgentOnly
     ? await supabase.from('agents').select('id').eq('user_id', user.id).maybeSingle()
     : { data: null }

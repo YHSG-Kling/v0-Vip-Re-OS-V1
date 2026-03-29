@@ -36,7 +36,7 @@ export default async function CoordinatorDashboard({
   if (!user) redirect("/login")
 
   // Get user data to check brokerage
-  const { data: userData } = await supabase.from("users").select("brokerage_id, role").eq("id", user.id).single()
+  const { data: userData } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
 
   // Get coordinator ID from params or lookup by user
   let coordinatorId = params.coordinatorId
@@ -48,11 +48,11 @@ export default async function CoordinatorDashboard({
       .select("*")
       .eq("user_id", user.id)
       .eq("is_active", true)
-      .single()
+      .maybeSingle()
     coordinator = tc
     coordinatorId = tc?.id
   } else {
-    const { data: tc } = await supabase.from("transaction_coordinators").select("*").eq("id", coordinatorId).single()
+    const { data: tc } = await supabase.from("transaction_coordinators").select("*").eq("id", coordinatorId).maybeSingle()
     coordinator = tc
   }
 
@@ -83,7 +83,7 @@ export default async function CoordinatorDashboard({
               <Button variant="outline" asChild>
                 <Link href="/dashboard">Return to Dashboard</Link>
               </Button>
-              {(userData?.role === "broker" || userData?.role === "admin") && (
+              {(userData?.user_type === "broker" || userData?.user_type === "admin") && (
                 <Button asChild>
                   <Link href="/dashboard/settings/team/tc">Setup TC Profile</Link>
                 </Button>
@@ -258,7 +258,7 @@ export default async function CoordinatorDashboard({
           }))}
           agentId={user.id}
           brokerageId={brokerageId || ""}
-          userRole={userData?.role ?? "tc"}
+          userRole={userData?.user_type ?? "tc"}
         />
       )}
 
