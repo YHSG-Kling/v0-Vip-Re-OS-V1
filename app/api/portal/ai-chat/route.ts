@@ -110,7 +110,7 @@ export async function POST(request: Request) {
             metadata:     { initiated_by_contact: true },
           })
           .select('id')
-          .single()
+          .maybeSingle()
         sessionId = newSession?.id ?? null
       }
     }
@@ -148,6 +148,61 @@ export async function POST(request: Request) {
       .limit(1)
       .maybeSingle()
 
+    // ── Load AI identity profile (agent-scope → brokerage-scope → defaults) ─────
+    let aiIdentity: {
+      assistant_name: string
+      persona_label: string
+      tone: string
+      formality_level: string
+      welcome_message: string | null
+    } = {
+      assistant_name: 'Your AI Assistant',
+      persona_label: 'Real Estate Assistant',
+      tone: 'warm',
+      formality_level: 'conversational',
+      welcome_message: null,
+    }
+
+    if (contact.agent_id) {
+      // Try agent-scope first
+      const { data: agentProfile } = await serviceClient
+        .from('ai_identity_profiles')
+        .select('assistant_name, persona_label, tone, formality_level, welcome_message')
+        .eq('scope_type', 'agent')
+        .eq('scope_id', contact.agent_id)
+        .eq('active', true)
+        .maybeSingle()
+
+      if (agentProfile) {
+        aiIdentity = {
+          assistant_name: agentProfile.assistant_name ?? aiIdentity.assistant_name,
+          persona_label: agentProfile.persona_label ?? aiIdentity.persona_label,
+          tone: agentProfile.tone ?? aiIdentity.tone,
+          formality_level: agentProfile.formality_level ?? aiIdentity.formality_level,
+          welcome_message: agentProfile.welcome_message ?? null,
+        }
+      } else if (contact.brokerage_id) {
+        // Fall back to brokerage-scope
+        const { data: brokerageProfile } = await serviceClient
+          .from('ai_identity_profiles')
+          .select('assistant_name, persona_label, tone, formality_level, welcome_message')
+          .eq('scope_type', 'brokerage')
+          .eq('scope_id', contact.brokerage_id)
+          .eq('active', true)
+          .maybeSingle()
+
+        if (brokerageProfile) {
+          aiIdentity = {
+            assistant_name: brokerageProfile.assistant_name ?? aiIdentity.assistant_name,
+            persona_label: brokerageProfile.persona_label ?? aiIdentity.persona_label,
+            tone: brokerageProfile.tone ?? aiIdentity.tone,
+            formality_level: brokerageProfile.formality_level ?? aiIdentity.formality_level,
+            welcome_message: brokerageProfile.welcome_message ?? null,
+          }
+        }
+      }
+    }
+
     // ── Build system prompt ────────────────────────────────────────────────────
     const contactName = contact.first_name || 'there'
     const portalView = contact.buyer_stage === 'BUYER_LIFETIME'
@@ -157,8 +212,9 @@ export async function POST(request: Request) {
       : 'buyer'
 
     const systemPrompt = [
-      `You are a helpful AI assistant for ${contactName}'s real estate client portal.`,
-      `You work for the real estate team helping ${contactName} with their ${portalView} journey.`,
+      `You are ${aiIdentity.assistant_name}, a ${aiIdentity.persona_label} for ${contactName}'s real estate client portal.`,
+      `Tone: ${aiIdentity.tone}. Formality: ${aiIdentity.formality_level}.`,
+      `You are helping ${contactName} with their ${portalView} journey.`,
       '',
       'YOUR RULES:',
       '- You may ONLY discuss information from the context below.',

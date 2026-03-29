@@ -224,9 +224,21 @@ async function loadSuperadminContext(service: ReturnType<typeof createServiceCli
 
 // ─── Build system prompt from role + context ─────────────────────────────────
 
-function buildSystemPrompt(role: string, ctx: Record<string, unknown>): string {
-  const base = `You are an AI-ISA internal assistant embedded in the Kernel OS real estate platform.
-Role: ${role}
+interface AIIdentity {
+  assistant_name: string
+  persona_label: string
+  tone: string
+  formality_level: string
+}
+
+function buildSystemPrompt(role: string, ctx: Record<string, unknown>, identity?: AIIdentity): string {
+  const name = identity?.assistant_name ?? "AI-ISA"
+  const persona = identity?.persona_label ?? "internal assistant"
+  const tone = identity?.tone ?? "professional"
+  const formality = identity?.formality_level ?? "formal"
+
+  const base = `You are ${name}, a ${persona} embedded in the Kernel OS real estate platform.
+Role: ${role} | Tone: ${tone} | Formality: ${formality}
 Date: ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
 
 CAPABILITIES:
@@ -302,24 +314,50 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "messages required" }, { status: 400 })
   }
 
-  // Load role-scoped context
+  // Load role-scoped context + AI identity profile in parallel
   const service = createServiceClient()
   let ctx: Record<string, unknown> = {}
-  try {
-    if (role === "agent" || role === "isa" || role === "team_lead") ctx = await loadAgentContext(service, user.id, brokerageId)
-    else if (role === "broker" || role === "admin") ctx = await loadBrokerContext(service, brokerageId)
-    else if (role === "lender") ctx = await loadLenderContext(service, user.id)
-    else if (role === "vendor") ctx = await loadVendorContext(service, user.id, brokerageId)
-    else if (role === "tc") ctx = await loadTCContext(service, user.id, brokerageId)
-    else if (role === "title_agent") ctx = await loadTitleContext(service, user.id)
-    else if (role === "compliance_officer") ctx = await loadComplianceContext(service, brokerageId)
-    else if (role === "superadmin") ctx = await loadSuperadminContext(service)
-  } catch {
-    // Non-fatal — proceed with empty context rather than failing the stream
-    ctx = {}
+  let identity: AIIdentity | undefined
+
+  // Load identity: agent-scope first, brokerage-scope fallback
+  const [contextResult, agentIdentityResult] = await Promise.allSettled([
+    (async () => {
+      if (role === "agent" || role === "isa" || role === "team_lead") return loadAgentContext(service, user.id, brokerageId)
+      else if (role === "broker" || role === "admin") return loadBrokerContext(service, brokerageId)
+      else if (role === "lender") return loadLenderContext(service, user.id)
+      else if (role === "vendor") return loadVendorContext(service, user.id, brokerageId)
+      else if (role === "tc") return loadTCContext(service, user.id, brokerageId)
+      else if (role === "title_agent") return loadTitleContext(service, user.id)
+      else if (role === "compliance_officer") return loadComplianceContext(service, brokerageId)
+      else if (role === "superadmin") return loadSuperadminContext(service)
+      return {}
+    })(),
+    service
+      .from("ai_identity_profiles")
+      .select("assistant_name, persona_label, tone, formality_level")
+      .eq("scope_type", "agent")
+      .eq("scope_id", user.id)
+      .eq("active", true)
+      .maybeSingle(),
+  ])
+
+  if (contextResult.status === "fulfilled") ctx = contextResult.value ?? {}
+
+  if (agentIdentityResult.status === "fulfilled" && agentIdentityResult.value.data) {
+    identity = agentIdentityResult.value.data as AIIdentity
+  } else if (brokerageId) {
+    // Fall back to brokerage-scope identity
+    const { data: brokerageProfile } = await service
+      .from("ai_identity_profiles")
+      .select("assistant_name, persona_label, tone, formality_level")
+      .eq("scope_type", "brokerage")
+      .eq("scope_id", brokerageId)
+      .eq("active", true)
+      .maybeSingle()
+    if (brokerageProfile) identity = brokerageProfile as AIIdentity
   }
 
-  const systemPrompt = buildSystemPrompt(role, ctx)
+  const systemPrompt = buildSystemPrompt(role, ctx, identity)
 
   // Persist session for this role if not yet created (fire-and-forget)
   const sessionId = req.headers.get("x-internal-session-id")

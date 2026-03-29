@@ -159,7 +159,6 @@ Rules:
       .insert({
         note_text: noteText,
         note_type: noteType,
-        role,
         brokerage_id: brokerageId,
         created_by: user.id,
         contact_id: contactId,

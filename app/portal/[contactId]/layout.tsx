@@ -59,7 +59,7 @@ export default async function PortalLayout({
     .from("contacts")
     .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, name, contact_persona, email")
     .eq("id", contactId)
-    .single()
+    .maybeSingle()
 
   if (contactError || !contact) {
     redirect("/portal?error=contact_not_found")
