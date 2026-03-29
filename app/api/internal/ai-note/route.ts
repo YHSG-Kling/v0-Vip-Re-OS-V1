@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
+import { openai } from "@ai-sdk/openai"
 import { NextRequest, NextResponse } from "next/server"
 
 const NOTE_TYPE_TITLE: Record<string, string> = {
@@ -77,7 +78,7 @@ Rules:
 
     try {
       const { text } = await generateText({
-        model: "openai/gpt-4o-mini",
+        model: openai("gpt-4o-mini"),
         system: systemPrompt,
         prompt: `Raw note: "${rawText}"\n\nConversation context:\n${conversationContext}`,
         maxOutputTokens: 512,
@@ -169,7 +170,7 @@ Rules:
         ai_draft_prompt: sessionId || null,
       })
       .select("id")
-      .single()
+      .maybeSingle()
 
     if (noteErr || !noteRow) {
       return NextResponse.json({ error: "Failed to save note" }, { status: 500 })
@@ -193,7 +194,7 @@ Rules:
         completed_at: new Date().toISOString(),
       })
       .select("id")
-      .single()
+      .maybeSingle()
 
     const activityId = activityRow?.id ?? null
 
@@ -279,7 +280,7 @@ Rules:
           due_date: dueDate,
         })
         .select("id")
-        .single()
+        .maybeSingle()
       taskId = task?.id ?? null
     }
 

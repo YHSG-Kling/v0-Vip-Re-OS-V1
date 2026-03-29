@@ -6,6 +6,7 @@
 
 import { NextRequest } from 'next/server'
 import { streamText, convertToModelMessages, UIMessage } from 'ai'
+import { openai } from '@ai-sdk/openai'
 import { createServiceClient } from '@/lib/supabase/service'
 
 const MAX_HISTORY = 20 // keep last 20 messages for context window
@@ -110,7 +111,7 @@ Do NOT make up property listings. Do NOT discuss competitor brokerages.${faqBloc
     const recentMessages = messages.slice(-MAX_HISTORY)
 
     const result = streamText({
-      model: 'openai/gpt-4o-mini',
+      model: openai('gpt-4o-mini'),
       system,
       messages: await convertToModelMessages(recentMessages),
       temperature: 0.7,

@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { streamText, convertToModelMessages } from "ai"
+import { openai } from "@ai-sdk/openai"
 import { NextRequest, NextResponse } from "next/server"
 
 // Roles that are permitted to use the internal AI assistant.
@@ -153,20 +154,21 @@ async function loadComplianceContext(service: ReturnType<typeof createServiceCli
     { data: recentAuditLogs },
     { data: agentSummary },
   ] = await Promise.all([
-    service.from("compliance_violations")
-      .select("id, violation_type, severity, status, created_at, agent_id", { count: "exact" })
-      .eq("brokerage_id", brokerageId)
+    // compliance_flags is the correct table (compliance_violations doesn't exist)
+    service.from("compliance_flags")
+      .select("id, violation_type, severity, status, created_at, user_id", { count: "exact" })
       .neq("status", "resolved")
       .order("created_at", { ascending: false })
       .limit(15),
-    service.from("content_approvals")
-      .select("id, content_type, status, created_at, agent_id", { count: "exact" })
+    // approval_items is the correct table for pending approvals
+    service.from("approval_items")
+      .select("id, item_type, status, submitted_at, agent_id", { count: "exact" })
       .eq("brokerage_id", brokerageId)
       .eq("status", "pending")
       .limit(20),
-    service.from("audit_logs")
-      .select("id, action, resource_type, created_at, user_id, details")
-      .eq("brokerage_id", brokerageId)
+    // audit_log (singular) is the correct table
+    service.from("audit_log")
+      .select("id, action, entity_type, created_at, user_id")
       .order("created_at", { ascending: false })
       .limit(25),
     service.from("agents")
@@ -192,16 +194,18 @@ async function loadSuperadminContext(service: ReturnType<typeof createServiceCli
     { data: recentUsers },
     { data: aiAuditSample },
   ] = await Promise.all([
+    // brokerages table: no subscription_tier or is_active columns — use name + slug
     service.from("brokerages")
-      .select("id, name, subscription_tier, is_active, created_at", { count: "exact" })
+      .select("id, name, slug, city, state, created_at", { count: "exact" })
       .order("created_at", { ascending: false })
       .limit(20),
     service.from("automation_errors")
       .select("id, workflow_name, error_message, status, severity, created_at, brokerage_id")
       .order("created_at", { ascending: false })
       .limit(15),
+    // users table: no last_sign_in_at column
     service.from("users")
-      .select("id, email, role, created_at, last_sign_in_at")
+      .select("id, email, user_type, created_at")
       .order("created_at", { ascending: false })
       .limit(10),
     service.from("ai_feedback_log")
@@ -354,7 +358,7 @@ export async function POST(req: NextRequest) {
   }
 
   const result = streamText({
-    model: "openai/gpt-4o-mini",
+    model: openai("gpt-4o-mini"),
     system: systemPrompt,
     messages: await convertToModelMessages(messages),
     maxOutputTokens: 1024,
