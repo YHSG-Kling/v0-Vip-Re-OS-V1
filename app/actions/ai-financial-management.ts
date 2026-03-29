@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
@@ -64,7 +65,7 @@ export async function aiCategorizeExpense(params: {
 
     // AI categorization
     const { text: categoryAnalysis } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `You are a real estate expense categorization expert. Categorize this expense.
 
 EXPENSE DETAILS:
@@ -320,7 +321,7 @@ export async function aiCalculateCommission(params: CommissionEntry) {
 
     // AI Tax Estimation
     const { text: taxAnalysis } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Estimate tax liability for this real estate commission.
 
 COMMISSION DETAILS:
@@ -455,7 +456,7 @@ export async function aiGenerateProfitLossReport(params: {
 
     // AI Analysis and Projections
     const { text: financialAnalysis } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `Analyze this real estate agent's financial performance and provide insights.
 
 PERIOD: ${params.startDate} to ${params.endDate}
@@ -753,7 +754,7 @@ export async function aiCreateBudget(params: {
 
     // AI Budget Generation
     const { text: budgetPlan } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `Create a smart budget plan for a real estate agent.
 
 HISTORICAL DATA (${lastYear}):

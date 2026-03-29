@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -105,7 +106,7 @@ Provide realistic estimates in JSON format:
 }`
 
     const { object: propertyData } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         beds: z.number(),
         baths: z.number(),
@@ -187,7 +188,7 @@ export async function aiGetRequiredForms(params: {
 
     // AI enhancement for special circumstances
     const { text: aiRecommendations } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `As a real estate compliance expert for ${params.state}, review this listing:
 Property Type: ${params.propertyType}
 Transaction: ${params.transactionType}
@@ -248,7 +249,7 @@ export async function aiGenerateListingDescription(params: {
       .maybeSingle()
 
     const { object: descriptions } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         mlsDescription: z.string().describe("MLS-compliant description, 500 chars max, no superlatives"),
         marketingDescription: z.string().describe("Marketing headline and paragraph for websites"),
@@ -308,7 +309,7 @@ export async function aiSuggestListPrice(params: {
     }
 
     const { object: pricing } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         suggestedListPrice: z.number(),
         priceRangeLow: z.number(),
@@ -363,7 +364,7 @@ export async function aiCheckListingCompliance(params: {
 }) {
   try {
     const { object: compliance } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         isCompliant: z.boolean(),
         overallScore: z.number().min(0).max(100),
@@ -581,7 +582,7 @@ export async function aiCheckDocumentStatus(params: { loopId: string; agentId: s
 
     // AI recommendation
     const { text: recommendation } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `As a transaction coordinator, review these document statuses and provide a brief action recommendation:
 
 ${documents.map((d) => `- ${d.name}: ${d.status}`).join("\n")}
@@ -696,7 +697,7 @@ export async function aiOptimizePhotoOrder(params: { listingId: string; photos: 
     }
 
     const { object: optimization } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         optimizedOrder: z.array(z.number()).describe("Indices of photos in optimal order"),
         heroPhoto: z.number().describe("Index of the best hero/cover photo"),

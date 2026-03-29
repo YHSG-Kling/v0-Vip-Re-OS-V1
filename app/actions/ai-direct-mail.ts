@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -84,7 +85,7 @@ export async function aiWritePostcardCopy(params: {
       .single()
 
     const { object: copy } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         headline: z.string().max(50).describe("Bold, attention-grabbing headline"),
         subheadline: z.string().max(80).describe("Supporting text"),
@@ -160,7 +161,7 @@ export async function aiSuggestDesign(params: {
 }) {
   try {
     const { object: design } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         colorScheme: z.object({
           primary: z.string(),
@@ -244,7 +245,7 @@ export async function aiSelectTargetAudience(params: {
       .limit(10)
 
     const { object: targeting } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         primarySegment: z.object({
           name: z.string(),
@@ -328,7 +329,7 @@ export async function aiPredictCampaignROI(params: {
     const totalCost = printCost + postageCost + dataCost
 
     const { object: prediction } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         estimatedResponseRate: z.number(),
         estimatedLeads: z.number(),
@@ -747,7 +748,7 @@ export async function aiAnalyzeCampaignPerformance(params: { agentId: string; br
       .not("submitted_at", "is", null)
 
     const { object: analysis } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         overallROI: z.number(),
         bestPerformingType: z.string(),
