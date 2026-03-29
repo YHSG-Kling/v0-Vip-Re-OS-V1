@@ -35,21 +35,21 @@ export default async function TeamFinancialsPage() {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type")
     .eq("id", user.id)
     .maybeSingle()
 
-  const userRole = profile?.role || "agent"
+  const userRole = profile?.user_type || "agent"
 
   // Role gate: redirect non-team_lead/broker users
-  if (!["team_lead", "broker", "admin"].includes(userRole)) {
+  if (!["team_lead", "broker", "admin", "superadmin"].includes(userRole)) {
     redirect("/dashboard/financials/agent")
   }
 
   // Get agent's team(s) - team lead sees their team, broker sees all
   let teamIds: string[] = []
 
-  if (userRole === "broker" || userRole === "admin") {
+  if (userRole === "broker" || userRole === "admin" || userRole === "superadmin") {
     // Broker sees all teams
     const { data: allTeams } = await supabase
       .from("teams")

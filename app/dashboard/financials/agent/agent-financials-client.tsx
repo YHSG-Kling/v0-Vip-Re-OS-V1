@@ -1,10 +1,14 @@
 "use client"
 
-import { useState, ReactNode } from "react"
+import { useState, useTransition, ReactNode } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
-import { DollarSign, Calculator, Wrench } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { DollarSign, Calculator, Wrench, Sparkles, Loader2, TrendingUp } from "lucide-react"
 import { format } from "date-fns"
+import { generateAIForecast } from "@/app/actions/financials"
 import {
   TaxReadinessPanel,
   TaxSetasidePanel,
@@ -91,6 +95,10 @@ export function AgentFinancialsClient({
   children,
 }: AgentFinancialsClientProps) {
   const [setAsidePercent, setSetAsidePercent] = useState(25)
+  const [forecastText, setForecastText] = useState<string | null>(null)
+  const [forecastProjection, setForecastProjection] = useState<number | null>(null)
+  const [forecastError, setForecastError] = useState<string | null>(null)
+  const [isForecastPending, startForecast] = useTransition()
 
   const isCapped = capTracking?.is_capped ?? false
   const anniversaryEnd = capTracking?.anniversary_end
@@ -98,6 +106,31 @@ export function AgentFinancialsClient({
   // Calculate quarter from current month
   const currentMonth = new Date().getMonth() + 1
   const quarter = Math.ceil(currentMonth / 3)
+
+  function handleAIForecast() {
+    startForecast(async () => {
+      setForecastError(null)
+      setForecastText(null)
+      const pipelineValue = pipelineTransactions.reduce(
+        (sum, t) => sum + (t.estimated_commission ?? 0),
+        0
+      )
+      const result = await generateAIForecast({
+        agentId,
+        brokerageId,
+        ytdGCI,
+        ytdTransactionCount,
+        pipelineValue,
+        monthsElapsed: currentMonth,
+      })
+      if (result.success) {
+        setForecastText(result.forecast ?? null)
+        setForecastProjection(result.projectedYearEnd ?? null)
+      } else {
+        setForecastError(result.error ?? "Forecast failed")
+      }
+    })
+  }
 
   // Calculate estimated tax liability
   const estimatedTaxRate = 0.25
@@ -153,6 +186,61 @@ export function AgentFinancialsClient({
         )}
 
         {children}
+
+        {/* AI Forecast Panel */}
+        <Card className="border-blue-200">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-lg bg-blue-100">
+                  <TrendingUp className="h-5 w-5 text-blue-700" />
+                </div>
+                <div>
+                  <CardTitle className="text-base">AI Earnings Forecast</CardTitle>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                onClick={handleAIForecast}
+                disabled={isForecastPending}
+              >
+                {isForecastPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5 text-blue-600" />
+                )}
+                {isForecastPending ? "Generating..." : "Generate Forecast"}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {forecastError && (
+              <Alert variant="destructive">
+                <AlertDescription>{forecastError}</AlertDescription>
+              </Alert>
+            )}
+            {!forecastText && !forecastError && !isForecastPending && (
+              <p className="text-sm text-muted-foreground">
+                Click &ldquo;Generate Forecast&rdquo; to get an AI projection of your year-end GCI based on current pace and pipeline.
+              </p>
+            )}
+            {forecastText && (
+              <div className="space-y-3">
+                {forecastProjection !== null && (
+                  <div className="p-3 rounded-lg bg-blue-50 border border-blue-200">
+                    <p className="text-xs text-muted-foreground">Linear Year-End Projection</p>
+                    <p className="text-2xl font-bold text-blue-700">
+                      {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(forecastProjection)}
+                    </p>
+                  </div>
+                )}
+                <p className="text-sm leading-relaxed whitespace-pre-line">{forecastText}</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </TabsContent>
 
       <TabsContent value="planning" className="space-y-6">

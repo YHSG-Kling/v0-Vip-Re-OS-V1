@@ -34,33 +34,42 @@ export default async function PayoutsPage() {
 
   const currentYear = new Date().getFullYear()
 
-  // agent_commissions has agent_id, gross_commission, agent_commission, brokerage_commission, status, close_date
-  // Join via agents(user_id) → users(first_name, last_name)
+  // Fetch commissions and agent name lookup separately to avoid chained FK join issues
   const { data: commissionsRaw } = await supabase
     .from('agent_commissions')
-    .select(`
-      id,
-      agent_id,
-      gross_commission,
-      agent_commission,
-      brokerage_commission,
-      status,
-      close_date,
-      side,
-      agents!agent_id (
-        user_id,
-        users:user_id (
-          first_name,
-          last_name
-        )
-      )
-    `)
+    .select('id, agent_id, gross_commission, agent_commission, brokerage_commission, status, close_date, side')
     .eq('brokerage_id', profile.brokerage_id)
     .gte('close_date', `${currentYear}-01-01`)
     .order('agent_commission', { ascending: false })
     .limit(200)
 
   const commissionsData = commissionsRaw ?? []
+
+  // Resolve agent names via agents→users join (separate query for safety)
+  const uniqueAgentIds = [...new Set(commissionsData.map((c: any) => c.agent_id).filter(Boolean))]
+  let agentNameMap: Record<string, string> = {}
+  if (uniqueAgentIds.length > 0) {
+    const { data: agentRows } = await supabase
+      .from('agents')
+      .select('id, user_id')
+      .in('id', uniqueAgentIds)
+    if (agentRows && agentRows.length > 0) {
+      const userIds = agentRows.map(a => a.user_id).filter(Boolean)
+      const { data: userRows } = await supabase
+        .from('users')
+        .select('id, first_name, last_name')
+        .in('id', userIds)
+      const userMap = Object.fromEntries((userRows ?? []).map(u => [u.id, u]))
+      agentNameMap = Object.fromEntries(
+        agentRows.map(a => [
+          a.id,
+          userMap[a.user_id]
+            ? `${userMap[a.user_id].first_name ?? ''} ${userMap[a.user_id].last_name ?? ''}`.trim()
+            : `Agent ${(a.id ?? '').slice(0, 8)}`
+        ])
+      )
+    }
+  }
 
   const totalAgentPayouts = commissionsData.reduce((s: number, c: any) => s + (c.agent_commission ?? 0), 0)
   const totalBrokerageNet = commissionsData.reduce((s: number, c: any) => s + (c.brokerage_commission ?? 0), 0)
@@ -70,9 +79,7 @@ export default async function PayoutsPage() {
   const agentCount = uniqueAgents.size
 
   function agentName(c: any) {
-    const u = c.agents?.users
-    if (u?.first_name || u?.last_name) return `${u.first_name ?? ''} ${u.last_name ?? ''}`.trim()
-    return `Agent ${(c.agent_id ?? '').slice(0, 8)}`
+    return agentNameMap[c.agent_id] || `Agent ${(c.agent_id ?? '').slice(0, 8)}`
   }
 
   // Build payout action stack
