@@ -34,6 +34,7 @@ export interface CreateMailCampaignParams {
   campaignName: string
   targetAudience: string
   designUrl?: string
+  copyText?: string
   quantity: number
   mailingDate?: string
   perPieceCost?: number
@@ -105,6 +106,7 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
         campaign_name: params.campaignName,
         target_audience: params.targetAudience,
         design_url: params.designUrl ?? null,
+        copy_text: params.copyText ?? null,
         quantity: params.quantity,
         mailing_date: params.mailingDate ?? null,
         per_piece_cost: params.perPieceCost ?? null,
