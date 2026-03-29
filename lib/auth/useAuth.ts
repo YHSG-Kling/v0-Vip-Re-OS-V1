@@ -138,9 +138,10 @@ export function useAuth(): AuthState {
       const domainUser: User = {
         id: authUser.id,
         email: authUser.email,
-        name: userData?.full_name
-          || `${userData?.first_name ?? ''} ${userData?.last_name ?? ''}`.trim()
-          || authUser.user_metadata?.full_name
+        name: `${userData?.first_name ?? ''} ${userData?.last_name ?? ''}`.trim()
+          || (authUser.user_metadata?.full_name as string | undefined)
+          || (authUser.user_metadata?.name as string | undefined)
+          || authUser.email?.split('@')[0]
           || 'User',
         role: canonicalRole,
       }
@@ -151,6 +152,37 @@ export function useAuth(): AuthState {
       setUserPersona(persona)
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Auth error'))
+      // Even on error, try to set a minimal context from the Supabase auth user
+      // so the dashboard can redirect instead of spinning indefinitely.
+      try {
+        const client = supabase.current
+        if (client) {
+          const { data: { user: authUser } } = await client.auth.getUser()
+          if (authUser) {
+            const fallbackRole = toCanonicalRoleOrDefault(
+              (authUser.user_metadata?.user_type as string | undefined) ?? 'agent',
+              'agent'
+            )
+            const fallbackUser: User = {
+              id: authUser.id,
+              email: authUser.email,
+              name: authUser.email?.split('@')[0] ?? 'User',
+              role: fallbackRole,
+            }
+            setUser(fallbackUser)
+            setRole(fallbackRole)
+            setUserContext({
+              id: authUser.id,
+              email: authUser.email ?? '',
+              firstName: '',
+              lastName: '',
+              roles: [fallbackRole],
+            })
+          }
+        }
+      } catch {
+        // ignore secondary error — loading will still be cleared below
+      }
     } finally {
       clearTimeout(timeoutId)
       setLoading(false)
