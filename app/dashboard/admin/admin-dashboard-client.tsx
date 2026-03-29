@@ -33,6 +33,8 @@ import {
   Megaphone,
   Plug,
   ArrowRight,
+  BarChart3,
+  Database,
 } from 'lucide-react'
 import Link from 'next/link'
 import type { OperationalSnapshot } from './page'
@@ -291,6 +293,24 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
             </CardContent>
           </Card>
         </div>
+
+        {/* Acquisition Funnel CTA */}
+        <Link href="/dashboard/analytics/source">
+          <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
+            <CardContent className="py-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <Database className="h-5 w-5 text-foreground shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold">Acquisition Funnel &amp; Source Analytics</p>
+                  <p className="text-xs text-muted-foreground">
+                    Track raw, lead, and direct-contact source performance — ROI, conversion, and attribution
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+            </CardContent>
+          </Card>
+        </Link>
 
         {/* Existing Tabs - Preserved for backward compatibility */}
         <Tabs defaultValue="overview" className="space-y-4 mt-8">

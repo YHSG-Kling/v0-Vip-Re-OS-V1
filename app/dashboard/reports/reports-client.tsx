@@ -31,6 +31,8 @@ import {
   RefreshCw,
   Building2,
   UserCheck,
+  ArrowRight,
+  Database,
 } from "lucide-react"
 import Link from "next/link"
 
@@ -382,6 +384,24 @@ Focus on scalable, brokerage-level insights.`
 
         {/* AGENT TAB */}
         <TabsContent value="agent" className="space-y-6">
+          {/* Source Analytics CTA */}
+          <Link href="/dashboard/analytics/source">
+            <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
+              <CardContent className="py-4 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <Database className="h-5 w-5 text-foreground shrink-0" />
+                  <div>
+                    <p className="text-sm font-semibold">Source Analytics &amp; Attribution</p>
+                    <p className="text-xs text-muted-foreground">
+                      View ROI by acquisition source, funnel conversion, and cost efficiency
+                    </p>
+                  </div>
+                </div>
+                <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+              </CardContent>
+            </Card>
+          </Link>
+
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />

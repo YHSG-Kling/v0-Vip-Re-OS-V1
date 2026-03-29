@@ -20,6 +20,7 @@ import {
   Activity,
   Brain,
   ArrowRight,
+  BarChart3,
 } from "lucide-react"
 import { BrokerageAgentList } from "@/components/brokerage/agent-list"
 import { BrokerageRevenueChart } from "@/components/brokerage/revenue-chart"
@@ -515,6 +516,24 @@ export default async function BrokerageDashboard({
           </CardContent>
         </Card>
       )}
+
+      {/* Source Performance CTA */}
+      <Link href="/dashboard/analytics/source">
+        <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
+          <CardContent className="py-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <BarChart3 className="h-5 w-5 text-foreground shrink-0" />
+              <div>
+                <p className="text-sm font-semibold">Source Performance</p>
+                <p className="text-xs text-muted-foreground">
+                  Attribution and ROI by acquisition source — raw, lead, and direct contact funnels
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+          </CardContent>
+        </Card>
+      </Link>
 
       {/* Intelligence Center CTA */}
       <Link href="/dashboard/brokerage/intelligence">

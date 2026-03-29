@@ -56,6 +56,7 @@ import {
   Award,
   XCircle,
   SlidersHorizontal,
+  Printer,
 } from "lucide-react"
 import Link from "next/link"
 import {
@@ -462,10 +463,13 @@ export function SourceAnalyticsClient({
       if (result.success) {
         setEmailOpen(false)
         setEmailSuccess(true)
-        setTimeout(() => setEmailSuccess(false), 3000)
       }
     })
   }, [brokerageId, userId, isBrokerOrAdmin, dateFrom, dateTo])
+
+  const handlePrint = useCallback(() => {
+    window.print()
+  }, [])
 
   const handleToggleSelect = useCallback((key: string) => {
     setSelectedKeys(prev => {
@@ -609,6 +613,10 @@ export function SourceAnalyticsClient({
             {isExporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
             <span className="ml-1.5">Export CSV</span>
           </Button>
+          <Button size="sm" variant="outline" onClick={handlePrint} className="h-8 text-xs">
+            <Printer className="h-3.5 w-3.5 mr-1.5" />
+            Print Report
+          </Button>
           <Button size="sm" variant="outline" onClick={() => setEmailOpen(true)} className="h-8 text-xs">
             <Mail className="h-3.5 w-3.5 mr-1.5" />
             Email Report
@@ -625,7 +633,16 @@ export function SourceAnalyticsClient({
       {emailSuccess && (
         <Alert>
           <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-          <AlertDescription>Report queued for delivery.</AlertDescription>
+          <AlertDescription className="flex items-center justify-between">
+            <span>Report queued for delivery.</span>
+            <button
+              type="button"
+              onClick={() => setEmailSuccess(false)}
+              className="text-xs text-muted-foreground hover:text-foreground ml-4"
+            >
+              Dismiss
+            </button>
+          </AlertDescription>
         </Alert>
       )}
 
