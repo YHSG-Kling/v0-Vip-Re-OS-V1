@@ -31,7 +31,7 @@ export default async function SocialDashboardPage({
   // Get user profile with brokerage
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, role, first_name, last_name")
+    .select("id, brokerage_id, user_type, first_name, last_name")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -89,7 +89,7 @@ export default async function SocialDashboardPage({
     <SocialDashboardClient
       userId={user.id}
       brokerageId={profile.brokerage_id}
-      userRole={profile.role || "agent"}
+      userRole={profile.user_type || "agent"}
       userName={`${profile.first_name || ""} ${profile.last_name || ""}`.trim()}
       accounts={accounts || []}
       initialPosts={posts || []}

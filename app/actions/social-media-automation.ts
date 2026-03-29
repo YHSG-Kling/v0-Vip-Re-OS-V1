@@ -276,8 +276,8 @@ export async function scheduleSocialPost(params: {
         .from("users")
         .select("id")
         .eq("brokerage_id", params.brokerageId)
-        .in("role", ["broker", "admin"])
-        .eq("deleted_at", null as any)
+        .in("user_type", ["broker", "admin"])
+        .is("deleted_at", null)
         .limit(5)
 
       for (const broker of brokerUsers ?? []) {

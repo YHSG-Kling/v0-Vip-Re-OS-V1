@@ -1,3 +1,4 @@
+// blog post editor — dynamic param: [id]
 import { createClient } from "@/lib/supabase/server"
 import { redirect, notFound } from "next/navigation"
 import { BlogEditorClient } from "./blog-editor-client"
@@ -27,7 +28,7 @@ export default async function BlogEditorPage({ params }: BlogEditorPageProps) {
     .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!userData?.brokerage_id) {
     redirect("/dashboard/onboarding")
@@ -41,7 +42,7 @@ export default async function BlogEditorPage({ params }: BlogEditorPageProps) {
     )
     .eq("id", postId)
     .eq("brokerage_id", userData.brokerage_id)
-    .single()
+    .maybeSingle()
 
   if (error || !post) {
     notFound()
@@ -80,7 +81,7 @@ export default async function BlogEditorPage({ params }: BlogEditorPageProps) {
     .eq("blog_post_id", postId)
     .order("optimized_at", { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
 
   const latestSeoLog = seoLog
     ? {
