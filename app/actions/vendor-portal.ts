@@ -52,7 +52,7 @@ export async function updateVendorJobStatus(data: {
     .eq("id", data.jobId)
     .eq("vendor_id", data.vendorId)
     .select()
-    .single()
+    .maybeSingle()
 
   if (updateError) throw updateError
 
@@ -87,12 +87,12 @@ export async function addVendorJobNote(data: {
     .eq("id", data.jobId)
     .eq("vendor_id", data.vendorId)
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) throw error
 
   // Emit kernel event - get brokerage from vendor
-  const { data: vendorData } = await supabase.from("vendors").select("brokerage_id").eq("id", data.vendorId).single()
+  const { data: vendorData } = await supabase.from("vendors").select("brokerage_id").eq("id", data.vendorId).maybeSingle()
   await supabase.from("lifecycle_events").insert({
     brokerage_id: vendorData?.brokerage_id,
     event_type: KernelEvent.PORTAL_MODULE_VIEWED,
@@ -124,7 +124,7 @@ export async function updateVendorJobCost(data: {
     .eq("id", data.jobId)
     .eq("vendor_id", data.vendorId)
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) throw error
   return job
@@ -140,23 +140,23 @@ export async function uploadVendorJobDocument(data: {
 }) {
   const supabase = await createClient()
 
-  // Create document record
+  // Create document record — use correct transaction_documents schema
   const { data: document, error: docError } = await supabase
     .from("transaction_documents")
     .insert({
       transaction_id: data.transactionId,
-      document_type: data.documentType,
-      file_name: data.fileName,
-      vendor_id: data.vendorId,
-      created_at: new Date().toISOString(),
+      doc_type: data.documentType,
+      doc_label: data.fileName,
+      status: "uploaded",
+      uploaded_by: data.vendorId,
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (docError) throw docError
 
   // Emit kernel event - get brokerage from transaction
-  const { data: txnDoc } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).single()
+  const { data: txnDoc } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle()
   await supabase.from("lifecycle_events").insert({
     brokerage_id: txnDoc?.brokerage_id,
     event_type: KernelEvent.DOCUMENT_UPLOADED,
@@ -198,7 +198,7 @@ export async function sendVendorMessageToAgent(data: {
   if (msgError) throw msgError
 
   // Emit kernel event - get brokerage from transaction
-  const { data: txnMsg } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).single()
+  const { data: txnMsg } = await supabase.from("transactions").select("brokerage_id").eq("id", data.transactionId).maybeSingle()
   await supabase.from("lifecycle_events").insert({
     brokerage_id: txnMsg?.brokerage_id,
     event_type: KernelEvent.MESSAGE_CREATED,

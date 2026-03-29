@@ -21,6 +21,7 @@ import {
 import { ListingAgreementStatusCard } from "./components/listing-agreement-status-card"
 import { OpenHousePostEventPanel } from "../components/open-house-post-event-panel"
 import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
+import { VendorBookingButton } from "./components/vendor-booking-button"
 import { DecisionHistoryPanel } from "./components/decision-history-panel"
 import { ComingSoonCommandCard } from "./components/coming-soon-command-card"
 import { ListingPacketPanel } from "./components/listing-packet-panel"
@@ -184,10 +185,18 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
     openHouseData?.posts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
   const rsvpCount = openHouseData?.invitations?.filter((i: any) => i.rsvp_response === "yes").length ?? 0
 
-  // Fetch vendor bookings directly by listing_id (column now exists after migration)
-  const { data: listingVendorBookings } = await supabase
-    .from("vendor_bookings")
-    .select("id, service_type, status, scheduled_date, notes, contact_id, listing_id, vendors(name)")
+// Fetch vendors for the "Assign Vendor" modal
+const { data: listingVendors } = await supabase
+  .from("vendors")
+  .select("id, name, category, rating")
+  .eq("brokerage_id", userRow.brokerage_id)
+  .order("name", { ascending: true })
+  .limit(100)
+
+// Fetch vendor bookings directly by listing_id (column now exists after migration)
+const { data: listingVendorBookings } = await supabase
+  .from("vendor_bookings")
+  .select("id, service_type, status, scheduled_date, notes, contact_id, listing_id, vendors(name)")
     .eq("listing_id", listingId)
     .not("status", "in", "(cancelled,no_show)")
     .order("scheduled_date", { ascending: true })
@@ -346,12 +355,22 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
           </div>
         )}
 
-        {/* Vendor bookings linked via transactions on this listing */}
-        {(listingVendorBookings ?? []).length > 0 && (
-          <div className="mb-6">
-            <VendorBookingsPanel bookings={listingVendorBookings ?? []} />
+        {/* Vendor section: assign button + bookings list */}
+        <div className="mb-6 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+              Vendors
+            </h3>
+            <VendorBookingButton
+              listingId={listingId}
+              brokerageId={userRow.brokerage_id}
+              vendors={listingVendors ?? []}
+            />
           </div>
-        )}
+          {(listingVendorBookings ?? []).length > 0 && (
+            <VendorBookingsPanel bookings={listingVendorBookings ?? []} />
+          )}
+        </div>
 
         {(currentStage === "COMING_SOON_PREP" ||
           currentStage === "COMING_SOON_ACTIVE" ||

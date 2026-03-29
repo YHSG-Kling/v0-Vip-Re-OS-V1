@@ -67,18 +67,18 @@ export async function getVendorRecommendations(params: {
   const supabase = await createClient()
 
   try {
-    // Get available vendors for the service type
+    // Get available vendors for the service type — use vendors table (not vendor_directory)
     const { data: vendors } = await supabase
-      .from("vendor_directory")
-      .select("*, vendor_reviews(*), vendor_jobs(*)")
-      .eq("service_type", params.serviceType)
-      .eq("status", "active")
+      .from("vendors")
+      .select("id, name, category, email, phone, website, rating, notes, brokerage_id")
+      .ilike("category", `%${params.serviceType}%`)
 
-    // Get agent's past vendor usage
+    // Get agent's past vendor usage via vendor_assignments
     const { data: pastJobs } = await supabase
-      .from("vendor_jobs")
-      .select("*, vendor_directory(*)")
-      .eq("agent_id", params.agentId)
+      .from("vendor_bookings")
+      .select("id, vendor_id, service_type, agent_rating, client_rating, status, vendors:vendor_id(name, category)")
+      .eq("booked_by", params.agentId)
+      .eq("status", "completed")
       .order("completed_at", { ascending: false })
       .limit(50)
 
@@ -141,18 +141,19 @@ ${JSON.stringify(propertyData || {}, null, 2)}
 Available Vendors:
 ${JSON.stringify(vendors?.map(v => ({
   id: v.id,
-  name: v.company_name,
-  rating: v.avg_rating,
-  reviews: v.vendor_reviews?.length || 0,
-  pricing: v.pricing_tier,
-  specializations: v.specializations
+  name: v.name,
+  category: v.category,
+  rating: v.rating,
+  phone: v.phone,
+  email: v.email,
 })) || [], null, 2)}
 
 Agent's Past Vendor Usage:
-${JSON.stringify(pastJobs?.slice(0, 10).map(j => ({
-  vendor: j.vendor_directory?.company_name,
-  rating: j.rating,
-  feedback: j.feedback
+${JSON.stringify(pastJobs?.slice(0, 10).map((j: any) => ({
+  vendor: j.vendors?.name,
+  serviceType: j.service_type,
+  agentRating: j.agent_rating,
+  clientRating: j.client_rating,
 })) || [], null, 2)}
 
 Provide:
@@ -187,11 +188,11 @@ export async function analyzeVendorPerformance(params: {
   const supabase = await createClient()
 
   try {
-    // Get vendor jobs
+    // Get vendor bookings using vendor_bookings table (agent-linked via booked_by)
     let query = supabase
-      .from("vendor_jobs")
-      .select("*, vendor_directory(*)")
-      .eq("agent_id", params.agentId)
+      .from("vendor_bookings")
+      .select("id, vendor_id, service_type, status, agent_rating, client_rating, cost, completed_at, vendors:vendor_id(name, category, rating)")
+      .eq("booked_by", params.agentId)
 
     if (params.vendorId && isValidUUID(params.vendorId)) {
       query = query.eq("vendor_id", params.vendorId)
@@ -252,14 +253,15 @@ export async function analyzeVendorPerformance(params: {
 Timeframe: ${params.timeframe || "90 days"}
 
 Job History:
-${JSON.stringify(jobs?.map(j => ({
-  vendor: j.vendor_directory?.company_name,
+${JSON.stringify(jobs?.map((j: any) => ({
+  vendor: j.vendors?.name,
+  category: j.vendors?.category,
   serviceType: j.service_type,
   cost: j.cost,
-  rating: j.rating,
-  onTime: j.completed_on_time,
-  issues: j.issues_reported,
-  feedback: j.feedback
+  agentRating: j.agent_rating,
+  clientRating: j.client_rating,
+  status: j.status,
+  completedAt: j.completed_at,
 })) || [], null, 2)}
 
 Provide comprehensive analysis:
@@ -304,18 +306,18 @@ export async function coordinateVendors(params: {
     // Get listing details
     const { data: listing } = await supabase
       .from("listings")
-      .select("*")
+      .select("id, address, city, state")
       .eq("id", params.listingId)
-      .single()
+      .maybeSingle()
 
-    // Get vendor availability
+    // Get vendor details (use vendors table)
     const vendorIds = params.services
       .filter(s => s.vendorId && isValidUUID(s.vendorId))
-      .map(s => s.vendorId)
+      .map(s => s.vendorId as string)
 
     const { data: vendors } = await supabase
-      .from("vendor_directory")
-      .select("*")
+      .from("vendors")
+      .select("id, name, category, phone, email")
       .in("id", vendorIds)
 
     const { object: coordination } = await generateObject({
@@ -382,24 +384,10 @@ Create:
 6. Budget summary`
     })
 
-    // Save coordination plan
-    const { data: plan, error } = await supabase
-      .from("vendor_coordination_plans")
-      .insert({
-        agent_id: params.agentId,
-        listing_id: params.listingId,
-        services: params.services,
-        coordination_plan: coordination,
-        status: "pending",
-        created_at: new Date().toISOString()
-      })
-      .select()
-      .single()
-
+    // Return coordination plan (vendor_coordination_plans table doesn't exist — return in-memory)
     return {
       success: true,
       coordination,
-      planId: plan?.id
     }
   } catch (error) {
     console.error("[v0] Coordinate vendors error:", error)
@@ -423,22 +411,33 @@ export async function requestVendorReview(params: {
   try {
     const { data: job } = await supabase
       .from("vendor_jobs")
-      .select("*, vendor_directory(*), listings(*)")
+      .select(`
+        id, job_title, status,
+        vendor_id,
+        vendors:vendor_id(name, category),
+        vendor_assignments:assignment_id(
+          transaction_id,
+          transactions:transaction_id(property_address)
+        )
+      `)
       .eq("id", params.jobId)
-      .single()
+      .maybeSingle()
 
     if (!job) {
       return { success: false, error: "Job not found" }
     }
 
+    const vendorName = (job as any).vendors?.name || "the vendor"
+    const propertyAddress = (job as any).vendor_assignments?.transactions?.property_address || "N/A"
+
     const { text: reviewRequest } = await generateText({
-      model: "openai/gpt-4o-mini",
+      feature: "unspecified",
       prompt: `Generate a professional review request for a vendor:
 
-Vendor: ${job.vendor_directory?.company_name}
-Service: ${job.service_type}
-Property: ${job.listings?.address || "N/A"}
-Completion Date: ${job.completed_at || "Recently"}
+Vendor: ${vendorName}
+Service: ${(job as any).job_title}
+Property: ${propertyAddress}
+Completion Date: recently
 
 Create a friendly, professional message asking for feedback on the vendor's service.
 Include:
@@ -451,7 +450,7 @@ Include:
     return {
       success: true,
       reviewRequest,
-      vendorName: job.vendor_directory?.company_name
+      vendorName,
     }
   } catch (error) {
     console.error("[v0] Request vendor review error:", error)
