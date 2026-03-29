@@ -35,7 +35,7 @@ export default async function CompetitiveMonitorPage() {
     .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!userData?.brokerage_id) {
     redirect("/dashboard/onboarding")

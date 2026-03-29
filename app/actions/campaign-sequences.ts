@@ -95,7 +95,7 @@ export async function getCampaignSequence(sequenceId: string): Promise<{
 }> {
   const service = createServiceClient()
   const [seqRes, stepsRes, enrollRes] = await Promise.all([
-    service.from("campaign_sequences").select("*").eq("id", sequenceId).single(),
+    service.from("campaign_sequences").select("*").eq("id", sequenceId).maybeSingle(),
     service
       .from("campaign_sequence_steps")
       .select("*")
@@ -153,7 +153,7 @@ export async function createCampaignSequence(params: {
       created_by: user.id,
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) return { sequence: null, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
@@ -225,7 +225,7 @@ export async function createSequenceStep(params: {
       reply_count: 0,
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) return { step: null, error: error.message }
   revalidatePath(`/dashboard/campaigns/sequences/${params.sequence_id}`)
@@ -346,7 +346,7 @@ export async function duplicateCampaignSequence(sequenceId: string, brokerageId:
     .from("campaign_sequences")
     .select("*")
     .eq("id", sequenceId)
-    .single()
+    .maybeSingle()
   
   if (fetchError || !original) return { sequence: null, error: "Sequence not found" }
   
@@ -370,7 +370,7 @@ export async function duplicateCampaignSequence(sequenceId: string, brokerageId:
       created_by: user.id,
     })
     .select()
-    .single()
+    .maybeSingle()
   
   if (createError) return { sequence: null, error: createError.message }
   
@@ -463,7 +463,7 @@ export async function enrollContactInSequence(params: {
       enrolled_at: new Date().toISOString(),
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) return { enrollment: null, error: error.message }
   

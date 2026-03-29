@@ -100,7 +100,7 @@ export function CreateCampaignDialog({
         .from("users")
         .select("brokerage_id")
         .eq("id", user.id)
-        .single()
+        .maybeSingle()
       if (data?.brokerage_id) setBrokerageId(data.brokerage_id)
     })
   }, [])
