@@ -178,45 +178,75 @@ export default function PortalAIAssistant({ contact, contactId, isBuyer, isSelle
     setIsLoading(true)
 
     try {
-      // Call AI endpoint
-      const response = await fetch("/api/portal/ai-assistant", {
+      // Stream from /api/portal/ai-chat — send UIMessage[] format required by convertToModelMessages
+      const historyMessages = messages.slice(-10).map((m, i) => ({
+        id: m.id ?? String(i),
+        role: m.role as "user" | "assistant",
+        content: m.content,
+        parts: [{ type: "text" as const, text: m.content }],
+        createdAt: m.timestamp ?? new Date(),
+      }))
+      const newUserMsg = {
+        id: String(Date.now()),
+        role: "user" as const,
+        content: userMessage.content,
+        parts: [{ type: "text" as const, text: userMessage.content }],
+        createdAt: new Date(),
+      }
+
+      const response = await fetch("/api/portal/ai-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contactId,
-          message: userMessage.content,
           persona,
-          isBuyer,
-          isSeller,
-          conversationHistory: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
+          messages: [...historyMessages, newUserMsg],
         }),
       })
 
       if (!response.ok) throw new Error("Failed to get response")
 
-      const data = await response.json()
+      // Read the stream and accumulate assistant text
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+      let accumulated = ""
 
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
+      // Insert a placeholder assistant message
+      const assistantId = (Date.now() + 1).toString()
+      setMessages((prev) => [...prev, {
+        id: assistantId,
         role: "assistant",
-        content: data.response,
+        content: "",
         timestamp: new Date(),
-        suggestions: data.suggestions,
-        actions: data.actions,
-      }
+      }])
 
-      setMessages((prev) => [...prev, assistantMessage])
-    } catch (error) {
-      // Fallback response if API fails
-      const fallbackMessage: Message = {
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          const chunk = decoder.decode(value, { stream: true })
+          // Parse AI SDK UIMessageStream chunks: lines starting with "0:"
+          for (const line of chunk.split("\n")) {
+            if (line.startsWith("0:")) {
+              try {
+                const text = JSON.parse(line.slice(2))
+                accumulated += text
+                setMessages((prev) =>
+                  prev.map((m) => m.id === assistantId ? { ...m, content: accumulated } : m)
+                )
+              } catch { /* skip malformed */ }
+            }
+          }
+        }
+      }
+    } catch {
+      setMessages((prev) => [...prev, {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content:
-          "I apologize, but I'm having trouble connecting right now. Your agent has been notified and will follow up with you shortly. In the meantime, you can browse your dashboard or documents.",
+        content: "I'm having trouble connecting right now. Your agent has been notified and will follow up with you shortly.",
         timestamp: new Date(),
         suggestions: ["View my dashboard", "Check documents", "Contact my agent"],
-      }
-      setMessages((prev) => [...prev, fallbackMessage])
+      }])
     }
 
     setIsLoading(false)

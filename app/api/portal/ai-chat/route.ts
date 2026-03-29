@@ -52,7 +52,7 @@ export async function POST(request: Request) {
       .from('contacts')
       .select('id, first_name, last_name, brokerage_id, agent_id, contact_type, buyer_stage, email')
       .eq('id', contactId)
-      .single()
+      .maybeSingle()
 
     if (!contact) {
       return NextResponse.json({ error: 'Contact not found' }, { status: 404 })
