@@ -14,9 +14,9 @@ export const dynamic = 'force-dynamic'
 export async function generateMetadata({
   params,
 }: {
-  params: Promise<{ videoId: string }>
+  params: Promise<{ id: string }>
 }) {
-  const { videoId } = await params
+  const { id: videoId } = await params
   const result = await getVideoWithProgress(videoId)
 
   if (!result.success || !result.data) {
@@ -34,9 +34,9 @@ export async function generateMetadata({
 export default async function VideoPlayerPage({
   params,
 }: {
-  params: Promise<{ videoId: string }>
+  params: Promise<{ id: string }>
 }) {
-  const { videoId } = await params
+  const { id: videoId } = await params
   const supabase = await createClient()
 
   // Verify session

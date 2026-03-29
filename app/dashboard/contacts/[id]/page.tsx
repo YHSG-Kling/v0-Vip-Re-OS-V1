@@ -4,8 +4,8 @@ import { redirect } from 'next/navigation'
 export default async function DashboardContactDetailPage({
   params,
 }: {
-  params: Promise<{ contactId: string }>
+  params: Promise<{ id: string }>
 }) {
-  const { contactId } = await params
+  const { id: contactId } = await params
   redirect(`/contacts/${contactId}`)
 }

@@ -25,11 +25,11 @@ import {
 export const dynamic = 'force-dynamic'
 
 interface PageProps {
-  params: Promise<{ agentId: string }>
+  params: Promise<{ id: string }>
 }
 
 export default async function AdminAgentDetailPage({ params }: PageProps) {
-  const { agentId } = await params
+  const { id: agentId } = await params
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
