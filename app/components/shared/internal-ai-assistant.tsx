@@ -3,7 +3,7 @@
 import { useChat } from "@ai-sdk/react"
 import { DefaultChatTransport } from "ai"
 import { useEffect, useRef, useState, useCallback } from "react"
-import { X, Send, Minimize2, Sparkles, ChevronDown, FileText, StickyNote, CheckCircle2, AlertTriangle, Loader2, Zap } from "lucide-react"
+import { X, Send, Minimize2, Sparkles, ChevronDown, FileText, StickyNote, CheckCircle2, AlertTriangle, Loader2, Zap, Mic, MicOff, Phone, Volume2 } from "lucide-react"
 
 // ─── Suggested questions by role ─────────────────────────────────────────────
 
@@ -468,11 +468,21 @@ function NoteDraftCard({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-interface InternalAIAssistantProps {
-  role: string
+interface CallQueueItem {
+  contactId: string
+  name: string
+  phone: string
+  score: number
+  reason: string
 }
 
-export function InternalAIAssistant({ role }: InternalAIAssistantProps) {
+interface InternalAIAssistantProps {
+  role: string
+  wakeWord?: string     // from users.assistant_wake_name — e.g. "hey nova"
+  userId?: string
+}
+
+export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssistantProps) {
   const [open, setOpen] = useState(false)
   const [minimized, setMinimized] = useState(false)
   const [input, setInput] = useState("")
@@ -482,6 +492,162 @@ export function InternalAIAssistant({ role }: InternalAIAssistantProps) {
   const [noteLoading, setNoteLoading] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // ── Voice mode state ────────────────────────────────────────────────────────
+  const [voiceListening, setVoiceListening] = useState(false)   // actively capturing command
+  const [wakeListening, setWakeListening] = useState(false)     // background wake word detection
+  const [voiceProcessing, setVoiceProcessing] = useState(false)
+  const [voiceTranscript, setVoiceTranscript] = useState("")
+  const [callQueue, setCallQueue] = useState<CallQueueItem[]>([])
+  const [voiceResponse, setVoiceResponse] = useState<string | null>(null)
+  const [fetchedWakeWord, setFetchedWakeWord] = useState<string | null>(null)
+  const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const wakeRecognitionRef = useRef<SpeechRecognition | null>(null)
+  const synthRef = useRef<SpeechSynthesis | null>(null)
+
+  // Fetch user's configured wake word on mount
+  useEffect(() => {
+    fetch("/api/internal/user-wake-word")
+      .then((r) => r.json())
+      .then((d) => { if (d.wakeWord) setFetchedWakeWord(d.wakeWord.toLowerCase().trim()) })
+      .catch(() => {})
+  }, [])
+
+  const resolvedWakeWord = (fetchedWakeWord ?? wakeWord ?? "").toLowerCase().trim()
+
+  // Speak text via SpeechSynthesis
+  const speakText = useCallback((text: string) => {
+    if (typeof window === "undefined") return
+    const synth = window.speechSynthesis
+    if (!synth) return
+    synthRef.current = synth
+    synth.cancel() // stop any current speech
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.rate = 1.05
+    utterance.pitch = 1.0
+    utterance.volume = 1.0
+    // Prefer a natural-sounding voice
+    const voices = synth.getVoices()
+    const preferred = voices.find((v) => /samantha|google us|zira|natural/i.test(v.name))
+    if (preferred) utterance.voice = preferred
+    synth.speak(utterance)
+  }, [])
+
+  // Process a voice command transcript
+  const processVoiceCommand = useCallback(async (transcript: string) => {
+    if (!transcript.trim()) return
+    setVoiceProcessing(true)
+    setVoiceTranscript(transcript)
+    setVoiceResponse(null)
+    setCallQueue([])
+
+    try {
+      const res = await fetch("/api/internal/voice-command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript, sessionId }),
+      })
+      const data = await res.json()
+
+      if (data.spokenResponse) {
+        setVoiceResponse(data.spokenResponse)
+        speakText(data.spokenResponse)
+      }
+      if (data.callQueue && data.callQueue.length > 0) {
+        setCallQueue(data.callQueue)
+      }
+      // If the intent is general, also forward to text chat
+      if (data.action === "forward_to_chat") {
+        sendMessage({ text: transcript })
+      }
+    } catch {
+      const errMsg = "Sorry, I couldn't process that command. Please try again."
+      setVoiceResponse(errMsg)
+      speakText(errMsg)
+    } finally {
+      setVoiceProcessing(false)
+    }
+  }, [sessionId, sendMessage, speakText])
+
+  // Start single-command voice capture
+  const startVoiceCapture = useCallback(() => {
+    if (typeof window === "undefined") return
+    const SR = (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
+      ?? (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
+    if (!SR) { alert("Voice recognition not supported in this browser."); return }
+
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop() } catch { /* ignore */ }
+    }
+
+    const recognition = new SR()
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.lang = "en-US"
+    recognitionRef.current = recognition
+
+    setVoiceListening(true)
+    setVoiceTranscript("")
+    if (!open) { setOpen(true); setMinimized(false) }
+
+    recognition.onresult = (e: SpeechRecognitionEvent) => {
+      const transcript = Array.from(e.results).map((r) => r[0].transcript).join(" ")
+      setVoiceListening(false)
+      processVoiceCommand(transcript)
+    }
+    recognition.onerror = () => { setVoiceListening(false) }
+    recognition.onend = () => { setVoiceListening(false) }
+    recognition.start()
+  }, [open, processVoiceCommand])
+
+  // Background wake-word detection — runs whenever component is mounted
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const SR = (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
+      ?? (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
+    if (!SR) return
+
+    let active = true
+
+    const startWakeDetection = () => {
+      if (!active) return
+      const wr = new SR()
+      wr.continuous = false
+      wr.interimResults = false
+      wr.lang = "en-US"
+      wakeRecognitionRef.current = wr
+      setWakeListening(true)
+
+      wr.onresult = (e: SpeechRecognitionEvent) => {
+        const heard = Array.from(e.results).map((r) => r[0].transcript).join(" ").toLowerCase()
+        if (heard.includes(resolvedWakeWord)) {
+          // Wake word detected — start command capture immediately
+          setTimeout(() => { if (active) startVoiceCapture() }, 300)
+        } else {
+          // Restart wake detection
+          setTimeout(() => { if (active) startWakeDetection() }, 500)
+        }
+      }
+      wr.onerror = () => { setTimeout(() => { if (active) startWakeDetection() }, 1500) }
+      wr.onend = () => {
+        setWakeListening(false)
+        setTimeout(() => { if (active) startWakeDetection() }, 500)
+      }
+
+      try { wr.start() } catch { /* already running */ }
+    }
+
+    // Only auto-start wake detection when wake word is configured
+    if (resolvedWakeWord && resolvedWakeWord !== "hey nova") {
+      startWakeDetection()
+    }
+
+    return () => {
+      active = false
+      setWakeListening(false)
+      try { wakeRecognitionRef.current?.stop() } catch { /* ignore */ }
+    }
+  }, [resolvedWakeWord, startVoiceCapture])
 
   const normalizedRole = role?.toLowerCase() ?? "agent"
   const suggestions = ROLE_SUGGESTIONS[normalizedRole] ?? ROLE_SUGGESTIONS.agent
@@ -951,6 +1117,138 @@ export function InternalAIAssistant({ role }: InternalAIAssistantProps) {
                   )
                 })}
 
+                {/* Voice listening indicator */}
+                {voiceListening && (
+                  <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "10px",
+                    padding: "12px 14px",
+                    borderRadius: "12px",
+                    background: "#fef2f2",
+                    border: "2px solid #ef4444",
+                    fontSize: "13px",
+                    color: "#b91c1c",
+                    fontWeight: 600,
+                  }}>
+                    <div style={{ display: "flex", gap: "3px" }}>
+                      {[0, 1, 2, 3].map((i) => (
+                        <div key={i} style={{
+                          width: "4px",
+                          borderRadius: "2px",
+                          background: "#ef4444",
+                          animation: `voiceBar 0.6s ease-in-out ${i * 0.1}s infinite alternate`,
+                          height: `${8 + i * 4}px`,
+                        }} />
+                      ))}
+                    </div>
+                    Listening... speak your command
+                  </div>
+                )}
+
+                {/* Voice processing indicator */}
+                {voiceProcessing && !voiceListening && (
+                  <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    padding: "10px 14px",
+                    borderRadius: "12px",
+                    background: "#f0f9ff",
+                    border: "1px solid #bae6fd",
+                    fontSize: "13px",
+                    color: "#0369a1",
+                  }}>
+                    <Loader2 style={{ width: "14px", height: "14px", animation: "spin 1s linear infinite" }} />
+                    <span>Processing: <em>{voiceTranscript}</em></span>
+                  </div>
+                )}
+
+                {/* Voice response card */}
+                {voiceResponse && !voiceProcessing && (
+                  <div style={{
+                    padding: "12px 14px",
+                    borderRadius: "12px",
+                    background: "#f0f9ff",
+                    border: "1px solid #7dd3fc",
+                    fontSize: "13px",
+                    color: "#0c4a6e",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px", fontWeight: 600, fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.05em", color: "#0284c7" }}>
+                      <Volume2 style={{ width: "12px", height: "12px" }} />
+                      Voice Response
+                    </div>
+                    <div style={{ lineHeight: "1.55" }}>{voiceResponse}</div>
+                    {voiceTranscript && (
+                      <div style={{ marginTop: "6px", fontSize: "11px", color: "#64748b", fontStyle: "italic" }}>
+                        You said: &ldquo;{voiceTranscript}&rdquo;
+                      </div>
+                    )}
+                    <button
+                      onClick={() => speakText(voiceResponse)}
+                      style={{ marginTop: "8px", fontSize: "11px", color: "#0284c7", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                    >
+                      Replay
+                    </button>
+                  </div>
+                )}
+
+                {/* Call queue — shown after hot contacts query */}
+                {callQueue.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <div style={{ fontSize: "11px", fontWeight: 600, color: "#7c3aed", textTransform: "uppercase", letterSpacing: "0.05em", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <Phone style={{ width: "12px", height: "12px" }} />
+                      Call Queue — {callQueue.length} contact{callQueue.length > 1 ? "s" : ""}
+                    </div>
+                    {callQueue.map((contact, idx) => (
+                      <div key={contact.contactId} style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "10px 12px",
+                        borderRadius: "10px",
+                        background: "#faf5ff",
+                        border: "1px solid #ddd6fe",
+                        gap: "10px",
+                      }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: "13px", color: "#1e293b" }}>
+                            {idx + 1}. {contact.name}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#64748b" }}>{contact.reason}</div>
+                          <div style={{ fontSize: "12px", color: "#7c3aed", marginTop: "2px" }}>{contact.phone}</div>
+                        </div>
+                        <a
+                          href={`tel:${contact.phone.replace(/\D/g, "")}`}
+                          style={{
+                            padding: "6px 12px",
+                            borderRadius: "8px",
+                            background: "#7c3aed",
+                            color: "#fff",
+                            fontSize: "12px",
+                            fontWeight: 600,
+                            textDecoration: "none",
+                            flexShrink: 0,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "4px",
+                          }}
+                          onClick={() => speakText(`Calling ${contact.name}`)}
+                        >
+                          <Phone style={{ width: "11px", height: "11px" }} />
+                          Call
+                        </a>
+                      </div>
+                    ))}
+                    <button
+                      onClick={() => setCallQueue([])}
+                      style={{ fontSize: "11px", color: "#94a3b8", background: "none", border: "none", cursor: "pointer", textAlign: "left", padding: 0 }}
+                    >
+                      Clear queue
+                    </button>
+                  </div>
+                )}
+
                 {/* Streaming indicator */}
                 {isStreaming && messages[messages.length - 1]?.role !== "assistant" && (
                   <div style={{ display: "flex", gap: "4px", padding: "4px 0" }}>
@@ -1062,6 +1360,33 @@ export function InternalAIAssistant({ role }: InternalAIAssistantProps) {
                     overflow: "auto",
                   }}
                 />
+                {/* Mic button */}
+                <button
+                  onClick={startVoiceCapture}
+                  disabled={voiceListening || voiceProcessing}
+                  aria-label={voiceListening ? "Listening..." : "Voice command"}
+                  title={`Voice command (wake word: "${resolvedWakeWord}")`}
+                  style={{
+                    width: "36px",
+                    height: "36px",
+                    borderRadius: "8px",
+                    border: "none",
+                    cursor: voiceListening || voiceProcessing ? "not-allowed" : "pointer",
+                    background: voiceListening ? "#fef2f2" : wakeListening ? "#f0fdf4" : "#f8fafc",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    transition: "background 0.15s",
+                    outline: voiceListening ? "2px solid #ef4444" : wakeListening ? "2px solid #22c55e" : "none",
+                  }}
+                >
+                  {voiceListening
+                    ? <MicOff style={{ width: "15px", height: "15px", color: "#ef4444" }} />
+                    : <Mic style={{ width: "15px", height: "15px", color: wakeListening ? "#22c55e" : "#64748b" }} />
+                  }
+                </button>
+
                 <button
                   onClick={handleSend}
                   disabled={!input.trim() || isStreaming || noteLoading}
@@ -1094,6 +1419,10 @@ export function InternalAIAssistant({ role }: InternalAIAssistantProps) {
                 @keyframes pulse {
                   0%, 100% { opacity: 0.3; transform: scale(0.8); }
                   50% { opacity: 1; transform: scale(1); }
+                }
+                @keyframes voiceBar {
+                  from { transform: scaleY(0.4); opacity: 0.6; }
+                  to   { transform: scaleY(1.6); opacity: 1; }
                 }
                 @keyframes spin {
                   from { transform: rotate(0deg); }

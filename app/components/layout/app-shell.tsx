@@ -147,7 +147,12 @@ export function AppShell({ children }: AppShellProps) {
       </div>
 
       {/* Internal AI Assistant — staff roles only */}
-      {showAIAssistant && <InternalAIAssistant role={primaryRole} />}
+      {showAIAssistant && (
+        <InternalAIAssistant
+          role={primaryRole}
+          userId={userContext.id}
+        />
+      )}
     </div>
   )
 }
