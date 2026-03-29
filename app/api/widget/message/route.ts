@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
       .from('chat_sessions')
       .select('id, brokerage_id, agent_id, status, capture_state')
       .eq('widget_session_token', session_token)
-      .single()
+      .maybeSingle()
 
     if (!session || session.status === 'closed') {
       return new Response(JSON.stringify({ error: 'Invalid or closed session' }), {

@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
         .select('id, widget_session_token, capture_state, status, brokerage_id, agent_id')
         .eq('widget_session_token', resume_token)
         .eq('brokerage_id', brokerage_id)
-        .single()
+        .maybeSingle()
 
       if (existing && existing.status !== 'closed') {
         const identity = await resolveIdentity(supabase, brokerage_id, agent_id ?? null)
@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
         session_type: 'website_widget',
       })
       .select('id, widget_session_token, capture_state')
-      .single()
+      .maybeSingle()
 
     if (error || !session) {
       console.error('[Widget/session] Insert failed:', error?.message)
