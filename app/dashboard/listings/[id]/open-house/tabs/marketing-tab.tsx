@@ -18,9 +18,8 @@ import {
   Loader2,
   RefreshCw,
 } from "lucide-react"
-import { inviteFarmContacts } from "@/app/actions/seller-open-house"
+import { inviteFarmContacts, createOpenHouseEvent } from "@/app/actions/seller-open-house"
 import {
-  createOpenHouseEvent,
   getOpenHouseEvents,
   sendOpenHouseInvitations,
   optimizeOpenHouseTiming,
@@ -69,14 +68,17 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
   const [optimizingTiming, setOptimizingTiming] = useState(false)
   const [invitingEventId, setInvitingEventId] = useState<string | null>(null)
 
-  // Load events on mount
+  // Load listing-scoped events on mount — filter client-side after fetching by agent
   useEffect(() => {
     if (listing?.agent_id) {
       getOpenHouseEvents(listing.agent_id).then((evts) => {
-        setScheduledEvents(evts ?? [])
+        const filtered = (evts ?? []).filter(
+          (e: any) => e.listing_id === listingId || e.property?.id === listingId
+        )
+        setScheduledEvents(filtered)
       })
     }
-  }, [listing?.agent_id])
+  }, [listing?.agent_id, listingId])
 
   // Pick the upcoming event for invitations (existing farm invite section)
   const upcomingEvent = dataEvents.find((e: any) => e.status === "scheduled") ?? dataEvents[0]
@@ -112,8 +114,10 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
     setCreatingEvent(true)
     try {
       const res = await createOpenHouseEvent({
-        propertyId: listingId,
+        listingId,
+        brokerageId: listing.brokerage_id,
         agentId: listing.agent_id,
+        userId: listing.agent_id,
         eventDate,
         startTime,
         endTime,
@@ -124,9 +128,13 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
         setStartTime("10:00")
         setEndTime("12:00")
         setTimingResult(null)
-        // Reload events
+        // Reload events, scoped to this listing
         const evts = await getOpenHouseEvents(listing.agent_id)
-        setScheduledEvents(evts ?? [])
+        setScheduledEvents(
+          (evts ?? []).filter(
+            (e: any) => e.listing_id === listingId || e.property?.id === listingId
+          )
+        )
       } else {
         toast({ title: "Failed to schedule event", description: res.error, variant: "destructive" })
       }

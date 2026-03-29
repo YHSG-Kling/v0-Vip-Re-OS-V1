@@ -17,9 +17,8 @@ import {
   AlertTriangle,
   CheckCircle2,
 } from "lucide-react"
-import { endOpenHouseEvent, createQrCodeForEvent } from "@/app/actions/seller-open-house"
+import { endOpenHouseEvent, createQrCodeForEvent, checkInAttendee } from "@/app/actions/seller-open-house"
 import {
-  checkInAttendee,
   getOpenHouseVisitors,
   fetchWeatherForEvent,
   monitorCompetingEvents,
@@ -91,13 +90,13 @@ export function EventDayTab({ listingId, data, onRefresh }: Props) {
     try {
       const res = await checkInAttendee({
         eventId: activeEventId,
-        contactEmail: walkInPhone
+        name: walkInName.trim(),
+        email: walkInPhone
           ? `${walkInPhone.replace(/\D/g, "")}@walkin.open`
-          : `${Date.now()}@walkin.open`,
-        contactName: walkInName.trim(),
-        contactPhone: walkInPhone.trim() || undefined,
-        interestLevel: "just_looking",
-        optInFollowUp: true,
+          : undefined,
+        phone: walkInPhone.trim() || undefined,
+        workingWithAgent: false,
+        tcpaConsent: true,
       })
       if (res.success) {
         toast({ title: "Visitor checked in", description: walkInName })

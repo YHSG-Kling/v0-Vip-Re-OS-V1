@@ -30,7 +30,7 @@ export async function getOpenHouseDashboard(listingId: string) {
         .from("listings")
         .select("id, address, city, state, zip, brokerage_id, agent_id, go_live_date, open_house_marketing_date, open_house_event_date, list_price, lifecycle_stage")
         .eq("id", listingId)
-        .single(),
+        .maybeSingle(),
       supabase
         .from("open_house_events")
         .select("*, qr_codes(id, slug, scan_count, target_url)")
@@ -123,7 +123,7 @@ export async function inviteFarmContacts(params: {
     .from("open_house_events")
     .select("event_date, start_time, end_time")
     .eq("id", params.eventId)
-    .single()
+    .maybeSingle()
 
   const channels: Array<"email" | "sms"> =
     params.channel === "both" ? ["email", "sms"] : [params.channel]
@@ -244,9 +244,10 @@ export async function createQrCodeForEvent(params: {
       { onConflict: "slug" }
     )
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) return { success: false, error: error.message }
+  if (!qr) return { success: false, error: "Failed to upsert QR code" }
 
   // Link QR code to event
   await supabase

@@ -65,7 +65,7 @@ interface PerformanceInsights {
 }
 
 interface CompetingEventsResult {
-  competing_count: number
+  total_competing: number
   same_time_conflicts: number
   error?: string
 }
@@ -198,7 +198,7 @@ function CompetingEventsCard({ eventId }: { eventId: string }) {
             <div className="grid grid-cols-2 gap-2">
               <div className="rounded-lg border bg-muted/30 p-3 text-center">
                 <p className="text-xs text-muted-foreground mb-1">Same Day</p>
-                <p className="text-xl font-bold text-foreground">{result.competing_count}</p>
+                <p className="text-xl font-bold text-foreground">{result.total_competing}</p>
               </div>
               <div
                 className={`rounded-lg border p-3 text-center ${
@@ -233,7 +233,7 @@ function CompetingEventsCard({ eventId }: { eventId: string }) {
                 {result.same_time_conflicts} competing open house{result.same_time_conflicts !== 1 ? "s" : ""} overlap your time slot. Consider adjusting timing or boosting your marketing.
               </p>
             )}
-            {result.same_time_conflicts === 0 && result.competing_count === 0 && (
+            {result.same_time_conflicts === 0 && result.total_competing === 0 && (
               <p className="text-xs text-emerald-700 flex items-center gap-1.5">
                 <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                 No competing open houses found on this date.
@@ -380,11 +380,12 @@ function InviteGeneratorCard({
             contactId: a.contact_id,
             eventId,
           })
-          if (res.success && res.invite) {
+          const draft = res.success ? (res as any).invite ?? (res as any).data?.email_body : null
+          if (res.success && draft) {
             return {
               contactId: a.contact_id,
               name: a.name ?? `Contact ${a.contact_id.slice(0, 6)}`,
-              draft: res.invite as string,
+              draft: draft as string,
             }
           }
           return null
