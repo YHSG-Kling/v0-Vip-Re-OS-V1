@@ -741,8 +741,8 @@ export async function createOpenHouseEvent(params: {
     const { data: event, error } = await supabase
       .from("open_house_events")
       .insert({
-        hosting_agent_id: params.agentId,
-        property_id: params.propertyId,
+        agent_id: params.agentId,
+        listing_id: params.propertyId,
         event_date: params.eventDate,
         start_time: params.startTime,
         end_time: params.endTime,
@@ -754,7 +754,7 @@ export async function createOpenHouseEvent(params: {
 
     if (error) throw error
 
-    revalidatePath("/dashboard/open-house")
+    revalidatePath(`/dashboard/listings/${params.propertyId}/open-house`)
     return { success: true, data: event }
   } catch (error) {
     console.error("Create event error:", error)
