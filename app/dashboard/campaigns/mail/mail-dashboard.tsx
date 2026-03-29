@@ -1,8 +1,8 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/app/components/ui/tabs"
-import { Button } from "@/app/components/ui/button"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button"
 import { Plus, Mail, Users, Truck, MessageSquare } from "lucide-react"
 import { CampaignsTab } from "./components/campaigns-tab"
 import { RecipientsTab } from "./components/recipients-tab"

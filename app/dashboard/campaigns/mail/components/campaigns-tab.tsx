@@ -1,16 +1,16 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Button } from "@/app/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/app/components/ui/card"
-import { Badge } from "@/app/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/app/components/ui/dropdown-menu"
+} from "@/components/ui/dropdown-menu"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,7 +20,7 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@/app/components/ui/alert-dialog"
+} from "@/components/ui/alert-dialog"
 import {
   Mail,
   MoreVertical,
@@ -40,6 +40,7 @@ import { formatDistanceToNow } from "date-fns"
 import type { Campaign } from "../mail-dashboard"
 import { deleteMailCampaign, sendCampaign, updateMailCampaign } from "@/app/actions/direct-mail"
 import { submitToPrintFulfillment, validateMailingList } from "@/app/actions/ai-direct-mail"
+
 import { createClient } from "@/lib/supabase/client"
 
 interface CampaignsTabProps {

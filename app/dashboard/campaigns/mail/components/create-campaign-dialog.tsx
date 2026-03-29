@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Button } from "@/app/components/ui/button"
+import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -9,19 +9,19 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/app/components/ui/dialog"
-import { Input } from "@/app/components/ui/input"
-import { Label } from "@/app/components/ui/label"
-import { Textarea } from "@/app/components/ui/textarea"
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/app/components/ui/select"
-import { Badge } from "@/app/components/ui/badge"
-import { Separator } from "@/app/components/ui/separator"
+} from "@/components/ui/select"
+import { Badge } from "@/components/ui/badge"
+import { Separator } from "@/components/ui/separator"
 import { toast } from "sonner"
 import { Loader2, TrendingUp, Palette, Users, FileText } from "lucide-react"
 import { createMailCampaign } from "@/app/actions/direct-mail"
@@ -31,6 +31,7 @@ import {
   aiSelectTargetAudience,
   aiPredictCampaignROI,
 } from "@/app/actions/ai-direct-mail"
+
 import { createClient } from "@/lib/supabase/client"
 
 interface CreateCampaignDialogProps {
