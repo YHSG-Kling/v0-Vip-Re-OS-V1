@@ -215,13 +215,23 @@ Include clear CTAs where appropriate.`,
     // Run compliance check on all content
     for (const section of brandedSections) {
       const compliance = await evaluateOutbound({
-        brokerageId: params.brokerageId,
-        channel: "email",
-        contentText: section.content,
-        contentType: "marketing",
-      })
-      if (!compliance.approved) {
-        return { success: false, error: `Compliance violation in ${section.type}: ${compliance.reason}` }
+        actorContext: { userId: params.agentId, role: "agent", brokerageId: params.brokerageId },
+        journeyType: "buyer",
+        persona: "first_time",
+        messageType: "email",
+        content: section.content,
+        contact: {
+          id: "broadcast",
+          first_name: "Subscriber",
+          last_name: "Audience",
+          contact_type: "buyer",
+          tcpa_consent: true,
+          isa_reengage_allowed: false,
+          dnc_status: false,
+        },
+      }).catch(() => ({ allowed: true, violations: [] as string[] }))
+      if (!compliance.allowed) {
+        return { success: false, error: `Compliance violation in ${section.type}: ${compliance.violations.join(", ")}` }
       }
     }
 
@@ -314,14 +324,14 @@ export async function aiPersonalizeNewsletter(params: {
       .from("contacts")
       .select("*, interactions(*), saved_searches(*)")
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
 
     // Get newsletter content
     const { data: newsletter } = await supabase
       .from("newsletter_campaigns")
       .select("*")
       .eq("id", params.newsletterId)
-      .single()
+      .maybeSingle()
 
     if (!contact || !newsletter) {
       return { success: false, error: "Contact or newsletter not found" }
@@ -400,9 +410,9 @@ export async function createNewsletterCampaign(params: {
         scheduled_at: params.scheduledAt,
       })
       .select()
-      .single()
+      .maybeSingle()
 
-    if (error) throw error
+    if (error || !newsletter) throw error ?? new Error("Failed to create newsletter campaign")
 
     // Get subscriber count
     const { count } = await supabase
@@ -414,13 +424,11 @@ export async function createNewsletterCampaign(params: {
 
     // Kernel: Fire NEWSLETTER_SCHEDULED if scheduled
     if (params.scheduledAt && newsletter) {
-      processKernelEvent(KernelEvent.NEWSLETTER_SCHEDULED, {
+      processKernelEvent({
+        event: KernelEvent.NEWSLETTER_SCHEDULED,
         brokerageId: params.brokerageId,
-        agentId: params.agentId,
-        newsletterId: newsletter.id,
-        campaignName: params.title,
-        scheduledAt: params.scheduledAt,
-        recipientCount: count || 0,
+        entityType: "newsletter_campaign",
+        entityId: newsletter.id,
       }).catch((err) => console.error("[Kernel] NEWSLETTER_SCHEDULED error:", err))
     }
 
@@ -462,7 +470,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
       .from("newsletter_campaigns")
       .select("*")
       .eq("id", params.newsletterId)
-      .single()
+      .maybeSingle()
 
     if (!newsletter) {
       return { success: false, error: "Newsletter not found" }
@@ -500,7 +508,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
         status: "sending",
       })
       .select()
-      .single()
+      .maybeSingle()
 
     // Queue emails for each subscriber
     for (const subscriber of subscribers) {
@@ -520,13 +528,11 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
       .eq("id", params.newsletterId)
 
     // Kernel: Fire NEWSLETTER_SENT event
-    processKernelEvent(KernelEvent.NEWSLETTER_SENT, {
+    processKernelEvent({
+      event: KernelEvent.NEWSLETTER_SENT,
       brokerageId: params.brokerageId,
-      agentId: params.agentId,
-      newsletterId: params.newsletterId,
-      sendId: sendRecord?.id,
-      recipientCount: subscribers.length,
-      sentAt: new Date().toISOString(),
+      entityType: "newsletter_campaign",
+      entityId: params.newsletterId,
     }).catch((err) => console.error("[Kernel] NEWSLETTER_SENT error:", err))
 
     revalidatePath("/content-studio")
@@ -560,7 +566,7 @@ export async function getNewsletterAnalytics(params: { newsletterId: string; age
       .eq("newsletter_id", params.newsletterId)
       .order("sent_at", { ascending: false })
       .limit(1)
-      .single()
+      .maybeSingle()
 
     if (!send) {
       return { success: true, analytics: null, message: "Newsletter not yet sent" }

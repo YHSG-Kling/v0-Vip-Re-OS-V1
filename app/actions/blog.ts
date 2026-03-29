@@ -391,7 +391,7 @@ export async function publishToWordPress(
   }
 }
 
-// ─── getBlogPosts ──────────��──────────────────────────────────────────────────
+// ─── getBlogPosts ──────────��────────────────────────────���─────────────────────
 
 export async function getBlogPosts(
   brokerageId: string,
@@ -564,7 +564,7 @@ export async function addSeoKeyword(
     .select("id")
     .eq("brokerage_id", params.brokerageId)
     .eq("keyword", params.keyword)
-    .single()
+    .maybeSingle()
 
   if (existing) {
     return { success: false, error: "Keyword already exists" }
@@ -587,7 +587,7 @@ export async function addSeoKeyword(
       is_active: true,
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error || !keyword) {
     console.error("[addSeoKeyword] Insert failed:", error)

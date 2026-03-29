@@ -227,7 +227,7 @@ export async function scheduleContent(params: {
       status: "in_progress",
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Schedule content error:", error)
@@ -285,7 +285,7 @@ export async function saveContentIdea(idea: string, contentType: string, persona
       status: "idea",
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) throw error
 

@@ -1,15 +1,33 @@
 import { Suspense } from "react"
+import { redirect } from "next/navigation"
+import { createClient } from "@/lib/supabase/server"
 import MarketingStudioClient from "./marketing-studio-client"
+
+export const dynamic = "force-dynamic"
 
 export const metadata = {
   title: "Marketing Studio | Dashboard",
   description: "Unified marketing command center for campaigns, assets, and content scheduling",
 }
 
-export default function MarketingStudioPage() {
+export default async function MarketingStudioPage() {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect("/login")
+
+  const { data: userRow } = await supabase
+    .from("users")
+    .select("brokerage_id, user_type")
+    .eq("id", user.id)
+    .maybeSingle()
+
   return (
     <Suspense fallback={<MarketingStudioSkeleton />}>
-      <MarketingStudioClient />
+      <MarketingStudioClient
+        userId={user.id}
+        brokerageId={userRow?.brokerage_id ?? ""}
+        userRole={userRow?.user_type ?? "agent"}
+      />
     </Suspense>
   )
 }

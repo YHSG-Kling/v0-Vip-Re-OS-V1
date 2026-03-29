@@ -23,9 +23,9 @@ export default async function MarketingOpsPage() {
 
   const { data: userRow } = await supabase
     .from("users")
-    .select("brokerage_id, role")
+    .select("brokerage_id, user_type")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!userRow?.brokerage_id) {
     return (

@@ -138,7 +138,7 @@ export async function createCampaign(params: CreateCampaignParams) {
       status: "draft",
     })
     .select("id, status")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error creating campaign:", error)
@@ -227,7 +227,7 @@ export async function getCampaignById(campaignId: string) {
     `)
     .eq("id", campaignId)
     .eq("brokerage_id", brokerageId)
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error fetching campaign:", error)
@@ -279,7 +279,7 @@ export async function transitionCampaignStatus(
     .select("id, status")
     .eq("id", campaignId)
     .eq("brokerage_id", brokerageId)
-    .single()
+    .maybeSingle()
 
   if (fetchError || !campaign) {
     return { success: false, error: "Campaign not found" }
@@ -343,7 +343,7 @@ export async function createAsset(params: CreateAssetParams) {
       approval_status: "pending",
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error creating asset:", error)
@@ -517,7 +517,7 @@ export async function createCalendarEvent(params: CreateCalendarEventParams) {
       status: "scheduled",
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error creating calendar event:", error)
@@ -611,7 +611,7 @@ export async function addCampaignComment(params: CreateCommentParams) {
       comment_body: params.commentBody,
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error adding comment:", error)
@@ -660,7 +660,7 @@ export async function createCampaignTask(params: CreateTaskParams) {
       status: "pending",
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error creating task:", error)
@@ -734,7 +734,7 @@ export async function generateCampaignContent(params: {
     .from("marketing_campaigns")
     .select("campaign_name, campaign_type, listing:listings(address, city)")
     .eq("id", params.campaignId)
-    .single()
+    .maybeSingle()
 
   // Load brand voice profile for this brokerage
   const { data: aiIdentity } = await supabase

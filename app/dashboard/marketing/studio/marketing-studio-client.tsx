@@ -155,7 +155,13 @@ interface DashboardData {
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-export default function MarketingStudioClient() {
+interface MarketingStudioClientProps {
+  userId?: string
+  brokerageId?: string
+  userRole?: string
+}
+
+export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole }: MarketingStudioClientProps) {
   const [activeTab, setActiveTab] = useState("overview")
   const [isLoading, setIsLoading] = useState(true)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
@@ -195,8 +201,8 @@ export default function MarketingStudioClient() {
 
   // Ad OS state
   const [listings, setListings] = useState<Array<{ id: string; address: string; city: string; zip?: string; list_price?: number }>>([])
-  const [agentId, setAgentId] = useState<string>("")
-  const [brokerageId, setBrokerageId] = useState<string>("")
+  const [agentId, setAgentId] = useState<string>(userIdProp ?? "")
+  const [brokerageId, setBrokerageId] = useState<string>(brokerageIdProp ?? "")
 
   // Form states
   const [newCampaign, setNewCampaign] = useState({
@@ -285,18 +291,23 @@ export default function MarketingStudioClient() {
   async function loadNewsletterData() {
     setIsNewsletterLoading(true)
     try {
-      // Get user context first - if unavailable, just show empty data (not an error)
-      const userContext = await getUserContextForPrediction()
-      if (!userContext.success || !userContext.brokerageId || !userContext.userId) {
-        // No brokerage context - show empty newsletter data without error
-        setNewsletterCampaigns([])
-        setScheduledSends([])
-        setSubscriberCount(0)
-        setNewsletterTemplates([])
-        setLocalContent([])
-        return
+      // Use server-resolved props first; fall back to action
+      let resolvedBrokerageId = brokerageIdProp
+      let resolvedUserId = userIdProp
+      if (!resolvedBrokerageId || !resolvedUserId) {
+        const userContext = await getUserContextForPrediction()
+        if (!userContext.success || !userContext.brokerageId || !userContext.userId) {
+          setNewsletterCampaigns([])
+          setScheduledSends([])
+          setSubscriberCount(0)
+          setNewsletterTemplates([])
+          setLocalContent([])
+          return
+        }
+        resolvedBrokerageId = userContext.brokerageId
+        resolvedUserId = userContext.userId
       }
-      const { brokerageId, userId } = userContext
+      const { brokerageId, userId } = { brokerageId: resolvedBrokerageId, userId: resolvedUserId }
 
       const supabase = (await import("@/lib/supabase/client")).createClient()
       
@@ -351,17 +362,26 @@ export default function MarketingStudioClient() {
 
   async function loadAdOsData() {
     try {
-      const userContext = await getUserContextForPrediction()
-      if (userContext.success && userContext.userId && userContext.brokerageId) {
-        setAgentId(userContext.userId)
-        setBrokerageId(userContext.brokerageId)
+      // Use server-resolved props first; fall back to action
+      let resolvedBrokerageId = brokerageIdProp
+      let resolvedUserId = userIdProp
+      if (!resolvedBrokerageId || !resolvedUserId) {
+        const userContext = await getUserContextForPrediction()
+        if (userContext.success && userContext.userId && userContext.brokerageId) {
+          resolvedBrokerageId = userContext.brokerageId
+          resolvedUserId = userContext.userId
+        }
+      }
+      if (resolvedUserId && resolvedBrokerageId) {
+        setAgentId(resolvedUserId)
+        setBrokerageId(resolvedBrokerageId)
 
         // Load agent's active listings
         const supabase = (await import("@/lib/supabase/client")).createClient()
         const { data: listingsData } = await supabase
           .from("listings")
           .select("id, address, city, zip, list_price")
-          .eq("brokerage_id", userContext.brokerageId)
+          .eq("brokerage_id", resolvedBrokerageId)
           .in("status", ["active", "pending", "coming_soon"])
           .order("created_at", { ascending: false })
           .limit(50)
@@ -473,10 +493,16 @@ export default function MarketingStudioClient() {
     setIsPredicting(true)
     setCurrentPrediction(null)
 
-    const userContext = await getUserContextForPrediction()
-    if (!userContext.success || !userContext.userId || !userContext.brokerageId) {
-      setIsPredicting(false)
-      return
+    let resolvedBrokerageId = brokerageIdProp
+    let resolvedUserId = userIdProp
+    if (!resolvedBrokerageId || !resolvedUserId) {
+      const userContext = await getUserContextForPrediction()
+      if (!userContext.success || !userContext.userId || !userContext.brokerageId) {
+        setIsPredicting(false)
+        return
+      }
+      resolvedBrokerageId = userContext.brokerageId
+      resolvedUserId = userContext.userId
     }
 
     // Map asset_type to content_type
@@ -489,8 +515,8 @@ export default function MarketingStudioClient() {
     }
 
     const result = await predictPerformanceAction({
-      brokerageId: userContext.brokerageId,
-      userId: userContext.userId,
+      brokerageId: resolvedBrokerageId,
+      userId: resolvedUserId,
       contentType: (contentTypeMap[asset.asset_type] || "ad_creative") as any,
       sourceTable: "marketing_assets",
       sourceId: asset.id,

@@ -22,7 +22,7 @@ export default async function SeoKeywordsPage() {
     .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!userData?.brokerage_id) {
     redirect("/dashboard/onboarding")
