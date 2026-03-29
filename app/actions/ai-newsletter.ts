@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
@@ -90,7 +91,7 @@ export async function aiGenerateSubjectLines(params: {
     }
 
     const { object: subjectLines } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         primary: z.object({
           subject: z.string(),
@@ -171,7 +172,7 @@ export async function aiWriteNewsletterContent(params: {
     const template = NEWSLETTER_TEMPLATES.find((t) => t.id === params.template) || NEWSLETTER_TEMPLATES[0]
 
     const { object: content } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         sections: z.array(
           z.object({
@@ -268,7 +269,7 @@ export async function aiOptimizeSendTime(params: {
       .limit(50)
 
     const { object: optimization } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         recommendedDay: z.enum(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]),
         recommendedTime: z.string().describe("HH:MM format in recipient timezone"),
@@ -338,7 +339,7 @@ export async function aiPersonalizeNewsletter(params: {
     }
 
     const { object: personalization } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         greeting: z.string(),
         customIntro: z.string(),
@@ -612,7 +613,7 @@ export async function aiAnalyzeNewsletterPerformance(params: { agentId: string; 
       .limit(20)
 
     const { object: analysis } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         overallPerformance: z.enum(["excellent", "good", "average", "needs_improvement"]),
         averageOpenRate: z.number(),

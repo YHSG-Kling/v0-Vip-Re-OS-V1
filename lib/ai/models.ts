@@ -345,7 +345,7 @@ async function executeModelCall(
     system,
     prompt,
     temperature,
-    maxTokens
+    maxOutputTokens: maxTokens,
   })
   
   return {

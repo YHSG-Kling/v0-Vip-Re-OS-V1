@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -224,7 +225,7 @@ export async function optimizeDailySchedule(params: {
       .eq("showing_date", params.date)
 
     const { object: optimizedSchedule } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         optimizedTimeline: z.array(z.object({
           time: z.string(),
@@ -333,7 +334,7 @@ export async function suggestAppointmentSlots(params: {
       .single()
 
     const { object: suggestions } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         topSlots: z.array(z.object({
           date: z.string(),
@@ -429,7 +430,7 @@ export async function scheduleSmartFollowUps(params: {
     }
 
     const { object: followUpPlan } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         scheduledFollowUps: z.array(z.object({
           contactId: z.string(),
@@ -508,7 +509,7 @@ export async function suggestMeetingTimes(params: {
       .lte("scheduled_at", new Date(Date.now() + daysAhead * 24 * 60 * 60 * 1000).toISOString())
 
     const { object: suggestions } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         suggestedSlots: z.array(z.object({
           startTime: z.string(),
@@ -654,7 +655,7 @@ export async function prepareMeetingBrief(params: {
       .eq("contact_id", appointment.contact_id)
 
     const { object: meetingBrief } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         executiveSummary: z.string(),
         clientProfile: z.object({
@@ -768,7 +769,7 @@ export async function generateWeeklyPlan(params: {
       .eq("period", "weekly")
 
     const { object: weeklyPlan } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         weekOverview: z.object({
           focus: z.string(),

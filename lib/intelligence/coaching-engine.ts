@@ -1,6 +1,5 @@
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
-import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 
