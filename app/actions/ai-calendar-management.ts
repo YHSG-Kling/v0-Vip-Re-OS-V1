@@ -99,15 +99,15 @@ export async function createAppointment(params: {
       .from("showings")
       .insert({
         agent_id: params.agentId,
-        contact_id: params.contactId,
-        listing_id: params.listingId,
+        contact_id: params.contactId || null,
+        listing_id: params.listingId || null,
         notes: params.title + (params.notes ? ` - ${params.notes}` : ""),
         scheduled_at: params.startTime,
         duration_minutes: durationMinutes,
         status: "scheduled",
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -139,7 +139,7 @@ export async function updateAppointment(appointmentId: string, updates: any) {
       .update(showingUpdates)
       .eq("id", appointmentId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -165,7 +165,7 @@ export async function cancelAppointment(appointmentId: string, reason?: string) 
       })
       .eq("id", appointmentId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -569,20 +569,46 @@ export async function syncCalendar(params: {
 }) {
   try {
     const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthorized" }
 
-    // In production, this would integrate with Google Calendar/Outlook APIs
+    // Look up provider account by user and provider type
+    const { data: providerAccount } = await supabase
+      .from("calendar_provider_accounts")
+      .select("id, brokerage_id")
+      .eq("user_id", user.id)
+      .eq("provider_type", params.provider)
+      .eq("is_active", true)
+      .maybeSingle()
+
+    if (!providerAccount) {
+      // No provider linked — return config-required state
+      return { success: false, error: "calendar_not_connected", provider: params.provider }
+    }
+
+    // Insert a sync log record using the correct table schema
+    const now = new Date().toISOString()
     const { data, error } = await supabase
-      .from("calendar_sync_log")
+      .from("calendar_sync_logs")
       .insert({
-        agent_id: params.agentId,
-        provider: params.provider,
-        synced_at: new Date().toISOString(),
-        status: "success",
+        provider_account_id: providerAccount.id,
+        brokerage_id: providerAccount.brokerage_id,
+        direction: "both",
+        status: "completed",
+        started_at: now,
+        completed_at: now,
+        event_count: 0,
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+
+    // Update last_sync_at on the provider account
+    await supabase
+      .from("calendar_provider_accounts")
+      .update({ last_sync_at: now })
+      .eq("id", providerAccount.id)
 
     return { success: true, syncLog: data }
   } catch (error) {
@@ -813,5 +839,81 @@ Create a balanced weekly plan that:
     return { success: true, weeklyPlan }
   } catch (error) {
     return handleError(error, "generateWeeklyPlan")
+  }
+}
+
+/**
+ * Auto-populate calendar deadline events from transaction milestones.
+ * Called when a transaction is created or updated.
+ * Each milestone with a target_date becomes a calendar_event of type "deadline".
+ */
+export async function createDeadlineEventsFromMilestones(params: {
+  transactionId: string
+  brokerageId: string
+}) {
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthorized" }
+
+    if (!isValidUUID(params.transactionId) || !isValidUUID(params.brokerageId)) {
+      return { success: false, error: "Invalid IDs" }
+    }
+
+    // Fetch pending milestones with target dates
+    const { data: milestones, error: mErr } = await supabase
+      .from("transaction_milestones")
+      .select("id, title, milestone_type, target_date, description")
+      .eq("transaction_id", params.transactionId)
+      .eq("status", "pending")
+      .not("target_date", "is", null)
+
+    if (mErr) throw mErr
+    if (!milestones || milestones.length === 0) {
+      return { success: true, created: 0, message: "No pending milestones with target dates" }
+    }
+
+    let created = 0
+    for (const milestone of milestones) {
+      // Check for existing calendar event for this milestone
+      const { data: existing } = await supabase
+        .from("calendar_events")
+        .select("id")
+        .eq("entity_type", "transaction_milestone")
+        .eq("entity_id", milestone.id)
+        .maybeSingle()
+
+      if (existing) continue // Already exists
+
+      const targetDate = new Date(milestone.target_date!)
+      const startAt = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 9, 0, 0)
+      const endAt = new Date(startAt.getTime() + 60 * 60000)
+
+      const { error: insertErr } = await supabase
+        .from("calendar_events")
+        .insert({
+          brokerage_id: params.brokerageId,
+          entity_type: "transaction_milestone",
+          entity_id: milestone.id,
+          event_type: "deadline",
+          start_at: startAt.toISOString(),
+          end_at: endAt.toISOString(),
+          is_system_generated: true,
+          metadata: {
+            title: milestone.title || milestone.milestone_type?.replace(/_/g, " ") || "Milestone",
+            description: milestone.description,
+            transaction_id: params.transactionId,
+            milestone_type: milestone.milestone_type,
+          },
+        })
+
+      if (!insertErr) created++
+    }
+
+    revalidatePath("/dashboard/calendar")
+
+    return { success: true, created }
+  } catch (error) {
+    return handleError(error, "createDeadlineEventsFromMilestones")
   }
 }

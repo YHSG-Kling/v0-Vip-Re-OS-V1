@@ -4,57 +4,74 @@ import { useState, useEffect, useTransition } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { RefreshCw, CheckCircle2, AlertCircle, Link2 } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { RefreshCw, CheckCircle2, AlertCircle, Link2, ExternalLink } from "lucide-react"
 import { syncCalendar } from "@/app/actions/ai-calendar-management"
+import Link from "next/link"
 
 interface CalendarSyncStatusCardProps {
   agentId: string
 }
 
-type SyncLog = {
+type ProviderAccount = {
   id: string
-  provider: "google" | "outlook"
-  synced_at: string
-  status: "success" | "failed"
+  provider_type: "google" | "outlook"
+  last_sync_at: string | null
+  is_active: boolean
+  sync_direction: string
 }
 
 export function CalendarSyncStatusCard({ agentId }: CalendarSyncStatusCardProps) {
   const supabase = createClient()
-  const [syncLogs, setSyncLogs] = useState<SyncLog[]>([])
+  const [providerAccounts, setProviderAccounts] = useState<ProviderAccount[]>([])
   const [isPending, startTransition] = useTransition()
+  const [syncErrors, setSyncErrors] = useState<Record<string, string>>({})
 
   useEffect(() => {
-    async function loadSyncLogs() {
+    async function loadProviders() {
+      // calendar_provider_accounts has user_id, provider_type, is_active, last_sync_at
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
       const { data } = await supabase
-        .from("calendar_sync_log")
-        .select("*")
-        .eq("agent_id", agentId)
-        .order("synced_at", { ascending: false })
-        .limit(2)
-      
-      setSyncLogs((data || []) as SyncLog[])
+        .from("calendar_provider_accounts")
+        .select("id, provider_type, last_sync_at, is_active, sync_direction")
+        .eq("user_id", user.id)
+      setProviderAccounts((data || []) as ProviderAccount[])
     }
-    loadSyncLogs()
-  }, [supabase, agentId])
+    loadProviders()
+  }, [supabase])
 
   const handleSync = (provider: "google" | "outlook") => {
     startTransition(async () => {
       const res = await syncCalendar({ agentId, provider })
-      if (res.success && res.syncLog) {
-        setSyncLogs((prev) => [res.syncLog as SyncLog, ...prev.slice(0, 1)])
+      if (!res.success) {
+        const errMsg = (res as any).error === "calendar_not_connected"
+          ? "Not connected — configure in Settings"
+          : (res as any).error || "Sync failed"
+        setSyncErrors((prev) => ({ ...prev, [provider]: errMsg }))
+      } else {
+        setSyncErrors((prev) => { const n = { ...prev }; delete n[provider]; return n })
+        // Refresh provider accounts to update last_sync_at
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const { data } = await supabase
+            .from("calendar_provider_accounts")
+            .select("id, provider_type, last_sync_at, is_active, sync_direction")
+            .eq("user_id", user.id)
+          setProviderAccounts((data || []) as ProviderAccount[])
+        }
       }
     })
   }
 
-  const googleLog = syncLogs.find((l) => l.provider === "google")
-  const outlookLog = syncLogs.find((l) => l.provider === "outlook")
+  const googleAccount = providerAccounts.find((a) => a.provider_type === "google")
+  const outlookAccount = providerAccounts.find((a) => a.provider_type === "outlook")
+  const neitherConnected = !googleAccount && !outlookAccount
 
-  const formatLastSync = (log: SyncLog | undefined) => {
-    if (!log) return "Never synced"
-    const date = new Date(log.synced_at)
-    const now = new Date()
-    const diff = now.getTime() - date.getTime()
+  const formatLastSync = (acct: ProviderAccount | undefined) => {
+    if (!acct?.last_sync_at) return "Never synced"
+    const date = new Date(acct.last_sync_at)
+    const diff = Date.now() - date.getTime()
     const minutes = Math.floor(diff / 60000)
     if (minutes < 1) return "Just now"
     if (minutes < 60) return `${minutes}m ago`
@@ -72,6 +89,21 @@ export function CalendarSyncStatusCard({ agentId }: CalendarSyncStatusCardProps)
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* Not-connected CTA (non-blocking) */}
+        {neitherConnected && (
+          <Alert className="border-blue-200 bg-blue-50 py-2">
+            <AlertDescription className="text-xs text-blue-900 flex items-center justify-between gap-2">
+              <span>Connect Google Calendar to sync events automatically.</span>
+              <Link href="/dashboard/settings/calendar">
+                <Button size="sm" variant="outline" className="h-7 text-xs gap-1 shrink-0 border-blue-300 text-blue-800 hover:bg-blue-100">
+                  <ExternalLink className="h-3 w-3" />
+                  Connect
+                </Button>
+              </Link>
+            </AlertDescription>
+          </Alert>
+        )}
+
         {/* Google Calendar */}
         <div className="flex items-center justify-between p-2 bg-muted/50 rounded-lg">
           <div className="flex items-center gap-2">
@@ -85,14 +117,19 @@ export function CalendarSyncStatusCard({ agentId }: CalendarSyncStatusCardProps)
             </div>
             <div>
               <p className="text-xs font-medium text-foreground">Google Calendar</p>
-              <p className="text-xs text-muted-foreground">{formatLastSync(googleLog)}</p>
+              <p className="text-xs text-muted-foreground">
+                {googleAccount ? formatLastSync(googleAccount) : "Not connected"}
+              </p>
+              {syncErrors.google && (
+                <p className="text-xs text-destructive">{syncErrors.google}</p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-            {googleLog?.status === "success" ? (
+            {googleAccount?.is_active ? (
               <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
-            ) : googleLog?.status === "failed" ? (
-              <AlertCircle className="h-3.5 w-3.5 text-destructive" />
+            ) : googleAccount ? (
+              <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
             ) : null}
             <Button
               size="icon"
@@ -100,6 +137,7 @@ export function CalendarSyncStatusCard({ agentId }: CalendarSyncStatusCardProps)
               className="h-6 w-6"
               onClick={() => handleSync("google")}
               disabled={isPending}
+              title={googleAccount ? "Sync now" : "Connect in Settings to sync"}
             >
               <RefreshCw className={`h-3 w-3 ${isPending ? "animate-spin" : ""}`} />
             </Button>
@@ -116,14 +154,19 @@ export function CalendarSyncStatusCard({ agentId }: CalendarSyncStatusCardProps)
             </div>
             <div>
               <p className="text-xs font-medium text-foreground">Outlook</p>
-              <p className="text-xs text-muted-foreground">{formatLastSync(outlookLog)}</p>
+              <p className="text-xs text-muted-foreground">
+                {outlookAccount ? formatLastSync(outlookAccount) : "Not connected"}
+              </p>
+              {syncErrors.outlook && (
+                <p className="text-xs text-destructive">{syncErrors.outlook}</p>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-1.5">
-            {outlookLog?.status === "success" ? (
+            {outlookAccount?.is_active ? (
               <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
-            ) : outlookLog?.status === "failed" ? (
-              <AlertCircle className="h-3.5 w-3.5 text-destructive" />
+            ) : outlookAccount ? (
+              <AlertCircle className="h-3.5 w-3.5 text-amber-500" />
             ) : null}
             <Button
               size="icon"
@@ -131,15 +174,24 @@ export function CalendarSyncStatusCard({ agentId }: CalendarSyncStatusCardProps)
               className="h-6 w-6"
               onClick={() => handleSync("outlook")}
               disabled={isPending}
+              title={outlookAccount ? "Sync now" : "Connect in Settings to sync"}
             >
               <RefreshCw className={`h-3 w-3 ${isPending ? "animate-spin" : ""}`} />
             </Button>
           </div>
         </div>
 
-        <p className="text-xs text-muted-foreground text-center">
-          Syncs every 15 minutes automatically
-        </p>
+        {!neitherConnected && (
+          <p className="text-xs text-muted-foreground text-center">
+            Syncs every 15 minutes automatically
+          </p>
+        )}
+        <Link href="/dashboard/settings/calendar" className="block">
+          <Button variant="ghost" size="sm" className="w-full text-xs h-7 gap-1 text-muted-foreground hover:text-foreground">
+            <ExternalLink className="h-3 w-3" />
+            Manage Calendar Integrations
+          </Button>
+        </Link>
       </CardContent>
     </Card>
   )

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
+import { useState } from "react"
 import { CheckCircle, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -50,8 +50,6 @@ export function SignInKiosk({ event, agent, branding }: Props) {
   const [tcpaConsent, setTcpaConsent] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
   const primaryColor = branding?.primary_color ?? "#2563eb"
   const agentName = agent?.full_name ?? branding?.from_name ?? "Your Agent"
 
@@ -70,15 +68,7 @@ export function SignInKiosk({ event, agent, branding }: Props) {
     setError(null)
   }
 
-  // Auto-reset 3 seconds after success
-  useEffect(() => {
-    if (step === "success") {
-      resetTimerRef.current = setTimeout(resetForm, 3000)
-    }
-    return () => {
-      if (resetTimerRef.current) clearTimeout(resetTimerRef.current)
-    }
-  }, [step])
+  // Success screen shows a "Check In Next Person" button instead of auto-reset
 
   async function handleSubmit() {
     if (!firstName.trim() || !lastName.trim() || !email.trim() || workingWithAgent === null) {
@@ -170,7 +160,16 @@ export function SignInKiosk({ event, agent, branding }: Props) {
       {/* Main content */}
       <main className="flex-1 flex flex-col items-center justify-start px-4 py-8 max-w-xl mx-auto w-full">
         {step === "success" ? (
-          <SuccessScreen agentName={agentName} />
+          <div className="flex flex-col items-center gap-6">
+            <SuccessScreen agentName={agentName} />
+            <Button
+              size="lg"
+              className="w-full max-w-xs h-14 text-base"
+              onClick={resetForm}
+            >
+              Check In Next Person
+            </Button>
+          </div>
         ) : (
           <div className="w-full flex flex-col gap-6">
             <h2 className="text-center text-lg font-semibold text-foreground">

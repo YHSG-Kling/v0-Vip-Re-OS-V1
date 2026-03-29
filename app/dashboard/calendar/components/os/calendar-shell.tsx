@@ -122,17 +122,18 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .gte("event_date", startISO)
           .lt("event_date", endISO),
 
-        // 4. Transactions with key dates
+        // 4. Transaction milestones with target_dates (inspection, appraisal, closing, deadline)
         supabase
-          .from("transactions")
+          .from("transaction_milestones")
           .select(`
-            id, property_address, status,
-            inspection_date, appraisal_date, closing_date,
-            contact_id,
-            contacts(first_name, last_name)
+            id, milestone_type, title, target_date, status, transaction_id,
+            transactions!inner(id, property_address, status, agent_id, contact_id, contacts(first_name, last_name))
           `)
-          .eq("agent_id", agentId)
-          .in("status", ["under_contract", "inspection", "appraisal", "financing", "closing"]),
+          .eq("transactions.agent_id", agentId)
+          .eq("status", "pending")
+          .not("target_date", "is", null)
+          .gte("target_date", start.toISOString().split("T")[0])
+          .lte("target_date", end.toISOString().split("T")[0]),
 
         // 5. Tasks with due dates
         supabase
@@ -144,10 +145,11 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .neq("status", "completed"),
 
         // 6. Scheduled touchpoints / follow-ups
+        // Note: scheduled_touchpoints has touchpoint_type, message_template (no purpose/priority)
         supabase
           .from("scheduled_touchpoints")
           .select(`
-            id, scheduled_date, touchpoint_type, purpose, priority, status,
+            id, scheduled_date, touchpoint_type, message_template, status,
             contact_id,
             contacts(first_name, last_name)
           `)
@@ -223,31 +225,31 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         })
       })
 
-      // Transform transaction milestones
-      transactionsRes.data?.forEach((t: any) => {
-        const dateFields = [
-          { field: "inspection_date", type: "inspection" as const },
-          { field: "appraisal_date", type: "appraisal" as const },
-          { field: "closing_date", type: "closing" as const },
-        ]
-        dateFields.forEach(({ field, type }) => {
-          if (t[field]) {
-            const dateStr = t[field]
-            const eventDate = new Date(dateStr)
-            if (eventDate >= start && eventDate < end) {
-              unified.push({
-                id: `${t.id}-${type}`,
-                title: `${type.charAt(0).toUpperCase() + type.slice(1)}: ${t.property_address}`,
-                startAt: new Date(dateStr + "T10:00:00").toISOString(),
-                endAt: new Date(dateStr + "T12:00:00").toISOString(),
-                eventType: type,
-                source: "transactions",
-                contactId: t.contact_id,
-                contactName: t.contacts ? `${t.contacts.first_name || ""} ${t.contacts.last_name || ""}`.trim() : undefined,
-                priority: "high",
-              })
-            }
-          }
+      // Transform transaction milestones (from transaction_milestones table)
+      transactionsRes.data?.forEach((m: any) => {
+        if (!m.target_date) return
+        const trx = m.transactions as any
+        const dateStr = m.target_date
+        const milestoneType = (m.milestone_type || "deadline") as "inspection" | "appraisal" | "closing" | "appointment"
+        const calEventType: UnifiedCalendarEvent["eventType"] =
+          milestoneType === "inspection" ? "inspection" :
+          milestoneType === "appraisal" ? "appraisal" :
+          milestoneType === "closing" || milestoneType === "close" ? "closing" :
+          "appointment"
+
+        unified.push({
+          id: `milestone-${m.id}`,
+          title: `${m.title || milestoneType.replace(/_/g, " ")}: ${trx?.property_address ?? ""}`,
+          startAt: new Date(dateStr + "T10:00:00").toISOString(),
+          endAt: new Date(dateStr + "T12:00:00").toISOString(),
+          eventType: calEventType,
+          source: "transactions",
+          contactId: trx?.contact_id,
+          contactName: trx?.contacts
+            ? `${trx.contacts.first_name || ""} ${trx.contacts.last_name || ""}`.trim()
+            : undefined,
+          priority: "high",
+          metadata: { milestoneId: m.id, transactionId: m.transaction_id, milestoneType },
         })
       })
 
@@ -265,18 +267,23 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         })
       })
 
-      // Transform touchpoints
+      // Transform touchpoints (no purpose/priority columns — use touchpoint_type + message_template)
       touchpointsRes.data?.forEach((tp: any) => {
+        const contactName = tp.contacts
+          ? `${tp.contacts.first_name || ""} ${tp.contacts.last_name || ""}`.trim()
+          : "Contact"
+        const label = tp.touchpoint_type
+          ? tp.touchpoint_type.replace(/_/g, " ")
+          : "follow-up"
         unified.push({
           id: tp.id,
-          title: `Follow-up: ${tp.contacts?.first_name || "Contact"} - ${tp.purpose}`,
+          title: `${label}: ${contactName}`,
           startAt: tp.scheduled_date,
           endAt: new Date(new Date(tp.scheduled_date).getTime() + 15 * 60000).toISOString(),
           eventType: "follow_up",
           source: "scheduled_touchpoints",
           contactId: tp.contact_id,
-          contactName: tp.contacts ? `${tp.contacts.first_name || ""} ${tp.contacts.last_name || ""}`.trim() : undefined,
-          priority: tp.priority as "high" | "medium" | "low",
+          contactName: contactName || undefined,
         })
       })
 
