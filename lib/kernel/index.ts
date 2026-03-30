@@ -337,6 +337,20 @@ export {
   emitOfferAcceptedEvent,
   emitTransactionInitiatedEvent,
   loadComplianceBridgeStatus,
+  // ─── CANONICAL TRANSACTION OS COMMANDS ───────────────────────────────────────
+  createManualTransaction,
+  loadTransactionWorkspace,
+  advanceTransactionStageCommand,
+  completeTransactionMilestone,
+  setMilestoneClientVisibilityCommand,
+  attachTransactionDocument,
+  updateLenderState,
+  updateVendorState,
+  closeTransactionCommand,
+  reopenTransactionCommand,
+  recalculateCommissionStateCommand,
+  emitClientFriendlyUpdateCommand,
+  prefillTransactionFormFromRecord,
 } from "./transactions"
 export type {
   KernelTxResult,
@@ -345,6 +359,7 @@ export type {
   AcceptOfferConditionallyResult,
   CreateTransactionInput,
   SeedMilestonesInput,
+  CreateManualTransactionInput,
 } from "./transactions"
 
 // ─── OFFER OS ────────────────────────────────────────────────────────────────

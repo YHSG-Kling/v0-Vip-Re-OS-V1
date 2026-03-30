@@ -147,7 +147,7 @@ export async function createTransaction(transactionData: {
     }
   }
 
-  revalidatePath("/transactions")
+  revalidatePath("/dashboard/transactions")
   return { success: true, data }
 }
 
@@ -196,8 +196,8 @@ export async function updateTransaction(
   }
 
   await addTimelineEntry(transactionId, "transaction_updated", "Transaction details updated")
-  revalidatePath("/transactions")
-  revalidatePath(`/transactions/${transactionId}`)
+  revalidatePath("/dashboard/transactions")
+  revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true, data }
 }
 
@@ -273,10 +273,11 @@ export async function completeMilestone(milestoneId: string, completedBy?: strin
   }
 
   if (data?.transactions?.id) {
-    await addTimelineEntry(data.transactions.id, "milestone_completed", `Milestone "${data.name}" completed`)
+    await addTimelineEntry(data.transactions.id, "milestone_completed", `Milestone "${data.milestone_name}" completed`)
+    revalidatePath(`/dashboard/transactions/${data.transactions.id}`)
   }
 
-  revalidatePath("/transactions")
+  revalidatePath("/dashboard/transactions")
   return { success: true, data }
 }
 
@@ -311,7 +312,7 @@ export async function updateMilestone(
     console.error("Error updating milestone:", error)
     return { success: false, error: error.message }
   }
-  revalidatePath("/transactions")
+  revalidatePath("/dashboard/transactions")
   return { success: true, data }
 }
 

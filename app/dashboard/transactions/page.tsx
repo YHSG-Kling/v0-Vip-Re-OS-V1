@@ -44,15 +44,16 @@ export default async function TransactionsPage() {
 
   const agentId = agentRecord?.id ?? user.id
 
-  // Fetch transactions (no FK join to deal_health_scores — query separately)
+  // Fetch transactions — use live schema column names (deal_type, purchase_price, not transaction_type/contract_price)
   const { data: transactions } = await supabase
     .from("transactions")
     .select(`
-      id, 
-      property_address, 
+      id,
+      property_address,
       deal_name,
-      status, 
-      purchase_price, 
+      deal_type,
+      status,
+      purchase_price,
       close_date,
       created_at,
       health_score,
@@ -62,6 +63,22 @@ export default async function TransactionsPage() {
     .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(50)
+
+  // Fetch deal_health_scores separately — no FK join supported from transactions
+  const txIds = (transactions ?? []).map(t => t.id)
+  const { data: healthScores } = txIds.length > 0
+    ? await supabase
+        .from("deal_health_scores")
+        .select("transaction_id, overall_score, risk_level")
+        .in("transaction_id", txIds)
+        .order("scored_at", { ascending: false })
+    : { data: [] }
+
+  // Key health scores by transaction_id (most recent per tx wins due to ordering)
+  const healthByTxId = (healthScores ?? []).reduce((acc, h) => {
+    if (!acc[h.transaction_id]) acc[h.transaction_id] = h
+    return acc
+  }, {} as Record<string, { overall_score: number; risk_level: string }>)
 
   // Calculate stats
   const activeDeals = transactions?.filter(t => t.status === "active" || t.status === "pending") || []
@@ -198,7 +215,8 @@ export default async function TransactionsPage() {
                   {transactions && transactions.length > 0 ? (
                     transactions.map((tx) => {
                       const statusConfig = STATUS_CONFIG[tx.status] || STATUS_CONFIG.active
-                      const health = Array.isArray(tx.deal_health) ? tx.deal_health[0] : tx.deal_health
+                      // Health scores fetched separately above and keyed by transaction_id
+                      const health = healthByTxId[tx.id]
                       const healthScore = health?.overall_score
                       const riskLevel = health?.risk_level
                       const isAtRisk = riskLevel === "high" || riskLevel === "critical" || riskLevel === "medium" || riskLevel === "at_risk"
@@ -206,7 +224,7 @@ export default async function TransactionsPage() {
                       return (
                         <tr key={tx.id} className="hover:bg-muted/50 group">
                           <td className="px-4 py-3">
-                            <Link 
+                            <Link
                               href={`/dashboard/transactions/${tx.id}`}
                               className="text-sm font-medium text-foreground hover:text-primary"
                             >
@@ -214,10 +232,12 @@ export default async function TransactionsPage() {
                             </Link>
                           </td>
                           <td className="px-4 py-3 text-sm text-muted-foreground capitalize">
-                            {tx.transaction_type || "purchase"}
+                            {/* Live schema column is deal_type, not transaction_type */}
+                            {tx.deal_type || "purchase"}
                           </td>
                           <td className="px-4 py-3 text-sm font-medium text-foreground">
-                            ${tx.contract_price?.toLocaleString() || "TBD"}
+                            {/* Live schema column is purchase_price, not contract_price */}
+                            ${tx.purchase_price?.toLocaleString() || "TBD"}
                           </td>
                           <td className="px-4 py-3">
                             <Badge className={`${statusConfig.bgColor} ${statusConfig.color}`}>
