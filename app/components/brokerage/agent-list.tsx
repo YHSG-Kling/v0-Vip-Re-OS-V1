@@ -38,10 +38,11 @@ export function BrokerageAgentList({ agents = [], brokerageId: _brokerageId }: B
       maximumFractionDigits: 0,
     }).format(amount)
 
-  const getDisplayName = (agent: Agent) =>
-    agent.name ??
-    `${agent.first_name ?? ""} ${agent.last_name ?? ""}`.trim() ||
-    agent.email.split("@")[0]
+  const getDisplayName = (agent: Agent) => {
+    if (agent.name) return agent.name
+    const full = `${agent.first_name ?? ""} ${agent.last_name ?? ""}`.trim()
+    return full || agent.email.split("@")[0]
+  }
 
   const getInitials = (name: string) =>
     name
