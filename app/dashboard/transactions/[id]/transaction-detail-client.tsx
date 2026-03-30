@@ -57,6 +57,7 @@ import {
   Bell,
   Share2,
   ChevronRight,
+  XCircle,
 } from "lucide-react"
 import { format } from "date-fns"
 import { createClient } from "@/lib/supabase/client"
@@ -994,7 +995,67 @@ export function TransactionDetailClient({
 
                 {/* Lost option */}
                 {canMarkLost && (
-                  <div className="pt-3 border-t mt-3">
+                  <div className="pt-3 border-t mt-3 space-y-1">
+                    {/* Close Transaction — sets status=closed, stage=CLOSED */}
+                    {currentStage !== "CLOSED" && currentStage !== "LOST" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-start text-green-700 hover:text-green-800 hover:bg-green-50"
+                        disabled={isPending}
+                        onClick={() => {
+                          startTransition(async () => {
+                            const { closeTransaction } = await import("@/app/actions/transactions")
+                            const result = await closeTransaction({
+                              transactionId: transaction.id,
+                              brokerageId,
+                              agentId: transaction.agent_id,
+                            })
+                            if (result.success) {
+                              toast.success("Transaction closed")
+                              router.refresh()
+                            } else {
+                              toast.error(result.error ?? "Failed to close transaction")
+                            }
+                          })
+                        }}
+                      >
+                        <CheckCircle2 className="h-4 w-4 mr-2" />
+                        Close Transaction
+                      </Button>
+                    )}
+                    {/* Reopen — only shown when closed; requires broker/admin */}
+                    {currentStage === "CLOSED" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-start text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                        disabled={isPending}
+                        onClick={() => {
+                          const reason = window.prompt("Reason for reopening this transaction:")
+                          if (!reason) return
+                          startTransition(async () => {
+                            const { reopenTransactionIfAuthorized } = await import("@/app/actions/transactions")
+                            const result = await reopenTransactionIfAuthorized({
+                              transactionId: transaction.id,
+                              brokerageId,
+                              requestingUserId: transaction.agent_id,
+                              requestingUserRole: "broker",
+                              reason,
+                            })
+                            if (result.success) {
+                              toast.success("Transaction reopened")
+                              router.refresh()
+                            } else {
+                              toast.error(result.error ?? "Reopen failed — broker/admin only")
+                            }
+                          })
+                        }}
+                      >
+                        <CircleDot className="h-4 w-4 mr-2" />
+                        Reopen Transaction
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -1015,8 +1076,39 @@ export function TransactionDetailClient({
           <div className="lg:col-span-6 space-y-4">
             {/* Deal Summary Card */}
             <Card>
-              <CardHeader className="pb-3">
+              <CardHeader className="pb-3 flex flex-row items-center justify-between gap-2">
                 <CardTitle className="text-sm font-medium">Deal Summary</CardTitle>
+                {/* Send Client Update — writes to client_friendly_updates table */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-xs h-7"
+                  disabled={isPending}
+                  onClick={() => {
+                    const text = window.prompt("Enter plain-language update for the client (shown in portal):")
+                    if (!text?.trim()) return
+                    startTransition(async () => {
+                      const { emitClientFriendlyUpdate } = await import("@/app/actions/transactions")
+                      const result = await emitClientFriendlyUpdate({
+                        transactionId: transaction.id,
+                        brokerageId,
+                        agentId:       transaction.agent_id,
+                        contactId:     transaction.contact_id,
+                        updateType:    "general",
+                        updateText:    text.trim(),
+                        sendVia:       "portal",
+                      })
+                      if (result.success) {
+                        toast.success("Client update sent to portal")
+                      } else {
+                        toast.error(result.error ?? "Failed to send update")
+                      }
+                    })
+                  }}
+                >
+                  <Bell className="h-3 w-3" />
+                  Client Update
+                </Button>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 gap-4 text-sm">
