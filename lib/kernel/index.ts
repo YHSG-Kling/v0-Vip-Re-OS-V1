@@ -60,6 +60,35 @@ export type { NotificationRuleRow } from "./notification-rules"
 export { getGlobalSettings, updateGlobalSettings } from "./global-settings"
 export type { GlobalSettingsRow } from "./global-settings"
 
+// ─── LISTING OS ───────────────────────────────────────────────────────────────
+// All listing lifecycle logic is owned by this module.
+// Stage transitions delegate to app/actions/listing-lifecycle-core.ts.
+// AI ISA is NEVER triggered from listing commands.
+
+export {
+  createListingRecord,
+  createOrAttachSellerContact,
+  loadListingWorkspace,
+  saveListingDraft,
+  validateListingLaunchReadiness,
+  launchListing,
+  updateListingStage,
+  attachMediaToListing,
+  generateListingDescription,
+  createTransactionShellFromAcceptedOffer,
+  closeListingLifecycle,
+  prefillListingFormFromRecord,
+} from "./listings"
+export type {
+  CreateListingInput,
+  SellerContactInput,
+  ListingUpdate,
+  ListingFormPrefill,
+  MediaAttachmentInput,
+  ListingStage,
+  KernelResult,
+} from "./listings"
+
 // ─── CRM / CONTACT OS ────────────────────────────────────────────────────────
 
 export {

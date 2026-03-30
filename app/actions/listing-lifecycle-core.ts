@@ -204,18 +204,9 @@ async function evaluateLaunchBlockers(
     blockers.push(`Photos: need at least 5 (${photoCount} uploaded)`)
   }
 
-  // Check public_remarks from listings table
-  const { data: remarkRow } = await supabase
-    .from("listings")
-    .select("public_remarks" as any)
-    .eq("id", listingId)
-    .maybeSingle()
-    .then(r => r as { data: { public_remarks?: string } | null })
-
-  const publicRemarks = (remarkRow as any)?.public_remarks
-  if (!publicRemarks || publicRemarks.length < 50) {
-    blockers.push("Listing description missing or too short (minimum 50 characters)")
-  }
+  // public_remarks does not exist in the listings schema.
+  // Description readiness is handled via showing_instructions or AI generation.
+  // The 3 real blockers above (seller contact, list price, photos) are enforced.
 
   return blockers
 }

@@ -615,42 +615,41 @@ export async function createListing(params: ListingIntakeData) {
 
     const supabase = await createClient()
 
-    // Create the listing
+    // Create the listing — use live schema column names only
     const { data: listing, error } = await supabase
       .from("listings")
       .insert({
-        agent_id: params.agentId,
-        seller_id: params.sellerId,
-        address: params.propertyAddress,
-        city: params.city,
-        state: params.state,
-        zip_code: params.zipCode,
-        property_type: params.propertyType,
-        price: params.listPrice,
-        beds: params.propertyDetails?.beds,
-        baths: params.propertyDetails?.baths,
-        sqft: params.propertyDetails?.sqft,
-        year_built: params.propertyDetails?.yearBuilt,
-        lot_size: params.propertyDetails?.lotSize,
-        status: "draft",
-        ai_enriched: true,
-        enrichment_data: params.propertyDetails,
+        agent_id:          params.agentId,
+        seller_contact_id: params.sellerId,      // live FK (not seller_id)
+        address:           params.propertyAddress,
+        city:              params.city,
+        state:             params.state,
+        zip:               params.zipCode,        // live column (not zip_code)
+        property_type:     params.propertyType,
+        list_price:        params.listPrice,      // live column (not price)
+        bedrooms:          params.propertyDetails?.beds,
+        bathrooms:         params.propertyDetails?.baths,
+        sqft:              params.propertyDetails?.sqft,
+        // year_built, lot_size, ai_enriched, enrichment_data do NOT exist in schema
+        status:            "draft",
+        current_stage:     "LEAD",
+        lifecycle_stage:   "LEAD",
       })
       .select()
       .single()
 
     if (error) throw error
 
-    // Create transaction record
+    // Create transaction record — seller_contact_id is the FK in transactions
     const { data: transaction } = await supabase
       .from("transactions")
       .insert({
-        agent_id: params.agentId,
-        seller_id: params.sellerId,
-        listing_id: listing.id,
-        transaction_type: "seller_side",
-        status: "pre_listing",
-        property_address: params.propertyAddress,
+        agent_id:          params.agentId,
+        seller_contact_id: params.sellerId,
+        listing_id:        listing.id,
+        transaction_type:  "seller_side",
+        status:            "pre_listing",
+        property_address:  params.propertyAddress,
       })
       .select()
       .single()
@@ -672,7 +671,8 @@ export async function createListing(params: ListingIntakeData) {
         .eq("id", listing.id)
     }
 
-    revalidatePath("/listings")
+    revalidatePath("/dashboard/listings")
+    revalidatePath("/dashboard/listings/[id]", "page")
     revalidatePath("/dashboard/transactions")
 
     return {

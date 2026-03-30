@@ -1,4 +1,6 @@
-"use server"
+// lib/application/listing-lifecycle.ts
+// Library service layer — NOT a Server Action entrypoint.
+// Imported by both app/actions/ and lib/kernel/. Do NOT add "use server" here.
 
 import { createClient } from "@/lib/supabase/server"
 import { logListingAppointmentSet, logListingSigned, logListingLive } from "@/lib/events"

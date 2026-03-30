@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { MarketIntelligencePanel } from "./components/market-intelligence-panel"
 import { CmaHistorySheet } from "./components/cma-history-sheet"
+import { ListingCreateSheet } from "./components/listing-create-sheet"
 import { 
   Plus, 
   Home, 
@@ -32,7 +33,14 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bgColor: str
   coming_soon: { label: "Coming Soon", color: "text-purple-700", bgColor: "bg-purple-100" },
 }
 
-export default async function ListingsPage() {
+export default async function ListingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ action?: string }>
+}) {
+  const resolvedSearchParams = await searchParams
+  const showCreateSheet = resolvedSearchParams?.action === "new"
+
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -320,6 +328,9 @@ export default async function ListingsPage() {
           )
         })()}
       </div>
+
+      {/* Listing create sheet — opened by ?action=new */}
+      <ListingCreateSheet open={showCreateSheet} />
     </div>
   )
 }
