@@ -15,6 +15,7 @@ import {
 import { OfferUploadZone } from "./components/offer-upload-zone"
 import { OfferComparisonMatrix } from "./components/offer-comparison-matrix"
 import { OfferCard } from "./components/offer-card"
+import { ComplianceBridgePanel } from "./components/compliance-bridge-panel"
 import { CounterOfferSlideOver } from "./components/counter-offer-slide-over"
 import { AIRecommendationBanner } from "./components/ai-recommendation-banner"
 import {
@@ -513,6 +514,29 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                       </Button>
                     </div>
                   )}
+
+                  {/* Compliance Bridge — shows compliance state, hold reason, and transaction link */}
+                  <ComplianceBridgePanel
+                    offerId={offer.id}
+                    listingId={listing.id}
+                    brokerageId={brokerageId}
+                    agentUserId={currentUserId}
+                    initialState={{
+                      offerStatus:      offer.status ?? null,
+                      compliancePassed: false,   // evaluated lazily on first action — avoids N+1 at load
+                      transactionId:    null,
+                    }}
+                    onAccepted={(txId) => {
+                      setOffers(prev =>
+                        prev.map(o =>
+                          o.id === offer.id
+                            ? { ...o, status: "accepted", is_winning_offer: true, winning_offer: true }
+                            : { ...o, is_winning_offer: false, winning_offer: false }
+                        )
+                      )
+                      toast({ title: "Offer accepted — transaction created", description: `Transaction ID: ${txId.slice(0, 8)}…` })
+                    }}
+                  />
 
                   {/* Change Decision — reversal validation for accepted/countered offers */}
                   {(offer.status === "accepted" || offer.status === "countered") && (

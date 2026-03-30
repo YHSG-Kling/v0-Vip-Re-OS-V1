@@ -31,32 +31,50 @@ export async function createTransactionFromOffer(params: {
     throw new Error("[offer-bridge] compliance_passed_at required to create transaction")
   }
   
-  // Get offer details
+  // Get offer details.
+  // NOTE: buyer_agents table does NOT exist — use offer.agent_id directly.
+  //       offer.buyer_id does NOT exist — live FK is offer.contact_id.
   const { data: offer, error: offerError } = await supabase
     .from("offers")
-    .select("*, buyer_agents!inner(agent_id, brokerage_id)")
+    .select("id, agent_id, contact_id, listing_id, offer_price, closing_date, property_address")
     .eq("id", params.offerId)
-    .single()
-  
+    .maybeSingle()
+
   if (offerError || !offer) {
     throw new Error(`[offer-bridge] Offer not found: ${params.offerId}`)
   }
-  
-  // Create transaction
+
+  // Resolve property address from listing if not on the offer directly
+  let resolvedAddress = (offer as any).property_address ?? null
+  if (!resolvedAddress && (offer as any).listing_id) {
+    const { data: listing } = await supabase
+      .from("listings")
+      .select("address, city, state")
+      .eq("id", (offer as any).listing_id)
+      .maybeSingle()
+    if (listing) {
+      resolvedAddress = [listing.address, listing.city, listing.state].filter(Boolean).join(", ")
+    }
+  }
+
+  // Create transaction — use contact_id (not buyer_id) and agent_id (not buyer_agents join)
   const { data: transaction, error: txnError } = await supabase
     .from("transactions")
     .insert({
-      brokerage_id: params.brokerageId,
-      agent_id: offer.buyer_agents[0]?.agent_id,
-      contact_id: offer.buyer_id,
-      property_address: offer.property_address,
-      deal_type: "purchase",
-      purchase_price: offer.offer_price,
-      contract_date: params.contractDate,
+      brokerage_id:         params.brokerageId,
+      agent_id:             (offer as any).agent_id,
+      contact_id:           (offer as any).contact_id,   // live FK (not buyer_id)
+      buyer_contact_id:     (offer as any).contact_id,
+      listing_id:           (offer as any).listing_id ?? null,
+      offer_id:             params.offerId,
+      property_address:     resolvedAddress,
+      deal_type:            "purchase",
+      purchase_price:       (offer as any).offer_price,
+      contract_date:        params.contractDate,
       compliance_passed_at: params.compliancePassedAt,
-      stage: "UNDER_CONTRACT",
-      status: "under_contract",
-      created_at: new Date().toISOString()
+      stage:                "UNDER_CONTRACT",
+      status:               "under_contract",
+      created_at:           new Date().toISOString(),
     })
     .select()
     .single()
@@ -99,18 +117,23 @@ export async function createTransactionFromOffer(params: {
     normalisedTerms
   )
   
+  // Back-link the offer to the created transaction
+  await supabase
+    .from("offers")
+    .update({ transaction_id: transaction.id, updated_at: new Date().toISOString() })
+    .eq("id", params.offerId)
+
   // Create first activity — Agent task (correct location, no changes) — activity_type: transaction_started
   await supabase.from("activities").insert({
     transaction_id: transaction.id,
-    brokerage_id: params.brokerageId,
-    agent_id: offer.buyer_agents[0]?.agent_id,
-    activity_type: "transaction_started",
-    title: "Transaction Created - Schedule Inspection",
-    description: "Transaction is now under contract. Next step: schedule home inspection.",
-    priority: "high",
-    assigned_to: offer.buyer_agents[0]?.agent_id,
-    status: "pending",
-    created_at: new Date().toISOString()
+    brokerage_id:   params.brokerageId,
+    agent_id:       (offer as any).agent_id,  // buyer_agents table does NOT exist
+    activity_type:  "transaction_started",
+    title:          "Transaction Created - Schedule Inspection",
+    description:    "Transaction is now under contract. Next step: schedule home inspection.",
+    priority:       "high",
+    status:         "pending",
+    created_at:     new Date().toISOString(),
   })
   
   // Create transparency update for client

@@ -323,6 +323,30 @@ export {
   buildIntegrityReport,
 } from "./contracts"
 
+// ─── TRANSACTION OS — OFFER-TO-TRANSACTION COMPLIANCE BRIDGE ─────────────────
+// Business rule: transaction created ONLY when offer accepted AND compliance passes.
+// If accepted but not compliant → explicit HOLD state. No silent stranded offers.
+// Column contracts: offers.contact_id (not buyer_id), transactions.purchase_price (not contract_price).
+
+export {
+  evaluateOfferCompliance,
+  acceptOfferConditionally,
+  createTransactionFromCompliantAcceptedOffer,
+  seedTransactionMilestones,
+  linkOfferToTransaction,
+  emitOfferAcceptedEvent,
+  emitTransactionInitiatedEvent,
+  loadComplianceBridgeStatus,
+} from "./transactions"
+export type {
+  KernelTxResult,
+  OfferComplianceState,
+  AcceptOfferConditionallyInput,
+  AcceptOfferConditionallyResult,
+  CreateTransactionInput,
+  SeedMilestonesInput,
+} from "./transactions"
+
 // ─── OFFER OS ────────────────────────────────────────────────────────────────
 // Canonical offer lifecycle commands.
 // Counter history lives in the offers table (parent_offer_id + offer_type='counter').

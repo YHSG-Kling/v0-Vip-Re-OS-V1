@@ -449,12 +449,13 @@ export async function getTransactionByListingId(listingId: string): Promise<{
   const supabase = await createClient()
   const { data } = await supabase
     .from("transactions")
-    .select("id, property_address, contract_price, status")
+    // contract_price does NOT exist — live column is purchase_price
+    .select("id, property_address, purchase_price, status")
     .eq("listing_id", listingId)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
-  return data ?? null
+  return data ? { ...data, contract_price: (data as any).purchase_price } : null
 }
 
 // ── FETCH REPAIR NEGOTIATION ITEMS FOR A TRANSACTION ─────────────────────────
