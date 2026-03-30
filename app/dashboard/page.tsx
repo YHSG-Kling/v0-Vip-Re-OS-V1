@@ -1,25 +1,21 @@
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { repairIncompleteAccountSetup } from "@/lib/kernel/users"
+import { determineFirstLoginDestination } from "@/lib/kernel/onboarding"
 
 export const dynamic = "force-dynamic"
 
-// Role-based dashboard routing — server-resolved, no client spinner
-const ROLE_DASHBOARD_ROUTES: Record<string, string> = {
-  admin: "/dashboard/admin",
-  superadmin: "/dashboard/admin",
-  broker: "/dashboard/brokerage",
-  tc: "/dashboard/coordinator",
-  compliance_officer: "/dashboard/compliance",
-  isa: "/dashboard/isa",
-  team_lead: "/dashboard/agent",
-  agent: "/dashboard/agent",
-  contact: "/portal",
-  vendor: "/vendor/dashboard",
-  lender: "/lender/dashboard",
-  title: "/title/dashboard",
-  title_agent: "/title/dashboard",
-}
-
+/**
+ * Dashboard entry router.
+ *
+ * Resolution order:
+ *   1. Not authenticated              → /login
+ *   2. Attempt silent self-repair     → fixes any missing domain records
+ *   3. determineFirstLoginDestination → returns the correct route based on
+ *      role, setup state, and onboarding progress
+ *
+ * This page never renders UI — it is a pure server-side redirect.
+ */
 export default async function DashboardPage() {
   const context = await getAgentContext()
 
@@ -27,7 +23,13 @@ export default async function DashboardPage() {
     redirect("/login")
   }
 
-  const role = context.userType || "agent"
-  const target = ROLE_DASHBOARD_ROUTES[role] ?? "/dashboard/agent"
-  redirect(target)
+  // Silently repair any missing domain records on every visit.
+  // This is idempotent — does nothing if all records already exist.
+  // It prevents the infinite-spinner / blank-dashboard state from
+  // an incomplete invite provisioning path.
+  await repairIncompleteAccountSetup(context.userId)
+
+  // Determine the correct destination from onboarding + workspace state
+  const destination = await determineFirstLoginDestination(context.userId)
+  redirect(destination.route)
 }

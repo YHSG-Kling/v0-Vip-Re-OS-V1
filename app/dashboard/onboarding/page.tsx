@@ -18,7 +18,7 @@ export default async function OnboardingPage() {
     redirect('/login')
   }
 
-  // Get user details including type
+  // Get user details including type — maybeSingle() never throws on missing row
   const { data: userData } = await supabase
     .from('users')
     .select('brokerage_id, user_type')
@@ -26,44 +26,44 @@ export default async function OnboardingPage() {
     .maybeSingle()
 
   // If no users row, fall back to agents table to get brokerage_id
-  let brokerageId = userData?.brokerage_id
+  let brokerageId = userData?.brokerage_id ?? null
   if (!brokerageId) {
     const { data: agentRow } = await supabase
       .from('agents')
       .select('brokerage_id')
       .eq('user_id', user.id)
       .maybeSingle()
-    brokerageId = agentRow?.brokerage_id
+    brokerageId = agentRow?.brokerage_id ?? null
   }
 
   if (!brokerageId) {
+    // No brokerage assigned — account is incomplete; show setup flow
     redirect('/dashboard/agent')
   }
 
-  // Get agent ID - for agents it's their own ID, for admin viewing they may pass a different ID
-  let agentId = user.id
+  // Get agent ID — for agents it's agents.id (FK), not users.id
+  let agentId: string | null = null
 
-  // For agents, get their agent record
   const userType = userData?.user_type ?? 'agent'
-  if (userType === 'agent') {
+  const isAgentRole = ['agent', 'isa', 'team_lead'].includes(userType)
+
+  if (isAgentRole) {
     const { data: agent } = await supabase
       .from('agents')
       .select('id')
       .eq('user_id', user.id)
       .eq('brokerage_id', brokerageId)
       .maybeSingle()
-
-    if (agent) {
-      agentId = agent.id
-    }
+    agentId = agent?.id ?? null
   }
 
   // Fetch onboarding dashboard data using kernel function
+  // agentId may be null for non-agent roles (tc, broker, admin) — kernel handles this
   let dashboard
   try {
     dashboard = await getAgentOnboardingDashboard({
-      userId: user.id,
-      agentId,
+      userId:  user.id,
+      agentId: agentId ?? user.id, // kernel expects a string; fall back to user.id for non-agent path
     })
   } catch (error) {
     console.error('[Onboarding] Failed to load dashboard:', error)
@@ -95,8 +95,8 @@ export default async function OnboardingPage() {
           quiz_score: c.quiz_score,
         })),
       }}
-      userType={userData.user_type || 'agent'}
-      brokerageId={userData.brokerage_id}
+      userType={userData?.user_type ?? 'agent'}
+      brokerageId={brokerageId}
     />
   )
 }

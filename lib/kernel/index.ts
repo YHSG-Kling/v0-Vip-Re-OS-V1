@@ -136,6 +136,43 @@ export type {
   EmitEventParams,
 } from "./helpers"
 
+// ─── USER PROVISIONING OS ────────────────────────────────────────────────────
+
+export {
+  createOrRepairUserDomainRecords,
+  resolveUserWorkspaceContext,
+  assignUserRoleAndEntitlements,
+  assignUserToBrokerage,
+  assignUserToTeam,
+  repairIncompleteAccountSetup,
+  emitUserProvisionedEvent,
+} from "./users"
+export type {
+  UserDomainRole,
+  UserProvisioningParams,
+  ProvisioningResult,
+  WorkspaceContext,
+  RoleAssignmentParams,
+  RoleAssignmentResult,
+  RepairResult,
+} from "./users"
+
+// ─── ONBOARDING WORKSPACE OS ─────────────────────────────────────────────────
+
+export {
+  startOnboarding,
+  markOnboardingStepComplete,
+  loadOnboardingWorkspace,
+  determineFirstLoginDestination,
+} from "./onboarding"
+export type {
+  OnboardingWorkspace,
+  OnboardingStep,
+  MarkStepCompleteParams,
+  MarkStepCompleteResult,
+  FirstLoginDestination,
+} from "./onboarding"
+
 // ─── IDENTITY & WRITE CONTEXT ─────────────────────────────────────────────────
 
 export {

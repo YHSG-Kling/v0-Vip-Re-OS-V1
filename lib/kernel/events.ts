@@ -434,4 +434,26 @@ export enum KernelEvent {
   MESSAGE_CREATED                    = 'message_created',
   SYSTEM_SYNC_TRIGGERED              = 'system_sync_triggered',
   SYSTEM_SYNC_COMPLETED              = 'system_sync_completed',
+
+  // ── User Provisioning & Onboarding OS ──────────────────────────────────
+  // These events are emitted by lib/kernel/users.ts and lib/kernel/onboarding.ts.
+  // Downstream: dashboard routing, notification rules, automation triggers.
+  USER_INVITED                       = 'user_invited',
+  USER_PROVISIONED                   = 'user_provisioned',
+  USER_DOMAIN_RECORDS_CREATED        = 'user_domain_records_created',
+  USER_DOMAIN_RECORDS_REPAIRED       = 'user_domain_records_repaired',
+  USER_ROLE_ASSIGNED                 = 'user_role_assigned',
+  USER_ROLE_CHANGED                  = 'user_role_changed',
+  USER_BROKERAGE_ASSIGNED            = 'user_brokerage_assigned',
+  USER_TEAM_ASSIGNED                 = 'user_team_assigned',
+  USER_ONBOARDING_STARTED            = 'user_onboarding_started',
+  USER_ONBOARDING_STEP_COMPLETED     = 'user_onboarding_step_completed',
+  USER_ONBOARDING_COMPLETED          = 'user_onboarding_completed',
+  USER_ONBOARDING_STALLED            = 'user_onboarding_stalled',
+  USER_ACCOUNT_INCOMPLETE            = 'user_account_incomplete',
+  USER_ACCOUNT_REPAIRED              = 'user_account_repaired',
+  USER_FIRST_LOGIN                   = 'user_first_login',
+  USER_INVITATION_ACCEPTED           = 'user_invitation_accepted',
+  USER_DEACTIVATED                   = 'user_deactivated',
+  USER_REACTIVATED                   = 'user_reactivated',
 }

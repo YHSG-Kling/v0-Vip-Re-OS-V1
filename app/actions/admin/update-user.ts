@@ -2,16 +2,21 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { assignUserRoleAndEntitlements, assignUserToBrokerage } from "@/lib/kernel/users"
+import type { UserDomainRole } from "@/lib/kernel/users"
 
 export interface UpdateUserParams {
   userId: string
   updates: {
     first_name?: string
     last_name?: string
+    /** Canonical role field — will sync to both user_type and user_role_assignments */
     user_type?: string
+    /** Legacy alias — treated as user_type if user_type is not provided */
     role?: string
     status?: string
     brokerage_id?: string | null
+    team_id?: string | null
   }
 }
 
@@ -20,83 +25,118 @@ export interface UpdateUserResult {
   error?: string
 }
 
+// Only superadmins can assign these roles
+const SUPERADMIN_ONLY_ROLES = new Set(["superadmin", "admin", "broker"])
+
 export async function updateUser({ userId, updates }: UpdateUserParams): Promise<UpdateUserResult> {
+  // ── 1. Auth gate ──────────────────────────────────────────────────────────
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { success: false, error: "Unauthenticated" }
 
-  // Role gate: caller must be admin or superadmin
+  // ── 2. Caller role — use user_type, not legacy role ───────────────────────
   const { data: caller } = await supabase
     .from("users")
-    .select("user_type, role, brokerage_id")
+    .select("user_type, brokerage_id")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
-  const callerRole = caller?.user_type ?? caller?.role ?? ""
-  if (!["admin", "superadmin"].includes(callerRole)) {
-    return { success: false, error: "Forbidden: admin or superadmin only" }
+  const callerRole = caller?.user_type ?? "agent"
+  if (!["admin", "broker", "superadmin"].includes(callerRole)) {
+    return { success: false, error: "Forbidden: admin, broker, or superadmin only" }
   }
 
-  // Non-superadmin admins can only update users in their own brokerage
-  if (callerRole === "admin" && caller?.brokerage_id) {
+  // ── 3. Scope guard for non-superadmin callers ─────────────────────────────
+  if (callerRole !== "superadmin" && caller?.brokerage_id) {
     const { data: target } = await supabase
       .from("users")
       .select("brokerage_id")
       .eq("id", userId)
-      .single()
+      .maybeSingle()
+
     if (target?.brokerage_id !== caller.brokerage_id) {
       return { success: false, error: "Forbidden: user belongs to a different brokerage" }
     }
-    // Prevent admin from granting brokerage_id outside their own
     if (updates.brokerage_id && updates.brokerage_id !== caller.brokerage_id) {
       return { success: false, error: "Forbidden: cannot reassign user to another brokerage" }
     }
   }
 
-  // Prevent role escalation to superadmin by non-superadmin callers
-  if (callerRole !== "superadmin" && (updates.user_type === "superadmin" || updates.role === "superadmin")) {
-    return { success: false, error: "Forbidden: cannot grant superadmin role" }
+  // ── 4. Role escalation guard ──────────────────────────────────────────────
+  const newRole = updates.user_type ?? updates.role
+  if (callerRole !== "superadmin" && newRole && SUPERADMIN_ONLY_ROLES.has(newRole)) {
+    return { success: false, error: `Forbidden: cannot assign role '${newRole}'` }
   }
 
   const service = createServiceClient()
 
-  // Snapshot current state for audit before
+  // ── 5. Snapshot current state for audit ──────────────────────────────────
   const { data: before } = await service
     .from("users")
     .select("first_name, last_name, user_type, role, status, brokerage_id")
     .eq("id", userId)
-    .single()
+    .maybeSingle()
 
-  // Apply update — keep role and user_type in sync
-  const patch: Record<string, unknown> = {
-    ...updates,
-    updated_at: new Date().toISOString(),
+  // ── 6. Build users table patch ────────────────────────────────────────────
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if (updates.first_name !== undefined) patch.first_name = updates.first_name
+  if (updates.last_name  !== undefined) patch.last_name  = updates.last_name
+  if (updates.status     !== undefined) patch.status     = updates.status
+
+  // Sync both user_type and legacy role column when role changes
+  if (newRole) {
+    patch.user_type = newRole
+    patch.role      = newRole
   }
-  if (updates.user_type && !updates.role) patch.role = updates.user_type
-  if (updates.role && !updates.user_type) patch.user_type = updates.role
+
+  // Handle brokerage change directly on users table here
+  // (RBAC sync is handled by kernel below)
+  if (updates.brokerage_id !== undefined) {
+    patch.brokerage_id = updates.brokerage_id
+  }
+  if (updates.team_id !== undefined) {
+    patch.team_id = updates.team_id
+  }
 
   const { error: updateError } = await service
     .from("users")
     .update(patch)
     .eq("id", userId)
 
-  if (updateError) {
-    return { success: false, error: updateError.message }
+  if (updateError) return { success: false, error: updateError.message }
+
+  // ── 7. Sync user_role_assignments when role or brokerage changes ──────────
+  // Delegate to kernel commands that handle full RBAC sync
+  const targetBrokerageId = updates.brokerage_id ?? before?.brokerage_id ?? caller?.brokerage_id ?? null
+
+  if (newRole && targetBrokerageId) {
+    await assignUserRoleAndEntitlements({
+      userId,
+      newRole:      newRole as UserDomainRole,
+      brokerageId:  targetBrokerageId,
+      teamId:       updates.team_id ?? null,
+      callerUserId: user.id,
+    })
+  } else if (updates.brokerage_id && updates.brokerage_id !== before?.brokerage_id) {
+    // Brokerage reassignment without role change
+    await assignUserToBrokerage({
+      userId,
+      brokerageId:  updates.brokerage_id,
+      callerUserId: user.id,
+    })
   }
 
-  // Audit log to activities table
+  // ── 8. Audit log ──────────────────────────────────────────────────────────
   await service
     .from("activities")
     .insert({
       activity_type: "admin.user.updated",
-      agent_id: user.id,
-      brokerage_id: caller?.brokerage_id ?? null,
-      title: `User updated: ${userId}`,
-      description: JSON.stringify({ before, after: patch, updated_by: user.id }),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      agent_id:      user.id,
+      brokerage_id:  caller?.brokerage_id ?? null,
+      title:         `User updated: ${userId}`,
+      description:   JSON.stringify({ before, after: patch, updated_by: user.id }),
+      created_at:    new Date().toISOString(),
+      updated_at:    new Date().toISOString(),
     })
     .catch(() => {})
 
