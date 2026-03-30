@@ -163,6 +163,44 @@ export type {
   EmitEventParams,
 } from "./helpers"
 
+// ─── RAW LEAD SCRAPING / ACQUISITION PIPELINE OS ─────────────────────────────
+// All scraping pipeline logic is owned by this module.
+// Direct-contact consented intake (forms, QR, cards) uses crm.ts instead.
+
+export {
+  runScrapeSourcesChronologically,
+  ingestRawSourceBatch,
+  normalizeRawSourceRecord,
+  dedupRawAgainstLeadAndContact,
+  enrichRawRecord,
+  gateRawRecordToLead,
+  promoteQualifiedRawToLead,
+  loadScrapingDiagnostics,
+  retryFailedSourceBatch,
+} from "./scraping"
+export type {
+  ScrapingMarket,
+  IngestRawSourceBatchParams,
+  IngestBatchResult,
+  NormalizeRawRecordParams,
+  NormalizedRawOutput,
+  DedupRawParams,
+  DedupResult,
+  EnrichRawRecordParams,
+  EnrichRawResult,
+  GateRawRecordToLeadParams,
+  GatingDecision,
+  GateResult,
+  PromoteRawToLeadParams,
+  PromoteResult,
+  ScrapingDiagnosticsParams,
+  ScrapingDiagnosticsData,
+  RetryFailedBatchParams,
+  RetryBatchResult,
+  RunScrapeChronologicallyParams,
+  RunScrapeResult,
+} from "./scraping"
+
 // ─── USER PROVISIONING OS ────────────────────────────────────────────────────
 
 export {

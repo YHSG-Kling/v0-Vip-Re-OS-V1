@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { ZenrowsClient, BatchDataClient, PeopleDataClient, ApifyClient } from "@/lib/external"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
@@ -10,16 +11,45 @@ import {
 } from "@/lib/lead-pipeline/raw-record-types"
 import * as cheerio from "cheerio"
 import { buildTerritoryPhrases } from "@/lib/lead-pipeline/source-intent-map"
+import { ingestRawSourceBatch } from "@/lib/kernel/scraping"
+import { KernelEvent } from "@/lib/kernel/events"
 
 export const dynamic = "force-dynamic"
 
-// Runs every 6 hours to scrape leads from all configured sources
+// Runs every 6 hours to scrape leads from all configured sources.
+// Kernel OS: cron_execution_logs are opened at entry and closed at every exit path.
 export async function GET(request: Request) {
   // Verify cron secret
   const authHeader = request.headers.get("authorization")
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
+
+  // Open cron_execution_logs record — kernel owns this audit trail
+  const serviceClient = createServiceClient()
+  const cronStartedAt = Date.now()
+  const { data: cronLog } = await serviceClient
+    .from("cron_execution_logs")
+    .insert({
+      cron_name:   "lead-scraping",
+      cron_path:   "/api/cron/lead-scraping",
+      status:      "running",
+      started_at:  new Date().toISOString(),
+    })
+    .select("id")
+    .maybeSingle()
+    .catch(() => ({ data: null }))
+  const cronLogId: string | null = (cronLog as any)?.id ?? null
+
+  // Emit SCRAPING_CRON_STARTED lifecycle event
+  await serviceClient.from("lifecycle_events").insert({
+    entity_type:  "system",
+    entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
+    event_type:   KernelEvent.SCRAPING_CRON_STARTED,
+    brokerage_id: null,
+    metadata:     { triggered_by: "cron" },
+    created_at:   new Date().toISOString(),
+  }).catch(() => {})
 
   console.log("[Lead Scraping Cron] Starting scheduled scraping with full enrichment pipeline...")
 
@@ -599,10 +629,50 @@ export async function GET(request: Request) {
         .catch(() => {})
     }
 
+    const durationMs = Date.now() - cronStartedAt
     console.log("[Lead Scraping Cron] Completed:", results)
+
+    // Close cron_execution_logs — success
+    if (cronLogId) {
+      await serviceClient.from("cron_execution_logs").update({
+        status:            "completed",
+        duration_ms:       durationMs,
+        records_processed: results.total_leads_created,
+        completed_at:      new Date().toISOString(),
+      }).eq("id", cronLogId).catch(() => {})
+    }
+    await serviceClient.from("lifecycle_events").insert({
+      entity_type:  "system",
+      entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
+      event_type:   KernelEvent.SCRAPING_CRON_COMPLETED,
+      brokerage_id: null,
+      metadata:     { ...results, duration_ms: durationMs },
+      created_at:   new Date().toISOString(),
+    }).catch(() => {})
+
     return NextResponse.json({ message: "Lead scraping completed", results })
   } catch (error) {
+    const durationMs = Date.now() - cronStartedAt
     console.error("[Lead Scraping Cron] Fatal error:", error)
+
+    // Close cron_execution_logs — failure
+    if (cronLogId) {
+      await serviceClient.from("cron_execution_logs").update({
+        status:        "failed",
+        duration_ms:   durationMs,
+        error_message: String(error),
+        completed_at:  new Date().toISOString(),
+      }).eq("id", cronLogId).catch(() => {})
+    }
+    await serviceClient.from("lifecycle_events").insert({
+      entity_type:  "system",
+      entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
+      event_type:   KernelEvent.SCRAPING_CRON_FAILED,
+      brokerage_id: null,
+      metadata:     { error: String(error), duration_ms: durationMs },
+      created_at:   new Date().toISOString(),
+    }).catch(() => {})
+
     return NextResponse.json({ error: String(error), results }, { status: 500 })
   }
 }

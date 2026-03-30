@@ -1,70 +1,60 @@
+import { loadScrapingDiagnostics } from "@/lib/kernel/scraping"
 import { createClient } from "@/lib/supabase/server"
 import { ScrapeDiagnosticsClient } from "./scrape-diagnostics-client"
+import { redirect } from "next/navigation"
 
 export const metadata = {
   title:       "Scrape Diagnostics | Kernel OS Admin",
-  description: "Provider health, territory budgets, pipeline funnel, and dry-run preview for the lead scraping system",
+  description: "Source health, raw queue, enrichment status, dedup decisions, gating status, failed batch retry, source lineage, cron run history",
 }
 
 /**
  * Admin Scrape Diagnostics Page — Kernel OS
  *
- * All data comes from real DB queries:
- *   - scraper_executions — recent runs per source
- *   - lead_scraping_markets — territory budgets
- *   - raw_scraped_leads — pipeline funnel grouped by source + status
+ * Data loading is fully delegated to loadScrapingDiagnostics() in lib/kernel/scraping.ts.
+ * That command returns all 9 required visibility dimensions as a normalized contract:
+ *   1. Source health (executions per source, status)
+ *   2. Raw queue (funnel by source + status)
+ *   3. Enrichment status (queued_for_enrichment + enriching rows)
+ *   4. Dedup decisions (lead_deduplication_log)
+ *   5. Gating status (territory_mismatch, insufficient_identity rows)
+ *   6. Failed source batch visibility (failed scraper_executions)
+ *   7. Cron run history (cron_execution_logs)
+ *   8. Source lineage and attribution (markets + funnel by source)
+ *   9. Territory budgets (lead_scraping_markets)
  *
- * Zero mock data.
+ * Zero direct DB queries in this file. Zero mock data.
  */
 export default async function ScrapeDiagnosticsPage() {
+  // Auth guard — only admin/broker/superadmin
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect("/auth/login")
 
-  // Fetch all three data sets in parallel
-  const [marketsResult, executionsResult, funnelResult] = await Promise.all([
-    supabase
-      .from("lead_scraping_markets")
-      .select("id, name, city, state, enabled_sources, monthly_budget_usd, spend_this_month, is_active, last_scraped_at")
-      .order("priority", { ascending: false })
-      .limit(50),
+  const { data: userData } = await supabase
+    .from("users")
+    .select("user_type, brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
 
-    supabase
-      .from("scraper_executions")
-      .select("id, scraper_type, status, started_at, completed_at, total_items_found, leads_created, api_cost, error_message")
-      .order("started_at", { ascending: false })
-      .limit(25),
+  const userType    = userData?.user_type ?? "agent"
+  const brokerageId = userData?.brokerage_id ?? undefined
 
-    // Group raw_scraped_leads by source + processing_status using a select aggregation.
-    // Supabase JS client doesn't support GROUP BY directly, so we fetch and aggregate client-side.
-    supabase
-      .from("raw_scraped_leads")
-      .select("source, processing_status")
-      .limit(10000),
-  ])
-
-  const markets    = marketsResult.data    ?? []
-  const executions = executionsResult.data ?? []
-
-  // Aggregate funnel rows in-process — no GROUP BY needed, just count
-  const funnelMap: Record<string, Record<string, number>> = {}
-  for (const row of funnelResult.data ?? []) {
-    const src    = row.source            ?? "unknown"
-    const status = row.processing_status ?? "unknown"
-    if (!funnelMap[src])       funnelMap[src]         = {}
-    if (!funnelMap[src][status]) funnelMap[src][status] = 0
-    funnelMap[src][status]++
+  if (!["admin", "broker", "superadmin"].includes(userType)) {
+    redirect("/dashboard")
   }
 
-  const funnel = Object.entries(funnelMap).flatMap(([source, statuses]) =>
-    Object.entries(statuses).map(([processing_status, count]) => ({
-      source,
-      processing_status,
-      count,
-    }))
-  )
+  // Delegate all data loading to the kernel command
+  const diagnostics = await loadScrapingDiagnostics({
+    brokerageId: userType === "superadmin" ? undefined : brokerageId,
+    limit:       100,
+  })
 
   return (
     <ScrapeDiagnosticsClient
-      data={{ markets, executions, funnel }}
+      data={diagnostics}
+      isSuperadmin={userType === "superadmin"}
+      currentUserId={user.id}
     />
   )
 }

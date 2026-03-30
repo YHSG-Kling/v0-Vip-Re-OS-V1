@@ -435,6 +435,28 @@ export enum KernelEvent {
   SYSTEM_SYNC_TRIGGERED              = 'system_sync_triggered',
   SYSTEM_SYNC_COMPLETED              = 'system_sync_completed',
 
+  // ── Raw Lead Scraping / Acquisition Pipeline OS ─────────────────────────
+  // Emitted by lib/kernel/scraping.ts and app/api/cron/lead-scraping/route.ts.
+  // Rule: AI ISA events (ISA_QUALIFICATION_STARTED etc.) are NEVER emitted
+  //       for raw records. They fire only after RAW_RECORD_PROMOTED.
+  SCRAPE_SOURCE_RUN_STARTED          = 'scrape_source_run_started',
+  SCRAPE_SOURCE_RUN_COMPLETED        = 'scrape_source_run_completed',
+  SCRAPE_SOURCE_RUN_FAILED           = 'scrape_source_run_failed',
+  SCRAPE_BATCH_RETRIED               = 'scrape_batch_retried',
+  RAW_RECORD_CREATED                 = 'raw_record_created',
+  RAW_RECORD_TERRITORY_GATED         = 'raw_record_territory_gated',
+  RAW_RECORD_IDENTITY_GATED          = 'raw_record_identity_gated',
+  RAW_RECORD_DEDUPLICATED            = 'raw_record_deduplicated',
+  RAW_RECORD_ENRICHED                = 'raw_record_enriched',
+  RAW_RECORD_VIABILITY_GATED         = 'raw_record_viability_gated',
+  RAW_RECORD_PROMOTED                = 'raw_record_promoted',
+  RAW_RECORD_FAILED                  = 'raw_record_failed',
+  RAW_RECORD_MERGED                  = 'raw_record_merged',
+  SCRAPING_BUDGET_EXHAUSTED          = 'scraping_budget_exhausted',
+  SCRAPING_CRON_STARTED              = 'scraping_cron_started',
+  SCRAPING_CRON_COMPLETED            = 'scraping_cron_completed',
+  SCRAPING_CRON_FAILED               = 'scraping_cron_failed',
+
   // ── CRM / Contact OS ────────────────────────────────────────────────────
   // Emitted by lib/kernel/crm.ts and app/actions/contacts.ts.
   // Downstream: notification rules, automation triggers, audit log.
