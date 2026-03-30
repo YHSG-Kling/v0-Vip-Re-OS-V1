@@ -1,5 +1,3 @@
-'use server'
-
 /**
  * lib/kernel/communications/assemble-email.ts
  * ─────────────────────────────────────────────────────────────────────────────

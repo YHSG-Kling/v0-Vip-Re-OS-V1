@@ -1,5 +1,3 @@
-'use server'
-
 /**
  * lib/kernel/marketing/real-estate-compliance-gate.ts
  * ─────────────────────────────────────────────────────────────────────────────

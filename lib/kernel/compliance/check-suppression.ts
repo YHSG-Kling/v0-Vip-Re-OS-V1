@@ -1,5 +1,3 @@
-'use server'
-
 /**
  * lib/kernel/compliance/check-suppression.ts
  * ─────────────────────────────────────────────────────────────────────────────

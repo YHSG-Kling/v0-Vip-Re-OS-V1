@@ -1,5 +1,3 @@
-'use server'
-
 // lib/kernel/scraping.ts
 // ─── RAW LEAD SCRAPING CANONICAL ORCHESTRATOR ────────────────────────────────
 //

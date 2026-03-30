@@ -1,5 +1,3 @@
-'use server'
-
 // SYSTEM: Kernel Lead-Acquisition Handlers (Track A — Lead-first)
 // FILE: lib/kernel/lead-acquisition-handlers.ts
 // TRACK: Scraped/Raw pipeline only. Forms/QR/Card/Imports use captureContact()
