@@ -35,23 +35,31 @@ export default async function TransactionsPage() {
     redirect("/login")
   }
 
-  // Fetch transactions with health data
+  // Look up agent record — transactions.agent_id = agents.id, not users.id
+  const { data: agentRecord } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+
+  const agentId = agentRecord?.id ?? user.id
+
+  // Fetch transactions (no FK join to deal_health_scores — query separately)
   const { data: transactions } = await supabase
     .from("transactions")
     .select(`
       id, 
       property_address, 
-      transaction_type,
+      deal_name,
       status, 
-      contract_price, 
+      purchase_price, 
       close_date,
       created_at,
-      deal_health (
-        overall_score,
-        risk_level
-      )
+      health_score,
+      stage
     `)
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
+    .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(50)
 
@@ -61,10 +69,9 @@ export default async function TransactionsPage() {
     if (t.status !== "closed" || !t.close_date) return false
     return new Date(t.close_date).getFullYear() === new Date().getFullYear()
   }) || []
-  const totalActiveVolume = activeDeals.reduce((sum, t) => sum + (t.contract_price || 0), 0)
+  const totalActiveVolume = activeDeals.reduce((sum, t) => sum + (t.purchase_price || 0), 0)
   const atRiskDeals = activeDeals.filter(t => {
-    const health = Array.isArray(t.deal_health) ? t.deal_health[0] : t.deal_health
-    return health?.risk_level === "high" || health?.risk_level === "critical"
+    return t.health_score != null && t.health_score < 50
   })
 
   // Calculate days to close for active deals

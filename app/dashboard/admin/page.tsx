@@ -24,16 +24,34 @@ export type OperationalSnapshot = {
 export default async function AdminPage() {
   const context = await getAgentContext()
 
-  if (!context?.brokerageId) {
+  // Verify user is authenticated
+  if (!context?.isAuthenticated) {
     redirect('/login')
   }
 
-  // Verify user has admin role
-  if (context.role !== 'admin' && context.role !== 'broker') {
+  // Verify user has admin/broker/superadmin role
+  const allowedRoles = ['admin', 'superadmin', 'broker', 'broker_admin']
+  if (!allowedRoles.includes(context.role)) {
     redirect('/dashboard')
   }
 
-  const brokerageId = context.brokerageId
+  // For admins without a specific brokerage, query the first available brokerage
+  let brokerageId = context.brokerageId
+  if (!brokerageId) {
+    const supabaseTemp = await createClient()
+    const { data: firstBrokerage } = await supabaseTemp
+      .from('brokerages')
+      .select('id')
+      .is('deleted_at', null)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    brokerageId = firstBrokerage?.id ?? null
+  }
+
+  if (!brokerageId) {
+    redirect('/dashboard/agent')
+  }
   const supabase = await createClient()
   const stalledCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
 

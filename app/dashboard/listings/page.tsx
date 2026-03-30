@@ -40,11 +40,21 @@ export default async function ListingsPage() {
     redirect("/login")
   }
 
+  // Look up the agent record to get the agent UUID (listings.agent_id = agents.id, not users.id)
+  const { data: agentRecord } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+
+  // Build query — if no agent record found, fall back to user.id for brokers/admins
+  const agentId = agentRecord?.id ?? user.id
+
   // Fetch listings with correct schema columns
   const { data: listings } = await supabase
     .from("listings")
     .select("id, address, city, state, list_price, status, lifecycle_stage, bedrooms, bathrooms, sqft, created_at, stage_updated_at, showing_count")
-    .eq("agent_id", user.id)
+    .eq("agent_id", agentId)
     .order("created_at", { ascending: false })
     .limit(50)
 

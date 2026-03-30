@@ -1,5 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { UsersManagementClient } from "./users-management-client"
+
+export const dynamic = "force-dynamic"
 
 export default async function SettingsUsersPage() {
   const supabase = await createClient()
@@ -11,16 +14,36 @@ export default async function SettingsUsersPage() {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("user_type, role")
+    .select("user_type, brokerage_id")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
-  const userType = profile?.user_type ?? profile?.role ?? "agent"
+  const userType = profile?.user_type ?? "agent"
 
-  if (["admin", "broker", "superadmin"].includes(userType)) {
-    redirect("/admin")
+  // Only admin/broker/superadmin can manage users
+  if (!["admin", "broker", "superadmin", "broker_admin"].includes(userType)) {
+    redirect("/dashboard")
   }
 
-  // Agents and other roles don't have user management access
-  redirect("/dashboard/settings/general")
+  const brokerageId = profile?.brokerage_id
+
+  // Fetch all users in the brokerage
+  const { data: users } = brokerageId
+    ? await supabase
+        .from("users")
+        .select("id, email, first_name, last_name, user_type, created_at, brokerage_id")
+        .eq("brokerage_id", brokerageId)
+        .order("created_at", { ascending: false })
+    : await supabase
+        .from("users")
+        .select("id, email, first_name, last_name, user_type, created_at, brokerage_id")
+        .order("created_at", { ascending: false })
+
+  return (
+    <UsersManagementClient
+      users={users ?? []}
+      currentUserId={user.id}
+      brokerageId={brokerageId}
+    />
+  )
 }

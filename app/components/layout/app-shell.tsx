@@ -111,8 +111,9 @@ export function AppShell({ children }: AppShellProps) {
     )
   }
 
-  // Show loading while redirecting to login
-  if (!user || !userContext) {
+  // If no user session — the useEffect above will redirect to /login.
+  // Render a brief spinner while that redirect fires rather than blank screen.
+  if (!user) {
     return (
       <div className="flex items-center justify-center h-screen bg-background">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
@@ -120,8 +121,19 @@ export function AppShell({ children }: AppShellProps) {
     )
   }
 
-  const primaryRole = userContext.roles[0]
+  // userContext should always be set when user is set (after useAuth fix).
+  // Fallback to 'agent' role if it ever arrives null to prevent crash.
+  const primaryRole = userContext?.roles?.[0] ?? 'agent'
   const navigation = getNavigationForRole(primaryRole)
+
+  // Build a safe userContext for components — if null, create a minimal one
+  const safeUserContext = userContext ?? {
+    id: user.id,
+    email: user.email ?? '',
+    firstName: '',
+    lastName: '',
+    roles: [primaryRole],
+  }
 
   // Only staff roles may see the Internal AI Assistant
   const showAIAssistant = STAFF_AI_ROLES.has(primaryRole?.toLowerCase?.() ?? '')
@@ -129,11 +141,11 @@ export function AppShell({ children }: AppShellProps) {
   return (
     <div className="flex h-screen bg-white">
       <div className="hidden lg:flex w-64 border-r border-gray-200 bg-white">
-        <Sidebar navigation={navigation} userContext={userContext} badgeCounts={badgeCounts} />
+        <Sidebar navigation={navigation} userContext={safeUserContext} badgeCounts={badgeCounts} />
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <Header navigation={navigation} userContext={userContext} />
+        <Header navigation={navigation} userContext={safeUserContext} />
 
         <main className="flex-1 overflow-auto pb-20 lg:pb-0 bg-white">
           <div className="h-full">{children}</div>
@@ -150,7 +162,7 @@ export function AppShell({ children }: AppShellProps) {
       {showAIAssistant && (
         <InternalAIAssistant
           role={primaryRole}
-          userId={userContext.id}
+          userId={safeUserContext.id}
         />
       )}
     </div>
