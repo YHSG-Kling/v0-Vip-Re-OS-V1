@@ -1,21 +1,34 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { SettingsSidebar } from '@/app/components/settings/SettingsSidebar';
 import { useAuth } from '@/lib/auth/client';
-import { redirect } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Loader2 } from 'lucide-react';
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const { user, userContext, loading } = useAuth();
+  const router = useRouter();
+
+  const hasAccess = userContext?.roles.some(r => ['admin', 'broker', 'superadmin'].includes(r))
+
+  useEffect(() => {
+    if (!loading && (!user || !hasAccess)) {
+      router.replace('/dashboard');
+    }
+  }, [loading, user, hasAccess, router])
 
   if (loading) {
-    return <div className="flex items-center justify-center min-h-screen">Loading...</div>;
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
   }
 
-  if (!user || !userContext?.roles.includes('admin' as any) && !userContext?.roles.includes('broker' as any)) {
-    redirect('/dashboard');
+  if (!user || !hasAccess) {
+    return null; // redirecting via useEffect
   }
 
   return (

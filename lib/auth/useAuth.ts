@@ -105,12 +105,20 @@ export function useAuth(): AuthState {
         agentFallback = agentRow
       }
 
-      // Source priority: users.user_type > role_assignments.role > agents row > auth metadata > 'agent'
+      // Source priority:
+      //  1. users.user_type   (DB — most authoritative, but requires RLS to allow read)
+      //  2. user_role_assignments.role (DB — explicit role grant)
+      //  3. auth.user_metadata.user_type (set at invite/signup time — no RLS needed)
+      //  4. agents row exists → 'agent'
+      //  5. hard fallback → 'agent'
+      const metaRole = (authUser.user_metadata?.user_type as string | undefined)
+        || (authUser.user_metadata?.role as string | undefined)
+
       const rawRole: string =
         userData?.user_type ||
         rolesData?.[0]?.role ||
+        metaRole ||
         (agentFallback ? 'agent' : null) ||
-        (authUser.user_metadata?.user_type as string | undefined) ||
         'agent'
       
       const canonicalRole = toCanonicalRoleOrDefault(rawRole, 'agent')
