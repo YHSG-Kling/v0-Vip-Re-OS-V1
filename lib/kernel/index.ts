@@ -60,6 +60,33 @@ export type { NotificationRuleRow } from "./notification-rules"
 export { getGlobalSettings, updateGlobalSettings } from "./global-settings"
 export type { GlobalSettingsRow } from "./global-settings"
 
+// ─── CRM / CONTACT OS ────────────────────────────────────────────────────────
+
+export {
+  resolveCanonicalPerson,
+  mergeOrUpdateContactIfDuplicate,
+  createOrUpdateContactFromDirectIntake,
+  createContactManually,
+  createLeadOnlyRecordForAcquisitionSource,
+  convertLeadToContact,
+  attachLeadOriginHistoryToContact,
+  enrichContactAfterIntake,
+  notifyAssignedAgentForNextAction,
+  updateContactRecord,
+  archiveContactRecord,
+  loadContactWorkspace,
+  generateContactFollowupDraft,
+  applyContactSuppressionState,
+} from "./crm"
+export type {
+  ContactSourceAttribution,
+  CreateContactParams,
+  CRMContactResult,
+  DeduplicateResult,
+  SuppressionStateParams,
+  CRMResult,
+} from "./crm"
+
 export {
   linkCalendarProvider,
   pushCalendarEventToProvider,

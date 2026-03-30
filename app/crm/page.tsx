@@ -217,8 +217,10 @@ export default function CRMPage() {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
-  // Agent context (resolved from user)
+  // Agent context (resolved from agents table, not users table)
+  // contacts.agent_id = agents.id — must resolve via agents.user_id = auth user.id
   const [agentId, setAgentId] = useState<string | null>(null)
+  const [brokerageId, setBrokerageId] = useState<string | null>(null)
 
   // Contact OS data
   const [churnRisk, setChurnRisk] = useState<any>(null)
@@ -254,13 +256,34 @@ export default function CRMPage() {
     assignedAt?: string
   } | null>(null)
 
-  // Resolve agentId from user context
+  // Resolve agents.id and brokerage_id from the agents table via user.id
+  // contacts.agent_id = agents.id (FK) — NEVER users.id
   useEffect(() => {
-    if (user?.id) {
-      // The agentId is typically available from user metadata or needs to be resolved
-      // For now, we'll use the user.id as a fallback - real implementation would query agents table
-      setAgentId(user.id)
-    }
+    if (!user?.id) return
+    const supabase = createClient()
+    supabase
+      .from("agents")
+      .select("id, brokerage_id")
+      .eq("user_id", user.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          setAgentId(data.id)
+          setBrokerageId(data.brokerage_id)
+        } else {
+          // Fallback: resolve brokerage_id from users table for broker/admin roles
+          supabase
+            .from("users")
+            .select("brokerage_id")
+            .eq("id", user.id)
+            .maybeSingle()
+            .then(({ data: userData }) => {
+              if (userData?.brokerage_id) setBrokerageId(userData.brokerage_id)
+            })
+            .catch(() => {})
+        }
+      })
+      .catch(() => {})
   }, [user])
 
   const loadContacts = useCallback(async () => {
@@ -619,6 +642,7 @@ export default function CRMPage() {
               churnRisk={churnRisk}
               autopilotPlans={autopilotPlans}
               agentId={agentId || ""}
+              brokerageId={brokerageId || ""}
               onEnableAutopilot={handleEnableAutopilot}
               onToggleAutopilot={handleToggleAutopilot}
               loading={isPending}

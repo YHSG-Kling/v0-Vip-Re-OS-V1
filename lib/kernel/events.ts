@@ -435,6 +435,24 @@ export enum KernelEvent {
   SYSTEM_SYNC_TRIGGERED              = 'system_sync_triggered',
   SYSTEM_SYNC_COMPLETED              = 'system_sync_completed',
 
+  // ── CRM / Contact OS ────────────────────────────────────────────────────
+  // Emitted by lib/kernel/crm.ts and app/actions/contacts.ts.
+  // Downstream: notification rules, automation triggers, audit log.
+  CONTACT_CREATED                    = 'contact_created',
+  CONTACT_UPDATED                    = 'contact_updated',
+  CONTACT_ARCHIVED                   = 'contact_archived',
+  CONTACT_MERGED                     = 'contact_merged',
+  CONTACT_DEDUP_MATCH_FOUND          = 'contact_dedup_match_found',
+  CONTACT_ENRICHMENT_QUEUED          = 'contact_enrichment_queued',
+  CONTACT_ENRICHED                   = 'contact_enriched',
+  CONTACT_SUPPRESSION_APPLIED        = 'contact_suppression_applied',
+  CONTACT_SUPPRESSION_CLEARED        = 'contact_suppression_cleared',
+  CONTACT_SOURCE_ATTRIBUTION_SET     = 'contact_source_attribution_set',
+  CONTACT_LEAD_CONVERTED             = 'contact_lead_converted',
+  CONTACT_AGENT_ASSIGNED             = 'contact_agent_assigned',
+  CONTACT_AGENT_NOTIFIED             = 'contact_agent_notified',
+  CONTACT_FOLLOWUP_DRAFT_GENERATED   = 'contact_followup_draft_generated',
+
   // ── User Provisioning & Onboarding OS ──────────────────────────────────
   // These events are emitted by lib/kernel/users.ts and lib/kernel/onboarding.ts.
   // Downstream: dashboard routing, notification rules, automation triggers.

@@ -1,13 +1,41 @@
 "use server"
 
+/**
+ * app/actions/contacts.ts
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Server actions for the CRM / Contact OS.
+ *
+ * Ownership:
+ *   - All dedup, enrichment queue, merge, and suppression logic lives in
+ *     lib/kernel/crm.ts — never duplicated here.
+ *   - This file validates the actor context, resolves the canonical agentId
+ *     (agents.id, not users.id), and delegates to kernel commands.
+ *   - contacts.agent_id is ALWAYS agents.id — resolved via agents.user_id = auth user.id
+ *
+ * Schema facts used here:
+ *   - contacts.agent_id → agents.id (FK to agents table, not users)
+ *   - contacts.phone_digits → normalized digits-only for dedup
+ *   - contacts.source, source_family, source_channel, source_subtype — all exist
+ *   - activities table (not activity_log) for notes/timeline
+ *   - lead_enrichment_queue for enrichment pipeline
+ */
+
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { syncContactToCRM } from "@/lib/crm/sync"
+import {
+  createContactManually,
+  updateContactRecord,
+  archiveContactRecord,
+} from "@/lib/kernel/crm"
+
+// ─── getContacts ──────────────────────────────────────────────────────────────
 
 export async function getContacts(params?: {
   status?: string
   contact_type?: string
   limit?: number
+  search?: string
 }) {
   try {
     const { agentId, brokerageId, userType } = await getAgentContext()
@@ -20,13 +48,13 @@ export async function getContacts(params?: {
     let query = supabase
       .from("contacts")
       .select(
-        "id, first_name, last_name, email, phone, contact_type, contact_persona, buyer_stage, status, city, state, engagement_score, last_contacted_at, created_at, deleted_at, brokerage_id, agent_id"
+        "id, first_name, last_name, email, phone, contact_type, contact_persona, buyer_stage, status, city, state, engagement_score, last_contacted_at, referral_potential, created_at, deleted_at, brokerage_id, agent_id, source, source_family, dnc_status, email_opt_out, sms_opt_out, phone_opt_out"
       )
       .eq("brokerage_id", brokerageId)
-      .is("deleted_at", null) // exclude archived contacts
+      .is("deleted_at", null)
       .order("last_contacted_at", { ascending: false, nullsFirst: false })
 
-    // Agents only see their own contacts; broker/admin sees all brokerage contacts
+    // Agents only see their own contacts
     if (userType === "agent" && agentId) {
       query = query.eq("agent_id", agentId)
     }
@@ -49,11 +77,13 @@ export async function getContacts(params?: {
       return { success: false, error: error.message, contacts: [] }
     }
 
-    return { success: true, contacts: data || [] }
+    return { success: true, contacts: data ?? [] }
   } catch (error: any) {
     return { success: false, error: error.message, contacts: [] }
   }
 }
+
+// ─── getContactById ───────────────────────────────────────────────────────────
 
 export async function getContactById(contactId: string) {
   try {
@@ -71,7 +101,6 @@ export async function getContactById(contactId: string) {
       .eq("brokerage_id", brokerageId)
       .is("deleted_at", null)
 
-    // Agents can only read their own contacts
     if (userType === "agent" && agentId) {
       query = query.eq("agent_id", agentId)
     }
@@ -91,6 +120,14 @@ export async function getContactById(contactId: string) {
   }
 }
 
+// ─── createContact ────────────────────────────────────────────────────────────
+/**
+ * Delegates to createContactManually() in lib/kernel/crm.ts.
+ * Dedup, enrichment queue, activity creation, and agent notification are all
+ * handled by the kernel — not duplicated here.
+ *
+ * contacts.agent_id must be agents.id — resolved from the agents table via user_id.
+ */
 export async function createContact(contactData: {
   first_name: string
   last_name: string
@@ -98,54 +135,73 @@ export async function createContact(contactData: {
   phone?: string
   contact_type?: "buyer" | "seller" | "both" | "investor"
   status?: string
+  contact_persona?: string
+  notes?: string
+  preferred_channel?: string
+  tcpa_consent?: boolean
+  source?: string
+  source_family?: string
+  source_channel?: string
+  source_subtype?: string
 }) {
   try {
-    const supabase = await createClient()
-    const { agentId, brokerageId, isAuthenticated } = await getAgentContext()
+    const { agentId, brokerageId, isAuthenticated, userId } = await getAgentContext()
 
-    if (!isAuthenticated || !agentId) {
+    if (!isAuthenticated || !userId) {
       return { success: false, error: "Not authenticated" }
     }
     if (!brokerageId) {
       return { success: false, error: "No brokerage configured" }
     }
 
-    const { data, error } = await supabase
-      .from("contacts")
-      .insert({
-        first_name: contactData.first_name,
-        last_name: contactData.last_name,
-        email: contactData.email ?? null,
-        phone: contactData.phone ?? null,
-        contact_type: contactData.contact_type ?? "buyer",
-        status: contactData.status ?? "new",
-        agent_id: agentId,
-        brokerage_id: brokerageId,
-      })
-      .select()
-      .single()
-
-    if (error) {
-      return { success: false, error: error.message }
+    // agentId from getAgentContext() is already agents.id (not users.id)
+    // but verify it exists; if the context returned users.id as fallback, resolve it
+    if (!agentId) {
+      return { success: false, error: "No agent record found for this user" }
     }
 
-    // Non-blocking CRM sync
+    // Delegate to kernel — handles dedup, enrichment queue, activity, notification
+    const result = await createContactManually({
+      first_name:      contactData.first_name,
+      last_name:       contactData.last_name,
+      email:           contactData.email ?? null,
+      phone:           contactData.phone ?? null,
+      contact_type:    contactData.contact_type ?? "buyer",
+      status:          contactData.status ?? "new",
+      contact_persona: contactData.contact_persona ?? null,
+      notes:           contactData.notes ?? null,
+      preferred_channel: contactData.preferred_channel ?? null,
+      tcpa_consent:    contactData.tcpa_consent ?? false,
+      agent_id:        agentId,   // agents.id — FK-correct
+      brokerage_id:    brokerageId,
+      source_label:    contactData.source ?? "manual",
+    })
+
+    if (!result.success || !result.contact) {
+      return { success: false, error: result.error ?? "Failed to create contact" }
+    }
+
+    const data = result.contact
+
+    // Non-blocking CRM sync (GHL/external CRM) — does not block the response
     void syncContactToCRM({
-      firstName: data.first_name,
-      lastName: data.last_name,
-      email: data.email ?? undefined,
-      phone: data.phone ?? undefined,
-      tags: [data.contact_type, data.status].filter(Boolean) as string[],
-      source: "kernel",
-      brokerageId: brokerageId,
-      agentId: agentId,
+      firstName:   contactData.first_name,
+      lastName:    contactData.last_name,
+      email:       contactData.email,
+      phone:       contactData.phone,
+      tags:        [contactData.contact_type, contactData.status].filter(Boolean) as string[],
+      source:      "kernel",
+      brokerageId,
+      agentId,
     }).catch(() => {})
 
-    return { success: true, contact: data }
+    return { success: true, contact: data, isDuplicate: result.isDuplicate ?? false }
   } catch (error: any) {
     return { success: false, error: error.message }
   }
 }
+
+// ─── updateContact ────────────────────────────────────────────────────────────
 
 export async function updateContact(contactId: string, updates: Partial<{
   first_name: string
@@ -158,74 +214,58 @@ export async function updateContact(contactId: string, updates: Partial<{
   buyer_stage: string
   notes: string
   preferred_channel: string
+  tcpa_consent: boolean
 }>) {
   try {
     const { agentId, brokerageId, userType } = await getAgentContext()
-    const supabase = await createClient()
 
     if (!brokerageId) {
       return { success: false, error: "No brokerage context" }
     }
 
-    let query = supabase
-      .from("contacts")
-      .update({ ...updates, updated_at: new Date().toISOString() })
-      .eq("id", contactId)
-      .eq("brokerage_id", brokerageId)
+    const result = await updateContactRecord({
+      contactId,
+      brokerageId,
+      agentId: agentId ?? undefined,
+      userType: userType ?? undefined,
+      updates,
+    })
 
-    // Agents can only update their own contacts
-    if (userType === "agent" && agentId) {
-      query = query.eq("agent_id", agentId)
+    if (!result.success) {
+      return { success: false, error: result.error }
     }
 
-    const { data, error } = await query.select().maybeSingle()
-
-    if (error) {
-      return { success: false, error: error.message }
-    }
-    if (!data) {
-      return { success: false, error: "Contact not found or no access" }
-    }
-
-    return { success: true, contact: data }
+    return { success: true, contact: result.contact }
   } catch (error: any) {
     return { success: false, error: error.message }
   }
 }
 
-/** Soft-archive a contact: sets deleted_at, preserves all history. */
+// ─── archiveContact ───────────────────────────────────────────────────────────
+
 export async function archiveContact(contactId: string) {
   try {
     const { agentId, brokerageId, userType } = await getAgentContext()
-    const supabase = await createClient()
 
     if (!brokerageId) {
       return { success: false, error: "No brokerage context" }
     }
 
-    let query = supabase
-      .from("contacts")
-      .update({ deleted_at: new Date().toISOString() })
-      .eq("id", contactId)
-      .eq("brokerage_id", brokerageId)
+    const result = await archiveContactRecord({
+      contactId,
+      brokerageId,
+      agentId: agentId ?? undefined,
+      userType: userType ?? undefined,
+    })
 
-    if (userType === "agent" && agentId) {
-      query = query.eq("agent_id", agentId)
-    }
-
-    const { error } = await query
-
-    if (error) {
-      return { success: false, error: error.message }
-    }
-
-    return { success: true }
+    return result.success ? { success: true } : { success: false, error: result.error }
   } catch (error: any) {
     return { success: false, error: error.message }
   }
 }
 
-/** Add a note for a contact, written to the activities table. */
+// ─── addContactNote ───────────────────────────────────────────────────────────
+
 export async function addContactNote(contactId: string, noteText: string) {
   try {
     const { agentId, brokerageId, isAuthenticated } = await getAgentContext()
@@ -239,14 +279,14 @@ export async function addContactNote(contactId: string, noteText: string) {
     }
 
     const { error } = await supabase.from("activities").insert({
-      brokerage_id: brokerageId,
-      agent_id: agentId,
-      contact_id: contactId,
+      brokerage_id:  brokerageId,
+      agent_id:      agentId,     // agents.id — kernel-resolved
+      contact_id:    contactId,
       activity_type: "note",
-      title: "Note",
-      description: noteText.trim(),
-      entity_type: "contact",
-      status: "completed",
+      title:         "Note",
+      description:   noteText.trim(),
+      entity_type:   "contact",
+      status:        "completed",
     })
 
     if (error) {
