@@ -496,4 +496,22 @@ export enum KernelEvent {
   USER_INVITATION_ACCEPTED           = 'user_invitation_accepted',
   USER_DEACTIVATED                   = 'user_deactivated',
   USER_REACTIVATED                   = 'user_reactivated',
+
+  // ── Offer OS (lib/kernel/offers.ts) ─────────────────────────────────────────
+  // Buyer-side: offer creation, esign, outcome.
+  // Seller-side: analysis, comparison, counter, accept/reject.
+  // Counter history is stored in offers table via parent_offer_id + offer_type='counter'.
+  OFFER_OS_DRAFT_STARTED             = 'offer_os_draft_started',
+  OFFER_OS_CREATED                   = 'offer_os_created',
+  OFFER_OS_SENT_FOR_ESIGN            = 'offer_os_sent_for_esign',
+  OFFER_OS_ESIGN_COMPLETED           = 'offer_os_esign_completed',
+  OFFER_OS_SUBMITTED                 = 'offer_os_submitted',
+  OFFER_OS_AI_ANALYZED               = 'offer_os_ai_analyzed',
+  OFFER_OS_AI_COMPARED               = 'offer_os_ai_compared',
+  OFFER_OS_COUNTERED                 = 'offer_os_countered',
+  OFFER_OS_COUNTER_RESPONDED         = 'offer_os_counter_responded',
+  OFFER_OS_ACCEPTED                  = 'offer_os_accepted',
+  OFFER_OS_REJECTED                  = 'offer_os_rejected',
+  OFFER_OS_WITHDRAWN                 = 'offer_os_withdrawn',
+  OFFER_OS_OUTCOME_RECORDED          = 'offer_os_outcome_recorded',
 }

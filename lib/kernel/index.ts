@@ -322,6 +322,30 @@ export {
   resolveCanonicalComponentPath,
   buildIntegrityReport,
 } from "./contracts"
+
+// ─── OFFER OS ────────────────────────────────────────────────────────────────
+// Canonical offer lifecycle commands.
+// Counter history lives in the offers table (parent_offer_id + offer_type='counter').
+// offer_counters and offer_analysis tables do NOT exist.
+
+export {
+  loadOfferWorkspace,
+  loadOffersForListing,
+  loadOffersForBuyer,
+  recordOfferSubmitted,
+  recordOfferAiAnalysis,
+  compareOffersForListing,
+  issueCounterOffer,
+  respondToCounter,
+  acceptOffer,
+  rejectOffer,
+  withdrawOffer,
+  getOfferNegotiationHistory,
+} from "./offers"
+export type {
+  KernelOfferResult,
+  OfferRow,
+} from "./offers"
 export type {
   BrokerageAgentContract,
   BrokerageAgentListInput,
