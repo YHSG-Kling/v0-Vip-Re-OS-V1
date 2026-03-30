@@ -45,8 +45,6 @@ export async function generateContentIdeas(persona?: string, userId?: string, us
       Types must be one of: video, social_post, blog, tool`,
     })
 
-    console.log("[v0] Raw AI response for content ideas:", text.substring(0, 200))
-    
     const ideas = parseAIJsonResponse(text)
 
     const validUserId = userId && isValidUUID(userId) ? userId : null

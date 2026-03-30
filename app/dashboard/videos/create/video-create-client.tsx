@@ -121,7 +121,9 @@ interface VideoCreatePageProps {
 
 export default function VideoCreatePage({ heygenConfigured = true }: VideoCreatePageProps) {
   const router = useRouter()
-  const { user, brokerage } = useAuth()
+  const { user, userContext } = useAuth()
+  // useAuth does not return a `brokerage` object — derive it from userContext
+  const brokerage = userContext?.brokerageId ? { id: userContext.brokerageId } : null
   const supabase = createClient()
 
   // Wizard state

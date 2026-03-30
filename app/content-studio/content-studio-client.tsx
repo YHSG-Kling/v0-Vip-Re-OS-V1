@@ -325,9 +325,21 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
       if (contentResult?.success) {
         setNewsletterComplianceBlockers([])
         setNewsletterComplianceWarnings([])
+        // Normalize subject lines: the action returns { primary, variants } — flatten to string[]
+        const rawSubjects = (subjectResult as any)?.subjectLines
+        const subjectStrings: string[] = Array.isArray(rawSubjects)
+          ? rawSubjects
+          : rawSubjects
+            ? [
+                rawSubjects?.primary?.subject,
+                ...(rawSubjects?.variants?.map((v: any) => v.subject) ?? []),
+              ].filter(Boolean)
+            : []
         setGeneratedNewsletterContent({
-          subjects: subjectResult?.subjectLines ?? [],
-          body: contentResult.content ?? "",
+          subjects: subjectStrings,
+          body: typeof (contentResult as any).content === "string"
+            ? (contentResult as any).content
+            : "",
           topic,
         })
         toast.success("Newsletter drafted — check Social Planner")
@@ -505,9 +517,9 @@ export default function ContentStudioClient({ userId, userRole, brokerageId: bro
                   <Sparkles className="h-8 w-8 text-white" />
                 </div>
                 <div>
-                  <h1 className="text-4xl lg:text-5xl font-bold text-slate-900 mb-2">Content & Marketing Studio</h1>
+                  <h1 className="text-4xl lg:text-5xl font-bold text-slate-900 mb-2">Content Creator</h1>
                   <p className="text-slate-600 text-lg">
-                    AI-powered content creation • 80% automated, 20% your approval
+                    AI-powered video scripts, newsletters, social posts &amp; more
                   </p>
                 </div>
               </div>

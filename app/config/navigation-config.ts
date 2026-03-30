@@ -30,12 +30,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       },
       {
         id: 'content',
-        label: 'Content Studio',
+        label: 'Marketing & Content',
         icon: 'Palette',
         children: [
+          { id: 'content-studio', label: 'Content Creator', href: '/content-studio' },
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
           { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
-          { id: 'content-studio', label: 'Content Studio', href: '/content-studio' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
@@ -195,11 +195,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       },
       {
         id: 'content',
-        label: 'Content & Marketing',
+        label: 'Marketing & Content',
         icon: 'Palette',
         children: [
-          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
+          { id: 'content-studio', label: 'Content Creator', href: '/content-studio' },
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },

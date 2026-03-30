@@ -101,7 +101,8 @@ function mapStatusToColumn(status: string, heygenStatus?: string): string {
 
 export default function VideoKanbanBoard() {
   const router = useRouter()
-  const { user, brokerage } = useAuth()
+  const { user, userContext } = useAuth()
+  const brokerage = userContext?.brokerageId ? { id: userContext.brokerageId } : null
   const supabase = createClient()
 
   const [videos, setVideos] = useState<VideoProject[]>([])

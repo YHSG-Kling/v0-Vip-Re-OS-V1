@@ -75,9 +75,9 @@ export async function aiGenerateSubjectLines(params: {
   agentId: string
   brokerageId: string
   newsletterTopic: string
-  audience: "all" | "buyers" | "sellers" | "investors" | "past_clients"
-  tone: "professional" | "friendly" | "urgent" | "curious"
-  includeEmoji: boolean
+  audience?: "all" | "buyers" | "sellers" | "investors" | "past_clients"
+  tone?: "professional" | "friendly" | "urgent" | "curious"
+  includeEmoji?: boolean
 }) {
   try {
     if (!isValidUUID(params.agentId)) {
@@ -114,9 +114,9 @@ export async function aiGenerateSubjectLines(params: {
       prompt: `Generate compelling email subject lines for a real estate newsletter.
 
 Topic: ${params.newsletterTopic}
-Audience: ${params.audience}
-Tone: ${params.tone}
-Include Emoji: ${params.includeEmoji}
+Audience: ${params.audience ?? "all"}
+Tone: ${params.tone ?? "professional"}
+Include Emoji: ${params.includeEmoji ?? false}
 
 Create:
 1. A primary subject line with preheader text
@@ -143,7 +143,10 @@ Best practices:
 export async function aiWriteNewsletterContent(params: {
   agentId: string
   brokerageId: string
-  template: string
+  template?: string
+  /** Flat alias for template — content-studio-client passes this */
+  targetAudience?: string
+  tone?: string
   topic: string
   featuredListings?: any[]
   marketStats?: any
@@ -169,7 +172,7 @@ export async function aiWriteNewsletterContent(params: {
       .eq("agent_id", params.agentId)
       .maybeSingle()
 
-    const template = NEWSLETTER_TEMPLATES.find((t) => t.id === params.template) || NEWSLETTER_TEMPLATES[0]
+    const template = NEWSLETTER_TEMPLATES.find((t) => t.id === (params.template ?? "modern")) || NEWSLETTER_TEMPLATES[0]
 
     const { object: content } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
@@ -238,7 +241,20 @@ Include clear CTAs where appropriate.`,
 
     await incrementFeatureUsage("newsletter_engine", params.brokerageId, params.agentId)
 
-    return { success: true, content: { ...content, sections: brandedSections } }
+    // Build a flat markdown string from sections for simple display
+    const flatContent = brandedSections
+      .map((s: any) => `## ${s.title}\n\n${s.content}${s.ctaText ? `\n\n**${s.ctaText}**` : ""}`)
+      .join("\n\n---\n\n")
+
+    return {
+      success: true,
+      /** Flat markdown string — used by content-studio-client for display/editing */
+      content: flatContent,
+      /** Structured sections — used by newsletter campaign builder */
+      sections: brandedSections,
+      estimatedReadTime: (content as any).estimatedReadTime ?? null,
+      wordCount: (content as any).wordCount ?? null,
+    }
   } catch (error) {
     console.error("[AI Newsletter] Content error:", error)
     return handleError(error, "aiWriteNewsletterContent")

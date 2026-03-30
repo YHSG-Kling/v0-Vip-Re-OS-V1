@@ -7,8 +7,8 @@ import ContentStudioClient from "./content-studio-client"
 export const dynamic = "force-dynamic"
 
 export const metadata = {
-  title: "Content & Marketing Studio | VIP Agents AI",
-  description: "AI-powered content creation for real estate professionals",
+  title: "Content Creator | VIP Agents AI",
+  description: "AI-powered content creation: video scripts, newsletters, social posts, and more",
 }
 
 export default async function ContentStudioPage() {

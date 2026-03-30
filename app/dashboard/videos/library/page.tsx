@@ -111,7 +111,8 @@ const Loading = () => (
 function VideoLibraryContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { user, brokerage } = useAuth()
+  const { user, userContext } = useAuth()
+  const brokerage = userContext?.brokerageId ? { id: userContext.brokerageId } : null
   const supabase = createClient()
 
   // State
