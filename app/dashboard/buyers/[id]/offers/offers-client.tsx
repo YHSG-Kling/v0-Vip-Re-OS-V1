@@ -373,6 +373,13 @@ export function OffersClient({
                     )}
                   </div>
                   <div className="flex flex-col gap-1.5 flex-shrink-0">
+                    {/* Link to canonical offer detail page (/dashboard/buyers/[id]/offers/[offerId]) */}
+                    <Link
+                      href={`/dashboard/buyers/${contactId}/offers/${offer.id}`}
+                      className="rounded-md border border-border px-3 py-1 text-xs font-medium hover:bg-muted/50 transition-colors text-center"
+                    >
+                      View Details
+                    </Link>
                     {!["accepted","rejected","withdrawn"].includes(offer.status) && (
                       <button
                         onClick={() => openOutcomeModal(offer)}
