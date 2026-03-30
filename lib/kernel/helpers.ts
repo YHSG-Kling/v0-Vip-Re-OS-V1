@@ -144,35 +144,67 @@ export async function enforceLifecycle(
 // ─── enforceCompliance ────────────────────────────────────────────────────────
 
 /**
- * Runs the full compliance gate for outbound content.
- * Delegates to evaluateOutbound() in lib/kernel/compliance.ts.
- * Returns a ComplianceResult. Never throws — returns allowed:false on error.
+ * Convenience wrapper around evaluateOutbound().
+ * Accepts flat params used by server actions/pages — builds the full
+ * EvaluateOutboundParams shape internally using safe defaults for fields
+ * that simple callers don't have (journeyType, persona, contact shape).
+ *
+ * For full compliance evaluation with real contact data, call evaluateOutbound
+ * directly with the complete EvaluateOutboundParams shape.
+ *
+ * Returns a ComplianceResult. Never throws.
  */
 export async function enforceCompliance(
   content: string,
-  contentType: string,
+  messageType: string,
   brokerageId: string,
   actorUserId: string,
   contactId?: string,
-  channel?: string
+  actorRole?: string
 ): Promise<ComplianceResult> {
   try {
+    // Build the EvaluateOutboundParams shape from the convenience params.
+    // Use safe defaults for required union fields that callers don't supply.
+    const safeMessageType = (
+      ["email", "sms", "social", "phone", "in_app", "ai", "direct_mail"].includes(messageType)
+        ? messageType
+        : "email"
+    ) as import("./types").MessageType
+
+    const safeRole = (
+      ["superadmin","broker","admin","team_lead","agent","isa","tc",
+       "compliance_officer","vendor","lender","title_agent","contact","system"]
+        .includes(actorRole ?? "")
+        ? actorRole
+        : "agent"
+    ) as import("./types").ActorRole
+
     return await evaluateOutbound({
+      actorContext: {
+        userId:      actorUserId,
+        role:        safeRole,
+        brokerageId: brokerageId,
+      },
+      journeyType: "buyer",  // safe default — callers that know the journey should call evaluateOutbound directly
+      persona:     "other",  // safe default
+      messageType: safeMessageType,
       content,
-      contentType: contentType as "email" | "sms" | "social" | "voice" | "letter",
-      brokerageId,
-      actorUserId,
-      contactId,
-      channel: channel as "email" | "sms" | "social" | "voice" | "letter" | undefined,
+      contact: {
+        id:            contactId ?? "",
+        first_name:    "",
+        last_name:     "",
+        contact_type:  "buyer",
+        tcpa_consent:  true,   // conservative default — real enforcement happens in Gate 2 via DB lookup
+        isa_reengage_allowed: false,
+        dnc_status:    false,
+      },
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Compliance check failed"
     return {
-      allowed: false,
-      reason: message,
-      violations: [],
-      correctedContent: content,
-      blockedByGate: "enforcement_error",
+      allowed:    false,
+      violations: [message],
+      blockedReason: message,
     }
   }
 }

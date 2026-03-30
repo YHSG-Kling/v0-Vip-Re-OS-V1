@@ -31,7 +31,7 @@ export default async function AdminPage() {
 
   // Verify user has admin/broker/superadmin role
   const allowedRoles = ['admin', 'superadmin', 'broker', 'broker_admin']
-  if (!allowedRoles.includes(context.role)) {
+  if (!allowedRoles.includes(context.userType)) {
     redirect('/dashboard')
   }
 

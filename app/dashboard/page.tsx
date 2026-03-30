@@ -27,7 +27,7 @@ export default async function DashboardPage() {
     redirect("/login")
   }
 
-  const role = context.role || "agent"
+  const role = context.userType || "agent"
   const target = ROLE_DASHBOARD_ROUTES[role] ?? "/dashboard/agent"
   redirect(target)
 }

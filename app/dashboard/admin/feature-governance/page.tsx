@@ -14,13 +14,13 @@ export default async function FeatureGovernancePage() {
   const context = await getAgentContext()
 
   if (!context?.brokerageId) redirect("/login")
-  if (!["admin", "superadmin", "broker"].includes(context.role ?? "")) {
+  if (!["admin", "superadmin", "broker"].includes(context.userType ?? "")) {
     redirect("/dashboard")
   }
 
   const supabase = await createClient()
   const brokerageId = context.brokerageId
-  const isSuperadmin = context.role === "superadmin"
+  const isSuperadmin = context.userType === "superadmin"
 
   const now = new Date()
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)

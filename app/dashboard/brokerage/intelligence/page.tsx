@@ -42,7 +42,7 @@ function relativeTime(dateStr: string): string {
 export default async function BrokerageIntelligencePage() {
   const context = await getAgentContext()
   if (!context?.brokerageId) redirect("/login")
-  if (context.role !== "admin" && context.role !== "broker" && context.role !== "superadmin") {
+  if (context.userType !== "admin" && context.userType !== "broker" && context.userType !== "superadmin") {
     redirect("/dashboard")
   }
 

@@ -136,6 +136,39 @@ export type {
   EmitEventParams,
 } from "./helpers"
 
+// ─── IDENTITY & WRITE CONTEXT ─────────────────────────────────────────────────
+
+export {
+  resolveWriteContext,
+  requireWriteContext,
+} from "./identity"
+export type {
+  WriteContext,
+  UnauthenticatedWriteContext,
+  WriteContextResult,
+} from "./identity"
+
+// ─── OUTBOUND COMMUNICATIONS ──────────────────────────────────────────────────
+
+export { evaluateOutboundEligibility } from "./communications"
+export type {
+  EvaluateOutboundEligibilityParams,
+  OutboundEligibilityResult,
+} from "./communications"
+
+// ─── CAPABILITY PREVIEW & CONTRACT VALIDATION ────────────────────────────────
+
+export {
+  renderCapabilityPreview,
+  validateKernelContract,
+} from "./preview"
+export type {
+  CapabilityPreview,
+  RenderCapabilityPreviewParams,
+  ContractValidationRule,
+  ContractValidationResult,
+} from "./preview"
+
 // ─── UI COMPONENT PATH NORMALIZATION ─────────────────────────────────────────
 
 export {

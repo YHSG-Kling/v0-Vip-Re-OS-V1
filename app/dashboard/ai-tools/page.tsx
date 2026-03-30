@@ -18,7 +18,7 @@ export default async function AIToolsPage() {
     <AIToolsClient
       agentId={context.agentId}
       userId={user.id}
-      userRole={context.role || "agent"}
+      userRole={context.userType || "agent"}
     />
   )
 }

@@ -33,7 +33,7 @@ const TABLE_CHECKS = [
 export async function GET() {
   // Role gate — broker/admin/superadmin only
   const context = await getAgentContext()
-  if (!context?.brokerageId || !["admin", "broker", "superadmin"].includes(context.role)) {
+  if (!context?.brokerageId || !["admin", "broker", "superadmin"].includes(context.userType)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
