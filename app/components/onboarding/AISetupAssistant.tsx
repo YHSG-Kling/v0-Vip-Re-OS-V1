@@ -2,224 +2,187 @@
 
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
-import { useState, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Badge } from '@/components/ui/badge'
-import { ChevronUp, Send, AlertCircle } from 'lucide-react'
-import { saveAssistantChat, escapeAssistant } from '@/app/actions/onboarding/assistant'
-import { toast } from 'sonner'
+import { Bot, Send, X, MessageCircle } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 interface AISetupAssistantProps {
-  agentOnboardingId: string
-  currentStep: string
-  isOpen?: boolean
-  onOpenChange?: (open: boolean) => void
+  brokerageId?: string
+  agentId?: string
 }
 
-export function AISetupAssistant({
-  agentOnboardingId,
-  currentStep,
-  isOpen = true,
-  onOpenChange,
-}: AISetupAssistantProps) {
-  const [open, setOpen] = useState(isOpen)
-  const [escalating, setEscalating] = useState(false)
-  const [escalateReason, setEscalateReason] = useState('')
+export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps) {
+  const [isOpen, setIsOpen] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
     transport: new DefaultChatTransport({
       api: '/api/onboarding/assistant',
       prepareSendMessagesRequest: ({ messages }) => ({
-        body: {
-          messages,
-          currentStep,
-          agentOnboardingId,
-        },
+        body: { messages, brokerageId, agentId },
       }),
     }),
   })
 
-  // Save chat history on changes
   useEffect(() => {
-    if (messages.length > 0) {
-      saveAssistantChat(agentOnboardingId, messages, currentStep, false).catch(
-        (error) => console.error('[v0] Error saving chat:', error)
-      )
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [messages, agentOnboardingId, currentStep])
+  }, [messages])
 
-  const handleEscalate = async () => {
-    if (!escalateReason.trim()) return
-
-    setEscalating(true)
-    try {
-      await escapeAssistant(agentOnboardingId, escalateReason, currentStep)
-      setEscalating(false)
-      setEscalateReason('')
-      setOpen(false)
-      // Trigger refresh of support tickets or show confirmation
-      toast.success('Support request submitted — admin will respond within 24 hours')
-    } catch (error) {
-      console.error('[v0] Escalation failed:', error)
-      toast.error('Escalation failed — try again')
-      setEscalating(false)
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+      const maxHeight = 20 * 3 + 16
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`
     }
+  }, [input])
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!input?.trim() || isLoading) return
+    handleSubmit(e)
   }
 
-  if (!open) {
-    return (
-      <button
-        onClick={() => {
-          setOpen(true)
-          onOpenChange?.(true)
-        }}
-        className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-full bg-primary text-primary-foreground px-4 py-3 shadow-lg hover:shadow-xl transition-shadow"
-      >
-        <span className="text-sm font-medium">Setup Assistant</span>
-        <ChevronUp className="w-4 h-4" />
-      </button>
-    )
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      onSubmit(e)
+    }
   }
 
   return (
-    <div className="fixed bottom-0 right-0 w-full sm:w-96 h-96 flex flex-col bg-background border-l border-t border-border rounded-t-lg shadow-lg z-50">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-border bg-muted/30">
-        <div>
-          <h3 className="font-semibold text-sm">Setup Assistant</h3>
-          <p className="text-xs text-muted-foreground">Step: {currentStep}</p>
-        </div>
-        <button
-          onClick={() => {
-            setOpen(false)
-            onOpenChange?.(false)
-          }}
-          className="p-1 hover:bg-muted rounded"
-        >
-          <ChevronUp className="w-4 h-4" />
-        </button>
-      </div>
+    <>
+      <AnimatePresence>
+        {!isOpen && (
+          <motion.button
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 25 }}
+            onClick={() => setIsOpen(true)}
+            className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-full bg-[#1e3a5f] text-white px-4 py-3 shadow-lg hover:bg-[#2a4a73] transition-colors"
+          >
+            <Bot className="w-5 h-5" />
+            <span className="text-sm font-medium">Setup Help</span>
+          </motion.button>
+        )}
+      </AnimatePresence>
 
-      {/* Messages */}
-      <ScrollArea className="flex-1 p-4">
-        <div className="space-y-4">
-          {messages.length === 0 && (
-            <div className="text-center py-8">
-              <p className="text-sm text-muted-foreground mb-3">
-                Hi! I'm here to help you with setup. What questions do you have?
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ y: 600, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 600, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+            className="fixed bottom-6 right-6 z-50 w-[380px] h-[520px] flex flex-col bg-background border border-border rounded-2xl shadow-2xl overflow-hidden"
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-[#1e3a5f] text-white">
+              <div className="flex items-center gap-2">
+                <Bot className="w-5 h-5" />
+                <span className="font-semibold text-sm">Setup Assistant</span>
+              </div>
+              <button
+                onClick={() => setIsOpen(false)}
+                className="p-1 rounded-full hover:bg-white/10 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <ScrollArea className="flex-1 p-4" ref={scrollRef}>
+              <div className="space-y-4">
+                {messages.length === 0 && (
+                  <div className="text-center py-8 px-4">
+                    <div className="w-12 h-12 rounded-full bg-[#1e3a5f]/10 flex items-center justify-center mx-auto mb-3">
+                      <MessageCircle className="w-6 h-6 text-[#1e3a5f]" />
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      Hi! I&apos;m here to help you get set up. Ask me anything about the platform.
+                    </p>
+                  </div>
+                )}
+
+                {messages.map((message, i) => (
+                  <div
+                    key={message.id || i}
+                    className={cn(
+                      'flex',
+                      message.role === 'user' ? 'justify-end' : 'justify-start'
+                    )}
+                  >
+                    {message.role === 'assistant' && (
+                      <div className="w-7 h-7 rounded-full bg-[#1e3a5f] flex items-center justify-center mr-2 flex-shrink-0 mt-0.5">
+                        <Bot className="w-4 h-4 text-white" />
+                      </div>
+                    )}
+                    <div
+                      className={cn(
+                        'max-w-[75%] px-3 py-2 rounded-2xl text-sm',
+                        message.role === 'user'
+                          ? 'bg-[#1e3a5f] text-white rounded-br-md'
+                          : 'bg-white border border-border text-foreground rounded-bl-md shadow-sm'
+                      )}
+                    >
+                      {message.content}
+                    </div>
+                  </div>
+                ))}
+
+                {isLoading && (
+                  <div className="flex justify-start">
+                    <div className="w-7 h-7 rounded-full bg-[#1e3a5f] flex items-center justify-center mr-2 flex-shrink-0">
+                      <Bot className="w-4 h-4 text-white" />
+                    </div>
+                    <div className="bg-white border border-border px-4 py-3 rounded-2xl rounded-bl-md shadow-sm">
+                      <div className="flex gap-1">
+                        <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-pulse" style={{ animationDelay: '0ms' }} />
+                        <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-pulse" style={{ animationDelay: '150ms' }} />
+                        <div className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-pulse" style={{ animationDelay: '300ms' }} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </ScrollArea>
+
+            <div className="px-4 py-3 border-t border-border bg-muted/30">
+              <form onSubmit={onSubmit} className="flex gap-2 items-end">
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={handleInputChange}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Ask a question..."
+                  disabled={isLoading}
+                  rows={1}
+                  className="flex-1 resize-none rounded-xl border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{ minHeight: '36px', maxHeight: '76px' }}
+                />
+                <Button
+                  type="submit"
+                  size="icon"
+                  disabled={isLoading || !input?.trim()}
+                  className="h-9 w-9 rounded-xl bg-[#1e3a5f] hover:bg-[#2a4a73] flex-shrink-0"
+                >
+                  <Send className="w-4 h-4" />
+                </Button>
+              </form>
+            </div>
+
+            <div className="px-4 py-2 border-t border-border bg-muted/50">
+              <p className="text-[10px] text-muted-foreground text-center leading-tight">
+                This is AI assistance — verify important decisions with your broker
               </p>
-              <Badge variant="outline" className="text-xs">
-                {currentStep}
-              </Badge>
             </div>
-          )}
-
-          {messages.map((message, i) => (
-            <div
-              key={i}
-              className={`flex ${
-                message.role === 'user' ? 'justify-end' : 'justify-start'
-              }`}
-            >
-              <div
-                className={`max-w-xs px-3 py-2 rounded-lg text-sm ${
-                  message.role === 'user'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-muted text-foreground'
-                }`}
-              >
-                {message.content}
-              </div>
-            </div>
-          ))}
-
-          {isLoading && (
-            <div className="flex justify-start">
-              <div className="bg-muted px-3 py-2 rounded-lg">
-                <div className="flex gap-1">
-                  <div className="w-2 h-2 bg-muted-foreground rounded-full animate-pulse" />
-                  <div className="w-2 h-2 bg-muted-foreground rounded-full animate-pulse delay-100" />
-                  <div className="w-2 h-2 bg-muted-foreground rounded-full animate-pulse delay-200" />
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </ScrollArea>
-
-      {/* Escalation Panel */}
-      {escalating && (
-        <div className="px-4 py-3 border-t border-border bg-destructive/10 space-y-2">
-          <div className="flex gap-2 text-sm">
-            <AlertCircle className="w-4 h-4 text-destructive flex-shrink-0 mt-0.5" />
-            <p className="text-destructive-foreground text-xs">
-              Let us know what you need help with
-            </p>
-          </div>
-          <Input
-            placeholder="Describe the issue..."
-            value={escalateReason}
-            onChange={(e) => setEscalateReason(e.target.value)}
-            className="text-sm h-8"
-          />
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setEscalating(false)
-                setEscalateReason('')
-              }}
-              className="text-xs h-7"
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={handleEscalate}
-              disabled={!escalateReason.trim()}
-              className="text-xs h-7"
-            >
-              Submit
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Input Area */}
-      <div className="p-4 border-t border-border space-y-2">
-        {!escalating ? (
-          <>
-            <form onSubmit={handleSubmit} className="flex gap-2">
-              <Input
-                value={input}
-                onChange={handleInputChange}
-                placeholder="Ask me anything..."
-                className="text-sm h-9"
-                disabled={isLoading}
-              />
-              <Button
-                type="submit"
-                size="sm"
-                disabled={isLoading || !input.trim()}
-                className="h-9 px-3"
-              >
-                <Send className="w-4 h-4" />
-              </Button>
-            </form>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setEscalating(true)}
-              className="w-full text-xs h-8"
-            >
-              Escalate to Support
-            </Button>
-          </>
-        ) : null}
-      </div>
-    </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   )
 }

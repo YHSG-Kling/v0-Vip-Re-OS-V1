@@ -135,3 +135,44 @@ export type {
   PageCapability,
   EmitEventParams,
 } from "./helpers"
+
+// ─── UI COMPONENT PATH NORMALIZATION ─────────────────────────────────────────
+
+export {
+  CANONICAL_COMPONENT_ROOT,
+  LEGACY_COMPONENT_ROOT,
+  CANONICAL_COMPONENT_MAP,
+  SURVIVOR_RULE,
+  IMPORT_NORMALIZATION_RULES,
+} from "./routes"
+export type {
+  CanonicalComponentPath,
+  ComponentAuditStatus,
+  ComponentAuditEntry,
+  ComponentAuditResult,
+  SurvivorRule,
+  ImportNormalizationRule,
+} from "./routes"
+
+export {
+  resolveCanonicalComponentPath,
+  buildIntegrityReport,
+} from "./contracts"
+export type {
+  BrokerageAgentContract,
+  BrokerageAgentListInput,
+  BrokerageRevenueInput,
+  BrokerageComplianceInput,
+  CoordinatorTransactionContract,
+  CoordinatorTransactionListInput,
+  CoordinatorDeadlineContract,
+  DeadlineTrackingInput,
+  CoordinatorMilestoneContract,
+  MilestoneQueueInput,
+  CoordinatorHealthScoreContract,
+  HealthOverviewInput,
+  ComponentImportAuditInput,
+  ComponentImportAuditOutput,
+  AuditComponentImports,
+  UiSurfaceIntegrityReport,
+} from "./contracts"
