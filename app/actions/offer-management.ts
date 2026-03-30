@@ -311,7 +311,7 @@ Provide: 1) RANKED LIST with reasoning 2) COMPARISON MATRIX 3) OVERALL RECOMMEND
 
 // ─── NET SHEET ────────────────────────────────────────────────────────────────
 
-export function calculateNetSheet(params: {
+export async function calculateNetSheet(params: {
   purchase_price:     number
   earnest_money:      number
   agent_commission:   number   // decimal 0.06 = 6%
