@@ -40,7 +40,7 @@ export async function determinePortalView(
       .from("contacts")
       .select("contact_type, buyer_stage, agent_id")
       .eq("id", contactId)
-      .single()
+      .maybeSingle()
 
     if (contactError || !contact) {
       console.error("[Portal] Contact not found:", contactId)

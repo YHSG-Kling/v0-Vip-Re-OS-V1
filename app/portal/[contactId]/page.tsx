@@ -58,7 +58,7 @@ export default async function PortalHomePage({
     .from("contacts")
     .select("id, first_name, last_name, name, contact_type, buyer_stage, agent_id, contact_persona")
     .eq("id", contactId)
-    .single()
+    .maybeSingle()
 
   if (!contact || contactError) {
     redirect("/portal?error=contact_not_found")
