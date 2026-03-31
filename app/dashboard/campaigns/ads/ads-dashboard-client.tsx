@@ -433,7 +433,7 @@ export function AdsDashboardClient({
 
   const handleSyncAudience = async (audienceId: string) => {
     setIsSyncing(audienceId)
-    const result = await syncAudience(userId, audienceId, brokerageId)
+    const result = await syncAudience(userId, { brokerageId, agentId: userId, audienceId })
     if (result.success) {
       router.refresh()
     } else {

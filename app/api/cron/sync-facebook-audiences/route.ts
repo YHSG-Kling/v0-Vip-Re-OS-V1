@@ -89,8 +89,11 @@ export async function GET(request: NextRequest) {
 
         const syncResult = await syncAudience(
           "system", // CRON uses system user
-          audience.id,
-          audience.brokerage_id
+          {
+            brokerageId: audience.brokerage_id,
+            agentId: "system",
+            audienceId: audience.id,
+          }
         )
 
         if (syncResult.success) {
