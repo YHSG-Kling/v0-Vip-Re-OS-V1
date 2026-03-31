@@ -58,12 +58,13 @@ const STATE_FORMS: Record<string, { required: string[]; optional: string[]; disc
 
 interface ListingIntakeData {
   agentId: string
+  brokerageId: string
   propertyAddress: string
   city: string
   state: string
   zipCode: string
   propertyType: "single_family" | "condo" | "townhouse" | "multi_family" | "land" | "commercial"
-  sellerId: string
+  sellerId?: string | null
   listPrice?: number
   propertyDetails?: any
 }
@@ -609,8 +610,8 @@ Provide a 1-2 sentence recommendation for the agent.`,
 // ============================================
 export async function createListing(params: ListingIntakeData) {
   try {
-    if (!isValidUUID(params.agentId) || !isValidUUID(params.sellerId)) {
-      return { success: false, error: "Invalid agent or seller ID" }
+    if (!isValidUUID(params.agentId)) {
+      return { success: false, error: "Invalid agent ID" }
     }
 
     const supabase = await createClient()
@@ -620,39 +621,40 @@ export async function createListing(params: ListingIntakeData) {
       .from("listings")
       .insert({
         agent_id:          params.agentId,
-        seller_contact_id: params.sellerId,      // live FK (not seller_id)
+        brokerage_id:      params.brokerageId,
+        seller_contact_id: params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null,
         address:           params.propertyAddress,
         city:              params.city,
         state:             params.state,
-        zip:               params.zipCode,        // live column (not zip_code)
+        zip:               params.zipCode,
         property_type:     params.propertyType,
-        list_price:        params.listPrice,      // live column (not price)
+        list_price:        params.listPrice ?? null,
         bedrooms:          params.propertyDetails?.beds,
         bathrooms:         params.propertyDetails?.baths,
         sqft:              params.propertyDetails?.sqft,
-        // year_built, lot_size, ai_enriched, enrichment_data do NOT exist in schema
         status:            "draft",
         current_stage:     "LEAD",
         lifecycle_stage:   "LEAD",
       })
       .select()
-      .single()
+      .maybeSingle()
 
-    if (error) throw error
+    if (error || !listing) throw error ?? new Error("Failed to create listing")
 
     // Create transaction record — seller_contact_id is the FK in transactions
     const { data: transaction } = await supabase
       .from("transactions")
       .insert({
         agent_id:          params.agentId,
-        seller_contact_id: params.sellerId,
+        brokerage_id:      params.brokerageId,
+        seller_contact_id: params.sellerId && isValidUUID(params.sellerId) ? params.sellerId : null,
         listing_id:        listing.id,
         transaction_type:  "seller_side",
         status:            "pre_listing",
         property_address:  params.propertyAddress,
       })
       .select()
-      .single()
+      .maybeSingle()
 
     // Create Dotloop loop
     const dotloopResult = await createOrPullDotloop({

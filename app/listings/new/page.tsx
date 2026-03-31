@@ -28,6 +28,7 @@ export default function NewListingPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isEnriching, setIsEnriching] = useState(false)
   const [enrichedData, setEnrichedData] = useState<any>(null)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   
   const [formData, setFormData] = useState({
     address: "",
@@ -46,13 +47,29 @@ export default function NewListingPage() {
     }
   }, [authLoading, user, router])
 
+  // Role-aware check: broker/admin with no agentId use their userId
+  if (!authLoading && userContext && !userContext.brokerageId) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
+        <h2 className="text-xl font-semibold">Account Setup Incomplete</h2>
+        <p className="text-muted-foreground text-sm text-center max-w-sm">
+          Your account is not linked to a brokerage. Contact your admin to complete setup.
+        </p>
+        <Link href="/dashboard/onboarding" className="text-blue-600 underline text-sm">
+          Go to Setup
+        </Link>
+      </div>
+    )
+  }
+
   const handleEnrichProperty = async () => {
-    if (!formData.address || !userContext?.agentId) return
+    const effectiveAgentId = userContext?.agentId ?? userContext?.id
+    if (!formData.address || !effectiveAgentId) return
     
     setIsEnriching(true)
     try {
       const fullAddress = `${formData.address}, ${formData.city}, ${formData.state} ${formData.zipCode}`
-      const result = await aiEnrichPropertyData(fullAddress, userContext.agentId)
+      const result = await aiEnrichPropertyData(fullAddress, effectiveAgentId)
       if (result.success && result.data) {
         setEnrichedData(result.data)
       }
@@ -65,27 +82,35 @@ export default function NewListingPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!userContext?.agentId) return
+    if (!userContext?.brokerageId) {
+      setSubmitError("Account not linked to a brokerage")
+      return
+    }
 
+    const effectiveAgentId = userContext.agentId ?? userContext.id
     setIsSubmitting(true)
+    setSubmitError(null)
     try {
       const result = await createListing({
-        agentId: userContext.agentId,
+        agentId: effectiveAgentId,
+        brokerageId: userContext.brokerageId,
         propertyAddress: formData.address,
         city: formData.city,
         state: formData.state,
         zipCode: formData.zipCode,
         propertyType: formData.propertyType as any,
-        sellerId: formData.sellerId || userContext.agentId, // Fallback to agent if no seller
+        sellerId: formData.sellerId || null, // null is fine — seller is optional
         listPrice: formData.listPrice ? parseInt(formData.listPrice) : undefined,
         propertyDetails: enrichedData,
       })
 
       if (result.success && result.listing) {
-        router.push(`/listings/${result.listing.id}`)
+        router.push(`/dashboard/listings/${result.listing.id}/lifecycle`)
+      } else {
+        setSubmitError(result.error ?? "Failed to create listing")
       }
-    } catch (error) {
-      console.error("Error creating listing:", error)
+    } catch (err: any) {
+      setSubmitError(err.message ?? "Unexpected error — please try again")
     } finally {
       setIsSubmitting(false)
     }
@@ -286,6 +311,13 @@ export default function NewListingPage() {
               )}
             </Button>
           </div>
+
+          {/* Error message */}
+          {submitError && (
+            <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm text-red-800">
+              {submitError}
+            </div>
+          )}
         </form>
       </div>
     </div>

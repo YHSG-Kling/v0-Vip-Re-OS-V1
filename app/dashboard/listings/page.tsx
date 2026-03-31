@@ -103,7 +103,7 @@ export default async function ListingsPage({
     <div className="space-y-6">
       {/* Command Strip — wraps cleanly on mobile */}
       <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 py-3 border-b border-border bg-muted/30">
-        <Link href="/dashboard/listings?action=new">
+        <Link href="/listings/new">
           <Button size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <Plus className="h-4 w-4" />
             New Listing
