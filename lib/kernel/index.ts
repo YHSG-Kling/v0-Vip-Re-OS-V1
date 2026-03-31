@@ -504,6 +504,45 @@ export type {
   CallContext,
 } from "./ai-isa"
 
+// ─── VENDOR / PARTNER OS ─────────────────────────────────────────────────────
+// Canonical Vendor kernel commands — all record creation, assignment, status
+// transitions, and deliverable attachment flow through these commands.
+// Business rules:
+//   • vendors (marketplace) and vendor_directory (curated) are SEPARATE tables
+//   • vendor_bookings.listing_id = listing-level assignments
+//   • vendor_assignments + vendor_jobs = transaction-level assignments
+//   • Status transitions enforced: booked→confirmed→completed | any→cancelled|no_show
+//   • Every write emits a KernelEvent via lifecycle_events
+export {
+  loadVendorWorkspace,
+  createVendorRecord,
+  updateVendorRecord,
+  assignVendorToListing,
+  assignVendorToTransaction,
+  updateVendorBookingStatus,
+  attachVendorDeliverable,
+  loadPartnerDirectory,
+} from "./vendors"
+export type {
+  VendorActorContext,
+  KernelVendorResult,
+  VendorWorkspaceData,
+  VendorRow,
+  VendorDirectoryRow,
+  VendorBookingRow,
+  VendorAssignmentRow,
+  PartnerDirectoryData,
+  ReferralPartnerRow,
+  LoadVendorWorkspaceInput,
+  CreateVendorRecordInput,
+  UpdateVendorRecordInput,
+  AssignVendorToListingInput,
+  AssignVendorToTransactionInput,
+  UpdateVendorBookingStatusInput,
+  AttachVendorDeliverableInput,
+  LoadPartnerDirectoryInput,
+} from "./vendors"
+
 export type {
   BrokerageAgentContract,
   BrokerageAgentListInput,

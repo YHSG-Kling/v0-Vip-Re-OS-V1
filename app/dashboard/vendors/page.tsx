@@ -48,6 +48,7 @@ export default async function VendorsPage() {
     transactions,
     assignedVendors,
     preferredVendors,
+    deliverables,
   ] = await Promise.all([
     searchVendors({ limit: 100 }),
     getAllVendorBookings(20),
@@ -67,6 +68,15 @@ export default async function VendorsPage() {
       .select("id, name, phone, email, website, category, notes, rating, brokerage_id")
       .eq("brokerage_id", profile.brokerage_id)
       .order("rating", { ascending: false, nullsFirst: false })
+      .then(r => r.data || []),
+    // Vendor deliverables — client_documents with doc_type = 'vendor_deliverable'
+    supabase
+      .from("client_documents")
+      .select("id, doc_name, file_url, notes, created_at, metadata")
+      .eq("brokerage_id", profile.brokerage_id)
+      .eq("doc_type", "vendor_deliverable")
+      .order("created_at", { ascending: false })
+      .limit(100)
       .then(r => r.data || []),
   ])
 
@@ -141,6 +151,7 @@ export default async function VendorsPage() {
               serviceTypes={serviceTypes}
               brokerageId={profile.brokerage_id}
               userRole={profile.user_type ?? "agent"}
+              deliverables={deliverables}
             />
           </Suspense>
         </TabsContent>

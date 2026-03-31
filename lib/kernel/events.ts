@@ -409,6 +409,11 @@ export enum KernelEvent {
   VENDOR_BOOKING_COMPLETED           = 'vendor_booking_completed',
   VENDOR_REVIEW_SUBMITTED            = 'vendor_review_submitted',
   VENDOR_ASSIGNED_TO_TRANSACTION     = 'vendor_assigned_to_transaction',
+  // Kernel-owned vendor commands (lib/kernel/vendors.ts)
+  VENDOR_RECORD_CREATED              = 'vendor_record_created',
+  VENDOR_RECORD_UPDATED              = 'vendor_record_updated',
+  VENDOR_ASSIGNED_TO_LISTING         = 'vendor_assigned_to_listing',
+  VENDOR_DELIVERABLE_ATTACHED        = 'vendor_deliverable_attached',
 
   // ── Layer 13 — Voice ────────────────────────────────────────────────────────
   VOICE_COMMAND_RECEIVED             = 'voice_command_received',
