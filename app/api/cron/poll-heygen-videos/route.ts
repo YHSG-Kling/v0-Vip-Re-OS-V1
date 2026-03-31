@@ -1,5 +1,11 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 const HEYGEN_API_BASE = "https://api.heygen.com/v2"
 const MAX_RETRIES = 3
@@ -9,13 +15,26 @@ export const runtime = "nodejs"
 
 // Run every 5 minutes to check HeyGen video status
 export async function GET(request: NextRequest) {
-  try {
-    // Verify cron secret
-    const authHeader = request.headers.get("authorization")
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+  // Verify cron secret
+  const authHeader = request.headers.get("authorization")
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
 
+  const contextResult = await createCronRunContextAction({
+    cron_name: "poll-heygen-videos",
+    cron_path: "/app/api/cron/poll-heygen-videos/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[PollHeygenVideos] Failed to record cron start:", startRecordResult.error)
+  }
+
+  try {
     const supabase = await createClient()
     const heygenApiKey = process.env.HEYGEN_API_KEY
 
@@ -195,13 +214,21 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: results.processed,
+      output_count: results.completed,
+      metadata: results,
+    })
+
     return NextResponse.json({
       success: true,
       timestamp: new Date().toISOString(),
       results,
     })
   } catch (error: any) {
-    console.error("[v0] HeyGen polling cron error:", error)
-    return NextResponse.json({ error: "Polling failed", details: error.message }, { status: 500 })
+    console.error("[PollHeygenVideos] Cron error:", error)
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    return NextResponse.json({ error: "Polling failed", details: error.message, context_id: contextId }, { status: 500 })
   }
 }

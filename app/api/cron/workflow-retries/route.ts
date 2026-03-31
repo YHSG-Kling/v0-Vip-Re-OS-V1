@@ -1,15 +1,34 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { WorkflowOrchestrator } from "@/lib/orchestrator"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export async function GET(request: Request) {
-  try {
-    // Verify cron secret
-    const authHeader = request.headers.get("authorization")
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+  // Verify cron secret
+  const authHeader = request.headers.get("authorization")
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
 
+  const contextResult = await createCronRunContextAction({
+    cron_name: "workflow-retries",
+    cron_path: "/app/api/cron/workflow-retries/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[WorkflowRetries] Failed to record cron start:", startRecordResult.error)
+  }
+
+  try {
     const supabase = await createClient()
 
     // Verify schema exists before running — tables may not be created in production yet
@@ -19,6 +38,11 @@ export async function GET(request: Request) {
       .limit(1)
 
     if (schemaCheck?.code === "42P01" || schemaCheck?.message?.includes("does not exist")) {
+      await recordCronSuccessAction({
+        context_id: contextId,
+        records_processed: 0,
+        metadata: { message: "Workflow tables not yet created" },
+      })
       return NextResponse.json({
         ok: false,
         message: "Workflow tables not yet created. Run scripts/220-create-workflow-orchestration.sql",
@@ -78,6 +102,13 @@ export async function GET(request: Request) {
       }
     }
 
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: processed,
+      output_count: succeeded,
+      metadata: { processed, succeeded, failed },
+    })
+
     return NextResponse.json({
       message: "Workflow retries processed",
       processed,
@@ -86,6 +117,11 @@ export async function GET(request: Request) {
     })
   } catch (error: any) {
     console.error("[Cron] Workflow retry processing failed:", error)
-    return NextResponse.json({ error: error.message }, { status: 500 })
+    await recordCronFailureAction({
+      context_id: contextId,
+      error,
+      stage: "main-processing",
+    })
+    return NextResponse.json({ error: error.message, context_id: contextId }, { status: 500 })
   }
 }

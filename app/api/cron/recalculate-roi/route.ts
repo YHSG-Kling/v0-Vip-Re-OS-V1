@@ -4,6 +4,12 @@ import {
   recalculateCampaignROI,
   recalculateChannelPerformance,
 } from "@/lib/campaigns/roi-calculator"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 /**
  * CRON — Recalculate ROI
@@ -24,14 +30,24 @@ export const runtime = "nodejs"
 export const maxDuration = 300 // 5 minutes max
 
 export async function GET(request: NextRequest) {
-  // ══════════════════════════════════════════════════════════════════════════
-  // Verify CRON_SECRET
-  // ══════════════════════════════════════════════════════════════════════════
   const authHeader = request.headers.get("authorization")
   const cronSecret = process.env.CRON_SECRET
 
   if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const contextResult = await createCronRunContextAction({
+    cron_name: "recalculate-roi",
+    cron_path: "/app/api/cron/recalculate-roi/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[RecalculateROI] Failed to record cron start:", startRecordResult.error)
   }
 
   const supabase = createServiceClient()
@@ -64,6 +80,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (!campaigns || campaigns.length === 0) {
+      await recordCronSuccessAction({ context_id: contextId, records_processed: 0, metadata: { message: "No recently active campaigns to process" } })
       return NextResponse.json({
         success: true,
         message: "No recently active campaigns to process",
@@ -137,6 +154,13 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: results.campaigns_processed,
+      output_count: results.channels_updated,
+      metadata: results,
+    })
+
     return NextResponse.json({
       success: true,
       message: `Processed ${results.campaigns_processed} campaigns, updated ${results.channels_updated} channel metrics`,
@@ -144,12 +168,9 @@ export async function GET(request: NextRequest) {
     })
   } catch (error: any) {
     console.error("[Cron] recalculate-roi error:", error)
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
     return NextResponse.json(
-      {
-        success: false,
-        error: error.message,
-        results,
-      },
+      { success: false, error: error.message, results, context_id: contextId },
       { status: 500 }
     )
   }

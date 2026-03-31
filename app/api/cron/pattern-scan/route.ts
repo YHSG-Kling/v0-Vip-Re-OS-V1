@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { scanEntityForPatterns } from "@/lib/intelligence/pattern-detector"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 // Schedule: every 4 hours (0 */4 * * *)
 // Batch limit: 50 contacts + 50 listings per run to control AI costs
@@ -12,6 +18,19 @@ export async function GET(request: Request) {
 
   if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const contextResult = await createCronRunContextAction({
+    cron_name: "pattern-scan",
+    cron_path: "/app/api/cron/pattern-scan/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[PatternScan] Failed to record cron start:", startRecordResult.error)
   }
 
   const supabase = createServiceClient()
@@ -84,16 +103,25 @@ export async function GET(request: Request) {
 
     const duration = Date.now() - startTime
 
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: results.contacts_scanned + results.listings_scanned,
+      output_count: results.patterns_detected,
+      metadata: { ...results, duration_ms: duration },
+    })
+
     return NextResponse.json({
       success: true,
       ...results,
       duration_ms: duration,
     })
   } catch (error) {
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
     return NextResponse.json(
       {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
+        context_id: contextId,
         ...results,
       },
       { status: 500 }
