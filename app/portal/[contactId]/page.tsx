@@ -41,7 +41,9 @@ export default async function PortalHomePage({
   const supabase = await createClient()
 
   // Determine portal view from kernel
-  const portalView = await determinePortalView(supabase, contactId)
+  const portalViewOutput = await determinePortalView(supabase, { contactId })
+  const portalView = portalViewOutput.view
+  const isPropertyOwner = portalViewOutput.isPropertyOwner
 
   // Render seller home if seller view
   if (portalView === "seller") {

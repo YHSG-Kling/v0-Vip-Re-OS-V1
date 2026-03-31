@@ -9,6 +9,20 @@ import { processKernelEvent } from "./notification-engine"
 import { KernelEvent } from "./events"
 import type { AgeSegment } from "./education"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import {
+  PortalViewOutput,
+  PortalModulesOutput,
+  PortalVisibilityOutput,
+  NavigationBuildOutput,
+  PORTAL_VALIDATION_RULES,
+  PORTAL_ERRORS,
+  createPortalSuccess,
+  createPortalErrorResponse,
+  type PortalViewInput,
+  type PortalModulesInput,
+  type PortalVisibilityInput,
+  type NavigationBuildInput,
+} from "./portal-contracts"
 
 // ─── PORTAL VIEW TYPES ────────────────────────────────────────────────────────
 
@@ -23,7 +37,11 @@ export interface NavItem {
 // ─── PORTAL SHELL KERNEL FUNCTIONS ────────────────────────────────────────────
 
 /**
- * Determines the portal view type for a contact.
+ * KERNEL CONTRACT: Determines the portal view type for a contact.
+ * 
+ * Input: PortalViewInput { contactId }
+ * Output: PortalViewOutput { view, reason, buyerStage, isPropertyOwner }
+ * 
  * Decision logic:
  * 1. If buyer_stage = 'BUYER_LIFETIME' → 'lifetime'
  * 2. Else if contact has closed transaction AND no active transaction → 'lifetime'
@@ -32,9 +50,21 @@ export interface NavItem {
  */
 export async function determinePortalView(
   supabase: SupabaseClient,
-  contactId: string
-): Promise<PortalView> {
+  input: PortalViewInput
+): Promise<PortalViewOutput> {
   try {
+    const { contactId, overrideView } = input
+
+    // Override for testing/admin
+    if (overrideView) {
+      return {
+        view: overrideView,
+        reason: 'ADMIN_OVERRIDE',
+        buyerStage: 'UNKNOWN',
+        isPropertyOwner: false,
+      }
+    }
+
     // Fetch contact with related data
     const { data: contact, error: contactError } = await supabase
       .from("contacts")
@@ -44,12 +74,22 @@ export async function determinePortalView(
 
     if (contactError || !contact) {
       console.error("[Portal] Contact not found:", contactId)
-      return 'buyer' // Default fallback
+      return {
+        view: 'buyer',
+        reason: 'DEFAULT_FALLBACK',
+        buyerStage: 'UNKNOWN',
+        isPropertyOwner: false,
+      }
     }
 
     // Check for lifetime status via buyer_stage
     if (contact.buyer_stage === 'BUYER_LIFETIME') {
-      return 'lifetime'
+      return {
+        view: 'lifetime',
+        reason: 'BUYER_LIFETIME_STATUS',
+        buyerStage: contact.buyer_stage,
+        isPropertyOwner: true,
+      }
     }
 
     // Check for closed transaction with no active transaction
@@ -66,65 +106,141 @@ export async function determinePortalView(
     )
 
     if (hasClosedTransaction && !hasActiveTransaction) {
-      return 'lifetime'
+      return {
+        view: 'lifetime',
+        reason: 'CLOSED_TRANSACTION_NO_ACTIVE',
+        buyerStage: contact.buyer_stage,
+        isPropertyOwner: true,
+      }
     }
 
     // Check for seller status
     if (contact.contact_type === 'seller') {
-      return 'seller'
+      return {
+        view: 'seller',
+        reason: 'SELLER_CONTACT_TYPE',
+        buyerStage: contact.buyer_stage,
+        isPropertyOwner: false,
+      }
     }
 
     // Check for active listing
     const { data: listings } = await supabase
       .from("listings")
-      .select("id, listing_status")
-      .eq("contact_id", contactId)
-      .in("listing_status", ["active", "pending", "coming_soon"])
+      .select("id, status")
+      .eq("agent_id", contact.agent_id)
+      .in("status", ["active", "pending", "coming_soon"])
 
     if (listings && listings.length > 0) {
-      return 'seller'
+      return {
+        view: 'seller',
+        reason: 'ACTIVE_LISTING',
+        buyerStage: contact.buyer_stage,
+        isPropertyOwner: false,
+      }
     }
 
-    return 'buyer'
+    return {
+      view: 'buyer',
+      reason: 'DEFAULT_BUYER',
+      buyerStage: contact.buyer_stage,
+      isPropertyOwner: false,
+    }
   } catch (error) {
     console.error("[Portal] Error determining portal view:", error)
-    return 'buyer' // Default fallback on error
+    return {
+      view: 'buyer',
+      reason: 'ERROR_FALLBACK',
+      buyerStage: 'UNKNOWN',
+      isPropertyOwner: false,
+    }
   }
 }
 
 /**
- * Determines which portal modules are enabled for a contact.
+ * KERNEL CONTRACT: Determines which portal modules are enabled for a contact.
+ * 
+ * Input: PortalModulesInput { contactId, view, isPropertyOwner? }
+ * Output: PortalModulesOutput { modules, journey, messages, ... }
+ * 
  * Reads from contact_portal_modules table if available.
  * Returns all modules enabled as graceful fallback if table not accessible.
  */
 export async function determinePortalModules(
   supabase: SupabaseClient,
-  contactId: string
-): Promise<Record<string, boolean>> {
+  input: PortalModulesInput
+): Promise<PortalModulesOutput> {
   try {
+    const { contactId, view, isPropertyOwner } = input
+
+    // Fetch module overrides from database
     const { data: modules, error } = await supabase
       .from("contact_portal_modules")
       .select("module_key, is_enabled")
       .eq("contact_id", contactId)
 
-    if (error) {
-      // Table may not exist yet — graceful fallback
-      console.warn("[Portal] contact_portal_modules not accessible, enabling all modules")
-      return {}
+    // Build default module map based on view type
+    const defaultModules: Record<string, boolean> = {
+      journey: true,
+      messages: true,
+      documents: true,
+      buyer_smart_search: view === 'buyer',
+      seller_listing_actions: view === 'seller',
+      offers: view === 'buyer' || view === 'lifetime',
+      showings: view === 'buyer' || view === 'lifetime',
+      properties: view === 'buyer',
+      calendar: view === 'buyer' || view === 'lifetime',
+      education: view === 'buyer',
     }
 
-    if (!modules || modules.length === 0) {
-      return {} // No specific overrides, all enabled by default
+    // Merge database overrides if available
+    if (!error && modules && modules.length > 0) {
+      for (const m of modules) {
+        defaultModules[m.module_key] = m.is_enabled
+      }
     }
 
-    const moduleMap: Record<string, boolean> = {}
-    for (const m of modules) {
-      moduleMap[m.module_key] = m.is_enabled
+    return {
+      modules: defaultModules,
+      journey: defaultModules.journey,
+      messages: defaultModules.messages,
+      documents: defaultModules.documents,
+      buyer_smart_search: defaultModules.buyer_smart_search,
+      seller_listing_actions: defaultModules.seller_listing_actions,
+      offers: defaultModules.offers,
+      showings: defaultModules.showings,
+      properties: defaultModules.properties,
+      calendar: defaultModules.calendar,
+      education: defaultModules.education,
+      reason: error ? 'DEFAULT_FALLBACK' : 'DATABASE_OVERRIDE',
     }
-    return moduleMap
   } catch (error) {
     console.warn("[Portal] Error fetching portal modules:", error)
-    return {} // All enabled by default
+    return {
+      modules: {
+        journey: true,
+        messages: true,
+        documents: true,
+        buyer_smart_search: input.view === 'buyer',
+        seller_listing_actions: input.view === 'seller',
+        offers: true,
+        showings: true,
+        properties: input.view === 'buyer',
+        calendar: true,
+        education: input.view === 'buyer',
+      },
+      journey: true,
+      messages: true,
+      documents: true,
+      buyer_smart_search: input.view === 'buyer',
+      seller_listing_actions: input.view === 'seller',
+      offers: true,
+      showings: true,
+      properties: input.view === 'buyer',
+      calendar: true,
+      education: input.view === 'buyer',
+      reason: 'ERROR_FALLBACK',
+    }
   }
 }
 
