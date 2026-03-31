@@ -80,6 +80,43 @@ export default async function AgentFinancialsPage() {
   const existingBudget = null
   const processedEarningsHistory = earningsHistory ?? []
 
+  // Helper function to process monthly trend data
+  function processMonthlyTrend(data: any[]) {
+    const monthlyMap = new Map<string, { gross: number; net: number }>()
+
+    data.forEach((record) => {
+      const date = new Date(record.paid_date)
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
+      
+      if (!monthlyMap.has(monthKey)) {
+        monthlyMap.set(monthKey, { gross: 0, net: 0 })
+      }
+      
+      const current = monthlyMap.get(monthKey)!
+      current.gross += record.gross_commission || 0
+      current.net += record.agent_net || 0
+    })
+
+    // Get last 12 months
+    const result = []
+    const now = new Date()
+    
+    for (let i = 11; i >= 0; i--) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
+      const monthLabel = date.toLocaleDateString("en-US", { month: "short" })
+      
+      const values = monthlyMap.get(monthKey) || { gross: 0, net: 0 }
+      result.push({
+        month: monthLabel,
+        gross: values.gross,
+        net: values.net,
+      })
+    }
+    
+    return result
+  }
+
   // Calculate expense totals by category (same logic as before)
   const expensesByCategory = businessExpenses.reduce((acc: Record<string, number>, expense: any) => {
     const category = expense.category || "Other"
@@ -446,41 +483,4 @@ export default async function AgentFinancialsPage() {
       </AgentFinancialsClient>
     </div>
   )
-}
-
-// Helper function to process monthly trend data
-function processMonthlyTrend(data: any[]) {
-  const monthlyMap = new Map<string, { gross: number; net: number }>()
-
-  data.forEach((record) => {
-    const date = new Date(record.paid_date)
-    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
-    
-    if (!monthlyMap.has(monthKey)) {
-      monthlyMap.set(monthKey, { gross: 0, net: 0 })
-    }
-    
-    const current = monthlyMap.get(monthKey)!
-    current.gross += record.gross_commission || 0
-    current.net += record.agent_net || 0
-  })
-
-  // Get last 12 months
-  const result = []
-  const now = new Date()
-  
-  for (let i = 11; i >= 0; i--) {
-    const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
-    const monthLabel = date.toLocaleDateString("en-US", { month: "short" })
-    
-    const values = monthlyMap.get(monthKey) || { gross: 0, net: 0 }
-    result.push({
-      month: monthLabel,
-      gross: values.gross,
-      net: values.net,
-    })
-  }
-
-  return result
 }
