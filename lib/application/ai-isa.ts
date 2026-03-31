@@ -137,10 +137,11 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     leadId: contactId,
     agentId: loginId,
     brokerageId,
+    callPurpose: 'isa_qualification',
   })
 
   if (ctx.blocked) {
-    return { success: false, error: `Call blocked: ${ctx.blockedReason ?? "TCPA or call stop flag"}` }
+    return { success: false, error: `Call blocked: ${ctx.blockReason ?? "TCPA or call stop flag"}` }
   }
 
   // Assemble assistantOverrides from buildCallContext output
@@ -163,12 +164,12 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
   }
 
   // Wire ElevenLabs voice config when present on the identity profile
-  if (ctx.voiceConfig?.elevenlabs_voice_id) {
+  if (ctx.voiceConfig?.voiceId) {
     assistantOverrides.voice = {
-      provider:        "elevenlabs",
-      voiceId:         ctx.voiceConfig.elevenlabs_voice_id,
-      stability:       ctx.voiceConfig.voice_stability        ?? undefined,
-      similarityBoost: ctx.voiceConfig.voice_similarity_boost ?? undefined,
+      provider:        (ctx.voiceConfig.provider as "elevenlabs" | "playht" | "deepgram" | "openai" | "azure") ?? "elevenlabs",
+      voiceId:         ctx.voiceConfig.voiceId,
+      stability:       ctx.voiceConfig.stability        ?? undefined,
+      similarityBoost: ctx.voiceConfig.similarityBoost ?? undefined,
     }
   }
 

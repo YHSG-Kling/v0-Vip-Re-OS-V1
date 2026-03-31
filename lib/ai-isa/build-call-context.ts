@@ -1,4 +1,6 @@
-'use server'
+// lib/ai-isa/build-call-context.ts
+// Library service layer — NOT a Server Action entrypoint.
+// Safe to import from both lib/ and app/actions/.
 
 import { createServiceClient } from '@/lib/supabase/service'
 import { loadBrandVoicePrompt } from '@/lib/ai-isa/brand-voice-prompt'
