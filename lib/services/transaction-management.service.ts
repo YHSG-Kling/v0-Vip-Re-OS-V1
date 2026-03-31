@@ -74,7 +74,7 @@ export async function createTransaction(params: CreateTransactionParams) {
       created_at: new Date().toISOString(),
     }
 
-    const { data, error } = await supabase.from("transactions").insert(transactionData).select().single()
+    const { data, error } = await supabase.from("transactions").insert(transactionData).select().maybeSingle()
 
     if (error) throw error
 

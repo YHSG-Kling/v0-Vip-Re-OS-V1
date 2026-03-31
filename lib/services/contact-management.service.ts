@@ -90,7 +90,7 @@ export async function createContact(params: CreateContactParams) {
         created_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) {
       throw new DatabaseError("Failed to create contact", error)
