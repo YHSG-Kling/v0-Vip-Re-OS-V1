@@ -27,7 +27,6 @@ import { AgentFinancialIntelligence } from "./components/agent-financial-intelli
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
 import { AgentStaleContactsPanel } from "./components/agent-stale-contacts-panel"
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
-import { ApprovalsBanner } from "@/app/components/shared/compliance"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
 import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
 
