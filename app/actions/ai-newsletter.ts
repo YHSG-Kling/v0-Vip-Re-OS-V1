@@ -413,29 +413,43 @@ export async function createNewsletterCampaign(params: {
 
     const supabase = await createClient()
 
+    // STEP 1: Resolve agents.id from users.id (required for agent_id FK)
+    let agentsTableId: string | null = null
+    if (params.agentId) {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", params.agentId)
+        .maybeSingle()
+      agentsTableId = agentRow?.id ?? null
+    }
+
+    // STEP 2: Fix the insert payload with correct field names and values
     const { data: newsletter, error } = await supabase
       .from("newsletter_campaigns")
       .insert({
-        agent_id: params.agentId,
-        title: params.title,
+        campaign_name: params.title, // campaign_name NOT title
         subject_line: params.subjectLine,
         preheader_text: params.preheaderText,
         template_id: params.template,
         content: params.content,
         audience_segment: params.audienceSegment,
         status: params.scheduledAt ? "scheduled" : "draft",
-        scheduled_at: params.scheduledAt,
+        send_date: params.scheduledAt ?? null, // send_date NOT scheduled_at
+        brokerage_id: params.brokerageId ?? null, // ADD THIS
+        agent_id: agentsTableId, // agents.id NOT users.id
+        created_by: (await supabase.auth.getUser()).data.user?.id ?? null, // users.id
       })
       .select()
       .maybeSingle()
 
     if (error || !newsletter) throw error ?? new Error("Failed to create newsletter campaign")
 
-    // Get subscriber count
+    // STEP 3: Fix newsletter_subscribers query — use agents.id not users.id
     const { count } = await supabase
       .from("newsletter_subscribers")
       .select("*", { count: "exact", head: true })
-      .eq("agent_id", params.agentId)
+      .eq("agent_id", agentsTableId) // agents.id NOT params.agentId
       .eq("segment", params.audienceSegment)
       .eq("subscribed", true)
 
