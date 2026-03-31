@@ -19,6 +19,8 @@
 
 import { NextRequest, NextResponse } from "next/server"
 import { generateText } from "ai"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { openai } from "@ai-sdk/openai"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchSms } from "@/lib/providers/dispatch"
 import { dispatchEmail } from "@/lib/providers/dispatch"
@@ -105,16 +107,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           .eq("id", existingContact.id)
 
         // Block if DNC / call_stop_flag / restricted state that has opted out
-        const blocked =
-          existingContact.call_stop_flag ||
-          existingContact.dnc_status ||
-          (RESTRICTED_STATES.has(existingContact.status ?? "") && !existingContact.isa_reengage_allowed)
-
-        const violations: string[] = []
-        if (existingContact.call_stop_flag) violations.push("CallStop: Contact has requested no calls")
-        if (existingContact.dnc_status) violations.push("TCPA: On Do Not Contact list")
-        if (RESTRICTED_STATES.has(existingContact.status ?? "") && !existingContact.isa_reengage_allowed)
-          violations.push("Authority: Contact in restricted state")
+        const complianceResult = await evaluateOutbound({
+          contact: existingContact,
+          channel: 'phone',
+          content: '',
+          actorContext: { brokerageId, actorType: 'ai_isa' },
+        })
+        const blocked = !complianceResult.allowed
+        const violations = complianceResult.violations ?? []
 
         await supabase.from("compliance_events").insert({
           brokerage_id: brokerageId,
@@ -634,7 +634,7 @@ async function schedulePostCallFollowUp(params: {
 
   // Generate follow-up message using AI SDK
   const { text: followUpMessage } = await generateText({
-    model: "openai/gpt-4o-mini",
+    model: openai('gpt-4o-mini'),
     system: [
       "You are a real estate ISA (Inside Sales Agent) AI assistant.",
       "Write a short, warm, personalized follow-up message to send after a voice call.",
