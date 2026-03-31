@@ -1,19 +1,38 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { trackCertificationExpiration, monitorTRIDCompliance } from "@/app/actions/compliance-monitoring"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
 
 // Run daily to check compliance
 export async function GET(request: NextRequest) {
-  try {
-    // Verify cron secret
-    const authHeader = request.headers.get("authorization")
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+  // Verify cron secret
+  const authHeader = request.headers.get("authorization")
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
 
+  const contextResult = await createCronRunContextAction({
+    cron_name: "compliance-monitoring",
+    cron_path: "/app/api/cron/compliance-monitoring/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[ComplianceMonitoring] Failed to record cron start:", startRecordResult.error)
+  }
+
+  try {
     const supabase = await createClient()
     const results = {
       certifications_checked: 0,
@@ -122,13 +141,20 @@ export async function GET(request: NextRequest) {
       await supabase.from("compliance_flags").insert(violations)
     }
 
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: results.certifications_checked,
+      metadata: results,
+    })
+
     return NextResponse.json({
       success: true,
       timestamp: new Date().toISOString(),
       results,
     })
   } catch (error: any) {
-    console.error("[v0] Compliance monitoring cron error:", error)
-    return NextResponse.json({ error: "Compliance monitoring failed", details: error.message }, { status: 500 })
+    console.error("[ComplianceMonitoring] Cron error:", error)
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    return NextResponse.json({ error: "Compliance monitoring failed", details: error.message, context_id: contextId }, { status: 500 })
   }
 }

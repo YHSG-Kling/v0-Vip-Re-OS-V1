@@ -1,11 +1,30 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization") ?? ""
   const cronSecret = process.env.CRON_SECRET
   if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 })
+  }
+
+  const contextResult = await createCronRunContextAction({
+    cron_name: "earnings-rollup",
+    cron_path: "/app/api/cron/earnings-rollup/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[EarningsRollup] Failed to record cron start:", startRecordResult.error)
   }
 
   const ranAt = new Date().toISOString()
@@ -67,6 +86,11 @@ export async function GET(req: NextRequest) {
       .from("automation_errors")
       .insert({ cron_job: "earnings-rollup", error_message: err.message, occurred_at: ranAt })
       .catch(() => {})
+    await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
+  }
+
+  if (errors.length === 0) {
+    await recordCronSuccessAction({ context_id: contextId, records_processed: processed, metadata: { ranAt, errors } })
   }
 
   return NextResponse.json({ ok: errors.length === 0, ranAt, processed, skipped: 0, errors })

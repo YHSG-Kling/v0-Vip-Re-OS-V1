@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { escalateToHuman } from '@/lib/intelligence/multi-agent-router'
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from '@/app/actions/cron-kernel'
 
 // ══════════════════════════════════════════════════════════════════════════════
 // GET /api/cron/agent-health-check
@@ -24,7 +30,20 @@ export async function GET(request: NextRequest) {
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  
+
+  const contextResult = await createCronRunContextAction({
+    cron_name: 'agent-health-check',
+    cron_path: '/app/api/cron/agent-health-check/route.ts',
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: 'Failed to create cron context' }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error('[AgentHealthCheck] Failed to record cron start:', startRecordResult.error)
+  }
+
   const supabase = createServiceClient()
   const now = new Date()
   const results = {
@@ -100,15 +119,24 @@ export async function GET(request: NextRequest) {
       }
     }
     
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: results.checked,
+      output_count: results.escalated,
+      metadata: { ...results, timestamp: now.toISOString() },
+    })
+
     return NextResponse.json({
       success: true,
       timestamp: now.toISOString(),
       ...results,
     })
-    
+
   } catch (err) {
+    console.error('[AgentHealthCheck] Cron failed:', err)
+    await recordCronFailureAction({ context_id: contextId, error: err, stage: 'main-processing' })
     return NextResponse.json(
-      { error: `Health check failed: ${err}` },
+      { error: `Health check failed: ${err}`, context_id: contextId },
       { status: 500 }
     )
   }

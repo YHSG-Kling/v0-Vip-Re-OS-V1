@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { calculateDealHealth } from "@/lib/deal-health/health-scorer"
 import { KernelEvent } from "@/lib/kernel/events"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export const dynamic = "force-dynamic"
 
@@ -25,6 +31,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const contextResult = await createCronRunContextAction({
+    cron_name: "deal-health-scan",
+    cron_path: "/app/api/cron/deal-health-scan/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[DealHealthScan] Failed to record cron start:", startRecordResult.error)
+  }
+
   const supabase = createServiceClient()
   const results: { transactionId: string; score: number; riskLevel: string; error?: string }[] = []
 
@@ -40,6 +59,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (!transactions || transactions.length === 0) {
+      await recordCronSuccessAction({ context_id: contextId, records_processed: 0, metadata: { message: "No active transactions" } })
       return NextResponse.json({ message: "No active transactions to scan", results: [] })
     }
 
@@ -119,15 +139,25 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    const atRiskCount = results.filter((r) => r.riskLevel === "at_risk" || r.riskLevel === "critical").length
+
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: transactions.length,
+      output_count: atRiskCount,
+      metadata: { total: transactions.length, atRiskCount },
+    })
+
     return NextResponse.json({
       message: `Scanned ${transactions.length} transactions`,
       results,
-      atRiskCount: results.filter((r) => r.riskLevel === "at_risk" || r.riskLevel === "critical").length,
+      atRiskCount,
     })
   } catch (error) {
     console.error("[deal-health-scan] Error:", error)
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Internal server error" },
+      { error: error instanceof Error ? error.message : "Internal server error", context_id: contextId },
       { status: 500 }
     )
   }

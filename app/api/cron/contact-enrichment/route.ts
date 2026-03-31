@@ -6,6 +6,12 @@ import {
   getUnenrichedContacts,
   getContactsNeedingLifeChangeCheck,
 } from "@/app/actions/contact-enrichment"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300 // 5 minutes
@@ -19,6 +25,19 @@ export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization")
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const contextResult = await createCronRunContextAction({
+    cron_name: "contact-enrichment",
+    cron_path: "/app/api/cron/contact-enrichment/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[ContactEnrichment] Failed to record cron start:", startRecordResult.error)
   }
 
   const supabase = createServiceClient()
@@ -97,6 +116,14 @@ export async function GET(request: Request) {
       console.error("[ContactEnrichmentCron] Error logging results:", logError)
     }
 
+    const totalSuccess = results.newEnrichments.success + results.lifeChangeChecks.success + results.ghlSyncEnrichments.success
+
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: totalSuccess,
+      metadata: { ...results, duration_ms: Date.now() - startTime },
+    })
+
     console.log("[ContactEnrichmentCron] Completed:", results)
     return NextResponse.json({
       success: true,
@@ -105,6 +132,7 @@ export async function GET(request: Request) {
     })
   } catch (error) {
     console.error("[ContactEnrichmentCron] Error:", error)
-    return NextResponse.json({ error: String(error) }, { status: 500 })
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    return NextResponse.json({ error: String(error), context_id: contextId }, { status: 500 })
   }
 }
