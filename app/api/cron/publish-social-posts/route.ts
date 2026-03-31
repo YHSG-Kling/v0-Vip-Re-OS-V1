@@ -141,7 +141,7 @@ export async function GET(request: Request) {
           .select("platform, access_token, refresh_token, account_id")
           .eq("id", post.social_account_id)
           .eq("is_active", true)
-          .single()
+          .maybeSingle()
 
         if (accountError || !account) {
           throw new Error(`No active account found for social_account_id: ${post.social_account_id}`)

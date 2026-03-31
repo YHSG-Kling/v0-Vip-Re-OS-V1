@@ -349,8 +349,8 @@ export async function GET(request: Request) {
             status: "running",
             started_at: new Date().toISOString(),
           })
-          .select("id")
-          .single()
+            .select("id")
+            .maybeSingle()
 
         const job = await createScrapingJob({
           job_type: "social_scrape",
