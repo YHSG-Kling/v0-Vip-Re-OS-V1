@@ -598,6 +598,38 @@ export type {
   EmailFinancialReportInput,
 } from "./financial"
 
+// ─── CRON EXECUTION LOGGING KERNEL ──────────────────────────────────────────────
+// Canonical Cron Execution logging kernel commands. All cron jobs must use these
+// commands to ensure silent failures are eliminated, records are tracked for audit,
+// and correlation IDs enable debugging.
+// Business rules:
+//   • Every cron job MUST call createCronRunContext() at start
+//   • recordCronStart() must be called immediately after context creation
+//   • recordCronSuccess() or recordCronFailure() must be called on completion
+//   • Logging failures MUST NOT crash the cron job
+//   • Correlation IDs persist across all log entries for trace correlation
+//   • Error messages are truncated to 2000 chars for DB safety
+//   • Records processed are tracked for audit trail
+export {
+  createCronRunContext,
+  recordCronStart,
+  recordCronProgress,
+  recordCronSuccess,
+  recordCronFailure,
+} from "./cron-logging"
+export type {
+  CronLoggingActorContext,
+  KernelCronLoggingResult,
+  CronRunContext,
+  CreateCronRunContextInput,
+  RecordCronStartInput,
+  RecordCronProgressInput,
+  RecordCronSuccessInput,
+  RecordCronSuccessOutput,
+  RecordCronFailureInput,
+  RecordCronFailureOutput,
+} from "./cron-logging"
+
 // ─── REPUTATION / REVIEW / REFERRAL OS ──────────────────────────────────────
 // Canonical reputation kernel commands. All review requests, inbound review
 // recording, response publishing, referral creation and pipeline advancement

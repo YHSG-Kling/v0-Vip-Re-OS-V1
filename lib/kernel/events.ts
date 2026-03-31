@@ -384,6 +384,11 @@ export enum KernelEvent {
   EXPENSE_CREATED                    = 'expense_created',
   EXPENSE_DELETED                    = 'expense_deleted',
 
+  // ── Cron Execution Logging Kernel (lib/kernel/cron-logging.ts) ─────────────────
+  CRON_STARTED                       = 'cron_started',
+  CRON_COMPLETED_SUCCESS             = 'cron_completed_success',
+  CRON_FAILED                        = 'cron_failed',
+
   // ── Layer 7 — Lifetime Customer & Referrals ─────────────────────────────────
   PAST_CLIENT_TOUCHPOINT_SENT        = 'past_client_touchpoint_sent',
   ANNIVERSARY_TRIGGERED              = 'anniversary_triggered',
