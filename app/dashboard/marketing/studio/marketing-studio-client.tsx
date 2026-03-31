@@ -2199,14 +2199,16 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 onClick={async () => {
                   setIsCreatingNewsletter(true)
                   try {
-                    const { createNewsletterCampaign } = await import("@/lib/kernel/marketing")
+                    const { createEmailCampaign } = await import("@/app/actions/email-campaigns")
                     const resolvedBrokerageId = brokerageIdProp || brokerageId
                     const resolvedAgentId = agentId
-                    const result = await createNewsletterCampaign({
-                      ctx: { brokerageId: resolvedBrokerageId, agentId: resolvedAgentId, userId: resolvedAgentId },
+                    const result = await createEmailCampaign({
+                      brokerageId: resolvedBrokerageId,
+                      agentId: resolvedAgentId || undefined,
                       campaignName: newNewsletter.campaignName.trim(),
                       subjectLine: newNewsletter.subjectLine.trim() || newNewsletter.campaignName.trim(),
                       content: newNewsletter.content.trim() || "",
+                      createdBy: resolvedAgentId,
                     })
                     if (result.success) {
                       setIsCreateNewsletterOpen(false)
@@ -2280,11 +2282,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 onClick={async () => {
                   setIsCreatingQr(true)
                   try {
-                    const { createQrAsset } = await import("@/lib/kernel/marketing")
+                    const { createQrCodeAction } = await import("@/app/actions/marketing-studio")
                     const resolvedBrokerageId = brokerageIdProp || brokerageId
                     const resolvedAgentId = agentId
-                    const result = await createQrAsset({
-                      ctx: { brokerageId: resolvedBrokerageId, agentId: resolvedAgentId, userId: resolvedAgentId },
+                    const result = await createQrCodeAction({
+                      brokerageId: resolvedBrokerageId,
+                      agentId: resolvedAgentId,
                       label: newQr.label.trim(),
                       targetUrl: newQr.targetUrl.trim(),
                       purpose: newQr.purpose,

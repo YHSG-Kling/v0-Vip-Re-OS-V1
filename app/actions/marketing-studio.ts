@@ -835,6 +835,76 @@ export async function generateCampaignContent(params: {
 
 // ─── DASHBOARD AGGREGATIONS ───────────────────────────────────────────────────
 
+// ─── QR CODE CREATION ────────────────────────────────────────────────────────
+
+/**
+ * Creates a new QR code record in qr_codes.
+ * Called from the marketing studio QR tab create dialog.
+ *
+ * Input contract:
+ *   brokerageId: string (required, UUID)
+ *   agentId: string (required, UUID)
+ *   label: string (display label)
+ *   targetUrl: string (full URL the QR code points to)
+ *   purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
+ *   listingId?: string (optional link to a listing)
+ *
+ * Output contract:
+ *   { success: true, qrCode: { id, slug, label, target_url, purpose } }
+ *   { success: false, error: string }
+ *
+ * Tables written: qr_codes
+ */
+export async function createQrCodeAction(params: {
+  brokerageId: string
+  agentId: string
+  label: string
+  targetUrl: string
+  purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
+  listingId?: string
+}) {
+  try {
+    if (!params.brokerageId || !params.agentId) {
+      return { success: false, error: "brokerageId and agentId are required" }
+    }
+    if (!params.label?.trim()) {
+      return { success: false, error: "Label is required" }
+    }
+    if (!params.targetUrl?.trim()) {
+      return { success: false, error: "Target URL is required" }
+    }
+
+    const supabase = await createClient()
+
+    // Generate a unique slug from label + timestamp
+    const slug = `${params.label.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").slice(0, 40)}-${Date.now().toString(36)}`
+
+    const { data: qrCode, error } = await supabase
+      .from("qr_codes")
+      .insert({
+        brokerage_id: params.brokerageId,
+        agent_id: params.agentId,
+        label: params.label.trim(),
+        target_url: params.targetUrl.trim(),
+        purpose: params.purpose,
+        slug,
+        listing_id: params.listingId ?? null,
+        is_active: true,
+        scan_count: 0,
+        lead_count: 0,
+      })
+      .select("id, slug, label, target_url, purpose")
+      .maybeSingle()
+
+    if (error) throw error
+
+    return { success: true, qrCode }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to create QR code"
+    return { success: false, error: message }
+  }
+}
+
 export async function getMarketingStudioDashboard() {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
