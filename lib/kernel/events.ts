@@ -404,6 +404,13 @@ export enum KernelEvent {
   HOME_VALUE_ESTIMATE_REQUESTED      = 'home_value_estimate_requested',
   HOME_VALUE_CONTACT_CREATED         = 'home_value_contact_created',
 
+  // ── Reporting OS (lib/kernel/reporting.ts) ──────────────────────────────────
+  REPORT_GENERATED                   = 'report_generated',
+  REPORT_EXPORTED_CSV                = 'report_exported_csv',
+  REPORT_EXPORTED_PDF                = 'report_exported_pdf',
+  REPORT_EMAILED                     = 'report_emailed',
+  REPORT_VIEWED                      = 'report_viewed',
+
   // ── Reputation / Reviews / Referrals (lib/kernel/reputation.ts) ────────────
   REVIEW_REQUEST_SENT                = 'review_request_sent',
   REVIEW_RECEIVED                    = 'review_received',

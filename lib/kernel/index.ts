@@ -504,6 +504,55 @@ export type {
   CallContext,
 } from "./ai-isa"
 
+// ─── REPORTING OS ────────────────────────────────────────────────────────────
+// Canonical Reporting kernel commands. All report generation, CSV/PDF export,
+// and email delivery flow through these commands.
+// Business rules:
+//   • agent_commissions (not commissions) is the source for YTD financial data
+//   • business_expenses has no brokerage_id — always filter by agent_id only
+//   • generated_documents table does NOT exist — exportReportPdf uses Vercel Blob
+//   • generateAgentPerformanceReport is the only command that writes to DB
+//   • exportReportCsv returns CSV string — no DB write; caller drives browser download
+//   • Every mutation emits KernelEvent via lifecycle_events
+export {
+  loadReportingWorkspace,
+  generateSourcePerformanceReport,
+  generateCampaignROIReport,
+  generateTransactionPipelineReport,
+  generateTeamPerformanceReport,
+  generateAgentPerformanceReport,
+  generateFinancialSummaryReport,
+  generateReputationReport,
+  exportReportCsv,
+  exportReportPdf,
+  emailReport,
+} from "./reporting"
+export type {
+  ReportingActorContext,
+  KernelReportingResult,
+  LoadReportingWorkspaceInput,
+  ReportingWorkspace,
+  GenerateSourcePerformanceInput,
+  SourcePerformanceReport,
+  GenerateCampaignROIInput,
+  CampaignROIReport,
+  GenerateTransactionPipelineInput,
+  TransactionPipelineReport,
+  GenerateTeamPerformanceInput,
+  TeamPerformanceReport,
+  GenerateAgentPerformanceInput,
+  AgentPerformanceReport,
+  GenerateFinancialSummaryInput,
+  FinancialSummaryReport,
+  GenerateReputationInput,
+  ReputationReport,
+  ExportReportCsvInput,
+  ExportReportCsvOutput,
+  ExportReportPdfInput,
+  ExportReportPdfOutput,
+  EmailReportInput,
+} from "./reporting"
+
 // ─── REPUTATION / REVIEW / REFERRAL OS ──────────────────────────────────────
 // Canonical reputation kernel commands. All review requests, inbound review
 // recording, response publishing, referral creation and pipeline advancement
