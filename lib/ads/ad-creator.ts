@@ -6,12 +6,8 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 
@@ -113,19 +109,6 @@ export async function createAdCampaign(
     },
   })
 
-  processKernelEvent({
-    event: KernelEvent.AD_CAMPAIGN_CREATED,
-    brokerageId: params.brokerageId,
-    entityType: "ad_campaign",
-    entityId: campaign.id,
-    actorUserId: userId,
-    metadata: {
-      platform: params.platform,
-      objective: params.objective,
-      campaign_name: params.campaignName,
-    },
-  }).catch(console.error)
-
   // ── 4. Increment usage ──────────────────────────────────────────────────────
   await incrementFeatureUsage(userId, "ad_creator")
 
@@ -141,20 +124,7 @@ export async function generateAdCreative(
   const supabase = await createClient()
   const { adCampaignId, context } = params
 
-  // ── 1. Resolve AI provider ──────────────────────────────────────────────────
-  const provider = await resolveProvider({
-    providerType: "ai",
-    actorContext: {
-      userId,
-      brokerageId: context.brokerageId,
-    },
-  })
-
-  if (!provider.resolved) {
-    return { success: false, error: "No AI provider configured" }
-  }
-
-  // ── 2. Get campaign details ─────────────────────────────────────────────────
+  // ── 1. Get campaign details ─────────────────────────────────────────────────
   const { data: campaign } = await supabase
     .from("ad_campaigns")
     .select("platform, objective, campaign_name")
@@ -204,7 +174,7 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
   // ── 5. Generate variations via AI ───────────────────────────────────────────
   try {
     const { text } = await generateText({
-      model: resolveModel((provider.modelString ?? "anthropic/claude-sonnet-4-20250514") as Parameters<typeof resolveModel>[0]),
+      model: resolveModel("anthropic/claude-sonnet-4-20250514" as Parameters<typeof resolveModel>[0]),
       prompt,
       maxTokens: 1500,
     })
@@ -244,7 +214,6 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
           description: variation.description,
           call_to_action: variation.callToAction,
           approval_status: approvalStatus,
-          compliance_approved: false,
         })
         .select("id")
         .single()
@@ -284,18 +253,20 @@ export async function approveCreativeVariation(
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
 
-  // ── 1. Check brand compliance ───────────────────────────────────────────────
-  const complianceResult = await checkBrandCompliance({
-    contentType: "ad_creative",
-    contentId: variationId,
-    brokerageId,
-  })
+  // ── 1. Verify variation exists and is not already approved ──────────────────
+  const { data: existing, error: fetchError } = await supabase
+    .from("ad_creative_variations")
+    .select("id, approval_status")
+    .eq("id", variationId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
 
-  if (!complianceResult.passed) {
-    return {
-      success: false,
-      error: `Brand compliance check failed: ${complianceResult.violations.join(", ")}`,
-    }
+  if (fetchError || !existing) {
+    return { success: false, error: "Creative variation not found" }
+  }
+
+  if (existing.approval_status === "approved") {
+    return { success: true }
   }
 
   // ── 2. Update approval status ───────────────────────────────────────────────
@@ -389,19 +360,6 @@ export async function launchAdCampaign(
       campaign_name: campaign.campaign_name,
     },
   })
-
-  // ── 4. Fire kernel event ────────────────────────────────────────────────────
-  processKernelEvent({
-    event: KernelEvent.AD_CAMPAIGN_LAUNCHED,
-    brokerageId,
-    entityType: "ad_campaign",
-    entityId: campaignId,
-    actorUserId: userId,
-    metadata: {
-      platform: campaign.platform,
-      campaign_name: campaign.campaign_name,
-    },
-  }).catch(console.error)
 
   return { success: true }
 }
