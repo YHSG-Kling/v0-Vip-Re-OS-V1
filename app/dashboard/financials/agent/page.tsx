@@ -75,117 +75,12 @@ export default async function AgentFinancialsPage() {
   const pipelineTransactions = summary.pipelineTransactions
   const earningsHistory = summary.earningsHistory
 
+  // Additional derived data
+  const currentBilling = null
+  const existingBudget = null
+  const processedEarningsHistory = earningsHistory ?? []
+
   // Calculate expense totals by category (same logic as before)
-  const expensesByCategory = businessExpenses.reduce((acc: Record<string, number>, expense: any) => {
-    const category = expense.category || "Other"
-    acc[category] = (acc[category] || 0) + (expense.amount || 0)
-    return acc
-  }, {})
-
-  const totalExpensesMTD = businessExpenses
-    .filter((e: any) => {
-      const expenseDate = new Date(e.expense_date)
-      const now = new Date()
-      return expenseDate.getMonth() === now.getMonth() && expenseDate.getFullYear() === now.getFullYear()
-    })
-    .reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
-
-  const totalExpensesYTD = businessExpenses
-    .filter((e: any) => new Date(e.expense_date).getFullYear() === currentYear)
-    .reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
-
-  // Filter pending pipeline (not yet paid)
-  const pipelineDeals = pendingCommissions.filter(
-    (c: any) => c.transactions?.status === "active" || c.transactions?.status === "pending"
-  )
-  const totalPipelineValue = pipelineDeals.reduce((sum: number, c: any) => sum + (c.total_commission || 0), 0)
-
-  // Team split totals
-  const totalTeamSplitsPaid = teamSplits.reduce((sum: number, s: any) => sum + (s.calculated_amount || 0), 0)
-
-  // Process monthly trend data
-  const monthlyTrendData = processMonthlyTrend(monthlyTrend)
-
-  // Calculate net income after expenses
-  const ytdNetAfterExpenses = (ytdEarnings?.agent_net || 0) - totalExpensesYTD
-
-  // Build financial priority
-  const financialPriority: FinancialPriority | null = (() => {
-    const pendingAmount = totalPipelineValue
-    const pendingCount = pipelineDeals.length
-    
-    if (pendingCount > 3 && pendingAmount > 50000) {
-      return {
-        id: "pending-commissions",
-        title: "Multiple Pending Commissions",
-        description: `${pendingCount} deals worth ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pendingAmount)} in pipeline`,
-        urgency: "high",
-        metric: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pendingAmount),
-        metricLabel: "pending",
-        ctaLabel: "Review Pipeline",
-        ctaHref: "/dashboard/financials/commissions",
-      }
-    }
-    
-    if (totalExpensesMTD > (mtdEarnings?.agent_net || 0) * 0.5 && totalExpensesMTD > 1000) {
-      return {
-        id: "expense-pressure",
-        title: "Expense Pressure This Month",
-        description: "Expenses are running high relative to income",
-        urgency: "medium",
-        metric: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(totalExpensesMTD),
-        metricLabel: "MTD expenses",
-        ctaLabel: "Track Expenses",
-        ctaHref: "/dashboard/financials/expenses",
-      }
-    }
-    
-    return null
-  })()
-
-  // Build action stack
-  const financialActions: FinancialAction[] = []
-  
-  if (pipelineDeals.length > 0) {
-    financialActions.push({
-      id: "review-pending",
-      title: "Review Pending Commissions",
-      description: `${pipelineDeals.length} commission${pipelineDeals.length !== 1 ? "s" : ""} awaiting close`,
-      priority: pipelineDeals.length > 3 ? "high" : "medium",
-      type: "commission",
-      value: totalPipelineValue,
-      href: "/dashboard/financials/commissions",
-    })
-  }
-  
-  financialActions.push({
-    id: "log-expense",
-    title: "Log New Expense",
-    description: "Track business expenses for tax deductions",
-    priority: "low",
-    type: "expense",
-    href: "/dashboard/financials/expenses",
-  })
-  
-  financialActions.push({
-    id: "generate-pl",
-    title: "Generate P&L Report",
-    description: "AI-powered profit and loss analysis",
-    priority: "low",
-    type: "report",
-  })
-
-  // Format expenses for planning components
-  const formattedExpenses = businessExpenses.map((e: any) => ({
-    id: e.id,
-    category: e.category || "Uncategorized",
-    amount: e.amount || 0,
-    description: e.description || "",
-    receipt_url: e.receipt_url,
-    date: e.expense_date,
-  }))
-
-  // Calculate expense totals by category
   const expensesByCategory = businessExpenses.reduce((acc: Record<string, number>, expense: any) => {
     const category = expense.category || "Other"
     acc[category] = (acc[category] || 0) + (expense.amount || 0)
