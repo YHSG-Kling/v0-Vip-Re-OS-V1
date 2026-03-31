@@ -10,9 +10,9 @@ import {
   type PortalView,
 } from "@/lib/kernel/portal"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
-import PortalNav from "@/components/portal/PortalNav"
-import PortalUserMenu from "@/components/portal/PortalUserMenu"
-import PortalAIAssistant from "@/components/portal/PortalAIAssistant"
+import PortalNav from "@/app/components/features/portal/base/PortalNav"
+import PortalUserMenu from "@/app/components/features/portal/base/PortalUserMenu"
+import PortalAIAssistant from "@/app/components/features/portal/ai/PortalAIAssistant"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 

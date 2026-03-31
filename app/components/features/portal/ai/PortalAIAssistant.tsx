@@ -1,442 +1,394 @@
-"use client"
+'use client'
 
-import type React from "react"
-import { useState, useRef, useEffect } from "react"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import { Bot, X, Send, Sparkles, ChevronRight, Loader2, Mic, MicOff } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { useState, useRef, useEffect, useCallback } from 'react'
+import { useChat } from '@ai-sdk/react'
+import { DefaultChatTransport } from 'ai'
+import { MessageSquare, X, Send, Minimize2, ChevronDown, AlertCircle } from 'lucide-react'
 
-interface Message {
+// ── Types ────────────────────────────────────────────────────────────────────
+
+interface Contact {
   id: string
-  role: "user" | "assistant"
-  content: string
-  timestamp: Date
-  suggestions?: string[]
-  actions?: { label: string; action: string; icon?: React.ReactNode }[]
+  first_name?: string | null
+  brokerage_id?: string | null
+  agent_id?: string | null
+  contact_persona?: string | null
 }
 
 interface PortalAIAssistantProps {
-  contact: any
+  contact: Contact
   contactId: string
   isBuyer: boolean
   isSeller: boolean
   persona: string
 }
 
-// Generate unique message IDs
-let messageCounter = 0
-const generateMessageId = () => `msg-${Date.now()}-${messageCounter++}`
+// ── Suggested questions per portal view ──────────────────────────────────────
 
-export default function PortalAIAssistant({ contact, contactId, isBuyer, isSeller, persona }: PortalAIAssistantProps) {
-  const [isOpen, setIsOpen] = useState(false)
+const SUGGESTED_QUESTIONS: Record<'buyer' | 'seller' | 'lifetime', string[]> = {
+  buyer:    ['What happens next?', 'What is earnest money?', 'When do I get keys?'],
+  seller:   ['How is my listing doing?', 'When will I get paid?', 'What does under contract mean?'],
+  lifetime: ['What is my home worth now?', 'When should I sell?', 'How are my neighbors doing?'],
+}
+
+// SESSION_KEY prefix for sessionStorage persistence
+const SESSION_KEY_PREFIX = 'portal_ai_session_'
+const MESSAGES_KEY_PREFIX = 'portal_ai_messages_'
+const UNREAD_KEY_PREFIX   = 'portal_ai_unread_'
+
+// ── Helper to get text from UIMessage parts ──────────────────────────────────
+
+function getMessageText(msg: { parts?: { type: string; text?: string }[] }): string {
+  if (!msg.parts?.length) return ''
+  return msg.parts
+    .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
+    .map(p => p.text)
+    .join('')
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
+
+export default function PortalAIAssistant({
+  contact,
+  contactId,
+  isBuyer,
+  isSeller,
+}: PortalAIAssistantProps) {
+  const portalView: 'buyer' | 'seller' | 'lifetime' = isSeller
+    ? 'seller'
+    : isBuyer
+    ? 'buyer'
+    : 'lifetime'
+
+  const suggestedQuestions = SUGGESTED_QUESTIONS[portalView]
+
+  // ── Local state ────────────────────────────────────────────────────────────
+  const [isOpen,      setIsOpen]      = useState(false)
   const [isMinimized, setIsMinimized] = useState(false)
-  const [messages, setMessages] = useState<Message[]>([])
-  const [input, setInput] = useState("")
-  const [isLoading, setIsLoading] = useState(false)
-  const [isListening, setIsListening] = useState(false)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [input,       setInput]       = useState('')
+  const [sessionId,   setSessionId]   = useState<string | null>(null)
+  const [hasOpened,   setHasOpened]   = useState(false)
+  const [error,       setError]       = useState<string | null>(null)
 
-  // Initialize with persona-specific welcome message
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const inputRef       = useRef<HTMLInputElement>(null)
+
+  const sessionStorageKey  = SESSION_KEY_PREFIX + contactId
+  const messagesStorageKey = MESSAGES_KEY_PREFIX + contactId
+  const unreadStorageKey   = UNREAD_KEY_PREFIX  + contactId
+
+  // ── Restore session from sessionStorage on mount ───────────────────────────
   useEffect(() => {
-    if (isOpen && messages.length === 0) {
-      const welcomeMessage = getWelcomeMessage(persona, contact.first_name || contact.name, isBuyer, isSeller)
-      setMessages([
-        {
-          id: "welcome",
-          role: "assistant",
-          content: welcomeMessage.content,
-          timestamp: new Date(),
-          suggestions: welcomeMessage.suggestions,
-        },
-      ])
-    }
-  }, [isOpen, persona, contact, isBuyer, isSeller])
-
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollIntoView({ behavior: "smooth" })
-    }
-  }, [messages])
-
-  useEffect(() => {
-    if (isOpen && inputRef.current) {
-      inputRef.current.focus()
-    }
-  }, [isOpen])
-
-  const getWelcomeMessage = (persona: string, name: string, isBuyer: boolean, isSeller: boolean) => {
-    const personaMessages: Record<string, { content: string; suggestions: string[] }> = {
-      first_time_buyer: {
-        content: `Hi ${name}! I'm your personal home buying assistant. As a first-time buyer, you probably have lots of questions - and that's totally normal! I'm here 24/7 to help you understand the process, explain terms, and guide you through each step. What would you like to know?`,
-        suggestions: [
-          "What's the home buying process?",
-          "How much can I afford?",
-          "What's earnest money?",
-          "Explain pre-approval",
-        ],
-      },
-      military_buyer: {
-        content: `Welcome ${name}! Thank you for your service. I'm here to help you navigate your VA loan benefits and find your perfect home. I understand military moves and can help with BAH calculations, VA loan requirements, and timing your purchase with your orders. How can I assist you today?`,
-        suggestions: [
-          "VA loan requirements",
-          "BAH vs mortgage payment",
-          "PCS timeline planning",
-          "VA funding fee explained",
-        ],
-      },
-      luxury_buyer: {
-        content: `Good day ${name}. I'm your dedicated concierge assistant for your luxury property search. I can provide insights on exclusive listings, market analysis for premium properties, and coordinate with our white-glove services. How may I assist you?`,
-        suggestions: [
-          "Market trends for luxury homes",
-          "Privacy and security features",
-          "Investment potential analysis",
-          "Concierge services available",
-        ],
-      },
-      investor: {
-        content: `Hello ${name}! I'm your investment property assistant. I can help you analyze deals, calculate cap rates, project cash flow, and identify market opportunities. What investment questions can I help with today?`,
-        suggestions: [
-          "Calculate cap rate",
-          "Cash flow projection",
-          "Market opportunity analysis",
-          "1031 exchange timing",
-        ],
-      },
-      first_time_seller: {
-        content: `Hi ${name}! Selling your home for the first time can feel overwhelming, but I'm here to make it simple. I can walk you through each step, explain what to expect, and help you prepare for showings and offers. What questions do you have?`,
-        suggestions: [
-          "How do I prepare to sell?",
-          "What's my home worth?",
-          "Timeline for selling",
-          "What are closing costs?",
-        ],
-      },
-      motivated_seller: {
-        content: `Hi ${name}! I understand you need to sell quickly, and I'm here to help expedite every step. I can provide real-time updates on showings, offers, and market conditions. What would you like to know about your listing?`,
-        suggestions: [
-          "Latest showing feedback",
-          "Current offer status",
-          "Price adjustment analysis",
-          "Quick sale strategies",
-        ],
-      },
-      divorce: {
-        content: `Hello ${name}. I understand this is a difficult time, and I'm here to provide neutral, confidential assistance with your real estate needs. I can help coordinate the sale process and answer questions privately. How can I help today?`,
-        suggestions: [
-          "Timeline for the sale",
-          "How are proceeds divided?",
-          "Showing coordination",
-          "Keep me updated privately",
-        ],
-      },
-      probate: {
-        content: `Hello ${name}. I'm here to help you navigate the estate property process with care and sensitivity. I can assist with understanding probate requirements, estate sale coordination, and timeline planning. What questions do you have?`,
-        suggestions: [
-          "Probate sale requirements",
-          "Property preparation help",
-          "Timeline expectations",
-          "Estate sale coordination",
-        ],
-      },
-      senior: {
-        content: `Hello ${name}! I'm here to help make your transition as smooth as possible. I can answer questions in plain language, help coordinate with senior move services, and ensure you feel supported every step of the way. What would you like to know?`,
-        suggestions: ["What are my options?", "Moving assistance available", "Timeline for selling", "Downsizing help"],
-      },
-      relocating: {
-        content: `Hi ${name}! I know relocating involves a lot of moving pieces. I can help coordinate your home search in your new area while managing the sale of your current home. What's most pressing for you right now?`,
-        suggestions: [
-          "Coordinate buy and sell",
-          "New area information",
-          "Moving timeline help",
-          "Remote buying process",
-        ],
-      },
-      default: {
-        content: `Hi ${name}! I'm your personal real estate assistant, available 24/7 to answer questions and help guide you through your ${isBuyer ? "home buying" : isSeller ? "home selling" : "real estate"} journey. What can I help you with?`,
-        suggestions: isBuyer
-          ? ["Search for homes", "View my saved properties", "Schedule a showing", "Check my offer status"]
-          : ["View my listing stats", "Recent showing feedback", "Current offers", "Market update"],
-      },
-    }
-
-    return personaMessages[persona] || personaMessages.default
-  }
-
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return
-
-    const userMessage: Message = {
-      id: generateMessageId(),
-      role: "user",
-      content: input.trim(),
-      timestamp: new Date(),
-    }
-
-    setMessages((prev) => [...prev, userMessage])
-    setInput("")
-    setIsLoading(true)
-
     try {
-      // Call AI endpoint
-      const response = await fetch("/api/portal/ai-assistant", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const savedSession = sessionStorage.getItem(sessionStorageKey)
+      if (savedSession) setSessionId(savedSession)
+      const savedUnread = sessionStorage.getItem(unreadStorageKey)
+      if (savedUnread) setUnreadCount(parseInt(savedUnread, 10) || 0)
+    } catch {
+      // sessionStorage unavailable (e.g. private mode) — silent fail
+    }
+  }, [sessionStorageKey, unreadStorageKey])
+
+  // ── useChat via AI SDK 6 ───────────────────────────────────────────────────
+  const { messages, sendMessage, status, setMessages } = useChat({
+    transport: new DefaultChatTransport({
+      api: '/api/portal/ai-chat',
+      prepareSendMessagesRequest: ({ messages: msgs }) => ({
+        body: {
+          messages:  msgs,
           contactId,
-          message: userMessage.content,
-          persona,
-          isBuyer,
-          isSeller,
-          conversationHistory: messages.slice(-10).map((m) => ({ role: m.role, content: m.content })),
-        }),
-      })
-
-      if (!response.ok) throw new Error("Failed to get response")
-
-      const data = await response.json()
-
-      const assistantMessage: Message = {
-        id: generateMessageId(),
-        role: "assistant",
-        content: data.response,
-        timestamp: new Date(),
-        suggestions: data.suggestions,
-        actions: data.actions,
+          sessionId,
+        },
+      }),
+    }),
+    onResponse: (response) => {
+      // Capture sessionId from response header for persistence
+      const sid = response.headers.get('x-portal-session-id')
+      if (sid && !sessionId) {
+        setSessionId(sid)
+        try { sessionStorage.setItem(sessionStorageKey, sid) } catch { /* noop */ }
       }
-
-      setMessages((prev) => [...prev, assistantMessage])
-    } catch (error) {
-      // Fallback response if API fails
-      const fallbackMessage: Message = {
-        id: generateMessageId(),
-        role: "assistant",
-        content:
-          "I apologize, but I'm having trouble connecting right now. Your agent has been notified and will follow up with you shortly. In the meantime, you can browse your dashboard or documents.",
-        timestamp: new Date(),
-        suggestions: ["View my dashboard", "Check documents", "Contact my agent"],
+    },
+    onFinish: () => {
+      // Increment unread badge when widget is closed/minimized
+      if (!isOpen || isMinimized) {
+        setUnreadCount(prev => {
+          const next = prev + 1
+          try { sessionStorage.setItem(unreadStorageKey, String(next)) } catch { /* noop */ }
+          return next
+        })
       }
-      setMessages((prev) => [...prev, fallbackMessage])
+    },
+    onError: () => {
+      setError('Something went wrong. Please try again.')
+    },
+  })
+
+  // ── Restore messages from sessionStorage ──────────────────────────────────
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(messagesStorageKey)
+      if (saved && messages.length === 0) {
+        const parsed = JSON.parse(saved)
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setMessages(parsed)
+        }
+      }
+    } catch { /* noop */ }
+  // Only run on mount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messagesStorageKey])
+
+  // Persist messages to sessionStorage whenever they change
+  useEffect(() => {
+    if (messages.length > 0) {
+      try {
+        sessionStorage.setItem(messagesStorageKey, JSON.stringify(messages))
+      } catch { /* noop */ }
     }
+  }, [messages, messagesStorageKey])
 
-    setIsLoading(false)
-  }
-
-  const handleSuggestionClick = (suggestion: string) => {
-    setInput(suggestion)
-    setTimeout(() => handleSend(), 100)
-  }
-
-  const handleActionClick = (action: string) => {
-    // Navigate or perform action
-    switch (action) {
-      case "dashboard":
-        window.location.href = `/portal/${contactId}`
-        break
-      case "documents":
-        window.location.href = `/portal/${contactId}/documents`
-        break
-      case "properties":
-        window.location.href = `/portal/${contactId}/properties`
-        break
-      case "showings":
-        window.location.href = `/portal/${contactId}/showings`
-        break
-      case "offers":
-        window.location.href = `/portal/${contactId}/offers`
-        break
-      case "listing":
-        window.location.href = `/portal/${contactId}/listing`
-        break
-      case "journey":
-        window.location.href = `/portal/${contactId}/journey`
-        break
-      default:
-        break
+  // ── Scroll to bottom on new messages ──────────────────────────────────────
+  useEffect(() => {
+    if (isOpen && !isMinimized) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }
+  }, [messages, isOpen, isMinimized])
 
-  const toggleVoice = () => {
-    setIsListening(!isListening)
-    // Voice recognition would be implemented here
-  }
+  // ── Clear unread when opened ───────────────────────────────────────────────
+  const handleOpen = useCallback(() => {
+    setIsOpen(true)
+    setIsMinimized(false)
+    setHasOpened(true)
+    setUnreadCount(0)
+    setError(null)
+    try { sessionStorage.removeItem(unreadStorageKey) } catch { /* noop */ }
+    setTimeout(() => inputRef.current?.focus(), 150)
+  }, [unreadStorageKey])
 
-  if (!isOpen) {
-    return (
-      <Button
-        onClick={() => setIsOpen(true)}
-        className="fixed bottom-6 right-6 h-14 w-14 rounded-full shadow-lg bg-primary hover:bg-primary/90 z-50"
-        size="icon"
-      >
-        <div className="relative">
-          <Bot className="h-6 w-6" />
-          <span className="absolute -top-1 -right-1 h-3 w-3 bg-green-500 rounded-full border-2 border-primary animate-pulse" />
-        </div>
-      </Button>
-    )
-  }
+  const handleClose = useCallback(() => {
+    setIsOpen(false)
+    setIsMinimized(false)
+  }, [])
 
+  const handleMinimize = useCallback(() => {
+    setIsMinimized(true)
+  }, [])
+
+  // ── Send message ──────────────────────────────────────────────────────────
+  const handleSend = useCallback(() => {
+    const text = input.trim()
+    if (!text || status === 'streaming' || status === 'submitted') return
+    setError(null)
+    sendMessage({ text })
+    setInput('')
+  }, [input, status, sendMessage])
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }, [handleSend])
+
+  const handleSuggestedQuestion = useCallback((q: string) => {
+    if (status === 'streaming' || status === 'submitted') return
+    setError(null)
+    sendMessage({ text: q })
+  }, [status, sendMessage])
+
+  const isLoading = status === 'streaming' || status === 'submitted'
+
+  // ── First-time greeting message (injected visually, not via API) ───────────
+  const greetingName = contact.first_name || 'there'
+  const greetingText = portalView === 'seller'
+    ? `Hi ${greetingName}! I can help you understand your listing status, what's happening next, and any real estate terms. What can I help you with?`
+    : portalView === 'lifetime'
+    ? `Hi ${greetingName}! I can help you understand your home's status, market trends, and what homeownership milestones look like. What would you like to know?`
+    : `Hi ${greetingName}! I can help you understand what's happening in your home purchase, explain real estate terms, and tell you what to expect next. What can I help you with?`
+
+  const showGreeting = isOpen && !isMinimized && messages.length === 0
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <Card
-      className={cn(
-        "fixed bottom-6 right-6 w-96 shadow-2xl z-50 transition-all duration-300",
-        isMinimized ? "h-14" : "h-[600px]",
-      )}
-    >
-      {/* Header */}
-      <CardHeader className="p-4 border-b bg-primary text-primary-foreground rounded-t-lg">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <div className="h-10 w-10 rounded-full bg-primary-foreground/20 flex items-center justify-center">
-                <Bot className="h-5 w-5" />
-              </div>
-              <span className="absolute bottom-0 right-0 h-3 w-3 bg-green-500 rounded-full border-2 border-primary" />
-            </div>
-            <div>
-              <CardTitle className="text-sm font-semibold">AI Assistant</CardTitle>
-              <p className="text-xs text-primary-foreground/70">Always here to help</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-primary-foreground hover:bg-primary-foreground/20"
-              onClick={() => setIsMinimized(!isMinimized)}
-            >
-              {isMinimized ? (
-                <ChevronRight className="h-4 w-4 rotate-90" />
-              ) : (
-                <ChevronRight className="h-4 w-4 -rotate-90" />
-              )}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 text-primary-foreground hover:bg-primary-foreground/20"
-              onClick={() => setIsOpen(false)}
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      </CardHeader>
+    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
 
-      {!isMinimized && (
-        <>
+      {/* Chat window */}
+      {isOpen && !isMinimized && (
+        <div
+          className="flex flex-col bg-background border border-border rounded-2xl shadow-2xl overflow-hidden"
+          style={{ width: 'min(380px, calc(100vw - 32px))', height: 'min(540px, calc(100vh - 120px))' }}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-3 bg-foreground text-background">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-full bg-background/20 flex items-center justify-center">
+                <MessageSquare className="h-4 w-4" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold leading-tight">Your Agent Assistant</p>
+                <p className="text-xs text-background/60 leading-tight">Ask me anything about your {portalView === 'lifetime' ? 'home' : portalView === 'seller' ? 'listing' : 'transaction'}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={handleMinimize}
+                className="p-1.5 rounded-lg hover:bg-background/10 transition-colors"
+                aria-label="Minimize"
+              >
+                <Minimize2 className="h-4 w-4" />
+              </button>
+              <button
+                onClick={handleClose}
+                className="p-1.5 rounded-lg hover:bg-background/10 transition-colors"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+
           {/* Messages */}
-          <CardContent className="p-0 flex-1 h-[440px]">
-            <ScrollArea className="h-full p-4">
-              <div className="space-y-4">
-                {messages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}
-                  >
-                    <div
-                      className={cn(
-                        "max-w-[85%] rounded-2xl px-4 py-3",
-                        message.role === "user"
-                          ? "bg-primary text-primary-foreground rounded-br-md"
-                          : "bg-muted rounded-bl-md",
-                      )}
-                    >
-                      <p className="text-sm whitespace-pre-wrap">{message.content}</p>
-
-                      {/* Suggestions */}
-                      {message.suggestions && message.suggestions.length > 0 && (
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {message.suggestions.map((suggestion, idx) => (
-                            <Button
-                              key={idx}
-                              variant="outline"
-                              size="sm"
-                              className="h-7 text-xs bg-background hover:bg-accent"
-                              onClick={() => handleSuggestionClick(suggestion)}
-                            >
-                              {suggestion}
-                            </Button>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Actions */}
-                      {message.actions && message.actions.length > 0 && (
-                        <div className="mt-3 space-y-2">
-                          {message.actions.map((action, idx) => (
-                            <Button
-                              key={idx}
-                              variant="secondary"
-                              size="sm"
-                              className="w-full justify-start"
-                              onClick={() => handleActionClick(action.action)}
-                            >
-                              {action.icon}
-                              <span className="ml-2">{action.label}</span>
-                              <ChevronRight className="h-4 w-4 ml-auto" />
-                            </Button>
-                          ))}
-                        </div>
-                      )}
-
-                      <p className="text-[10px] mt-2 opacity-50">
-                        {message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-
-                {isLoading && (
-                  <div className="flex justify-start">
-                    <div className="bg-muted rounded-2xl rounded-bl-md px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span className="text-sm text-muted-foreground">Thinking...</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div ref={scrollRef} />
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+            {/* Greeting */}
+            {showGreeting && (
+              <div className="flex gap-2">
+                <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <div className="bg-muted rounded-2xl rounded-tl-none px-3 py-2.5 max-w-[82%]">
+                  <p className="text-sm text-foreground leading-relaxed">{greetingText}</p>
+                </div>
               </div>
-            </ScrollArea>
-          </CardContent>
+            )}
+
+            {/* Conversation */}
+            {messages.map((msg) => {
+              const text = getMessageText(msg)
+              if (!text) return null
+              return (
+                <div
+                  key={msg.id}
+                  className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  {msg.role === 'assistant' && (
+                    <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
+                    </div>
+                  )}
+                  <div
+                    className={`rounded-2xl px-3 py-2.5 max-w-[82%] text-sm leading-relaxed ${
+                      msg.role === 'user'
+                        ? 'bg-foreground text-background rounded-tr-none'
+                        : 'bg-muted text-foreground rounded-tl-none'
+                    }`}
+                  >
+                    {text}
+                  </div>
+                </div>
+              )
+            })}
+
+            {/* Typing indicator */}
+            {isLoading && (
+              <div className="flex gap-2">
+                <div className="w-7 h-7 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
+                  <MessageSquare className="h-3.5 w-3.5 text-muted-foreground" />
+                </div>
+                <div className="bg-muted rounded-2xl rounded-tl-none px-3 py-2.5">
+                  <div className="flex gap-1 items-center h-4">
+                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Error */}
+            {error && (
+              <div className="flex gap-2 items-start">
+                <AlertCircle className="h-4 w-4 text-destructive flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-destructive">{error}</p>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Suggested questions — shown after greeting, before any messages */}
+          {showGreeting && !isLoading && (
+            <div className="px-4 pb-3 flex flex-wrap gap-1.5">
+              {suggestedQuestions.map((q) => (
+                <button
+                  key={q}
+                  onClick={() => handleSuggestedQuestion(q)}
+                  className="text-xs border border-border rounded-full px-3 py-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors text-left"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Input */}
-          <div className="p-4 border-t">
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="icon"
-                className={cn("shrink-0", isListening && "bg-red-100 text-red-600 border-red-300")}
-                onClick={toggleVoice}
-              >
-                {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-              </Button>
-              <Input
+          <div className="px-4 pb-4 pt-2 border-t border-border">
+            <div className="flex items-center gap-2">
+              <input
                 ref={inputRef}
+                type="text"
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-                placeholder="Ask me anything..."
-                className="flex-1"
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Ask a question..."
                 disabled={isLoading}
+                className="flex-1 text-sm bg-muted border-0 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-foreground/20 placeholder:text-muted-foreground disabled:opacity-50"
               />
-              <Button onClick={handleSend} disabled={!input.trim() || isLoading} size="icon" className="shrink-0">
+              <button
+                onClick={handleSend}
+                disabled={isLoading || !input.trim()}
+                className="w-9 h-9 rounded-xl bg-foreground text-background flex items-center justify-center flex-shrink-0 hover:bg-foreground/80 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-label="Send"
+              >
                 <Send className="h-4 w-4" />
-              </Button>
+              </button>
             </div>
-            <p className="text-[10px] text-center text-muted-foreground mt-2">
-              <Sparkles className="h-3 w-3 inline mr-1" />
-              Powered by AI - Available 24/7
+            <p className="text-[10px] text-muted-foreground mt-1.5 text-center">
+              AI can make mistakes — your agent has the final word.
             </p>
           </div>
-        </>
+        </div>
       )}
-    </Card>
+
+      {/* Minimized bar */}
+      {isOpen && isMinimized && (
+        <button
+          onClick={() => setIsMinimized(false)}
+          className="flex items-center gap-2 bg-foreground text-background rounded-full px-4 py-2.5 shadow-lg hover:bg-foreground/90 transition-colors"
+        >
+          <MessageSquare className="h-4 w-4" />
+          <span className="text-sm font-medium">Your Agent Assistant</span>
+          <ChevronDown className="h-3.5 w-3.5 ml-1" />
+        </button>
+      )}
+
+      {/* FAB — closed state */}
+      {!isOpen && (
+        <button
+          onClick={handleOpen}
+          className="relative w-14 h-14 rounded-full bg-foreground text-background shadow-lg hover:bg-foreground/90 active:scale-95 transition-all flex items-center justify-center"
+          aria-label="Open AI assistant"
+        >
+          <MessageSquare className="h-6 w-6" />
+          {/* Unread badge — draws attention on first visit */}
+          {(unreadCount > 0 || !hasOpened) && (
+            <span className="absolute -top-1 -right-1 min-w-[20px] h-5 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold flex items-center justify-center px-1 ring-2 ring-background">
+              {unreadCount > 0 ? (unreadCount > 9 ? '9+' : unreadCount) : '1'}
+            </span>
+          )}
+        </button>
+      )}
+    </div>
   )
 }

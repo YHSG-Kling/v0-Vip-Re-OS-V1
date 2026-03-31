@@ -4,9 +4,9 @@ import { Progress } from "@/components/ui/progress"
 import { Button } from "@/components/ui/button"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { CoordinatorTransactionList } from "@/components/coordinator/transaction-list"
-import { DeadlineTracking } from "@/components/coordinator/deadline-tracking"
-import { MilestoneQueue } from "@/components/coordinator/milestone-queue"
+import { CoordinatorTransactionList } from "@/app/components/features/dashboard/coordinator/transaction-list"
+import { DeadlineTracking } from "@/app/components/features/dashboard/coordinator/deadline-tracking"
+import { MilestoneQueue } from "@/app/components/features/dashboard/coordinator/milestone-queue"
 import { HealthOverview } from "@/components/coordinator/health-overview"
 import {
   CoordinatorCommandStrip,

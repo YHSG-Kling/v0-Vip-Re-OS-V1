@@ -22,9 +22,9 @@ import {
   ArrowRight,
   BarChart3,
 } from "lucide-react"
-import { BrokerageAgentList } from "@/components/brokerage/agent-list"
-import { BrokerageRevenueChart } from "@/components/brokerage/revenue-chart"
-import { BrokerageComplianceOverview } from "@/components/brokerage/compliance-overview"
+import { BrokerageAgentList } from "@/app/components/features/dashboard/brokerage/agent-list"
+import { BrokerageRevenueChart } from "@/app/components/features/dashboard/brokerage/revenue-chart"
+import { BrokerageComplianceOverview } from "@/app/components/features/dashboard/brokerage/compliance-overview"
 import {
   BrokerCommandStrip,
   BrokerRiskRadar,
