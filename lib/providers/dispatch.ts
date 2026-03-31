@@ -19,6 +19,8 @@ import {
 } from "@/lib/providers/messaging"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
 import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
+import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
+import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
 
@@ -70,6 +72,43 @@ export interface DispatchEmailParams extends DispatchActorContext {
 }
 
 export async function dispatchEmail(params: DispatchEmailParams): Promise<DispatchResult> {
+  // ── COMPLIANCE GATE: Check if contact is eligible for outbound ───────────────
+  if (params.contactId || params.leadId) {
+    const supabase = await createServiceClient()
+    const recipientId = params.contactId || params.leadId
+    const table = params.contactId ? "contacts" : "leads"
+
+    const { data: recipient, error: recipientError } = await supabase
+      .from(table)
+      .select("*")
+      .eq("id", recipientId)
+      .maybeSingle()
+
+    if (!recipientError && recipient) {
+      const complianceResult = await evaluateOutboundCompliance({
+        contact: recipient,
+        channel: "email",
+        content: params.subject,
+        actorContext: {
+          brokerageId: params.brokerageId,
+          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
+          userId: params.userId,
+        },
+      })
+
+      if (!complianceResult.allowed) {
+        console.warn(
+          `[Dispatch] Email blocked for ${recipientId}: ${complianceResult.primaryReason}`
+        )
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: `Outbound blocked: ${complianceResult.primaryReason}`,
+        }
+      }
+    }
+  }
+
   const { providerKey } = await resolveProvider({
     providerType: "email",
     actorContext: {
@@ -170,6 +209,43 @@ export interface DispatchSmsParams extends DispatchActorContext {
 }
 
 export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchResult> {
+  // ── COMPLIANCE GATE: Check if contact is eligible for SMS ──────────────────
+  if (params.contactId || params.leadId) {
+    const supabase = await createServiceClient()
+    const recipientId = params.contactId || params.leadId
+    const table = params.contactId ? "contacts" : "leads"
+
+    const { data: recipient, error: recipientError } = await supabase
+      .from(table)
+      .select("*")
+      .eq("id", recipientId)
+      .maybeSingle()
+
+    if (!recipientError && recipient) {
+      const complianceResult = await evaluateOutboundCompliance({
+        contact: recipient,
+        channel: "sms",
+        content: params.message,
+        actorContext: {
+          brokerageId: params.brokerageId,
+          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
+          userId: params.userId,
+        },
+      })
+
+      if (!complianceResult.allowed) {
+        console.warn(
+          `[Dispatch] SMS blocked for ${recipientId}: ${complianceResult.primaryReason}`
+        )
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: `Outbound blocked: ${complianceResult.primaryReason}`,
+        }
+      }
+    }
+  }
+
   const { providerKey } = await resolveProvider({
     providerType: "sms",
     actorContext: {
@@ -221,6 +297,43 @@ export interface DispatchPhoneParams extends DispatchActorContext {
 }
 
 export async function dispatchPhone(params: DispatchPhoneParams): Promise<DispatchResult> {
+  // ── COMPLIANCE GATE: Check if contact is eligible for phone calls ───────────
+  if (params.contactId || params.leadId) {
+    const supabase = await createServiceClient()
+    const recipientId = params.contactId || params.leadId
+    const table = params.contactId ? "contacts" : "leads"
+
+    const { data: recipient, error: recipientError } = await supabase
+      .from(table)
+      .select("*")
+      .eq("id", recipientId)
+      .maybeSingle()
+
+    if (!recipientError && recipient) {
+      const complianceResult = await evaluateOutboundCompliance({
+        contact: recipient,
+        channel: "phone",
+        content: "Outbound call",
+        actorContext: {
+          brokerageId: params.brokerageId,
+          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
+          userId: params.userId,
+        },
+      })
+
+      if (!complianceResult.allowed) {
+        console.warn(
+          `[Dispatch] Phone call blocked for ${recipientId}: ${complianceResult.primaryReason}`
+        )
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: `Outbound blocked: ${complianceResult.primaryReason}`,
+        }
+      }
+    }
+  }
+
   const { providerKey } = await resolveProvider({
     providerType: "phone",
     actorContext: {
