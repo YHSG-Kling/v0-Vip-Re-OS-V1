@@ -498,6 +498,7 @@ export default function FormsManagerClient({ forms: initialForms, brokerageId, b
             </div>
           </form>
         </div>
+      </div>
       )}
       </>
       )}
