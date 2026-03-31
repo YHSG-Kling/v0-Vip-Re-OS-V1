@@ -12,6 +12,7 @@ import {
   sendWeatherAlertToAgent,
   sendFeedbackRequest,
 } from "@/lib/communications"
+import { completeOpenHouseCheckInAction } from "@/app/actions/open-house-kernel"
 
 function parseAIJsonResponse(text: string) {
   let cleanText = text.trim()
@@ -92,30 +93,90 @@ export async function recordVisitor(params: {
   try {
     const supabase = await createClient()
 
-    const { data, error } = await supabase
-      .from("open_house_attendees")
-      .insert({
-        event_id: params.openHouseId,
-        contact_id: params.contactId,
-        first_name: params.firstName,
-        last_name: params.lastName,
-        email: params.email,
-        phone: params.phone,
-        notes: params.notes,
-        interest_level: params.interestLevel || "somewhat_interested",
-        check_in_time: new Date().toISOString(),
-      })
-      .select()
+    // Auth gate: get current user and brokerage
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      return { success: false, error: "Unauthorized" }
+    }
+
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
       .maybeSingle()
 
-    if (error) throw error
-    if (!data) throw new Error("Failed to record visitor")
+    if (!userRow?.brokerage_id) {
+      return { success: false, error: "Brokerage not found" }
+    }
+
+    // If contact_id is provided, use direct insert
+    if (params.contactId) {
+      const { data, error } = await supabase
+        .from("open_house_attendees")
+        .insert({
+          open_house_id: params.openHouseId,
+          contact_id: params.contactId,
+          first_name: params.firstName,
+          last_name: params.lastName,
+          email: params.email,
+          phone: params.phone,
+          notes: params.notes,
+          property_interest_level: mapInterestLevel(params.interestLevel),
+          checked_in: true,
+          check_in_time: new Date().toISOString(),
+          rsvp_status: "confirmed",
+        })
+        .select()
+        .maybeSingle()
+
+      if (error) throw error
+      if (!data) throw new Error("Failed to record visitor")
+
+      revalidatePath("/dashboard")
+      return { success: true, visitor: data, contactId: params.contactId }
+    }
+
+    // Walk-in: use kernel flow to resolve or create contact first
+    const checkInResult = await completeOpenHouseCheckInAction({
+      brokerage_id: userRow.brokerage_id,
+      agent_id: user.id,
+      open_house_id: params.openHouseId,
+      first_name: params.firstName,
+      last_name: params.lastName,
+      email: params.email,
+      phone: params.phone,
+      check_in_method: "manual",
+      interest_level: mapInterestLevel(params.interestLevel),
+      notes: params.notes,
+    })
+
+    if (!checkInResult.success) {
+      throw new Error(checkInResult.error || "Failed to process walk-in check-in")
+    }
 
     revalidatePath("/dashboard")
-    return { success: true, visitor: data }
+    return {
+      success: true,
+      visitor: { id: checkInResult.attendee_id },
+      contactId: checkInResult.contact_id,
+      nextActionId: checkInResult.next_action_id,
+    }
   } catch (error) {
     return handleError(error, "recordVisitor")
   }
+}
+
+/**
+ * Map interest_level string to numeric 1-5 scale
+ */
+function mapInterestLevel(interest?: string): number {
+  const levelMap: Record<string, number> = {
+    not_interested: 1,
+    somewhat_interested: 3,
+    interested: 4,
+    very_interested: 5,
+  }
+  return levelMap[interest || "somewhat_interested"] || 3
 }
 
 // ============================================
