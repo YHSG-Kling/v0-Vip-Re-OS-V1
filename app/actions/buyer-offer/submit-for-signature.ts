@@ -87,10 +87,14 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   if (credential) {
     try {
       const provider = getTransactionProviderByName(credential.platform)
-      // Only call requestSignatures if the offer has an external transaction reference
-      if (offer.esign_provider) {
-        await provider.requestSignatures(offer.esign_provider, signers)
-      }
+      // Only call sendForSignature if the offer has an external transaction reference
+        if (offer.esign_provider) {
+          await provider.sendForSignature({
+            externalTransactionId: offer.esign_provider,
+            documentId: offerId,
+            signers: signers.map((s) => ({ email: s.email, name: s.name, role: s.role })),
+          })
+        }
 
       await supabase.from("activities").insert({
         activity_type: "buyer.offer.provider.signature.requested",

@@ -708,6 +708,38 @@ export type {
   LoadPartnerDirectoryInput,
 } from "./vendors"
 
+// ─── FORMS, E-SIGN & SMART PROPERTY WORKFLOW OS ──────────────────────────────
+// Canonical forms/esign/buyer-property-action kernel commands.
+// Business rules:
+//   • Form context is STRICT — listing/offer/transaction context never cross-pollinates
+//   • Drafts persist to form_submissions with status='draft'
+//   • E-sign is TRANSPORT ONLY — provider handles API; kernel logs events
+//   • Buyer property actions write to property_interests (canonical table)
+//   • resolveTransactionFormsProvider reads platform_credentials — not contact data
+export {
+  resolveTransactionFormsProvider,
+  loadAvailableTransactionForms,
+  prefillFormWithContext,
+  saveFormDraft,
+  loadFormDraft,
+  launchEsignEnvelope,
+  getEsignStatus,
+  syncEsignDocuments,
+  recordBuyerPropertyAction,
+  loadBuyerSavedProperties,
+} from "./forms"
+export type {
+  KernelFormsResult,
+  FormContextType,
+  BuyerPropertyInterestLevel,
+  FormTemplate,
+  FormPrefillData,
+  FormDraft,
+  EsignStatus,
+  ProviderDocument,
+  BuyerPropertyInterest,
+} from "./forms"
+
 export type {
   BrokerageAgentContract,
   BrokerageAgentListInput,

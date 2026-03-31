@@ -11,6 +11,7 @@ import { analyzeMultipleOffers } from "@/app/actions/offer-management"
 import { CheckCircle2, Clock, FileText, ArrowLeft, PartyPopper, Filter, DollarSign, Calendar, Home } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
+import { EsignStatusTracker } from "@/app/components/forms/EsignStatusTracker"
 
 // Buyer offer card component
 function OfferCard({ offer, contactId }: { offer: any; contactId: string }) {

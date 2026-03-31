@@ -5,10 +5,21 @@
  * Defaults to Dotloop if provider unknown or not configured.
  */
 
-import type { ITransactionProvider } from "./transaction-provider.interface"
+import type { ITransactionProvider, TransactionProvider } from "./transaction-provider.interface"
 import { DotloopProvider } from "./dotloop-provider"
-import type { TransactionProvider } from "./transaction-provider.interface"
 import { getTransactionProvider as getProviderName } from "@/lib/brokerage"
+
+// ── Provider registry ────────────────────────────────────────────────────────
+// Add new providers here. Factory returns an instance; throw means not-yet-implemented.
+
+export type ProviderName = "dotloop" | "skyslope" | "formsimplicity" | "brokermint"
+
+const PROVIDER_REGISTRY: Record<ProviderName, () => ITransactionProvider> = {
+  dotloop:         () => new DotloopProvider(),
+  skyslope:        () => { throw new Error("SkySlope provider not yet implemented") },
+  formsimplicity:  () => { throw new Error("FormSimplicity provider not yet implemented") },
+  brokermint:      () => { throw new Error("BrokerMint provider not yet implemented") },
+}
 
 /**
  * Resolve the correct provider based on brokerage configuration

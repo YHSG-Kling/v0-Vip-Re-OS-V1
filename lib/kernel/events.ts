@@ -241,7 +241,7 @@ export enum KernelEvent {
   VIDEO_HIGH_PERFORMER_DETECTED  = 'video_high_performer_detected',
   VIDEO_LOW_PERFORMER_DETECTED   = 'video_low_performer_detected',
 
-  // ── Layer 9 — Marketing & Automation ────────────────────────────────────
+  // ── Layer 9 — Marketing & Automation ──────��─────────────────────────────
   MARKETING_CAMPAIGN_CREATED         = 'marketing_campaign_created',
   MARKETING_CAMPAIGN_APPROVED        = 'marketing_campaign_approved',
   MARKETING_CAMPAIGN_LAUNCHED        = 'marketing_campaign_launched',
@@ -548,4 +548,12 @@ export enum KernelEvent {
   OFFER_OS_REJECTED                  = 'offer_os_rejected',
   OFFER_OS_WITHDRAWN                 = 'offer_os_withdrawn',
   OFFER_OS_OUTCOME_RECORDED          = 'offer_os_outcome_recorded',
+
+  // ── Forms, E-Sign & Smart Property Workflow OS (lib/kernel/forms.ts) ─────────
+  // Rule: ESIGN_ENVELOPE_REQUESTED already exists above (Layer 11).
+  // These are the additional forms-kernel-specific events.
+  FORM_DRAFT_SAVED                   = 'form_draft_saved',
+  FORM_SUBMITTED                     = 'form_submitted',
+  ESIGN_SIGNED_COMPLETED             = 'esign_signed_completed',
+  BUYER_PROPERTY_ACTION_RECORDED     = 'buyer_property_action_recorded',
 }
