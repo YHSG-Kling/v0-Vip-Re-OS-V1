@@ -504,6 +504,45 @@ export type {
   CallContext,
 } from "./ai-isa"
 
+// ─── REPUTATION / REVIEW / REFERRAL OS ──────────────────────────────────────
+// Canonical reputation kernel commands. All review requests, inbound review
+// recording, response publishing, referral creation and pipeline advancement
+// flow through these commands — never directly through app/actions.
+// Business rules:
+//   • rating 1–5 only — validated in kernel, not caller
+//   • respondToReview verifies reviewId belongs to agentId before writing
+//   • createReviewRequest blocks duplicate pending per contact+platform
+//   • advanceReferralStatus enforces REFERRAL_STATUS_TRANSITIONS graph
+//   • Every mutation emits KernelEvent via lifecycle_events
+export {
+  loadReputationWorkspace,
+  createReviewRequest,
+  recordReview,
+  respondToReview,
+  createReferralRequest,
+  advanceReferralStatus,
+  loadReferralPipeline,
+  loadReviewPerformance,
+} from "./reputation"
+export type {
+  ReputationActorContext,
+  KernelReputationResult,
+  ReviewRow,
+  ReviewRequestRow,
+  ReferralRow,
+  ReputationPerformance,
+  ReputationWorkspace,
+  ReferralPipelineData,
+  LoadReputationWorkspaceInput,
+  LoadReviewPerformanceInput,
+  LoadReferralPipelineInput,
+  CreateReviewRequestInput,
+  RecordReviewInput,
+  RespondToReviewInput,
+  CreateReferralInput,
+  AdvanceReferralStatusInput,
+} from "./reputation"
+
 // ─── VENDOR / PARTNER OS ─────────────────────────────────────────────────────
 // Canonical Vendor kernel commands — all record creation, assignment, status
 // transitions, and deliverable attachment flow through these commands.

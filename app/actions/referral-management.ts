@@ -5,14 +5,22 @@ import { revalidatePath } from "next/cache"
 import { getAgentContext } from "@/lib/identity"
 
 // Create new referral
+// Live schema: referrals(id, referral_name, status, referral_source, notes,
+//   value_estimate, commission_potential, source_contact_name, referred_by,
+//   gift_sent, thank_you_sent, brokerage_id, agent_id, referred_contact_id,
+//   referred_lead_id, partner_id, created_at, updated_at, converted_at,
+//   closed_at, gift_sent_at, thank_you_sent_at, commission_amount)
 export async function createReferral(params: {
-  referringContactId: string
-  referredName: string
-  referredPhone?: string
-  referredEmail?: string
-  source: string
-  potentialValue?: number
+  referralName: string
+  referredBy?: string
+  sourceContactName?: string
+  referralSource?: string
+  valueEstimate?: number
+  commissionPotential?: number
   notes?: string
+  referredContactId?: string
+  referredLeadId?: string
+  partnerId?: string
 }) {
   const { agentId, brokerageId } = await getAgentContext()
   if (!agentId) throw new Error("Not authenticated")
@@ -21,16 +29,21 @@ export async function createReferral(params: {
   const { data, error } = await supabase
     .from("referrals")
     .insert({
-      referring_contact_id: params.referringContactId,
-      agent_id: agentId,
-      brokerage_id: brokerageId,
-      referred_name: params.referredName,
-      referred_phone: params.referredPhone,
-      referred_email: params.referredEmail,
-      source: params.source,
-      potential_value: params.potentialValue,
-      notes: params.notes,
-      status: "new",
+      agent_id:             agentId,
+      brokerage_id:         brokerageId,
+      referral_name:        params.referralName,
+      referred_by:          params.referredBy          ?? null,
+      source_contact_name:  params.sourceContactName   ?? null,
+      referral_source:      params.referralSource       ?? null,
+      value_estimate:       params.valueEstimate        ?? null,
+      commission_potential: params.commissionPotential  ?? null,
+      notes:                params.notes                ?? null,
+      referred_contact_id:  params.referredContactId   ?? null,
+      referred_lead_id:     params.referredLeadId      ?? null,
+      partner_id:           params.partnerId            ?? null,
+      gift_sent:            false,
+      thank_you_sent:       false,
+      status:               "new",
     })
     .select()
     .single()
@@ -42,30 +55,25 @@ export async function createReferral(params: {
 }
 
 // Update referral status
+// Only writes columns that exist: status, updated_at, converted_at (on converted), closed_at (on closed)
 export async function updateReferralStatus(referralId: string, status: string) {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
-  const updates: any = { status }
-
-  // Set dates based on status
-  const dateField = {
-    contacted: "contacted_date",
-    qualified: "qualified_date",
-    under_contract: "contract_date",
-    closed: "closed_date",
-  }[status]
-
-  if (dateField) {
-    updates[dateField] = new Date().toISOString().split("T")[0]
+  const updates: Record<string, unknown> = {
+    status,
+    updated_at: new Date().toISOString(),
   }
 
-  // Set reward tier
-  if (["contacted", "qualified", "under_contract", "closed"].includes(status)) {
-    updates.reward_tier = status
-  }
+  if (status === "converted") updates.converted_at = new Date().toISOString()
+  if (status === "closed")    updates.closed_at    = new Date().toISOString()
 
-  const { error } = await supabase.from("referrals").update(updates).eq("id", referralId).eq("agent_id", agentId).eq("brokerage_id", brokerageId)
+  const { error } = await supabase
+    .from("referrals")
+    .update(updates)
+    .eq("id",           referralId)
+    .eq("agent_id",     agentId)
+    .eq("brokerage_id", brokerageId)
 
   if (error) throw error
 
@@ -74,26 +82,20 @@ export async function updateReferralStatus(referralId: string, status: string) {
 }
 
 // Send referral thank you
-export async function sendReferralThankYou(referralId: string, rewardType: string) {
+// Writes: thank_you_sent=true, thank_you_sent_at=now (columns that exist in live schema)
+export async function sendReferralThankYou(referralId: string) {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
-
-  const rewardDescriptions = {
-    contacted: "$25 coffee gift card",
-    qualified: "$100 restaurant gift card",
-    under_contract: "$250 experience gift",
-    closed: "$500+ personalized gift",
-  }
 
   const { error } = await supabase
     .from("referrals")
     .update({
-      thank_you_sent: true,
-      thank_you_sent_date: new Date().toISOString().split("T")[0],
-      reward_description: rewardDescriptions[rewardType as keyof typeof rewardDescriptions],
+      thank_you_sent:    true,
+      thank_you_sent_at: new Date().toISOString(),
+      updated_at:        new Date().toISOString(),
     })
-    .eq("id", referralId)
-    .eq("agent_id", agentId)
+    .eq("id",           referralId)
+    .eq("agent_id",     agentId)
     .eq("brokerage_id", brokerageId)
 
   if (error) throw error
@@ -103,16 +105,17 @@ export async function sendReferralThankYou(referralId: string, rewardType: strin
 }
 
 // Get all referrals for the agent
+// Note: referrals.referred_contact_id FK to contacts (not referring_contact_id)
 export async function getReferrals() {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("referrals")
-    .select("*, contacts!referring_contact_id(first_name, last_name, email, phone)")
-    .eq("agent_id", agentId)
+    .select("*")
+    .eq("agent_id",     agentId)
     .eq("brokerage_id", brokerageId)
-    .order("referral_date", { ascending: false })
+    .order("created_at", { ascending: false })
 
   if (error) throw error
   return data || []
@@ -126,7 +129,7 @@ export async function getReferralROI(dateRange?: { start: string; end: string })
   let query = supabase.from("referrals").select("*").eq("agent_id", agentId).eq("brokerage_id", brokerageId)
 
   if (dateRange) {
-    query = query.gte("referral_date", dateRange.start).lte("referral_date", dateRange.end)
+    query = query.gte("created_at", dateRange.start).lte("created_at", dateRange.end)
   }
 
   const { data, error } = await query
@@ -134,50 +137,45 @@ export async function getReferralROI(dateRange?: { start: string; end: string })
   if (error) throw error
 
   const stats = {
-    totalReferrals: data?.length || 0,
-    contacted: data?.filter((r) => r.status === "contacted").length || 0,
-    qualified: data?.filter((r) => r.status === "qualified").length || 0,
-    underContract: data?.filter((r) => r.status === "under_contract").length || 0,
-    closed: data?.filter((r) => r.status === "closed").length || 0,
-    totalValue: data?.reduce((sum, r) => sum + (r.actual_value || 0), 0) || 0,
-    potentialValue: data?.reduce((sum, r) => sum + (r.potential_value || 0), 0) || 0,
-    conversionRate: data?.length ? (data.filter((r) => r.status === "closed").length / data.length) * 100 : 0,
+    totalReferrals:   data?.length || 0,
+    identified:       data?.filter((r) => r.status === "identified").length || 0,
+    asked:            data?.filter((r) => r.status === "asked").length || 0,
+    received:         data?.filter((r) => r.status === "received").length || 0,
+    converting:       data?.filter((r) => r.status === "converting").length || 0,
+    converted:        data?.filter((r) => r.status === "converted").length || 0,
+    totalValue:       data?.reduce((sum: number, r) => sum + (r.commission_amount  || 0), 0) || 0,
+    potentialValue:   data?.reduce((sum: number, r) => sum + (r.value_estimate     || 0), 0) || 0,
+    conversionRate:   data?.length ? (data.filter((r) => r.status === "converted").length / data.length) * 100 : 0,
   }
 
   return stats
 }
 
-// Get referral leaderboard (top referrers)
+// Get referral leaderboard — groups by referred_by (text field, not FK)
 export async function getReferralLeaderboard() {
   const { agentId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("referrals")
-    .select("referring_contact_id, contacts(first_name, last_name)")
-    .eq("agent_id", agentId)
+    .select("referred_by, referral_name, status")
+    .eq("agent_id",     agentId)
     .eq("brokerage_id", brokerageId)
+    .not("referred_by", "is", null)
 
   if (error) throw error
 
-  // Group by referring contact and count
-  const counts = data?.reduce((acc: any, ref) => {
-    const id = ref.referring_contact_id
-    if (!acc[id]) {
-      acc[id] = {
-        contact: ref.contacts,
-        count: 0,
-      }
-    }
-    acc[id].count++
+  const counts = (data ?? []).reduce((acc: Record<string, { referredBy: string; count: number; converted: number }>, ref) => {
+    const key = ref.referred_by as string
+    if (!acc[key]) acc[key] = { referredBy: key, count: 0, converted: 0 }
+    acc[key].count++
+    if (ref.status === "converted") acc[key].converted++
     return acc
   }, {})
 
-  const leaderboard = Object.values(counts || {})
-    .sort((a: any, b: any) => b.count - a.count)
+  return Object.values(counts)
+    .sort((a, b) => b.count - a.count)
     .slice(0, 10)
-
-  return leaderboard
 }
 
 // Create referral partner

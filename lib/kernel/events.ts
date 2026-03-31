@@ -404,6 +404,14 @@ export enum KernelEvent {
   HOME_VALUE_ESTIMATE_REQUESTED      = 'home_value_estimate_requested',
   HOME_VALUE_CONTACT_CREATED         = 'home_value_contact_created',
 
+  // ── Reputation / Reviews / Referrals (lib/kernel/reputation.ts) ────────────
+  REVIEW_REQUEST_SENT                = 'review_request_sent',
+  REVIEW_RECEIVED                    = 'review_received',
+  REVIEW_RESPONSE_PUBLISHED          = 'review_response_published',
+  REFERRAL_CREATED                   = 'referral_created',
+  REFERRAL_ADVANCED                  = 'referral_advanced',
+  REFERRAL_CONVERTED                 = 'referral_converted',
+
   // ── Vendor Marketplace ──────────────────────────────────────────────────────
   VENDOR_BOOKING_CREATED             = 'vendor_booking_created',
   VENDOR_BOOKING_COMPLETED           = 'vendor_booking_completed',
