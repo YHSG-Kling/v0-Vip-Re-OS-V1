@@ -8,6 +8,7 @@ import { Button } from "@/app/components/ui/button"
 import { Badge } from "@/app/components/ui/badge"
 import { Switch } from "@/app/components/ui/switch"
 import { ArrowLeft, Search, Bell, Home, Heart, ThumbsDown, MessageSquare, Settings, Filter, DollarSign, Bed, Bath, MapPin } from "lucide-react"
+import { SmartSearchWidget } from "@/app/components/forms/SmartSearchWidget"
 
 // Personas that support family/collaborative search
 const FAMILY_SEARCH_PERSONAS = [
@@ -258,6 +259,12 @@ export default async function SearchPage({
           )}
         </CardContent>
       </Card>
+
+      {/* Smart property search — NL query against buyer preferences */}
+      <SmartSearchWidget
+        contactId={contactId}
+        preferences={preferences ?? undefined}
+      />
 
       {/* Saved/Dismissed Properties */}
       <div className="grid gap-6 md:grid-cols-2">

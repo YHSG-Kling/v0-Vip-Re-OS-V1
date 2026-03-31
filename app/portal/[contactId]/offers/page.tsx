@@ -166,6 +166,14 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
           </Card>
         )}
 
+        {/* E-sign status tracker — shown when any offer has an active esign envelope */}
+        {offers.some((o: any) => o.esign_status && o.esign_status !== "completed" && o.transaction_id) && (
+          <EsignStatusTracker
+            transactionId={offers.find((o: any) => o.esign_status && o.esign_status !== "completed" && o.transaction_id)!.transaction_id}
+            compact={false}
+          />
+        )}
+
         {/* Tabs for filtering */}
         <Tabs defaultValue="all" className="space-y-4">
           <TabsList>

@@ -28,8 +28,12 @@ import { Skeleton } from "@/app/components/ui/skeleton"
 import { cn } from "@/lib/utils"
 
 interface EsignStatusTrackerProps {
-  externalTransactionId: string | null | undefined
+  /** The external transaction ID from the forms provider (e.g. Dotloop loop ID). */
+  transactionId: string | null | undefined
+  /** Deprecated alias — use transactionId */
+  externalTransactionId?: string | null | undefined
   formName?: string
+  compact?: boolean
   className?: string
 }
 
@@ -48,14 +52,18 @@ const fetcher = (url: string) =>
   })
 
 export function EsignStatusTracker({
+  transactionId,
   externalTransactionId,
   formName,
+  compact = false,
   className,
 }: EsignStatusTrackerProps) {
-  const shouldPoll = !!externalTransactionId
+  // Support both prop names for backwards compatibility
+  const resolvedId = transactionId ?? externalTransactionId
+  const shouldPoll = !!resolvedId
 
   const { data, error, isLoading, mutate } = useSWR<{ success: boolean; status: EsignStatus }>(
-    shouldPoll ? `/api/esign/status/${externalTransactionId}` : null,
+    shouldPoll ? `/api/esign/status/${resolvedId}` : null,
     fetcher,
     {
       refreshInterval: (data) => {

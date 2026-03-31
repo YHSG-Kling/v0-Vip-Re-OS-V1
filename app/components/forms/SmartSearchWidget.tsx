@@ -39,7 +39,16 @@ import type { BuyerPropertyInterestLevel, BuyerPropertyInterest } from "@/lib/ke
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 interface SmartSearchWidgetProps {
-  contact_id: string
+  contactId: string
+  /** Optional pre-loaded property preferences from parent server component */
+  preferences?: {
+    min_price?: number | null
+    max_price?: number | null
+    min_beds?: number | null
+    min_baths?: number | null
+    zip_codes?: string[] | null
+    property_types?: string[] | null
+  } | null
   className?: string
 }
 
@@ -180,7 +189,7 @@ function PropertyCard({
 
 // ─── MAIN COMPONENT ──────────────────────────────────────────────────────────
 
-export function SmartSearchWidget({ contact_id, className }: SmartSearchWidgetProps) {
+export function SmartSearchWidget({ contactId, preferences, className }: SmartSearchWidgetProps) {
   const [query, setQuery]           = useState("")
   const [activeQuery, setActiveQuery] = useState("")
   const [pendingAction, setPendingAction] = useState<string | null>(null)
@@ -193,9 +202,9 @@ export function SmartSearchWidget({ contact_id, className }: SmartSearchWidgetPr
 
   // Saved properties (shown when no active search)
   const { data: savedData, mutate: mutateSaved, isLoading: isLoadingSaved } = useSWR(
-    `buyer-properties-${contact_id}`,
+    `buyer-properties-${contactId}`,
     () =>
-      loadBuyerPropertiesAction({ contact_id, limit: 20 }).then((r) =>
+      loadBuyerPropertiesAction({ contact_id: contactId, limit: 20 }).then((r) =>
         r.success ? r.data?.interests ?? [] : []
       ),
     { revalidateOnFocus: false }
@@ -207,7 +216,7 @@ export function SmartSearchWidget({ contact_id, className }: SmartSearchWidgetPr
     total?: number
   }>(
     activeQuery
-      ? `/api/search/buyer-smart-search?q=${encodeURIComponent(activeQuery)}&contact_id=${contact_id}`
+      ? `/api/search/buyer-smart-search?q=${encodeURIComponent(activeQuery)}&contact_id=${contactId}`
       : null,
     fetcher,
     { revalidateOnFocus: false }
@@ -249,12 +258,12 @@ export function SmartSearchWidget({ contact_id, className }: SmartSearchWidgetPr
       setOptimisticInterests((prev) => ({ ...prev, [listingId]: level }))
 
       startTransition(async () => {
-        await recordPropertyActionAction({ contact_id, listing_id: listingId, interest_level: level })
+        await recordPropertyActionAction({ contact_id: contactId, listing_id: listingId, interest_level: level })
         setPendingAction(null)
         mutateSaved()
       })
     },
-    [contact_id, mutateSaved]
+    [contactId, mutateSaved]
   )
 
   // ── Handle search ─────────────────────────────────────────────────────────

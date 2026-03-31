@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState, useTransition, useEffect } from 'react'
 
 type FormField = {
   key: string
@@ -46,6 +46,26 @@ const emptyForm = () => ({
   ],
 })
 
+// ── Types for transaction forms ────────────────────────────────────────────
+
+type TransactionFormTemplate = {
+  id: string
+  name: string
+  form_type: string
+  state_code?: string
+  is_required: boolean
+  category?: string
+}
+
+type TransactionFormsState = {
+  status: 'idle' | 'loading' | 'loaded' | 'error'
+  provider: string | null
+  templates: TransactionFormTemplate[]
+  error: string | null
+}
+
+// ── Component ──────────────────────────────────────────────────────────────
+
 export default function FormsManagerClient({ forms: initialForms, brokerageId, baseUrl }: Props) {
   const [forms, setForms] = useState<FormRow[]>(initialForms)
   const [showModal, setShowModal] = useState(false)
@@ -53,6 +73,29 @@ export default function FormsManagerClient({ forms: initialForms, brokerageId, b
   const [copied, setCopied] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
+  const [activeTab, setActiveTab] = useState<'lead-capture' | 'transaction-forms'>('lead-capture')
+  const [txForms, setTxForms] = useState<TransactionFormsState>({
+    status: 'idle',
+    provider: null,
+    templates: [],
+    error: null,
+  })
+
+  // Load transaction form templates when tab is first opened
+  useEffect(() => {
+    if (activeTab !== 'transaction-forms' || txForms.status !== 'idle') return
+    setTxForms(s => ({ ...s, status: 'loading' }))
+    fetch('/api/forms/templates')
+      .then(r => r.json())
+      .then((json: { success: boolean; provider?: string; templates?: TransactionFormTemplate[]; error?: string }) => {
+        if (json.success) {
+          setTxForms({ status: 'loaded', provider: json.provider ?? null, templates: json.templates ?? [], error: null })
+        } else {
+          setTxForms(s => ({ ...s, status: 'error', error: json.error ?? 'Failed to load templates' }))
+        }
+      })
+      .catch(() => setTxForms(s => ({ ...s, status: 'error', error: 'Network error loading templates' })))
+  }, [activeTab, txForms.status])
 
   function handleCopy(slug: string) {
     const url = `${baseUrl}/forms/${slug}`
@@ -125,21 +168,140 @@ export default function FormsManagerClient({ forms: initialForms, brokerageId, b
 
   return (
     <div className="p-6 space-y-6">
+      {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-foreground">Lead Capture Forms</h1>
+          <h1 className="text-2xl font-semibold text-foreground">Forms</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Contact-first capture. Form fill = TCPA consent. No leads created.
+            Lead capture forms and transaction document templates.
           </p>
         </div>
+        {activeTab === 'lead-capture' && (
+          <button
+            onClick={() => setShowModal(true)}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            + Create Form
+          </button>
+        )}
+      </div>
+
+      {/* Tab switcher */}
+      <div className="flex gap-1 rounded-lg border border-border bg-muted/40 p-1 w-fit">
         <button
-          onClick={() => setShowModal(true)}
-          className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors"
+          onClick={() => setActiveTab('lead-capture')}
+          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+            activeTab === 'lead-capture'
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
         >
-          + Create Form
+          Lead Capture
+        </button>
+        <button
+          onClick={() => setActiveTab('transaction-forms')}
+          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
+            activeTab === 'transaction-forms'
+              ? 'bg-background text-foreground shadow-sm'
+              : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Transaction Forms
         </button>
       </div>
 
+      {/* ── Transaction Forms panel ───────────────────────────────────────── */}
+      {activeTab === 'transaction-forms' && (
+        <div className="space-y-4">
+          {/* Provider status */}
+          <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 flex items-center justify-between">
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium text-foreground">Forms Provider</p>
+              <p className="text-xs text-muted-foreground">
+                {txForms.status === 'loading' && 'Detecting provider…'}
+                {txForms.status === 'loaded' && (txForms.provider
+                  ? `Connected: ${txForms.provider.charAt(0).toUpperCase() + txForms.provider.slice(1)}`
+                  : 'No provider connected — templates are unavailable')}
+                {txForms.status === 'error' && (txForms.error ?? 'Error loading provider')}
+                {txForms.status === 'idle' && 'Loading…'}
+              </p>
+            </div>
+            <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+              txForms.status === 'loaded' && txForms.provider
+                ? 'bg-green-100 text-green-800'
+                : txForms.status === 'error'
+                ? 'bg-red-100 text-red-800'
+                : 'bg-muted text-muted-foreground'
+            }`}>
+              {txForms.status === 'loaded' && txForms.provider ? 'Connected' : txForms.status === 'error' ? 'Error' : 'Checking'}
+            </span>
+          </div>
+
+          {/* Templates table */}
+          {txForms.status === 'loading' && (
+            <div className="rounded-lg border border-border py-12 text-center text-sm text-muted-foreground">
+              Loading templates…
+            </div>
+          )}
+          {txForms.status === 'error' && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/5 py-8 text-center space-y-2">
+              <p className="text-sm font-medium text-destructive">{txForms.error}</p>
+              <button
+                onClick={() => setTxForms(s => ({ ...s, status: 'idle', error: null }))}
+                className="text-xs text-primary hover:underline"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {txForms.status === 'loaded' && (
+            <div className="rounded-lg border border-border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Form Name</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Type</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">State</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Required</th>
+                    <th className="px-4 py-3 text-left font-medium text-muted-foreground">Category</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {txForms.templates.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">
+                        {txForms.provider
+                          ? 'No templates available from this provider.'
+                          : 'Connect a forms provider in Settings to see available templates.'}
+                      </td>
+                    </tr>
+                  ) : (
+                    txForms.templates.map(t => (
+                      <tr key={t.id} className="bg-background hover:bg-muted/30 transition-colors">
+                        <td className="px-4 py-3 font-medium text-foreground">{t.name}</td>
+                        <td className="px-4 py-3 text-muted-foreground capitalize">{t.form_type.replace(/_/g, ' ')}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{t.state_code ?? '—'}</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                            t.is_required ? 'bg-amber-100 text-amber-800' : 'bg-muted text-muted-foreground'
+                          }`}>
+                            {t.is_required ? 'Required' : 'Optional'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground capitalize">{t.category ?? '—'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Lead Capture panel ───────────────────────────────────────────── */}
+      {activeTab === 'lead-capture' && (
+        <>
       {/* Forms list */}
       <div className="rounded-lg border border-border overflow-hidden">
         <table className="w-full text-sm">
@@ -326,17 +488,18 @@ export default function FormsManagerClient({ forms: initialForms, brokerageId, b
                 >
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  disabled={isPending}
-                  className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
-                >
-                  {isPending ? 'Creating...' : 'Create Form'}
-                </button>
-              </div>
-            </form>
-          </div>
+              <button
+                type="submit"
+                disabled={isPending}
+                className="rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {isPending ? 'Creating...' : 'Create Form'}
+              </button>
+            </div>
+          </form>
         </div>
+      )}
+        </>
       )}
     </div>
   )
