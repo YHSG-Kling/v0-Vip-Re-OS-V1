@@ -220,7 +220,7 @@ async function triggerStageActions(listingId: string, stage: string, agentId: st
   const supabase = await createClient()
   const { data: listing } = await supabase
     .from("listings")
-    .select("*, seller:seller_id(*)")
+    .select("*, seller:seller_contact_id(first_name, last_name)")
     .eq("id", listingId)
     .single()
 
@@ -262,7 +262,7 @@ async function triggerStageActions(listingId: string, stage: string, agentId: st
     case "offer_received":
       await createTask(agentId, listingId, "Review offer with seller", 0)
       await createTask(agentId, listingId, "Prepare counter if needed", 1)
-      await notifySeller(listing.seller_id, "offer_received")
+      await notifySeller(listing.seller_contact_id, "offer_received")
       break
     case "under_contract":
       await createTask(agentId, listingId, "Create transaction folder", 0)
@@ -286,8 +286,8 @@ async function triggerStageActions(listingId: string, stage: string, agentId: st
       await createTask(agentId, listingId, "Deliver keys/garage codes", 0)
       await createTask(agentId, listingId, "Send closing congratulations", 0)
       await trackClosingGift(listing.id)
-      await scheduleReviewRequests(listing.seller_id, listing.id)
-      await enrollLifetimeCustomer(listing.seller_id)
+      await scheduleReviewRequests(listing.seller_contact_id, listing.id)
+      await enrollLifetimeCustomer(listing.seller_contact_id)
       break
     case "post_close":
       await createTask(agentId, listingId, "30-day check-in call", 30)
@@ -313,7 +313,7 @@ export async function scheduleClosingGift(listingId: string) {
   const supabase = await createClient()
   const { data: listing } = await supabase
     .from("listings")
-    .select("estimated_close_date, seller_id, agent_id")
+    .select("estimated_close_date, seller_contact_id, agent_id")
     .eq("id", listingId)
     .single()
 
@@ -322,7 +322,7 @@ export async function scheduleClosingGift(listingId: string) {
     const orderDate = new Date(closeDate.getTime() - 7 * 24 * 60 * 60 * 1000)
     await supabase.from("closing_gifts").insert({
       listing_id: listingId,
-      contact_id: listing.seller_id,
+      contact_id: listing.seller_contact_id,
       agent_id: listing.agent_id,
       gift_description: "Closing gift basket",
       price_cents: 7500,
@@ -395,7 +395,7 @@ async function generateSellerVideo(listingId: string, videoType: string) {
   const supabase = await createClient()
   const { data: listing } = await supabase
     .from("listings")
-    .select("*, seller:seller_id(*), agent:agent_id(*)")
+    .select("*, seller:seller_contact_id(first_name, last_name), agent:agent_id(first_name, last_name)")
     .eq("id", listingId)
     .single()
 
@@ -412,7 +412,7 @@ async function generateSellerVideo(listingId: string, videoType: string) {
   const { data: scriptRecord } = await supabase
     .from("video_scripts")
     .insert({
-      contact_id: listing.seller_id,
+      contact_id: listing.seller_contact_id,
       agent_id: listing.agent_id,
       script_text: script,
       script_purpose: videoType,

@@ -228,7 +228,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
   // Create QR dialog state (inline in studio)
   const [isCreateQrOpen, setIsCreateQrOpen] = useState(false)
-  const [newQr, setNewQr] = useState({ label: "", targetUrl: "", purpose: "general" as const })
+  const [newQr, setNewQr] = useState<{ label: string; targetUrl: string; purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture" }>({ label: "", targetUrl: "", purpose: "general" })
   const [isCreatingQr, setIsCreatingQr] = useState(false)
 
   // Ad OS state
@@ -462,7 +462,9 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   async function loadMailData() {
     setIsMailLoading(true)
     try {
-      const result = await getMailCampaigns()
+      const resolvedBrokerageId = brokerageIdProp || brokerageId
+      if (!resolvedBrokerageId) return
+      const result = await getMailCampaigns(resolvedBrokerageId)
       if (result.success) setMailCampaigns(result.campaigns || [])
     } catch (e) {
       console.error("[v0] loadMailData error:", e)
@@ -1715,11 +1717,23 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
           <TabsContent value="qr" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <QrCode className="h-5 w-5 text-violet-600" />
-                  QR Code Management
-                </CardTitle>
-                <CardDescription>Link QR codes to marketing assets for tracking</CardDescription>
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <QrCode className="h-5 w-5 text-violet-600" />
+                      QR Code Management
+                    </CardTitle>
+                    <CardDescription>Link QR codes to marketing assets for tracking</CardDescription>
+                  </div>
+                  <Button
+                    size="sm"
+                    className="bg-violet-600 hover:bg-violet-700"
+                    onClick={() => setIsCreateQrOpen(true)}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    New QR Code
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center gap-4 mb-6">
@@ -2132,6 +2146,162 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 onPredict={() => selectedAssetForPrediction && handlePredictPerformance(selectedAssetForPrediction)}
                 showPredictButton={!!currentPrediction}
               />
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Create Newsletter Campaign Dialog */}
+        <Dialog open={isCreateNewsletterOpen} onOpenChange={setIsCreateNewsletterOpen}>
+          <DialogContent className="sm:max-w-[500px]">
+            <DialogHeader>
+              <DialogTitle>New Newsletter Campaign</DialogTitle>
+              <DialogDescription>
+                Create a newsletter campaign. You can compose content and schedule after saving.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-name">Campaign Name</Label>
+                <Input
+                  id="nl-name"
+                  placeholder="e.g. May Market Update"
+                  value={newNewsletter.campaignName}
+                  onChange={(e) => setNewNewsletter((prev) => ({ ...prev, campaignName: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-subject">Subject Line</Label>
+                <Input
+                  id="nl-subject"
+                  placeholder="e.g. What's happening in your neighborhood this month"
+                  value={newNewsletter.subjectLine}
+                  onChange={(e) => setNewNewsletter((prev) => ({ ...prev, subjectLine: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-content">Content (optional — save draft and edit later)</Label>
+                <Textarea
+                  id="nl-content"
+                  rows={5}
+                  placeholder="Write your newsletter content here, or leave blank to compose later..."
+                  value={newNewsletter.content}
+                  onChange={(e) => setNewNewsletter((prev) => ({ ...prev, content: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsCreateNewsletterOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-violet-600 hover:bg-violet-700"
+                disabled={isCreatingNewsletter || !newNewsletter.campaignName.trim()}
+                onClick={async () => {
+                  setIsCreatingNewsletter(true)
+                  try {
+                    const { createNewsletterCampaign } = await import("@/lib/kernel/marketing")
+                    const resolvedBrokerageId = brokerageIdProp || brokerageId
+                    const resolvedAgentId = agentId
+                    const result = await createNewsletterCampaign({
+                      ctx: { brokerageId: resolvedBrokerageId, agentId: resolvedAgentId, userId: resolvedAgentId },
+                      campaignName: newNewsletter.campaignName.trim(),
+                      subjectLine: newNewsletter.subjectLine.trim() || newNewsletter.campaignName.trim(),
+                      content: newNewsletter.content.trim() || "",
+                    })
+                    if (result.success) {
+                      setIsCreateNewsletterOpen(false)
+                      setNewNewsletter({ campaignName: "", subjectLine: "", content: "" })
+                      await loadNewsletterData()
+                    }
+                  } finally {
+                    setIsCreatingNewsletter(false)
+                  }
+                }}
+              >
+                {isCreatingNewsletter ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Save Draft
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Create QR Code Dialog */}
+        <Dialog open={isCreateQrOpen} onOpenChange={setIsCreateQrOpen}>
+          <DialogContent className="sm:max-w-[440px]">
+            <DialogHeader>
+              <DialogTitle>New QR Code</DialogTitle>
+              <DialogDescription>
+                Create a trackable QR code linked to a URL of your choice.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-label">Label</Label>
+                <Input
+                  id="qr-label"
+                  placeholder="e.g. Open House Flyer — 123 Main St"
+                  value={newQr.label}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, label: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-url">Target URL</Label>
+                <Input
+                  id="qr-url"
+                  placeholder="https://..."
+                  type="url"
+                  value={newQr.targetUrl}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, targetUrl: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-purpose">Purpose</Label>
+                <select
+                  id="qr-purpose"
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  value={newQr.purpose}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, purpose: e.target.value as "listing" | "open_house" | "general" | "campaign" | "lead_capture" }))}
+                >
+                  <option value="general">General</option>
+                  <option value="open_house">Open House</option>
+                  <option value="listing">Listing</option>
+                  <option value="lead_capture">Lead Capture</option>
+                  <option value="campaign">Campaign</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsCreateQrOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-violet-600 hover:bg-violet-700"
+                disabled={isCreatingQr || !newQr.label.trim() || !newQr.targetUrl.trim()}
+                onClick={async () => {
+                  setIsCreatingQr(true)
+                  try {
+                    const { createQrAsset } = await import("@/lib/kernel/marketing")
+                    const resolvedBrokerageId = brokerageIdProp || brokerageId
+                    const resolvedAgentId = agentId
+                    const result = await createQrAsset({
+                      ctx: { brokerageId: resolvedBrokerageId, agentId: resolvedAgentId, userId: resolvedAgentId },
+                      label: newQr.label.trim(),
+                      targetUrl: newQr.targetUrl.trim(),
+                      purpose: newQr.purpose,
+                    })
+                    if (result.success) {
+                      setIsCreateQrOpen(false)
+                      setNewQr({ label: "", targetUrl: "", purpose: "general" })
+                      await loadQrCodes()
+                    }
+                  } finally {
+                    setIsCreatingQr(false)
+                  }
+                }}
+              >
+                {isCreatingQr ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Create QR Code
+              </Button>
             </div>
           </DialogContent>
         </Dialog>

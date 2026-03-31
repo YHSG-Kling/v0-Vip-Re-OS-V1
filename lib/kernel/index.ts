@@ -385,6 +385,50 @@ export type {
   KernelOfferResult,
   OfferRow,
 } from "./offers"
+// ─── MARKETING OS ────────────────────────────────────────────────────────────
+// Canonical marketing commands — all content types, one kernel layer.
+// Business rules:
+//   • newsletter_campaigns (not email_campaigns) is the newsletter table
+//   • blog_posts.publish_status (not status) controls published state
+//   • ai_video_projects (not video_projects) is the video table
+//   • qr_codes.agent_id references agents (not agent_user_id)
+//   • No direct DB calls from UI — all writes go through these commands
+export {
+  loadMarketingWorkspace,
+  createNewsletterCampaign,
+  saveNewsletterDraft,
+  scheduleNewsletterSend,
+  sendNewsletterNow,
+  createDirectMailCampaign,
+  previewDirectMailAsset,
+  submitDirectMailCampaign,
+  createBlogPost,
+  previewBlogPost,
+  publishBlogPost,
+  createVideoProject,
+  previewVideoProject,
+  distributeVideoAsset,
+  createPodcastEpisodeKernel,
+  previewPodcastEpisode,
+  publishPodcastEpisode,
+  createMarketingCampaign,
+  repurposeContentAsset,
+  createQrAsset,
+  previewQrAsset,
+} from "./marketing"
+export type {
+  KernelMarketingResult,
+  MarketingActorContext,
+  MarketingWorkspaceData,
+  CreateNewsletterCampaignInput,
+  CreateDirectMailCampaignInput,
+  CreateBlogPostInput,
+  CreateVideoProjectInput,
+  CreatePodcastEpisodeInput,
+  CreateMarketingCampaignInput,
+  CreateQrAssetInput,
+} from "./marketing"
+
 export type {
   BrokerageAgentContract,
   BrokerageAgentListInput,
