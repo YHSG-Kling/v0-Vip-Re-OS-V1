@@ -1,5 +1,3 @@
-"use server"
-
 // lib/ads/facebook-audience-sync.ts
 // Layer 9.5 — Facebook Custom Audience and Sync Server Actions
 // Kernel gates: canAccessFeature, createAudienceSegment, syncAudience, loadAudienceDefinitions
