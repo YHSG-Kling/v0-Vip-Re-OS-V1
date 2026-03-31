@@ -429,6 +429,81 @@ export type {
   CreateQrAssetInput,
 } from "./marketing"
 
+// ─── AI TOOLS OS ─────────────────────────────────────────────────────────────
+// Canonical AI Tools kernel commands — all tool executions, saves, and entity
+// attachments flow through these commands.
+// Business rules:
+//   • All runs logged to ai_tool_usage — no silent executions
+//   • Output is only persisted when user explicitly saves (saveAiToolOutput)
+//   • attachAiOutputToEntity writes to ai_assistant_notes, not saved_ai_outputs
+//   • tool_name must be a value from AiToolName union — no ad-hoc strings
+export {
+  loadAiToolsWorkspace,
+  runAiTool,
+  saveAiToolOutput,
+  attachAiOutputToEntity,
+  previewAiOutput,
+} from "./ai-tools"
+export type {
+  AiToolName,
+  KernelAiToolsResult,
+  AiToolsActorContext,
+  AiToolsWorkspaceData,
+  AiToolUsageRecord,
+  SavedAiOutput,
+  LoadAiToolsWorkspaceInput,
+  RunAiToolInput,
+  SaveAiToolOutputInput,
+  AttachAiOutputToEntityInput,
+  PreviewAiOutputInput,
+} from "./ai-tools"
+
+// ─── AI ISA OS ───────────────────────────────────────────────────────────────
+// Canonical AI Inside Sales Agent kernel commands — all ISA qualification,
+// automation, handoff, outcome recording, and call context flows here.
+// Business rules:
+//   • leads.minimum_viable_for_isa must be true before assignAiIsaToLeadAfterGate
+//   • leads.ai_isa_owner = true is the single source of truth for ISA ownership
+//   • tcpa_consent required before any outreach — evaluateAiIsaEligibility enforces this
+//   • handoffToHumanAgent sets ai_isa_owner = false, fires lifecycle_event
+//   • pauseAiIsaAutomation sets ai_outreach_paused = true — never deletes state
+//   • buildCallContext reads ai_identity_profiles: agent → team → brokerage cascade
+export {
+  loadAiIsaWorkspace,
+  evaluateAiIsaEligibility,
+  assignAiIsaToLeadAfterGate,
+  startAiIsaAutomation,
+  pauseAiIsaAutomation,
+  resumeAiIsaAutomation,
+  handoffToHumanAgent,
+  recordAiIsaOutcome,
+  routeHistoryToCanonicalEntity,
+  resolveLeadChannel,
+  buildCallContext,
+} from "./ai-isa"
+export type {
+  KernelAiIsaResult,
+  AiIsaActorContext,
+  AiIsaWorkspaceData,
+  AiIsaCampaignRow,
+  AiIsaLeadRow,
+  AiIsaCallRow,
+  AiIsaHandoffRow,
+  EvaluateAiIsaEligibilityInput,
+  EligibilityResult,
+  AssignAiIsaToLeadInput,
+  StartAiIsaAutomationInput,
+  PauseAiIsaAutomationInput,
+  ResumeAiIsaAutomationInput,
+  HandoffToHumanAgentInput,
+  RecordAiIsaOutcomeInput,
+  RouteHistoryInput,
+  ResolveLeadChannelInput,
+  LeadChannelResult,
+  BuildCallContextInput,
+  CallContext,
+} from "./ai-isa"
+
 export type {
   BrokerageAgentContract,
   BrokerageAgentListInput,
