@@ -1,73 +1,47 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import {
   BarChart3,
-  TrendingUp,
-  Users,
-  DollarSign,
-  Share2,
-  Loader2,
-  CheckCircle2,
-  AlertTriangle,
-  Copy,
   Download,
-  Sparkles,
   FileText,
-  Target,
+  Mail,
+  TrendingUp,
+  AlertCircle,
+  CheckCircle2,
   Clock,
-  RefreshCw,
-  Building2,
-  UserCheck,
-  ArrowRight,
-  Database,
+  DollarSign,
+  Eye,
+  Star,
+  Activity,
+  Send,
 } from "lucide-react"
-import Link from "next/link"
-
-// Action imports
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
-  loadValueDrivenDashboard,
-  calculateTrustCapital,
-  aggregateValueDelivered,
-} from "@/app/actions/analytics"
-import {
-  aiGenerateProfitLossReport,
-  getCommissionRecords,
-  getExpenses,
-} from "@/app/actions/ai-financial-management"
-import {
-  getTopConversionCandidates,
-} from "@/app/actions/ai-predictions"
-import {
-  getContentPerformanceStats,
-  getHashtagPerformance,
-} from "@/app/actions/ai-content-generation"
-import { getSocialQueue } from "@/app/actions/social-media-automation"
-import { getReferralROI } from "@/app/actions/referral-management"
-import { getWorkflowStats } from "@/app/actions/workflow-monitoring"
-import { generateContextualDraft } from "@/app/actions/social/generate-social-post"
+  exportReportCsvAction,
+  exportReportPdfAction,
+  emailReportAction,
+} from "@/app/actions/reporting-kernel"
 
 interface ReportsClientProps {
   agentId: string
-  brokerageId?: string
+  brokerageId: string
   role: string
   userId: string
   monthStart: string
+  initialCampaignData: any
+  initialFinancialData: any
+  initialReputationData: any
+  initialSourceData: any
 }
-
-type Period = "month" | "quarter" | "year"
 
 export function ReportsClient({
   agentId,
@@ -75,992 +49,558 @@ export function ReportsClient({
   role,
   userId,
   monthStart,
+  initialCampaignData,
+  initialFinancialData,
+  initialReputationData,
+  initialSourceData,
 }: ReportsClientProps) {
-  const [activeTab, setActiveTab] = useState("agent")
-  const [period, setPeriod] = useState<Period>("month")
-  const [generating, setGenerating] = useState(false)
-  const [generatingPL, setGeneratingPL] = useState(false)
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
 
-  // Data states
-  const [valueData, setValueData] = useState<any>(null)
-  const [commissions, setCommissions] = useState<any[]>([])
-  const [expenses, setExpenses] = useState<any[]>([])
-  const [conversionCandidates, setConversionCandidates] = useState<any[]>([])
-  const [referralRoi, setReferralRoi] = useState<any>(null)
-  const [trustCapital, setTrustCapital] = useState<number | null>(null)
-  const [plReport, setPlReport] = useState<any>(null)
+  // Email dialog state
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false)
+  const [emailRecipients, setEmailRecipients] = useState("")
+  const [emailSubject, setEmailSubject] = useState(`Reports - ${new Date().toLocaleDateString()}`)
+  const [emailMessage, setEmailMessage] = useState("")
+  const [emailReportType, setEmailReportType] = useState("summary")
+  const [emailError, setEmailError] = useState("")
+  const [emailSuccess, setEmailSuccess] = useState(false)
 
-  // Social data
-  const [contentStats, setContentStats] = useState<any>(null)
-  const [hashtagPerformance, setHashtagPerformance] = useState<any>(null)
-  const [socialQueue, setSocialQueue] = useState<any[]>([])
-
-  // Team/Brokerage data
-  const [workflowStats, setWorkflowStats] = useState<any>(null)
-
-  // AI Summary states
-  const [aiSummary, setAiSummary] = useState<string | null>(null)
-  const [socialSummary, setSocialSummary] = useState<string | null>(null)
-  const [pipelineSummary, setPipelineSummary] = useState<string | null>(null)
-  const [teamSummary, setTeamSummary] = useState<string | null>(null)
-  const [brokerageSummary, setBrokerageSummary] = useState<string | null>(null)
-
-  const [loading, setLoading] = useState(true)
-
-  const today = new Date().toISOString().split("T")[0]
-
-  const getPeriodStart = useCallback(() => {
-    const now = new Date()
-    if (period === "month") {
-      return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split("T")[0]
-    } else if (period === "quarter") {
-      const quarter = Math.floor(now.getMonth() / 3)
-      return new Date(now.getFullYear(), quarter * 3, 1).toISOString().split("T")[0]
-    } else {
-      return new Date(now.getFullYear(), 0, 1).toISOString().split("T")[0]
-    }
-  }, [period])
-
-  // Load Agent Report data
-  const loadAgentData = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [valueResult, commissionsResult, expensesResult, candidatesResult, referralResult, trustResult] =
-        await Promise.all([
-          loadValueDrivenDashboard(agentId, period).catch(() => null),
-          getCommissionRecords({ status: "pending" }).catch(() => []),
-          getExpenses({ startDate: getPeriodStart() }).catch(() => []),
-          getTopConversionCandidates(5).catch(() => []),
-          getReferralROI().catch(() => null),
-          calculateTrustCapital(agentId).catch(() => null),
-        ])
-
-      setValueData(valueResult)
-      setCommissions(commissionsResult || [])
-      setExpenses(expensesResult || [])
-      setConversionCandidates(candidatesResult || [])
-      setReferralRoi(referralResult)
-      setTrustCapital(trustResult)
-    } catch (error) {
-      console.error("Error loading agent data:", error)
-    } finally {
-      setLoading(false)
-    }
-  }, [agentId, period, getPeriodStart])
-
-  // Load Social Report data
-  const loadSocialData = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [contentResult, hashtagResult, queueResult] = await Promise.all([
-        getContentPerformanceStats(agentId, { start: getPeriodStart(), end: today }).catch(() => null),
-        getHashtagPerformance(agentId).catch(() => null),
-        getSocialQueue({ brokerage_id: brokerageId }).catch(() => []),
-      ])
-
-      setContentStats(contentResult)
-      setHashtagPerformance(hashtagResult)
-      setSocialQueue(queueResult || [])
-    } catch (error) {
-      console.error("Error loading social data:", error)
-    } finally {
-      setLoading(false)
-    }
-  }, [agentId, brokerageId, getPeriodStart, today])
-
-  // Load Pipeline data
-  const loadPipelineData = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [candidatesResult, valueResult] = await Promise.all([
-        getTopConversionCandidates(10).catch(() => []),
-        loadValueDrivenDashboard(agentId, period).catch(() => null),
-      ])
-
-      setConversionCandidates(candidatesResult || [])
-      setValueData(valueResult)
-    } catch (error) {
-      console.error("Error loading pipeline data:", error)
-    } finally {
-      setLoading(false)
-    }
-  }, [agentId, period])
-
-  // Load Team/Brokerage data
-  const loadTeamData = useCallback(async () => {
-    setLoading(true)
-    try {
-      const [workflowResult] = await Promise.all([getWorkflowStats().catch(() => null)])
-      setWorkflowStats(workflowResult)
-    } catch (error) {
-      console.error("Error loading team data:", error)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  // Tab change handler
-  useEffect(() => {
-    if (activeTab === "agent") {
-      loadAgentData()
-    } else if (activeTab === "social") {
-      loadSocialData()
-    } else if (activeTab === "pipeline") {
-      loadPipelineData()
-    } else if (activeTab === "team" || activeTab === "brokerage") {
-      loadTeamData()
-    }
-  }, [activeTab, period, loadAgentData, loadSocialData, loadPipelineData, loadTeamData])
-
-  // Generate P&L Report
-  const handleGeneratePL = async () => {
-    setGeneratingPL(true)
-    try {
-      const result = await aiGenerateProfitLossReport({
-        agentId,
-        startDate: getPeriodStart(),
-        endDate: today,
-        includeProjections: true,
-      })
-      setPlReport(result)
-    } catch (error) {
-      console.error("Error generating P&L:", error)
-    } finally {
-      setGeneratingPL(false)
-    }
-  }
-
-  // Generate AI Summary
-  const handleGenerateAiSummary = async (tab: string) => {
-    setGenerating(true)
-    try {
-      let context = ""
-      let systemPrompt = ""
-
-      if (tab === "agent") {
-        context = JSON.stringify({
-          valueData,
-          pendingCommissions: commissions.reduce((sum, c) => sum + (c.amount || 0), 0),
-          totalExpenses: expenses.reduce((sum, e) => sum + (e.amount || 0), 0),
-          referralRoi,
-          trustCapital,
-          conversionCandidates: conversionCandidates.length,
-        })
-        systemPrompt = `You are an AI business analyst for a real estate agent. Analyze this performance data and provide:
-1. "What's Working" - 2-3 specific wins based on the data
-2. "What to Correct" - 2-3 areas needing improvement
-3. "Priority Action This Week" - 1 specific, actionable item
-
-Be specific and reference actual numbers from the data. Format with clear headers.`
-      } else if (tab === "social") {
-        context = JSON.stringify({
-          contentStats,
-          hashtagPerformance,
-          queuedPosts: socialQueue.length,
-        })
-        systemPrompt = `You are a social media strategist for a real estate agent. Analyze this content performance data and provide:
-1. "What's Working" - 2-3 content wins
-2. "What to Correct" - 2-3 content improvements
-3. "What to Post Next Week" - 3 specific post ideas based on performance data
-
-Be specific about content types and engagement metrics.`
-      } else if (tab === "pipeline") {
-        context = JSON.stringify({
-          valueData,
-          topCandidates: conversionCandidates,
-        })
-        systemPrompt = `You are a real estate pipeline analyst. Analyze this pipeline data and provide:
-1. "What's Working" - 2-3 pipeline strengths
-2. "What to Correct" - 2-3 pipeline issues
-3. "Priority Pipeline Actions This Week" - Top 3 specific actions to take
-
-Reference specific leads and conversion probabilities where available.`
-      } else if (tab === "team") {
-        context = JSON.stringify({ workflowStats })
-        systemPrompt = `You are a team performance analyst for a real estate brokerage. Provide:
-1. "Team Wins" - 2-3 team performance highlights
-2. "Coaching Opportunities" - 2-3 areas for team improvement
-3. "Priority Team Action" - 1 specific management action
-
-Focus on actionable team-level insights.`
-      } else if (tab === "brokerage") {
-        context = JSON.stringify({ workflowStats })
-        systemPrompt = `You are a brokerage operations analyst. Provide:
-1. "Operational Wins" - 2-3 brokerage-wide wins
-2. "Operational Bottlenecks" - 2-3 areas causing friction
-3. "Priority Brokerage Action" - 1 specific operational improvement
-
-Focus on scalable, brokerage-level insights.`
+  const handleExport = (format: "csv" | "pdf", reportType: string) => {
+    startTransition(async () => {
+      try {
+        if (format === "csv") {
+          const result = await exportReportCsvAction({
+            reportType,
+            agentId,
+            brokerageId,
+            dateFrom: monthStart,
+          })
+          if (!result.success) throw new Error(result.error)
+          const blob = new Blob([result.data], { type: "text/csv" })
+          const url = window.URL.createObjectURL(blob)
+          const a = document.createElement("a")
+          a.href = url
+          a.download = `report-${reportType}-${new Date().toISOString().split("T")[0]}.csv`
+          document.body.appendChild(a)
+          a.click()
+          window.URL.revokeObjectURL(url)
+          document.body.removeChild(a)
+        } else {
+          const result = await exportReportPdfAction({
+            reportType,
+            agentId,
+            brokerageId,
+            dateFrom: monthStart,
+          })
+          if (!result.success) throw new Error(result.error)
+          const a = document.createElement("a")
+          a.href = result.pdfUrl
+          a.download = `report-${reportType}-${new Date().toISOString().split("T")[0]}.pdf`
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+        }
+      } catch (error) {
+        console.error("[v0] Export error:", error)
       }
+    })
+  }
 
-      const result = await generateContextualDraft({
-        agentId,
-        contentType: "note",
-        currentContent: `${systemPrompt}\n\nData: ${context.slice(0, 1200)}`,
-      })
-
-      const summaryText = result.draft || "Unable to generate summary"
-
-      if (tab === "agent") setAiSummary(summaryText)
-      else if (tab === "social") setSocialSummary(summaryText)
-      else if (tab === "pipeline") setPipelineSummary(summaryText)
-      else if (tab === "team") setTeamSummary(summaryText)
-      else if (tab === "brokerage") setBrokerageSummary(summaryText)
-    } catch (error) {
-      console.error("Error generating AI summary:", error)
-    } finally {
-      setGenerating(false)
+  const handleEmailReport = () => {
+    if (!emailRecipients.trim() || !emailSubject.trim()) {
+      setEmailError("Recipients and subject are required.")
+      return
     }
+    setEmailError("")
+    setEmailSuccess(false)
+    startTransition(async () => {
+      try {
+        const result = await emailReportAction({
+          reportType: emailReportType,
+          recipients: emailRecipients.split(",").map((e) => e.trim()),
+          subject: emailSubject,
+          message: emailMessage || undefined,
+          agentId,
+          brokerageId,
+          dateFrom: monthStart,
+        })
+        if (!result.success) {
+          setEmailError(result.error ?? "Failed to send report.")
+          return
+        }
+        setEmailSuccess(true)
+        setEmailRecipients("")
+        setEmailSubject(`Reports - ${new Date().toLocaleDateString()}`)
+        setEmailMessage("")
+        setTimeout(() => {
+          setEmailDialogOpen(false)
+          setEmailSuccess(false)
+        }, 2000)
+      } catch (error) {
+        setEmailError("An error occurred while sending the report.")
+      }
+    })
   }
-
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text)
-  }
-
-  const canAccessTeam = ["team_lead", "broker", "admin"].includes(role)
-  const canAccessBrokerage = ["broker", "admin"].includes(role)
-
-  // Calculate totals
-  const pendingCommissionTotal = commissions.reduce((sum, c) => sum + (c.amount || 0), 0)
-  const expensesTotal = expenses.reduce((sum, e) => sum + (e.amount || 0), 0)
-  const netPipelineValue = pendingCommissionTotal - expensesTotal
 
   return (
-    <div className="container mx-auto p-6 max-w-7xl space-y-6">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Report Operations Center</h1>
-          <p className="text-muted-foreground">
-            Because the OS sees the whole business, your reports see what others can't.
-          </p>
+          <h1 className="text-3xl font-bold tracking-tight">Reports</h1>
+          <p className="text-muted-foreground">Comprehensive analytics and performance insights</p>
         </div>
-        <div className="flex items-center gap-3">
-          <Select value={period} onValueChange={(v) => setPeriod(v as Period)}>
-            <SelectTrigger className="w-32">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="month">Month</SelectItem>
-              <SelectItem value="quarter">Quarter</SelectItem>
-              <SelectItem value="year">Year</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setEmailDialogOpen(true)}
+            className="bg-transparent"
+          >
+            <Mail className="h-4 w-4 mr-2" />
+            Email Report
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleExport("csv", "summary")}
+            disabled={isPending}
+            className="bg-transparent"
+          >
+            <Download className="h-4 w-4 mr-2" />
+            Export CSV
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleExport("pdf", "summary")}
+            disabled={isPending}
+            className="bg-transparent"
+          >
+            <FileText className="h-4 w-4 mr-2" />
+            Export PDF
           </Button>
         </div>
       </div>
 
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-3 md:grid-cols-5 lg:w-auto lg:grid-cols-none lg:flex">
-          <TabsTrigger value="agent" className="gap-2">
-            <UserCheck className="h-4 w-4" />
-            Agent
+      {/* Main Tabs */}
+      <Tabs defaultValue="summary" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="summary" className="flex items-center gap-1.5">
+            <BarChart3 className="h-4 w-4" />
+            Summary
           </TabsTrigger>
-          <TabsTrigger value="social" className="gap-2">
-            <Share2 className="h-4 w-4" />
-            Social & Marketing
+          <TabsTrigger value="source" className="flex items-center gap-1.5">
+            <TrendingUp className="h-4 w-4" />
+            Sources
           </TabsTrigger>
-          <TabsTrigger value="pipeline" className="gap-2">
-            <Target className="h-4 w-4" />
-            Pipeline
+          <TabsTrigger value="campaigns" className="flex items-center gap-1.5">
+            <Activity className="h-4 w-4" />
+            Campaigns
           </TabsTrigger>
-          {canAccessTeam && (
-            <TabsTrigger value="team" className="gap-2">
-              <Users className="h-4 w-4" />
-              Team
-            </TabsTrigger>
-          )}
-          {canAccessBrokerage && (
-            <TabsTrigger value="brokerage" className="gap-2">
-              <Building2 className="h-4 w-4" />
-              Brokerage
-            </TabsTrigger>
-          )}
+          <TabsTrigger value="reputation" className="flex items-center gap-1.5">
+            <Star className="h-4 w-4" />
+            Reputation
+          </TabsTrigger>
         </TabsList>
 
-        {/* AGENT TAB */}
-        <TabsContent value="agent" className="space-y-6">
-          {/* Source Analytics CTA */}
-          <Link href="/dashboard/analytics/source">
-            <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
-              <CardContent className="py-4 flex items-center justify-between gap-4">
-                <div className="flex items-center gap-3">
-                  <Database className="h-5 w-5 text-foreground shrink-0" />
-                  <div>
-                    <p className="text-sm font-semibold">Source Analytics &amp; Attribution</p>
-                    <p className="text-xs text-muted-foreground">
-                      View ROI by acquisition source, funnel conversion, and cost efficiency
+        {/* Summary Tab */}
+        <TabsContent value="summary" className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-4">
+            {initialFinancialData && (
+              <>
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">YTD Revenue</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold">
+                      ${(initialFinancialData.totalCommission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {initialFinancialData.commission_count ?? 0} transactions
                     </p>
-                  </div>
-                </div>
-                <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
-              </CardContent>
-            </Card>
-          </Link>
+                  </CardContent>
+                </Card>
 
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <>
-              {/* Pipeline Performance */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <BarChart3 className="h-5 w-5" />
-                    Pipeline Performance
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Active Contacts</p>
-                      <p className="text-2xl font-bold">{valueData?.activeContacts || 0}</p>
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Total Expenses</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold">
+                      ${(initialFinancialData.totalExpenses ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                     </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Value Delivered</p>
-                      <p className="text-2xl font-bold">{valueData?.valueDeliveredScore || 0}</p>
-                    </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Trust Capital</p>
-                      <p className="text-2xl font-bold">{trustCapital?.toFixed(1) || 0}</p>
-                    </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Conversion Candidates</p>
-                      <p className="text-2xl font-bold">{conversionCandidates.length}</p>
-                    </div>
-                  </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {initialFinancialData.expense_count ?? 0} entries
+                    </p>
+                  </CardContent>
+                </Card>
 
-                  {conversionCandidates.length > 0 && (
-                    <div className="mt-4">
-                      <h4 className="text-sm font-medium mb-2">Top Conversion Candidates</h4>
-                      <div className="space-y-2">
-                        {conversionCandidates.slice(0, 3).map((candidate: any, i: number) => (
-                          <div key={i} className="flex items-center justify-between p-2 border rounded">
-                            <span className="text-sm font-medium">
-                              {candidate.contact?.first_name} {candidate.contact?.last_name}
-                            </span>
-                            <div className="flex items-center gap-2">
-                              <Badge variant="outline">{Math.round(candidate.probability * 100)}%</Badge>
-                              <Link href="/crm">
-                                <Button variant="ghost" size="sm">
-                                  View
-                                </Button>
-                              </Link>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Net Profit</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold text-green-600">
+                      ${(
+                        (initialFinancialData.totalCommission ?? 0) - (initialFinancialData.totalExpenses ?? 0)
+                      ).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
+                    <p className="text-xs text-muted-foreground mt-1">YTD margin</p>
+                  </CardContent>
+                </Card>
 
-              {/* Financial Health */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <DollarSign className="h-5 w-5" />
-                    Financial Health
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Pending Commissions</p>
-                      <p className="text-2xl font-bold text-green-600">
-                        ${pendingCommissionTotal.toLocaleString()}
-                      </p>
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Profit Margin</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-2xl font-bold">
+                      {initialFinancialData.profitMarginPercent?.toFixed(1) ?? "0"}%
                     </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Period Expenses</p>
-                      <p className="text-2xl font-bold text-red-600">
-                        ${expensesTotal.toLocaleString()}
-                      </p>
-                    </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Net Pipeline Value</p>
-                      <p className={`text-2xl font-bold ${netPipelineValue >= 0 ? "text-green-600" : "text-red-600"}`}>
-                        ${netPipelineValue.toLocaleString()}
-                      </p>
-                    </div>
-                    <div className="p-4 rounded-lg border bg-card flex flex-col justify-center">
-                      <Button onClick={handleGeneratePL} disabled={generatingPL} className="w-full">
-                        {generatingPL ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            Generating...
-                          </>
-                        ) : (
-                          <>
-                            <FileText className="h-4 w-4 mr-2" />
-                            Generate Full P&L
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  </div>
+                    <p className="text-xs text-muted-foreground mt-1">of gross revenue</p>
+                  </CardContent>
+                </Card>
+              </>
+            )}
+          </div>
 
-                  {plReport && (
-                    <div className="mt-4 p-4 border rounded-lg bg-muted/50">
-                      <h4 className="font-medium mb-2">P&L Report Summary</h4>
-                      <pre className="text-sm whitespace-pre-wrap">{JSON.stringify(plReport, null, 2)}</pre>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Referral Performance */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <TrendingUp className="h-5 w-5" />
-                    Referral Performance
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-3 gap-4">
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Total Referrals</p>
-                      <p className="text-2xl font-bold">{referralRoi?.totalReferrals || 0}</p>
-                    </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Converted</p>
-                      <p className="text-2xl font-bold">{referralRoi?.closed || 0}</p>
-                    </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Total Value</p>
-                      <p className="text-2xl font-bold text-green-600">
-                        ${(referralRoi?.totalValue || 0).toLocaleString()}
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* AI Business Summary */}
-              <Card className="border-primary/20">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-primary" />
-                    AI Business Summary
-                  </CardTitle>
-                  <CardDescription>
-                    Get AI-powered insights on your business performance
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  {!aiSummary ? (
-                    <Button
-                      onClick={() => handleGenerateAiSummary("agent")}
-                      disabled={generating}
-                      className="w-full"
-                      size="lg"
-                    >
-                      {generating ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          AI is analyzing your business data...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="h-4 w-4 mr-2" />
-                          Generate AI Report Summary
-                        </>
-                      )}
-                    </Button>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="prose prose-sm max-w-none whitespace-pre-wrap">{aiSummary}</div>
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={() => copyToClipboard(aiSummary)}>
-                          <Copy className="h-4 w-4 mr-2" />
-                          Copy
-                        </Button>
-                        <Button variant="outline" size="sm" onClick={() => window.print()}>
-                          <Download className="h-4 w-4 mr-2" />
-                          Export PDF
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => setAiSummary(null)}>
-                          Regenerate
-                        </Button>
-                      </div>
-                      {/* Cross-links */}
-                      <div className="flex gap-2 pt-2 border-t">
-                        <Link href="/dashboard/diagnosis">
-                          <Button variant="link" size="sm" className="text-xs px-0">Open Diagnosis →</Button>
-                        </Link>
-                        <Link href="/crm">
-                          <Button variant="link" size="sm" className="text-xs px-0">Open CRM →</Button>
-                        </Link>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </>
-          )}
-        </TabsContent>
-
-        {/* SOCIAL & MARKETING TAB */}
-        <TabsContent value="social" className="space-y-6">
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <>
-              {/* Content Performance */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Share2 className="h-5 w-5" />
-                    Content Performance
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Posts Published</p>
-                      <p className="text-2xl font-bold">{contentStats?.postsPublished || 0}</p>
-                    </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Scheduled</p>
-                      <p className="text-2xl font-bold">{socialQueue.filter((p) => p.status === "scheduled").length}</p>
-                    </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Avg Engagement</p>
-                      <p className="text-2xl font-bold">{contentStats?.avgEngagementRate?.toFixed(1) || 0}%</p>
-                    </div>
-                    <div className="p-4 rounded-lg border bg-card">
-                      <p className="text-sm text-muted-foreground">Best Platform</p>
-                      <p className="text-2xl font-bold capitalize">{contentStats?.bestPlatform || "N/A"}</p>
-                    </div>
-                  </div>
-
-                  {contentStats?.topPost && (
-                    <div className="mt-4 p-4 border rounded-lg bg-muted/50">
-                      <h4 className="font-medium mb-1">Top Performing Post</h4>
-                      <p className="text-sm text-muted-foreground">{contentStats.topPost.content}</p>
-                      <Badge variant="outline" className="mt-2">
-                        {contentStats.topPost.engagement} engagements
-                      </Badge>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
-              {/* Hashtag Intelligence */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>Hashtag Intelligence</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid md:grid-cols-2 gap-6">
-                    <div>
-                      <h4 className="text-sm font-medium mb-2 text-green-600">Top Performing</h4>
-                      <div className="flex flex-wrap gap-2">
-                        {(hashtagPerformance?.top || []).slice(0, 5).map((tag: any, i: number) => (
-                          <Badge key={i} variant="outline" className="bg-green-50">
-                            #{tag.hashtag} ({tag.engagement})
-                          </Badge>
-                        ))}
-                        {(!hashtagPerformance?.top || hashtagPerformance.top.length === 0) && (
-                          <p className="text-sm text-muted-foreground">No data yet</p>
-                        )}
-                      </div>
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-medium mb-2 text-red-600">Declining (Consider Removing)</h4>
-                      <div className="flex flex-wrap gap-2">
-                        {(hashtagPerformance?.declining || []).slice(0, 5).map((tag: any, i: number) => (
-                          <Badge key={i} variant="outline" className="bg-red-50">
-                            #{tag.hashtag}
-                          </Badge>
-                        ))}
-                        {(!hashtagPerformance?.declining || hashtagPerformance.declining.length === 0) && (
-                          <p className="text-sm text-muted-foreground">None identified</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* AI Social Summary */}
-              <Card className="border-primary/20">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-primary" />
-                    AI Social Strategy
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {!socialSummary ? (
-                    <Button
-                      onClick={() => handleGenerateAiSummary("social")}
-                      disabled={generating}
-                      className="w-full"
-                      size="lg"
-                    >
-                      {generating ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          AI is analyzing your content...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="h-4 w-4 mr-2" />
-                          What Should I Post Next Week?
-                        </>
-                      )}
-                    </Button>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="prose prose-sm max-w-none whitespace-pre-wrap">{socialSummary}</div>
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={() => copyToClipboard(socialSummary)}>
-                          <Copy className="h-4 w-4 mr-2" />
-                          Copy
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => setSocialSummary(null)}>
-                          Regenerate
-                        </Button>
-                      </div>
-                      {/* Cross-links */}
-                      <div className="flex gap-2 pt-2 border-t">
-                        <Link href="/dashboard/social">
-                          <Button variant="link" size="sm" className="text-xs px-0">Open Social →</Button>
-                        </Link>
-                        <Link href="/dashboard/campaigns">
-                          <Button variant="link" size="sm" className="text-xs px-0">Open Campaigns →</Button>
-                        </Link>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </>
-          )}
-        </TabsContent>
-
-        {/* PIPELINE TAB */}
-        <TabsContent value="pipeline" className="space-y-6">
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <>
-              {/* Lead Conversion Funnel */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Target className="h-5 w-5" />
-                    Lead Conversion Funnel
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    {[
-                      { label: "Leads", value: valueData?.leads || 0, color: "bg-blue-500" },
-                      { label: "Contacts", value: valueData?.activeContacts || 0, color: "bg-indigo-500" },
-                      { label: "Active/Touring", value: valueData?.activeDeals || 0, color: "bg-purple-500" },
-                      { label: "Under Contract", value: valueData?.underContract || 0, color: "bg-pink-500" },
-                      { label: "Closed", value: valueData?.closedDeals || 0, color: "bg-green-500" },
-                    ].map((stage, i) => (
-                      <div key={i} className="space-y-1">
-                        <div className="flex justify-between text-sm">
-                          <span>{stage.label}</span>
-                          <span className="font-medium">{stage.value}</span>
+          <Card>
+            <CardHeader>
+              <CardTitle>Monthly Breakdown</CardTitle>
+              <CardDescription>Revenue, expenses, and net profit by month</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {initialFinancialData?.monthlyData ? (
+                <div className="space-y-3">
+                  {initialFinancialData.monthlyData.map((month: any, idx: number) => (
+                    <div key={idx} className="flex items-center justify-between p-3 border rounded-lg">
+                      <div>
+                        <div className="font-medium">{month.month}</div>
+                        <div className="text-sm text-muted-foreground">
+                          {month.transactionCount} transactions
                         </div>
-                        <Progress value={(stage.value / Math.max(valueData?.leads || 1, 1)) * 100} className="h-2" />
+                      </div>
+                      <div className="text-right">
+                        <div className="font-medium">
+                          ${month.revenue.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                        </div>
+                        <div className={`text-sm ${month.netProfit >= 0 ? "text-green-600" : "text-red-600"}`}>
+                          Net: ${month.netProfit.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-muted-foreground">No data available</p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Source Performance Tab */}
+        <TabsContent value="source" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Source Performance</CardTitle>
+                  <CardDescription>Leads and revenue by source</CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleExport("csv", "source")}
+                  disabled={isPending}
+                  className="bg-transparent"
+                >
+                  Export CSV
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {initialSourceData?.sources && initialSourceData.sources.length > 0 ? (
+                <div className="space-y-3">
+                  {initialSourceData.sources.map((source: any) => (
+                    <div key={source.source} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div>
+                        <div className="font-medium capitalize">{source.source}</div>
+                        <div className="text-sm text-muted-foreground">
+                          {source.leadCount} leads • {source.conversionRate}% conversion
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-medium">
+                          ${source.totalRevenue.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                        </div>
+                        <div className="text-sm text-muted-foreground">
+                          ${source.avgDeal.toLocaleString("en-US", { maximumFractionDigits: 0 })} avg deal
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-muted-foreground">No source data available</p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Campaign ROI Tab */}
+        <TabsContent value="campaigns" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Campaign ROI</CardTitle>
+                  <CardDescription>Marketing spend vs. revenue generated</CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleExport("csv", "campaign")}
+                  disabled={isPending}
+                  className="bg-transparent"
+                >
+                  Export CSV
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {initialCampaignData?.campaigns && initialCampaignData.campaigns.length > 0 ? (
+                <div className="space-y-3">
+                  {initialCampaignData.campaigns.map((campaign: any) => (
+                    <div key={campaign.id} className="flex items-center justify-between p-4 border rounded-lg">
+                      <div className="flex-1">
+                        <div className="font-medium">{campaign.name}</div>
+                        <div className="text-sm text-muted-foreground flex items-center gap-4 mt-1">
+                          <span>Budget: ${campaign.budget?.toLocaleString("en-US", { maximumFractionDigits: 0 })}</span>
+                          <span>Spent: ${campaign.budgetSpent?.toLocaleString("en-US", { maximumFractionDigits: 0 })}</span>
+                          <span>{campaign.leadsGenerated} leads</span>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className={`font-bold ${campaign.roi >= 0 ? "text-green-600" : "text-red-600"}`}>
+                          {campaign.roi?.toFixed(1)}% ROI
+                        </div>
+                        <div className="text-sm text-muted-foreground">
+                          ${campaign.revenueGenerated?.toLocaleString("en-US", { maximumFractionDigits: 0 })} revenue
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-muted-foreground">No campaign data available</p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Reputation Tab */}
+        <TabsContent value="reputation" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>Reputation Summary</CardTitle>
+                  <CardDescription>Reviews, ratings, and referral performance</CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => handleExport("csv", "reputation")}
+                  disabled={isPending}
+                  className="bg-transparent"
+                >
+                  Export CSV
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {initialReputationData ? (
+                <div className="grid gap-4 md:grid-cols-3 mb-6">
+                  <Card className="border-0 bg-muted/50">
+                    <CardContent className="pt-6">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm text-muted-foreground">Average Rating</p>
+                          <div className="text-2xl font-bold">
+                            {initialReputationData.avgRating?.toFixed(1) ?? "N/A"}
+                          </div>
+                        </div>
+                        <Star className="h-8 w-8 text-yellow-500 fill-yellow-500" />
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-0 bg-muted/50">
+                    <CardContent className="pt-6">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm text-muted-foreground">Reviews Received</p>
+                          <div className="text-2xl font-bold">{initialReputationData.reviewCount ?? 0}</div>
+                        </div>
+                        <Eye className="h-8 w-8 text-blue-500" />
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-0 bg-muted/50">
+                    <CardContent className="pt-6">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm text-muted-foreground">Response Rate</p>
+                          <div className="text-2xl font-bold">
+                            {initialReputationData.responseRate?.toFixed(0) ?? 0}%
+                          </div>
+                        </div>
+                        <CheckCircle2 className="h-8 w-8 text-green-500" />
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              ) : null}
+
+              {initialReputationData?.recentReviews && initialReputationData.recentReviews.length > 0 ? (
+                <div>
+                  <h4 className="font-medium mb-3">Recent Reviews</h4>
+                  <div className="space-y-3">
+                    {initialReputationData.recentReviews.map((review: any, idx: number) => (
+                      <div key={idx} className="p-4 border rounded-lg">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <div className="flex gap-1">
+                              {[...Array(5)].map((_, i) => (
+                                <Star
+                                  key={i}
+                                  className={`h-4 w-4 ${
+                                    i < review.rating ? "fill-yellow-500 text-yellow-500" : "text-gray-300"
+                                  }`}
+                                />
+                              ))}
+                            </div>
+                            <span className="text-sm font-medium">{review.rating}/5</span>
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(review.created_at).toLocaleDateString()}
+                          </span>
+                        </div>
+                        {review.review_text && (
+                          <p className="text-sm text-muted-foreground italic">{review.review_text}</p>
+                        )}
                       </div>
                     ))}
                   </div>
-                </CardContent>
-              </Card>
-
-              {/* Top Conversion Candidates */}
-              <Card>
-                <CardHeader>
-                  <CardTitle>Top Conversion Candidates</CardTitle>
-                  <CardDescription>Leads most likely to convert based on AI analysis</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-3">
-                    {conversionCandidates.length > 0 ? (
-                      conversionCandidates.map((candidate: any, i: number) => (
-                        <div key={i} className="flex items-center justify-between p-3 border rounded-lg">
-                          <div>
-                            <p className="font-medium">
-                              {candidate.contact?.first_name} {candidate.contact?.last_name}
-                            </p>
-                            <p className="text-sm text-muted-foreground">{candidate.suggestedAction}</p>
-                          </div>
-                          <div className="flex items-center gap-3">
-                            <div className="text-right">
-                              <p className="text-lg font-bold text-green-600">
-                                {Math.round(candidate.probability * 100)}%
-                              </p>
-                              <p className="text-xs text-muted-foreground">conversion</p>
-                            </div>
-                            <Link href="/crm">
-                              <Button variant="outline" size="sm">
-                                Open Contact
-                              </Button>
-                            </Link>
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <p className="text-muted-foreground text-center py-4">No conversion candidates found</p>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* AI Pipeline Summary */}
-              <Card className="border-primary/20">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Sparkles className="h-5 w-5 text-primary" />
-                    AI Pipeline Analysis
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {!pipelineSummary ? (
-                    <Button
-                      onClick={() => handleGenerateAiSummary("pipeline")}
-                      disabled={generating}
-                      className="w-full"
-                      size="lg"
-                    >
-                      {generating ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          AI is analyzing your pipeline...
-                        </>
-                      ) : (
-                        <>
-                          <Sparkles className="h-4 w-4 mr-2" />
-                          What Pipeline Actions Should I Take?
-                        </>
-                      )}
-                    </Button>
-                  ) : (
-                    <div className="space-y-4">
-                      <div className="prose prose-sm max-w-none whitespace-pre-wrap">{pipelineSummary}</div>
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={() => copyToClipboard(pipelineSummary)}>
-                          <Copy className="h-4 w-4 mr-2" />
-                          Copy
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => setPipelineSummary(null)}>
-                          Regenerate
-                        </Button>
-                      </div>
-                      {/* Cross-links */}
-                      <div className="flex gap-2 pt-2 border-t">
-                        <Link href="/crm">
-                          <Button variant="link" size="sm" className="text-xs px-0">Open CRM →</Button>
-                        </Link>
-                        <Link href="/leads">
-                          <Button variant="link" size="sm" className="text-xs px-0">Open Leads →</Button>
-                        </Link>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </>
-          )}
+                </div>
+              ) : (
+                <p className="text-muted-foreground">No review data available</p>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
-
-        {/* TEAM TAB */}
-        {canAccessTeam && (
-          <TabsContent value="team" className="space-y-6">
-            {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
-            ) : (
-              <>
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Users className="h-5 w-5" />
-                      Team Performance Overview
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      <div className="p-4 rounded-lg border bg-card">
-                        <p className="text-sm text-muted-foreground">Active Workflows</p>
-                        <p className="text-2xl font-bold">{workflowStats?.running || 0}</p>
-                      </div>
-                      <div className="p-4 rounded-lg border bg-card">
-                        <p className="text-sm text-muted-foreground">Completed Today</p>
-                        <p className="text-2xl font-bold text-green-600">{workflowStats?.completed || 0}</p>
-                      </div>
-                      <div className="p-4 rounded-lg border bg-card">
-                        <p className="text-sm text-muted-foreground">Failed</p>
-                        <p className="text-2xl font-bold text-red-600">{workflowStats?.failed || 0}</p>
-                      </div>
-                      <div className="p-4 rounded-lg border bg-card">
-                        <p className="text-sm text-muted-foreground">Pending Approval</p>
-                        <p className="text-2xl font-bold text-amber-600">{workflowStats?.paused || 0}</p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* AI Team Summary */}
-                <Card className="border-primary/20">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Sparkles className="h-5 w-5 text-primary" />
-                      AI Team Insights
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {!teamSummary ? (
-                      <Button
-                        onClick={() => handleGenerateAiSummary("team")}
-                        disabled={generating}
-                        className="w-full"
-                        size="lg"
-                      >
-                        {generating ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            AI is analyzing team performance...
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="h-4 w-4 mr-2" />
-                            Generate Team Summary
-                          </>
-                        )}
-                      </Button>
-                    ) : (
-                      <div className="space-y-4">
-                        <div className="prose prose-sm max-w-none whitespace-pre-wrap">{teamSummary}</div>
-                        <div className="flex gap-2">
-                          <Button variant="outline" size="sm" onClick={() => copyToClipboard(teamSummary)}>
-                            <Copy className="h-4 w-4 mr-2" />
-                            Copy
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={() => setTeamSummary(null)}>
-                            Regenerate
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </>
-            )}
-          </TabsContent>
-        )}
-
-        {/* BROKERAGE TAB */}
-        {canAccessBrokerage && (
-          <TabsContent value="brokerage" className="space-y-6">
-            {loading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
-            ) : (
-              <>
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Building2 className="h-5 w-5" />
-                      Brokerage Operations
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                      <div className="p-4 rounded-lg border bg-card">
-                        <p className="text-sm text-muted-foreground">Total Workflows</p>
-                        <p className="text-2xl font-bold">{workflowStats?.total || 0}</p>
-                      </div>
-                      <div className="p-4 rounded-lg border bg-card">
-                        <p className="text-sm text-muted-foreground">Success Rate</p>
-                        <p className="text-2xl font-bold text-green-600">
-                          {workflowStats?.total
-                            ? Math.round(((workflowStats.completed || 0) / workflowStats.total) * 100)
-                            : 0}
-                          %
-                        </p>
-                      </div>
-                      <div className="p-4 rounded-lg border bg-card">
-                        <p className="text-sm text-muted-foreground">Bottlenecks</p>
-                        <p className="text-2xl font-bold text-amber-600">{workflowStats?.paused || 0}</p>
-                      </div>
-                      <div className="p-4 rounded-lg border bg-card">
-                        <p className="text-sm text-muted-foreground">Errors</p>
-                        <p className="text-2xl font-bold text-red-600">{workflowStats?.failed || 0}</p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* AI Brokerage Summary */}
-                <Card className="border-primary/20">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Sparkles className="h-5 w-5 text-primary" />
-                      AI Brokerage Analysis
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    {!brokerageSummary ? (
-                      <Button
-                        onClick={() => handleGenerateAiSummary("brokerage")}
-                        disabled={generating}
-                        className="w-full"
-                        size="lg"
-                      >
-                        {generating ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            AI is analyzing brokerage operations...
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="h-4 w-4 mr-2" />
-                            Generate Brokerage Summary
-                          </>
-                        )}
-                      </Button>
-                    ) : (
-                      <div className="space-y-4">
-                        <div className="prose prose-sm max-w-none whitespace-pre-wrap">{brokerageSummary}</div>
-                        <div className="flex gap-2">
-                          <Button variant="outline" size="sm" onClick={() => copyToClipboard(brokerageSummary)}>
-                            <Copy className="h-4 w-4 mr-2" />
-                            Copy
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={() => setBrokerageSummary(null)}>
-                            Regenerate
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </>
-            )}
-          </TabsContent>
-        )}
       </Tabs>
+
+      {/* Email Report Dialog */}
+      <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Email Report</DialogTitle>
+            <DialogDescription>Send a report to team members or stakeholders</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="report-type">Report Type</Label>
+              <Select value={emailReportType} onValueChange={setEmailReportType}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select report type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="summary">Summary</SelectItem>
+                  <SelectItem value="source">Source Performance</SelectItem>
+                  <SelectItem value="campaign">Campaign ROI</SelectItem>
+                  <SelectItem value="reputation">Reputation</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="recipients">
+                Recipients <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="recipients"
+                value={emailRecipients}
+                onChange={(e) => setEmailRecipients(e.target.value)}
+                placeholder="email@example.com, another@example.com"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="subject">
+                Subject <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="subject"
+                value={emailSubject}
+                onChange={(e) => setEmailSubject(e.target.value)}
+                placeholder="Report subject"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="message">Message</Label>
+              <Textarea
+                id="message"
+                value={emailMessage}
+                onChange={(e) => setEmailMessage(e.target.value)}
+                placeholder="Optional message to include with the report..."
+                rows={3}
+              />
+            </div>
+
+            {emailError && <p className="text-sm text-destructive">{emailError}</p>}
+            {emailSuccess && (
+              <p className="text-sm text-green-600 flex items-center gap-2">
+                <CheckCircle2 className="h-4 w-4" />
+                Report sent successfully!
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEmailDialogOpen(false)
+                setEmailError("")
+                setEmailSuccess(false)
+              }}
+              className="bg-transparent"
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleEmailReport} disabled={isPending || emailSuccess}>
+              {isPending ? (
+                <>
+                  <Clock className="h-4 w-4 mr-2 animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-2" />
+                  Send Report
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
