@@ -35,6 +35,7 @@ import {
   ArrowRight,
   BarChart3,
   Database,
+  GitMerge,
 } from 'lucide-react'
 import Link from 'next/link'
 import type { OperationalSnapshot } from './page'
@@ -304,6 +305,24 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
                   <p className="text-sm font-semibold">Acquisition Funnel &amp; Source Analytics</p>
                   <p className="text-xs text-muted-foreground">
                     Track raw, lead, and direct-contact source performance — ROI, conversion, and attribution
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+            </CardContent>
+          </Card>
+        </Link>
+
+        {/* Domain Coherence CTA */}
+        <Link href="/dashboard/admin/domain-coherence">
+          <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
+            <CardContent className="py-4 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <GitMerge className="h-5 w-5 text-foreground shrink-0" />
+                <div>
+                  <p className="text-sm font-semibold">Domain Coherence &amp; Route Audit</p>
+                  <p className="text-xs text-muted-foreground">
+                    Classify route ownership, detect duplicate surfaces, validate kernel contracts, preview role-based navigation
                   </p>
                 </div>
               </div>

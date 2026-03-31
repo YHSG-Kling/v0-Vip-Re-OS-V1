@@ -162,17 +162,20 @@ export default async function PortalLayout({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
-  // Kernel-driven portal view determination
-  const [view, modules] = await Promise.all([
-    determinePortalView(supabase, contactId),
-    determinePortalModules(supabase, contactId),
+  // Kernel-driven portal view determination — use normalized contract objects
+  const [viewOutput, modulesOutput] = await Promise.all([
+    determinePortalView(supabase, { contactId }),
+    determinePortalModules(supabase, { contactId }),
   ])
+
+  // Extract canonical PortalView string from contract output
+  const view = viewOutput.view
+  const modules = modulesOutput.modules
 
   // Build nav from kernel function
   const navItems = buildPortalNav(view, modules, contactId)
 
-  // Log portal access (non-blocking)
-  logPortalAccess(supabase, contactId, "layout", "view", agentData?.id).catch(() => {})
+  // Portal access logged below after view is derived
 
   // Derive display values
   const contactName = contact.first_name || contact.name || "Guest"
@@ -180,6 +183,8 @@ export default async function PortalLayout({
   const isBuyer = view === "buyer"
   const isSeller = view === "seller"
   const persona = contact.contact_persona || "other"
+  // Log access with resolved view for tracing
+  logPortalAccess(supabase, contactId, "layout", `view:${view}`, agentData?.id).catch(() => {})
 
   return (
     <div className="min-h-screen bg-background">
