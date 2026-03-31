@@ -176,7 +176,7 @@ export default async function VendorsPage() {
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <p className="font-medium">
-                            {assignment.vendors?.business_name || "Unknown Vendor"}
+                            {assignment.vendors?.name || "Unknown Vendor"}
                           </p>
                           <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
                             {assignment.assignment_type}

@@ -191,6 +191,7 @@ export async function createVendorBooking(data: {
     metadata: { vendor_id: data.vendorId, service_type: data.serviceType }
   })
 
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/dashboard/transactions/${data.transactionId}`)
   revalidatePath("/dashboard/vendors")
   return booking
