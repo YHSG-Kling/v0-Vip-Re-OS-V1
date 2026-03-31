@@ -1,390 +1,190 @@
 "use server"
 
 // lib/ads/facebook-audience-sync.ts
-// Layer 9.5 — Facebook Custom Audiences Creation and Sync
-// Kernel gates: consent_basis REQUIRED, kernel events for audience creation and sync
+// Layer 9.5 — Facebook Custom Audience and Sync Server Actions
+// Kernel gates: canAccessFeature, createAudienceSegment, syncAudience, loadAudienceDefinitions
+// All audience writes and syncs flow through lib/kernel/ads.ts commands — no direct DB writes here.
 
-import { createClient } from "@/lib/supabase/server"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import {
+  loadAudienceDefinitions,
+  syncAudience as kernelSyncAudience,
+  createAudienceSegment,
+  type AdsActorContext,
+  type AudienceType,
+  type SourceRule,
+} from "@/lib/kernel/ads"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
-export type AudienceType = "website_visitors" | "contact_list" | "lookalike" | "engagement"
-
-export interface SourceRule {
-  type: "website_visitors" | "contact_list" | "engagement"
-  filters?: {
-    visited_pages?: string[]
-    days_lookback?: number
-    contact_tags?: string[]
-    engagement_type?: string
-  }
-}
-
 export interface CreateAudienceParams {
   brokerageId: string
+  agentId: string
   audienceName: string
   audienceType: AudienceType
   sourceRule: SourceRule
-  consentBasis: string // REQUIRED - e.g., "GDPR Article 6(a) — explicit consent"
+  consentBasis: string
   adCampaignId?: string
 }
 
-export interface SyncAudienceResult {
-  success: boolean
-  runId?: string
-  recordsAttempted?: number
-  recordsSynced?: number
-  recordsRejected?: number
-  error?: string
+export interface SyncAudienceParams {
+  brokerageId: string
+  agentId: string
+  audienceId: string
 }
 
-// ─── createAudience ───────────────────────────────────────────────────────────
+export interface LoadAudiencesParams {
+  brokerageId: string
+  agentId: string
+  campaignId?: string
+}
 
-export async function createAudience(
+// ─── createFacebookAudience ───────────────────────────────────────────────────
+
+export async function createFacebookAudience(
   userId: string,
   params: CreateAudienceParams
 ): Promise<{ success: boolean; audienceId?: string; error?: string }> {
-  const supabase = await createClient()
-
-  // ── CRITICAL: consent_basis is REQUIRED ─────────────────────────────────────
-  if (!params.consentBasis || params.consentBasis.trim() === "") {
-    return {
-      success: false,
-      error:
-        "consent_basis is REQUIRED for legal compliance. Please provide a valid consent basis (e.g., 'GDPR Article 6(a) — explicit consent').",
-    }
+  // ── 1. Feature gate ─────────────────────────────────────────────────────────
+  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
 
-  // ── Insert audience ─────────────────────────────────────────────────────────
-  const { data: audience, error } = await supabase
-    .from("facebook_custom_audiences")
-    .insert({
-      brokerage_id: params.brokerageId,
-      audience_name: params.audienceName,
-      audience_type: params.audienceType,
-      source_rule: params.sourceRule,
-      consent_basis: params.consentBasis.trim(),
-      ad_campaign_id: params.adCampaignId || null,
-      status: "pending_review",
-      external_audience_id: null, // Will be set after Facebook API call
-    })
-    .select("id")
-    .single()
-
-  if (error) {
-    return { success: false, error: error.message }
+  const ctx: AdsActorContext = {
+    brokerageId: params.brokerageId,
+    agentId: params.agentId,
+    userId,
   }
 
-  // ── Lifecycle event ─────────────────────────────────────────────────────────
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: params.brokerageId,
-    entity_type: "facebook_custom_audience",
-    entity_id: audience.id,
-    event_type: "retargeting_audience_created",
-    actor_user_id: userId,
-    metadata: {
-      audience_name: params.audienceName,
-      audience_type: params.audienceType,
-      consent_basis: params.consentBasis,
-    },
+  // ── 2. Delegate to kernel createAudienceSegment ──────────────────────────────
+  const result = await createAudienceSegment({
+    ctx,
+    audienceName: params.audienceName,
+    audienceType: params.audienceType,
+    sourceRule: params.sourceRule,
+    consentBasis: params.consentBasis,
+    adCampaignId: params.adCampaignId,
   })
 
-  // ── Kernel event ────────────────────────────────────────────────────────────
-  processKernelEvent({
-    event: KernelEvent.RETARGETING_AUDIENCE_CREATED,
-    brokerageId: params.brokerageId,
-    entityType: "facebook_custom_audience",
-    entityId: audience.id,
-    actorUserId: userId,
-    metadata: {
-      audience_name: params.audienceName,
-      audience_type: params.audienceType,
-      consent_basis: params.consentBasis,
-    },
-  }).catch(console.error)
+  if (!result.success) {
+    return { success: false, error: result.error }
+  }
 
-  return { success: true, audienceId: audience.id }
+  // ── 3. Increment usage ──────────────────────────────────────────────────────
+  await incrementFeatureUsage(userId, "ads_audiences")
+
+  return { success: true, audienceId: result.audienceId }
 }
 
-// ─── syncAudience ─────────────────────────────────────────────────────────────
+// ─── syncFacebookAudience ─────────────────────────────────────────────────────
 
-export async function syncAudience(
+export async function syncFacebookAudience(
   userId: string,
-  audienceId: string,
-  brokerageId: string
-): Promise<SyncAudienceResult> {
-  const supabase = await createClient()
-
-  // ── 1. Get audience details ─────────────────────────────────────────────────
-  const { data: audience, error: fetchError } = await supabase
-    .from("facebook_custom_audiences")
-    .select("*")
-    .eq("id", audienceId)
-    .eq("brokerage_id", brokerageId)
-    .single()
-
-  if (fetchError || !audience) {
-    return { success: false, error: "Audience not found" }
+  params: SyncAudienceParams
+): Promise<{
+  success: boolean
+  syncRunId?: string
+  recordsSynced?: number
+  recordsRejected?: number
+  error?: string
+}> {
+  // ── 1. Feature gate ─────────────────────────────────────────────────────────
+  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
 
-  // ── 2. Create sync run ──────────────────────────────────────────────────────
-  const { data: syncRun, error: runError } = await supabase
-    .from("audience_sync_runs")
-    .insert({
-      audience_id: audienceId,
-      brokerage_id: brokerageId,
-      run_status: "running",
-      records_attempted: 0,
-      records_synced: 0,
-      records_rejected: 0,
-    })
-    .select("id")
-    .single()
-
-  if (runError || !syncRun) {
-    return { success: false, error: "Failed to create sync run" }
+  const ctx: AdsActorContext = {
+    brokerageId: params.brokerageId,
+    agentId: params.agentId,
+    userId,
   }
 
-  // ── 3. Apply source_rule to find matching records ───────────────────────────
-  let recordsToSync: any[] = []
-  const sourceRule = audience.source_rule as SourceRule
-
-  try {
-    if (sourceRule.type === "contact_list") {
-      // Query contacts based on tags or other filters
-      let query = supabase
-        .from("contacts")
-        .select("id, email, phone, first_name, last_name")
-        .eq("brokerage_id", brokerageId)
-        .eq("tcpa_consent", true) // Only consented contacts
-
-      if (sourceRule.filters?.contact_tags && sourceRule.filters.contact_tags.length > 0) {
-        // Filter by tags if specified
-        query = query.contains("tags", sourceRule.filters.contact_tags)
-      }
-
-      const { data: contacts } = await query.limit(10000)
-      recordsToSync = contacts || []
-    } else if (sourceRule.type === "website_visitors") {
-      // Query website visitors
-      const daysLookback = sourceRule.filters?.days_lookback || 30
-      const lookbackDate = new Date()
-      lookbackDate.setDate(lookbackDate.getDate() - daysLookback)
-
-      const { data: visitors } = await supabase
-        .from("website_visitors")
-        .select("id, contact_id, lead_id")
-        .eq("brokerage_id", brokerageId)
-        .gte("last_seen_at", lookbackDate.toISOString())
-        .limit(10000)
-
-      recordsToSync = visitors || []
-    } else if (sourceRule.type === "engagement") {
-      // Query engaged contacts
-      const { data: engaged } = await supabase
-        .from("contacts")
-        .select("id, email, phone, first_name, last_name")
-        .eq("brokerage_id", brokerageId)
-        .eq("tcpa_consent", true)
-        .gt("engagement_score", 50) // High engagement
-        .limit(10000)
-
-      recordsToSync = engaged || []
-    }
-  } catch (err: any) {
-    await supabase
-      .from("audience_sync_runs")
-      .update({
-        run_status: "failed",
-        error_message: err.message,
-        completed_at: new Date().toISOString(),
-      })
-      .eq("id", syncRun.id)
-
-    return { success: false, error: err.message, runId: syncRun.id }
-  }
-
-  // ── 4. Simulate Facebook sync (in production, call Facebook Marketing API) ──
-  const recordsAttempted = recordsToSync.length
-  let recordsSynced = 0
-  let recordsRejected = 0
-
-  // In production, this would batch upload hashed emails/phones to Facebook
-  // For now, we simulate the sync
-  for (const record of recordsToSync) {
-    // Validate record has required data
-    if (record.email || record.phone) {
-      recordsSynced++
-    } else {
-      recordsRejected++
-    }
-  }
-
-  // ── 5. Update sync run ──────────────────────────────────────────────────────
-  await supabase
-    .from("audience_sync_runs")
-    .update({
-      run_status: "completed",
-      records_attempted: recordsAttempted,
-      records_synced: recordsSynced,
-      records_rejected: recordsRejected,
-      completed_at: new Date().toISOString(),
-      provider_response: {
-        simulated: true,
-        timestamp: new Date().toISOString(),
-      },
-    })
-    .eq("id", syncRun.id)
-
-  // ── 6. Update audience ──────────────────────────────────────────────────────
-  await supabase
-    .from("facebook_custom_audiences")
-    .update({
-      status: "synced",
-      last_synced_at: new Date().toISOString(),
-    })
-    .eq("id", audienceId)
-
-  // ── 7. Lifecycle event ──────────────────────────────────────────────────────
-  await supabase.from("lifecycle_events").insert({
-    brokerage_id: brokerageId,
-    entity_type: "facebook_custom_audience",
-    entity_id: audienceId,
-    event_type: "retargeting_audience_synced",
-    actor_user_id: userId,
-    metadata: {
-      records_attempted: recordsAttempted,
-      records_synced: recordsSynced,
-      records_rejected: recordsRejected,
-      run_id: syncRun.id,
-    },
+  // ── 2. Delegate to kernel syncAudience ───────────────────────────────────────
+  const result = await kernelSyncAudience({
+    ctx,
+    audienceId: params.audienceId,
   })
 
-  // ── 8. Kernel event ─────────────────────────────────────────────────────────
-  processKernelEvent({
-    event: KernelEvent.RETARGETING_AUDIENCE_SYNCED,
-    brokerageId,
-    entityType: "facebook_custom_audience",
-    entityId: audienceId,
-    actorUserId: userId,
-    metadata: {
-      audience_name: audience.audience_name,
-      records_synced: recordsSynced,
-      records_rejected: recordsRejected,
-    },
-  }).catch(console.error)
+  if (!result.success) {
+    return { success: false, error: result.error }
+  }
+
+  const syncRun = result.syncRun
 
   return {
     success: true,
-    runId: syncRun.id,
-    recordsAttempted,
-    recordsSynced,
-    recordsRejected,
+    syncRunId: result.syncRunId,
+    recordsSynced: syncRun?.records_synced ?? 0,
+    recordsRejected: syncRun?.records_rejected ?? 0,
   }
 }
 
-// ─── getAudiences ─────────────────────────────────────────────────────────────
+// ─── loadFacebookAudiences ────────────────────────────────────────────────────
 
-export async function getAudiences(
-  brokerageId: string
+export async function loadFacebookAudiences(
+  userId: string,
+  params: LoadAudiencesParams
 ): Promise<{ success: boolean; audiences?: any[]; error?: string }> {
-  const supabase = await createClient()
-
-  const { data: audiences, error } = await supabase
-    .from("facebook_custom_audiences")
-    .select(`
-      *,
-      audience_sync_runs (
-        id,
-        run_status,
-        records_synced,
-        records_rejected,
-        completed_at
-      )
-    `)
-    .eq("brokerage_id", brokerageId)
-    .order("created_at", { ascending: false })
-
-  if (error) {
-    return { success: false, error: error.message }
+  // ── 1. Feature gate ─────────────────────────────────────────────────────────
+  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
 
-  return { success: true, audiences: audiences || [] }
+  const ctx: AdsActorContext = {
+    brokerageId: params.brokerageId,
+    agentId: params.agentId,
+    userId,
+  }
+
+  // ── 2. Delegate to kernel loadAudienceDefinitions ────────────────────────────
+  const result = await loadAudienceDefinitions({
+    ctx,
+    campaignId: params.campaignId,
+  })
+
+  if (!result.success) {
+    return { success: false, error: result.error }
+  }
+
+  return { success: true, audiences: (result.audience as any[]) || [] }
 }
 
-// ─── getAudienceSyncRuns ──────────────────────────────────────────────────────
+// ─── getAudienceSyncHistory ───────────────────────────────────────────────────
+// Returns the sync run history for a specific audience. The sync runs are
+// embedded in loadAudienceDefinitions results via the joined audience_sync_runs.
 
-export async function getAudienceSyncRuns(
-  audienceId: string,
-  brokerageId: string
+export async function getAudienceSyncHistory(
+  userId: string,
+  params: { brokerageId: string; agentId: string; audienceId: string }
 ): Promise<{ success: boolean; runs?: any[]; error?: string }> {
-  const supabase = await createClient()
-
-  const { data: runs, error } = await supabase
-    .from("audience_sync_runs")
-    .select("*")
-    .eq("audience_id", audienceId)
-    .eq("brokerage_id", brokerageId)
-    .order("created_at", { ascending: false })
-    .limit(20)
-
-  if (error) {
-    return { success: false, error: error.message }
+  // ── 1. Feature gate ─────────────────────────────────────────────────────────
+  const accessCheck = await canAccessFeature(userId, "ads_audiences")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
 
-  return { success: true, runs: runs || [] }
-}
-
-// ─── approveAudience ──────────────────────────────────────────────────────────
-
-export async function approveAudience(
-  userId: string,
-  audienceId: string,
-  brokerageId: string
-): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-
-  const { error } = await supabase
-    .from("facebook_custom_audiences")
-    .update({ status: "approved" })
-    .eq("id", audienceId)
-    .eq("brokerage_id", brokerageId)
-
-  if (error) {
-    return { success: false, error: error.message }
+  const ctx: AdsActorContext = {
+    brokerageId: params.brokerageId,
+    agentId: params.agentId,
+    userId,
   }
 
-  return { success: true }
-}
+  // ── 2. Load all audiences (includes embedded sync_runs) ──────────────────────
+  const result = await loadAudienceDefinitions({ ctx })
 
-// ─── deleteAudience ───────────────────────────────────────────────────────────
-
-export async function deleteAudience(
-  userId: string,
-  audienceId: string,
-  brokerageId: string
-): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createClient()
-
-  // First delete sync runs
-  await supabase
-    .from("audience_sync_runs")
-    .delete()
-    .eq("audience_id", audienceId)
-    .eq("brokerage_id", brokerageId)
-
-  // Then delete audience
-  const { error } = await supabase
-    .from("facebook_custom_audiences")
-    .delete()
-    .eq("id", audienceId)
-    .eq("brokerage_id", brokerageId)
-
-  if (error) {
-    return { success: false, error: error.message }
+  if (!result.success) {
+    return { success: false, error: result.error }
   }
 
-  return { success: true }
+  const audiences = (result.audience as any[]) || []
+  const target = audiences.find((a: any) => a.id === params.audienceId)
+
+  if (!target) {
+    return { success: false, error: "Audience not found" }
+  }
+
+  return { success: true, runs: target.audience_sync_runs || [] }
 }
