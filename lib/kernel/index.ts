@@ -553,6 +553,51 @@ export type {
   EmailReportInput,
 } from "./reporting"
 
+// ─── FINANCIAL CANONICAL MANAGER ─────────────────────────────────────────────────
+// Canonical Financial kernel commands. All commission approval/payment, cap tracking,
+// expense creation, and financial reporting flow through these commands only.
+// Business rules:
+//   • agent_commissions.status transitions: calculated → approved → paid
+//   • business_expenses has NO brokerage_id — filter by agent_id only
+//   • agent_cap_tracking is source of truth for cap state
+//   • Only broker/admin/superadmin can approve/pay commissions
+//   • Every mutation emits KernelEvent via lifecycle_events
+export {
+  loadFinancialWorkspace,
+  loadAgentFinancialSummary,
+  loadBrokerageFinancialSummary,
+  loadCommissionQueue,
+  loadCommissionDistributions,
+  recalculateCommissionState,
+  markCommissionApproved,
+  markCommissionPaid,
+  createExpenseRecord,
+  exportFinancialReport,
+  emailFinancialReport,
+} from "./financial"
+export type {
+  FinancialActorContext,
+  KernelFinancialResult,
+  FinancialWorkspace,
+  AgentFinancialSummary,
+  BrokerageFinancialSummary,
+  CommissionRecord,
+  CommissionDistribution,
+  ExpenseRecord,
+  FinancialExportResult,
+  LoadFinancialWorkspaceInput,
+  LoadAgentFinancialSummaryInput,
+  LoadBrokerageFinancialSummaryInput,
+  LoadCommissionQueueInput,
+  LoadCommissionDistributionsInput,
+  RecalculateCommissionStateInput,
+  MarkCommissionApprovedInput,
+  MarkCommissionPaidInput,
+  CreateExpenseRecordInput,
+  ExportFinancialReportInput,
+  EmailFinancialReportInput,
+} from "./financial"
+
 // ─── REPUTATION / REVIEW / REFERRAL OS ──────────────────────────────────────
 // Canonical reputation kernel commands. All review requests, inbound review
 // recording, response publishing, referral creation and pipeline advancement

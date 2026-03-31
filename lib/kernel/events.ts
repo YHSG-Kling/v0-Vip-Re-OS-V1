@@ -378,6 +378,12 @@ export enum KernelEvent {
   RECRUITING_ROI_CALCULATED          = 'recruiting_roi_calculated',
   GAMIFICATION_BADGE_AWARDED         = 'gamification_badge_awarded',
 
+  // ── Financial Kernel Manager (lib/kernel/financial.ts) ────────────────────────
+  COMMISSION_APPROVED                = 'commission_approved',
+  COMMISSION_STATE_RECALCULATED      = 'commission_state_recalculated',
+  EXPENSE_CREATED                    = 'expense_created',
+  EXPENSE_DELETED                    = 'expense_deleted',
+
   // ── Layer 7 — Lifetime Customer & Referrals ─────────────────────────────────
   PAST_CLIENT_TOUCHPOINT_SENT        = 'past_client_touchpoint_sent',
   ANNIVERSARY_TRIGGERED              = 'anniversary_triggered',
