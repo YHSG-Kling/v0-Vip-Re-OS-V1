@@ -10,6 +10,7 @@ import {
   FinancialActionStack,
   type FinancialAction,
 } from '../components/os'
+import { loadCommissionQueueAction } from '@/app/actions/financial-kernel'
 
 export const dynamic = 'force-dynamic'
 
@@ -32,51 +33,25 @@ export default async function PayoutsPage() {
     redirect('/dashboard/financials/agent')
   }
 
-  const currentYear = new Date().getFullYear()
+  // Load commission queue via kernel command
+  const commissionQueueResult = await loadCommissionQueueAction({
+    brokerageId: profile.brokerage_id,
+  })
 
-  // Fetch commissions and agent name lookup separately to avoid chained FK join issues
-  const { data: commissionsRaw } = await supabase
-    .from('agent_commissions')
-    .select('id, agent_id, gross_commission, agent_commission, brokerage_commission, status, close_date, side')
-    .eq('brokerage_id', profile.brokerage_id)
-    .gte('close_date', `${currentYear}-01-01`)
-    .order('agent_commission', { ascending: false })
-    .limit(200)
-
-  const commissionsData = commissionsRaw ?? []
-
-  // Resolve agent names via agents→users join (separate query for safety)
-  const uniqueAgentIds = [...new Set(commissionsData.map((c: any) => c.agent_id).filter(Boolean))]
-  let agentNameMap: Record<string, string> = {}
-  if (uniqueAgentIds.length > 0) {
-    const { data: agentRows } = await supabase
-      .from('agents')
-      .select('id, user_id')
-      .in('id', uniqueAgentIds)
-    if (agentRows && agentRows.length > 0) {
-      const userIds = agentRows.map(a => a.user_id).filter(Boolean)
-      const { data: userRows } = await supabase
-        .from('users')
-        .select('id, first_name, last_name')
-        .in('id', userIds)
-      const userMap = Object.fromEntries((userRows ?? []).map(u => [u.id, u]))
-      agentNameMap = Object.fromEntries(
-        agentRows.map(a => [
-          a.id,
-          userMap[a.user_id]
-            ? `${userMap[a.user_id].first_name ?? ''} ${userMap[a.user_id].last_name ?? ''}`.trim()
-            : `Agent ${(a.id ?? '').slice(0, 8)}`
-        ])
-      )
-    }
+  if (!commissionQueueResult.success) {
+    redirect('/dashboard')
   }
 
-  const totalAgentPayouts = commissionsData.reduce((s: number, c: any) => s + (c.agent_commission ?? 0), 0)
-  const totalBrokerageNet = commissionsData.reduce((s: number, c: any) => s + (c.brokerage_commission ?? 0), 0)
-  const pendingPayouts = commissionsData.filter((c: any) => c.status === 'pending')
-  const paidPayouts = commissionsData.filter((c: any) => c.status === 'paid')
-  const uniqueAgents = new Set(commissionsData.map((c: any) => c.agent_id))
-  const agentCount = uniqueAgents.size
+  const queueData = commissionQueueResult.data
+
+  // Extract data from kernel result
+  const commissionsData = queueData.commissions
+  const agentNameMap = queueData.agentNameMap
+  const totalAgentPayouts = queueData.totalAgentPayouts
+  const totalBrokerageNet = queueData.totalBrokerageNet
+  const pendingPayouts = queueData.pendingPayouts
+  const paidPayouts = queueData.paidPayouts
+  const agentCount = queueData.agentCount
 
   function agentName(c: any) {
     return agentNameMap[c.agent_id] || `Agent ${(c.agent_id ?? '').slice(0, 8)}`
@@ -117,6 +92,8 @@ export default async function PayoutsPage() {
 
   const fmt = (n: number) =>
     new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n)
+
+  const currentYear = new Date().getFullYear()
 
   return (
     <div className="p-6 space-y-6">

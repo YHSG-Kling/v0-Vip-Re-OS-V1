@@ -27,7 +27,7 @@ import {
 } from "../components/os"
 import { getProviderConnectionStatus } from "@/app/actions/accounting-sync"
 import { AgentFinancialsClient } from "./agent-financials-client"
-
+import { loadAgentFinancialSummaryAction } from "@/app/actions/financial-kernel"
 
 export const dynamic = "force-dynamic"
 
@@ -45,182 +45,144 @@ export default async function AgentFinancialsPage() {
   const { agentId, brokerageId } = context
   const currentYear = new Date().getFullYear()
 
-  // Parallel fetch all financial data
-  const [
-    agentData,
-    mtdEarnings,
-    ytdEarnings,
-    earningsHistory,
-    businessExpenses,
-    pendingCommissions,
-    teamSplits,
-    bonusCredits,
-    monthlyTrend,
-    ytdTransactionCount,
-    syncStatus,
-    currentBilling,
-    existingBudget,
-    pipelineTransactions,
-    commissionProfile,
-    capTracking,
-  ] = await Promise.all([
-    // Agent profile for cap info — look up by user_id since agentId = user.id from getAgentContext
-    supabase
-      .from("agents")
-      .select("id, cap_amount, cap_progress, gamification_points")
-      .eq("user_id", agentId)
-      .maybeSingle()
-      .then((r) => r.data),
+  // Load agent financial summary via kernel command (replaces 16 individual DB queries)
+  const financialSummaryResult = await loadAgentFinancialSummaryAction({
+    agentId,
+    brokerageId,
+  })
 
-    // MTD earnings from agent_earnings
-    supabase
-      .from("agent_earnings")
-      .select("*")
-      .eq("agent_id", agentId)
-      .eq("period_type", "mtd")
-      .order("computed_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then((r) => r.data),
+  if (!financialSummaryResult.success) {
+    redirect("/login")
+  }
 
-    // YTD earnings from agent_earnings
-    supabase
-      .from("agent_earnings")
-      .select("*")
-      .eq("agent_id", agentId)
-      .eq("period_type", "ytd")
-      .order("computed_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then((r) => r.data),
+  const summary = financialSummaryResult.data
 
-    // Earnings history for breakdown table
-    supabase
-      .from("earnings_history")
-      .select(`
-        id,
-        transaction_id,
-        paid_date,
-        gross_commission,
-        agent_net,
-        brokerage_net,
-        total_fees,
-        transactions:transaction_id(property_address)
-      `)
-      .eq("agent_id", agentId)
-      .order("paid_date", { ascending: false })
-      .limit(100)
-      .then((r) => r.data || []),
+  // Fetch accounting sync status in parallel (not in kernel scope yet)
+  const syncStatus = await getProviderConnectionStatus(brokerageId).catch(() => null)
 
-    // Business expenses grouped by category
-    supabase
-      .from("business_expenses")
-      .select("id, category, amount, description, expense_date")
-      .eq("agent_id", agentId)
-      .order("expense_date", { ascending: false })
-      .then((r) => r.data || []),
+  // Extract data from kernel result
+  const mtdEarnings = summary.mtdEarnings
+  const ytdEarnings = summary.ytdEarnings
+  const businessExpenses = summary.expenses
+  const pendingCommissions = summary.pendingCommissions
+  const teamSplits = summary.teamSplits
+  const bonusCredits = summary.bonusCredits
+  const monthlyTrend = summary.monthlyTrendData
+  const ytdTransactionCount = summary.ytdTransactionCount
+  const commissionProfile = summary.commissionProfile
+  const capTracking = summary.capTracking
+  const agentData = summary.agentData
+  const pipelineTransactions = summary.pipelineTransactions
+  const earningsHistory = summary.earningsHistory
 
-    // Pending/pipeline commissions
-    supabase
-      .from("commission_calculations")
-      .select(`
-        id,
-        transaction_id,
-        total_commission,
-        calculated_at,
-        transactions:transaction_id(property_address, status, stage)
-      `)
-      .eq("agent_id", agentId)
-      .order("calculated_at", { ascending: false })
-      .then((r) => r.data || []),
+  // Calculate expense totals by category (same logic as before)
+  const expensesByCategory = businessExpenses.reduce((acc: Record<string, number>, expense: any) => {
+    const category = expense.category || "Other"
+    acc[category] = (acc[category] || 0) + (expense.amount || 0)
+    return acc
+  }, {})
 
-    // Team splits (commission_distributions where this agent received team split)
-    supabase
-      .from("commission_distributions")
-      .select(`
-        id,
-        calculated_amount,
-        distribution_type,
-        transaction_id,
-        transactions:transaction_id(property_address)
-      `)
-      .eq("agent_id", agentId)
-      .eq("distribution_type", "team_split")
-      .then((r) => r.data || []),
+  const totalExpensesMTD = businessExpenses
+    .filter((e: any) => {
+      const expenseDate = new Date(e.expense_date)
+      const now = new Date()
+      return expenseDate.getMonth() === now.getMonth() && expenseDate.getFullYear() === now.getFullYear()
+    })
+    .reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
 
-    // Bonus credits from commission_adjustments
-    supabase
-      .from("commission_adjustments")
-      .select("amount")
-      .eq("applies_to", agentId)
-      .eq("adjustment_type", "credit")
-      .eq("is_active", true)
-      .then((r) => {
-        const adjustments = r.data || []
-        return adjustments.reduce((sum, adj) => sum + (adj.amount || 0), 0)
-      }),
+  const totalExpensesYTD = businessExpenses
+    .filter((e: any) => new Date(e.expense_date).getFullYear() === currentYear)
+    .reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
 
-    // Monthly trend for last 12 months
-    supabase
-      .from("earnings_history")
-      .select("paid_date, gross_commission, agent_net")
-      .eq("agent_id", agentId)
-      .gte("paid_date", new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0])
-      .order("paid_date", { ascending: true })
-      .then((r) => r.data || []),
+  // Filter pending pipeline (not yet paid)
+  const pipelineDeals = pendingCommissions.filter(
+    (c: any) => c.transactions?.status === "active" || c.transactions?.status === "pending"
+  )
+  const totalPipelineValue = pipelineDeals.reduce((sum: number, c: any) => sum + (c.total_commission || 0), 0)
 
-    // YTD transaction count
-    supabase
-      .from("commissions")
-      .select("id", { count: "exact", head: true })
-      .eq("agent_id", agentId)
-      .gte("paid_date", `${currentYear}-01-01`)
-      .then((r) => r.count || 0),
+  // Team split totals
+  const totalTeamSplitsPaid = teamSplits.reduce((sum: number, s: any) => sum + (s.calculated_amount || 0), 0)
 
-    // Accounting sync status
-    getProviderConnectionStatus(brokerageId).catch(() => null),
+  // Process monthly trend data
+  const monthlyTrendData = processMonthlyTrend(monthlyTrend)
 
-    // No agent_billing or budgets tables — return null placeholders
-    Promise.resolve(null),
-    Promise.resolve(null),
+  // Calculate net income after expenses
+  const ytdNetAfterExpenses = (ytdEarnings?.agent_net || 0) - totalExpensesYTD
 
-    // Active pipeline transactions for commission calculator
-    supabase
-      .from("transactions")
-      .select("id, property_address, purchase_price, commission_percentage, estimated_commission, deal_name")
-      .eq("agent_id", agentId)
-      .not("status", "eq", "closed")
-      .is("deleted_at", null)
-      .order("created_at", { ascending: false })
-      .limit(20)
-      .then((r) => r.data || []),
+  // Build financial priority
+  const financialPriority: FinancialPriority | null = (() => {
+    const pendingAmount = totalPipelineValue
+    const pendingCount = pipelineDeals.length
+    
+    if (pendingCount > 3 && pendingAmount > 50000) {
+      return {
+        id: "pending-commissions",
+        title: "Multiple Pending Commissions",
+        description: `${pendingCount} deals worth ${new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pendingAmount)} in pipeline`,
+        urgency: "high",
+        metric: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pendingAmount),
+        metricLabel: "pending",
+        ctaLabel: "Review Pipeline",
+        ctaHref: "/dashboard/financials/commissions",
+      }
+    }
+    
+    if (totalExpensesMTD > (mtdEarnings?.agent_net || 0) * 0.5 && totalExpensesMTD > 1000) {
+      return {
+        id: "expense-pressure",
+        title: "Expense Pressure This Month",
+        description: "Expenses are running high relative to income",
+        urgency: "medium",
+        metric: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(totalExpensesMTD),
+        metricLabel: "MTD expenses",
+        ctaLabel: "Track Expenses",
+        ctaHref: "/dashboard/financials/expenses",
+      }
+    }
+    
+    return null
+  })()
 
-    // Active commission profile for this agent
-    supabase
-      .from("agent_commission_profiles")
-      .select("split_percent, cap_amount, transaction_fee_value, transaction_fee_type, structure_type, desk_fee_value, royalty_percent, is_active")
-      .eq("agent_id", agentId)
-      .eq("is_active", true)
-      .order("effective_date", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then((r) => r.data),
+  // Build action stack
+  const financialActions: FinancialAction[] = []
+  
+  if (pipelineDeals.length > 0) {
+    financialActions.push({
+      id: "review-pending",
+      title: "Review Pending Commissions",
+      description: `${pipelineDeals.length} commission${pipelineDeals.length !== 1 ? "s" : ""} awaiting close`,
+      priority: pipelineDeals.length > 3 ? "high" : "medium",
+      type: "commission",
+      value: totalPipelineValue,
+      href: "/dashboard/financials/commissions",
+    })
+  }
+  
+  financialActions.push({
+    id: "log-expense",
+    title: "Log New Expense",
+    description: "Track business expenses for tax deductions",
+    priority: "low",
+    type: "expense",
+    href: "/dashboard/financials/expenses",
+  })
+  
+  financialActions.push({
+    id: "generate-pl",
+    title: "Generate P&L Report",
+    description: "AI-powered profit and loss analysis",
+    priority: "low",
+    type: "report",
+  })
 
-    // Current anniversary cap tracking record
-    supabase
-      .from("agent_cap_tracking")
-      .select("cap_amount, cap_paid_to_date, is_capped, anniversary_start, anniversary_end")
-      .eq("agent_id", agentId)
-      .order("anniversary_start", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then((r) => r.data),
-  ])
-
-  // Process earnings history to include property address
-  const processedEarningsHistory = earningsHistory.map((record: any) => ({
-    ...record,
-    property_address: record.transactions?.property_address,
+  // Format expenses for planning components
+  const formattedExpenses = businessExpenses.map((e: any) => ({
+    id: e.id,
+    category: e.category || "Uncategorized",
+    amount: e.amount || 0,
+    description: e.description || "",
+    receipt_url: e.receipt_url,
+    date: e.expense_date,
   }))
 
   // Calculate expense totals by category

@@ -14,6 +14,7 @@ import {
   type FinancialPriority,
   type FinancialAction,
 } from "../components/os"
+import { loadBrokerageFinancialSummaryAction } from "@/app/actions/financial-kernel"
 
 export const dynamic = "force-dynamic"
 
@@ -46,140 +47,32 @@ export default async function TeamFinancialsPage() {
     redirect("/dashboard/financials/agent")
   }
 
-  // Get agent's team(s) - team lead sees their team, broker sees all
-  let teamIds: string[] = []
+  // Load brokerage financial summary via kernel command
+  const brokerageFinancialResult = await loadBrokerageFinancialSummaryAction({
+    brokerageId,
+    userRole,
+    currentUserId: agentId,
+  })
 
-  if (userRole === "broker" || userRole === "admin" || userRole === "superadmin") {
-    // Broker sees all teams
-    const { data: allTeams } = await supabase
-      .from("teams")
-      .select("id")
-      .eq("brokerage_id", brokerageId)
-
-    teamIds = allTeams?.map(t => t.id) || []
-  } else {
-    // Team lead sees only their team(s)
-    const { data: ledTeams } = await supabase
-      .from("teams")
-      .select("id")
-      .eq("team_lead_id", agentId)
-
-    teamIds = ledTeams?.map(t => t.id) || []
+  if (!brokerageFinancialResult.success) {
+    redirect("/dashboard")
   }
 
-  if (teamIds.length === 0) {
-    return (
-      <div className="container mx-auto p-6">
-        <Card>
-          <CardContent className="p-8 text-center">
-            <Users className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-            <p className="text-muted-foreground">No teams found. You must be a team lead or broker to view this page.</p>
-            <Link href="/dashboard/financials/agent" className="text-blue-600 hover:underline mt-4 inline-block">
-              View Individual Financials
-            </Link>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
-  const currentPeriod = getCurrentPeriodLabel()
-
-  // Parallel fetch all data
-  const [
-    teamEarningsMTD,
-    teamEarningsYTD,
-    teamPerformance,
-    leaderboard,
-    teamAgents,
-    agentEarningsData,
-    recruitingROI,
-    earningsHistory,
-  ] = await Promise.all([
-    // Team MTD earnings
-    supabase
-      .from("team_earnings")
-      .select("*")
-      .in("team_id", teamIds)
-      .eq("period_type", "mtd")
-      .order("computed_at", { ascending: false })
-      .limit(teamIds.length),
-
-    // Team YTD earnings
-    supabase
-      .from("team_earnings")
-      .select("*")
-      .in("team_id", teamIds)
-      .eq("period_type", "ytd")
-      .order("computed_at", { ascending: false })
-      .limit(teamIds.length),
-
-    // Team performance (goals)
-    supabase
-      .from("team_performance")
-      .select("*")
-      .in("team_id", teamIds)
-      .eq("period_label", currentPeriod)
-      .limit(teamIds.length),
-
-    // Leaderboard rankings
-    supabase
-      .from("leaderboard_rankings")
-      .select(`
-        *,
-        agents:agent_id(id, user_id, users:user_id(first_name, last_name))
-      `)
-      .in("team_id", teamIds)
-      .eq("metric_type", "revenue")
-      .eq("period_label", currentPeriod)
-      .order("rank_position", { ascending: true })
-      .limit(5),
-
-    // Team agents for breakdown
-    supabase
-      .from("agents")
-      .select("id, user_id, cap_progress, gamification_points, users:user_id(first_name, last_name)")
-      .in("team_id", teamIds)
-      .eq("is_active", true),
-
-    // Agent earnings for breakdown
-    supabase
-      .from("agent_earnings")
-      .select("*")
-      .in("agent_id", teamIds.length > 0 ? 
-        (await supabase.from("agents").select("id").in("team_id", teamIds).then(r => r.data?.map(a => a.id) || [])) 
-        : [])
-      .in("period_type", ["mtd", "ytd"]),
-
-    // Recruiting ROI (if exists)
-    supabase
-      .from("recruiting_roi")
-      .select("*")
-      .eq("brokerage_id", brokerageId)
-      .limit(10),
-
-    // Earnings history for chart (last 6 months)
-    supabase
-      .from("earnings_history")
-      .select(`
-        *,
-        agents:agent_id(id, team_id, users:user_id(first_name, last_name))
-      `)
-      .in("agent_id", teamIds.length > 0 ?
-        (await supabase.from("agents").select("id").in("team_id", teamIds).then(r => r.data?.map(a => a.id) || []))
-        : [])
-      .gte("recorded_at", new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString())
-      .order("recorded_at", { ascending: false }),
-  ])
-
-  // Aggregate MTD/YTD totals
-  const mtdTotal = teamEarningsMTD.data?.reduce((sum, t) => sum + (t.gross_commission || 0), 0) || 0
-  const ytdTotal = teamEarningsYTD.data?.reduce((sum, t) => sum + (t.gross_commission || 0), 0) || 0
-  const ytdTransactions = teamEarningsYTD.data?.reduce((sum, t) => sum + (t.transaction_count || 0), 0) || 0
-  const agentCount = teamEarningsYTD.data?.[0]?.agent_count || teamAgents.data?.length || 0
+  const brokageFinData = brokerageFinancialResult.data
+  
+  // Extract data from kernel result
+  const mtdTotal = brokageFinData.mtdTotal
+  const ytdTotal = brokageFinData.ytdTotal
+  const ytdTransactions = brokageFinData.ytdTransactions
+  const agentCount = brokageFinData.agentCount
+  const leaderboard = brokageFinData.leaderboard
+  const teamAgents = brokageFinData.teamAgents
+  const agentEarningsData = brokageFinData.agentEarningsData
+  const recruitingROI = brokageFinData.recruitingROI
+  const earningsHistory = brokageFinData.earningsHistory
 
   // Goals data
-  const perf = teamPerformance.data?.[0]
+  const perf = brokageFinData.teamPerformance
   const goalPct = perf?.goal_pct || 0
   const goalAmount = perf?.goal_amount || 0
   const currentRevenue = perf?.total_revenue || mtdTotal
@@ -188,8 +81,8 @@ export default async function TeamFinancialsPage() {
   const goalColor = goalPct < 50 ? "bg-red-500" : goalPct < 80 ? "bg-amber-500" : "bg-green-500"
 
   // Recruiting ROI totals
-  const totalRecruitingCost = recruitingROI.data?.reduce((sum, r) => sum + (r.total_recruiting_cost || 0), 0) || 0
-  const totalRecruitingRevenue = recruitingROI.data?.reduce((sum, r) => sum + (r.lifetime_brokerage_net || 0), 0) || 0
+  const totalRecruitingCost = recruitingROI.reduce((sum: number, r: any) => sum + (r.total_recruiting_cost || 0), 0)
+  const totalRecruitingRevenue = recruitingROI.reduce((sum: number, r: any) => sum + (r.lifetime_brokerage_net || 0), 0)
 
   // Build financial priority for team lead
   const teamFinancialPriority: FinancialPriority | null = (() => {
@@ -197,7 +90,7 @@ export default async function TeamFinancialsPage() {
       return {
         id: "below-goal",
         title: "Team Below Revenue Target",
-        description: `Currently at ${goalPct.toFixed(1)}% of ${currentPeriod} goal`,
+        description: `Currently at ${goalPct.toFixed(1)}% of ${getCurrentPeriodLabel()} goal`,
         urgency: "high",
         metric: `${goalPct.toFixed(1)}%`,
         metricLabel: "of goal",
