@@ -50,6 +50,10 @@ export function ExternalDocStatusPanel({
   const [expandedDoc, setExpandedDoc] = useState<string | null>(null)
   const [downloading, setDownloading] = useState<string | null>(null)
 
+  // Kernel OS contract: partnerId identifies which partner these documents belong to
+  // Used for access control validation and audit logging per Kernel OS architecture
+  console.log("[v0] ExternalDocStatusPanel scoped to partner:", { partnerId, partnerType, docCount: documents.length })
+
   const handleDownload = async (doc: DocumentStatus) => {
     if (!onDownload) return
     
