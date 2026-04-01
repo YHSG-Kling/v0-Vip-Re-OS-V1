@@ -58,8 +58,6 @@ export function ExternalPartnerCommandStrip({
     },
   }
 
-  const routes = baseRoutes[partnerType]
-
   const handleRefresh = async () => {
     setRefreshing(true)
     router.refresh()
@@ -79,7 +77,7 @@ export function ExternalPartnerCommandStrip({
       </div>
 
       <div className="flex items-center gap-1">
-        <Link href={routes.dashboard}>
+        <Link href={baseRoutes[partnerType].dashboard}>
           <Button variant="ghost" size="sm" className="h-8">
             <LayoutDashboard className="h-4 w-4 mr-1" />
             Dashboard
@@ -87,7 +85,7 @@ export function ExternalPartnerCommandStrip({
         </Link>
 
         {partnerType === "vendor" && (
-          <Link href={routes.jobs}>
+          <Link href={baseRoutes.vendor.jobs}>
             <Button variant="ghost" size="sm" className="h-8">
               <FileText className="h-4 w-4 mr-1" />
               Jobs
@@ -99,7 +97,7 @@ export function ExternalPartnerCommandStrip({
         )}
 
         {partnerType === "lender" && (
-          <Link href={routes.pipeline}>
+          <Link href={baseRoutes.lender.pipeline}>
             <Button variant="ghost" size="sm" className="h-8">
               <FileText className="h-4 w-4 mr-1" />
               Pipeline
@@ -108,7 +106,7 @@ export function ExternalPartnerCommandStrip({
         )}
 
         {partnerType === "title" && (
-          <Link href={routes.orders}>
+          <Link href={baseRoutes.title.orders}>
             <Button variant="ghost" size="sm" className="h-8">
               <FileText className="h-4 w-4 mr-1" />
               Orders
@@ -116,21 +114,23 @@ export function ExternalPartnerCommandStrip({
           </Link>
         )}
 
-        <Link href={partnerType === "vendor" ? routes.earnings : routes.documents}>
-          <Button variant="ghost" size="sm" className="h-8">
-            {partnerType === "vendor" ? (
-              <>
-                <DollarSign className="h-4 w-4 mr-1" />
-                Earnings
-              </>
-            ) : (
-              <>
-                <FileText className="h-4 w-4 mr-1" />
-                Documents
-              </>
-            )}
-          </Button>
-        </Link>
+        {partnerType === "vendor" && (
+          <Link href={baseRoutes.vendor.earnings}>
+            <Button variant="ghost" size="sm" className="h-8">
+              <DollarSign className="h-4 w-4 mr-1" />
+              Earnings
+            </Button>
+          </Link>
+        )}
+
+        {(partnerType === "lender" || partnerType === "title") && (
+          <Link href={baseRoutes[partnerType].documents}>
+            <Button variant="ghost" size="sm" className="h-8">
+              <FileText className="h-4 w-4 mr-1" />
+              Documents
+            </Button>
+          </Link>
+        )}
 
         <Button variant="ghost" size="sm" className="h-8 relative" title="Notifications">
           <Bell className="h-4 w-4" />
@@ -154,7 +154,7 @@ export function ExternalPartnerCommandStrip({
           <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
         </Button>
 
-        <Link href={routes.settings}>
+        <Link href={baseRoutes[partnerType].settings}>
           <Button variant="ghost" size="sm" className="h-8">
             <Settings className="h-4 w-4" />
           </Button>
