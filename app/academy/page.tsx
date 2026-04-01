@@ -42,7 +42,7 @@ export default function AcademyPage() {
   const [currentPoints, setCurrentPoints] = useState<number | undefined>(undefined)
   const [currentTier, setCurrentTier] = useState<string | undefined>(undefined)
   const [generatingPath, setGeneratingPath] = useState(false)
-  const [completedContent, setCompletedContent] = useState<any[]>([])
+  const [completedContent, _setCompletedContent] = useState<any[]>([])
   const [inProgressContent, setInProgressContent] = useState<any[]>([])
 
   useEffect(() => {
