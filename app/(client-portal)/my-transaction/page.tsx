@@ -23,7 +23,7 @@ export default async function ClientTransactionPage() {
     return <div className="p-6">Contact record not found</div>
   }
 
-  // Get active transaction for this client
+  // Get active transaction for this client with agent details
   const { data: transaction } = await supabase
     .from("transactions")
     .select(`
@@ -33,7 +33,8 @@ export default async function ClientTransactionPage() {
       property_address,
       contract_date,
       contract_price,
-      agent:agents(name, phone, email)
+      agent_id,
+      agents(name, phone, email)
     `)
     .eq("contact_id", contact.id)
     .in("status", ["under_contract", "closing"])
@@ -111,9 +112,15 @@ export default async function ClientTransactionPage() {
 
       <div className="rounded-lg border p-6 bg-muted/50">
         <h3 className="font-semibold mb-2">Your Agent</h3>
-        <p className="font-medium">{transaction.agent?.name}</p>
-        <p className="text-sm text-muted-foreground">{transaction.agent?.phone}</p>
-        <p className="text-sm text-muted-foreground">{transaction.agent?.email}</p>
+        {transaction.agents && transaction.agents.length > 0 ? (
+          <>
+            <p className="font-medium">{transaction.agents[0]?.name}</p>
+            <p className="text-sm text-muted-foreground">{transaction.agents[0]?.phone}</p>
+            <p className="text-sm text-muted-foreground">{transaction.agents[0]?.email}</p>
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">Agent information not available</p>
+        )}
       </div>
     </div>
   )
