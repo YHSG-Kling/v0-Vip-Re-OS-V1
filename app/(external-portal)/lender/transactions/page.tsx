@@ -50,7 +50,7 @@ export default async function LenderTransactionsPage() {
   // Map assignments to transactions and flatten to 1D array
   const transactions = (assignments || [])
     .map(a => a.transaction)
-    .filter((t): t is typeof a.transaction => Boolean(t))
+    .filter(Boolean) as typeof assignments[0]['transaction'][]
 
   return (
     <div className="container mx-auto p-6">
