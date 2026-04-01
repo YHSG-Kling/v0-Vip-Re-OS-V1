@@ -104,13 +104,27 @@ export function ExternalDocStatusPanel({
   const completedRequired = documents.filter((d) => d.required && (d.status === "approved" || d.status === "uploaded")).length
   const progressPercent = requiredCount > 0 ? Math.round((completedRequired / requiredCount) * 100) : 100
 
+  // Partner-specific document title per Kernel OS contract
+  const getDocumentTitle = () => {
+    switch (partnerType) {
+      case "vendor":
+        return "Required Vendor Documents"
+      case "lender":
+        return "Required Lender Documents"
+      case "title":
+        return "Required Title Company Documents"
+      default:
+        return "Document Status"
+    }
+  }
+
   return (
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base flex items-center gap-2">
             <FileText className="h-4 w-4" />
-            Document Status
+            {getDocumentTitle()}
           </CardTitle>
           <span className="text-xs text-muted-foreground">
             {completedCount}/{documents.length} Complete
