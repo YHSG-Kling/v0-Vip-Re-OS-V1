@@ -55,14 +55,17 @@ export function AiTutorPanel({ agentId, brokerageId, currentContext }: AiTutorPa
     setLoading(true)
     setResponse("")
     try {
+      // generateSmartResponse API expects: incomingMessage, contactId, agentId, channel, tone?, includeNextSteps?
+      // We use chat channel for the tutor context and include the training context in the message itself
       const result = await generateSmartResponse({
+        incomingMessage: `[Training Context: You are a real estate training expert. Answer clearly for a real estate agent. ${currentContext || ""}]\n\nQuestion: ${question}`,
+        contactId: agentId, // Use agent as the contact for context
         agentId,
-        brokerageId,
-        contactId: agentId, // Use agent as context
-        context: `You are a real estate training expert. Answer clearly for a real estate agent. ${currentContext || ""}`,
-        message: question,
+        channel: "chat",
+        tone: "professional",
+        includeNextSteps: true,
       })
-      setResponse(result?.response || result?.message || "No response generated.")
+      setResponse(result?.draft || "No response generated.")
     } catch (error) {
       console.error("Error asking question:", error)
       setResponse("An error occurred. Please try again.")
