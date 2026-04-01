@@ -187,16 +187,21 @@ export function ExternalBatchActionsPanel({
                   />
                   <span className="text-muted-foreground">{getTypeIcon(item.type)}</span>
                   <span className="text-sm flex-1">{item.label}</span>
-                  <Badge
-                    variant="outline"
-                    className={`text-[10px] ${
-                      item.status === "ready"
-                        ? "bg-green-50 text-green-700 border-green-200"
-                        : "bg-yellow-50 text-yellow-700 border-yellow-200"
-                    }`}
-                  >
-                    {item.status}
-                  </Badge>
+                  <div className="flex items-center gap-1">
+                    {item.status === "pending" && (
+                      <AlertTriangle className="h-3 w-3 text-yellow-500" aria-label="Awaiting action" />
+                    )}
+                    <Badge
+                      variant="outline"
+                      className={`text-[10px] ${
+                        item.status === "ready"
+                          ? "bg-green-50 text-green-700 border-green-200"
+                          : "bg-yellow-50 text-yellow-700 border-yellow-200"
+                      }`}
+                    >
+                      {item.status}
+                    </Badge>
+                  </div>
                 </div>
               ))}
             </div>
