@@ -47,7 +47,10 @@ export default async function LenderTransactionsPage() {
     .eq("member_type", "lender")
     .in("transaction.status", ["under_contract", "closing"])
 
-  const transactions = assignments?.map(a => a.transaction).filter(Boolean) || []
+  // Map assignments to transactions and flatten to 1D array
+  const transactions = (assignments || [])
+    .map(a => a.transaction)
+    .filter((t): t is typeof a.transaction => Boolean(t))
 
   return (
     <div className="container mx-auto p-6">
