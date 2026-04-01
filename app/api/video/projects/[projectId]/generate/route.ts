@@ -4,11 +4,12 @@ import type { SubmitVideoGenerationJobInput } from "@/lib/kernel/video"
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { projectId: string } }
+  { params }: { params: Promise<{ projectId: string }> }
 ) {
+  const { projectId } = await params
   const body = await request.json()
   const input: SubmitVideoGenerationJobInput = {
-    projectId: params.projectId,
+    projectId,
     scriptText: body.scriptText,
     voiceProfileId: body.voiceProfileId,
     avatarStyle: body.avatarStyle,
@@ -26,10 +27,11 @@ export async function POST(
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { projectId: string } }
+  { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
-    const state = await loadVideoGenerationState({ projectId: params.projectId })
+    const { projectId } = await params
+    const state = await loadVideoGenerationState({ projectId })
     return NextResponse.json({ state }, { status: 200 })
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load state"

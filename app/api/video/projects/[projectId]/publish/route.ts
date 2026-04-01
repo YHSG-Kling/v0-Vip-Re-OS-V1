@@ -4,13 +4,14 @@ import type { DistributeVideoProjectInput, RepurposeVideoOutputInput } from "@/l
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { projectId: string } }
+  { params }: { params: Promise<{ projectId: string }> }
 ) {
+  const { projectId } = await params
   const body = await request.json()
 
   if (body.action === "distribute") {
     const input: DistributeVideoProjectInput = {
-      projectId: params.projectId,
+      projectId,
       channels: body.channels,
       title: body.title,
       description: body.description,
@@ -28,7 +29,7 @@ export async function POST(
 
   if (body.action === "repurpose") {
     const input: RepurposeVideoOutputInput = {
-      projectId: params.projectId,
+      projectId,
       formats: body.formats,
     }
 

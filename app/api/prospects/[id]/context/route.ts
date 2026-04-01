@@ -1,12 +1,13 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { supabase } from "@/services/supabase"
 
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params
     const { data, error } = await supabase
       .from("prospect_context")
       .select("*, prospects(*)")
-      .eq("prospect_id", params.id)
+      .eq("prospect_id", id)
       .single()
 
     if (error) throw error
@@ -18,8 +19,9 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
 }
 
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params
     const body = await request.json()
     const { emotion, situation, pain_point, timeline, life_context, what_helps } = body
 
@@ -28,7 +30,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
       .from("prospect_context")
       .upsert(
         {
-          prospect_id: params.id,
+          prospect_id: id,
           emotion,
           situation,
           pain_point,

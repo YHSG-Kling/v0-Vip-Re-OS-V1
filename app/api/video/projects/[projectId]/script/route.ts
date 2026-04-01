@@ -4,11 +4,12 @@ import type { GenerateVideoScriptInput } from "@/lib/kernel/video"
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { projectId: string } }
+  { params }: { params: Promise<{ projectId: string }> }
 ) {
+  const { projectId } = await params
   const body = await request.json()
   const input: GenerateVideoScriptInput = {
-    projectId: params.projectId,
+    projectId,
     contentStrategy: body.contentStrategy,
     tone: body.tone,
     duration: body.duration,
