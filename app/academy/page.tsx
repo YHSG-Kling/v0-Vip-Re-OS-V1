@@ -55,7 +55,7 @@ export default function AcademyPage() {
       const data = await getAgentPointsAndTier(agentId)
       if (data) {
         setCurrentPoints(data.points)
-        setCurrentTier(data.tier)
+        setCurrentTier(data.currentTier)
       }
     } catch (error) {
       console.error("Error loading gamification data:", error)
