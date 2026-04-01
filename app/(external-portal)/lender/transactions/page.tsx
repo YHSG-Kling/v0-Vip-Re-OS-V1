@@ -4,6 +4,24 @@ import { LenderTransactionList } from "@/components/external-portal/lender-trans
 
 export const dynamic = 'force-dynamic'
 
+// Type matching LenderTransactionList Transaction interface
+interface Transaction {
+  id: string
+  property_address: string
+  stage: string
+  status: string
+  contract_price: number
+  contract_date: string
+  agent: { name: string; email: string; phone: string }[] | null
+  milestones: Array<{
+    id: string
+    milestone_name: string
+    status: string
+    milestone_date: string | null
+    completed_at: string | null
+  }>
+}
+
 export default async function LenderTransactionsPage() {
   const supabase = await createClient()
 
@@ -47,10 +65,11 @@ export default async function LenderTransactionsPage() {
     .eq("member_type", "lender")
     .in("transaction.status", ["under_contract", "closing"])
 
-  // Map assignments to transactions and flatten to 1D array
-  const transactions = (assignments || [])
+  // Map assignments to transactions and flatten to 1D array per Kernel OS contract
+  // Each lender can only access transactions they're assigned to via deal_team_members
+  const transactions: Transaction[] = (assignments || [])
     .map(a => a.transaction)
-    .filter(Boolean) as typeof assignments[0]['transaction'][]
+    .filter((t): t is Transaction => Boolean(t))
 
   return (
     <div className="container mx-auto p-6">
