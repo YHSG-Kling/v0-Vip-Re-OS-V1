@@ -50,6 +50,12 @@ export function ExternalDocStatusPanel({
   const [expandedDoc, setExpandedDoc] = useState<string | null>(null)
   const [downloading, setDownloading] = useState<string | null>(null)
 
+  // Kernel OS contract: scoped to specific transaction per partner
+  // Filter documents to only show those for this transaction if transactionId is provided
+  const scopedDocuments = transactionId 
+    ? documents.filter(doc => (doc as any).transactionId === transactionId)
+    : documents
+
   // Kernel OS contract: partnerId identifies which partner these documents belong to
   // Used for access control validation and audit logging per Kernel OS architecture
   console.log("[v0] ExternalDocStatusPanel scoped to partner:", { partnerId, partnerType, docCount: documents.length })
@@ -153,7 +159,7 @@ export function ExternalDocStatusPanel({
           </div>
         ) : (
           <div className="space-y-2">
-            {documents.map((doc) => (
+            {scopedDocuments.map((doc) => (
               <div
                 key={doc.id}
                 className="p-3 bg-muted/50 rounded-lg"
