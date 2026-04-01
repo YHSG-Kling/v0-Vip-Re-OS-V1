@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase"
+import { createClient } from "@/lib/supabase/server"
 
 export async function POST(request: NextRequest) {
   try {
@@ -12,12 +12,12 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const { partnerId, partnerType } = context
+    const { partnerId, partnerType, transactionId } = context
 
-    // Initialize Supabase client
+    // Initialize Supabase server client
     const supabase = await createClient()
 
-    // Verify partner exists and matches the session
+    // Verify referral partner exists and matches the requested type
     const { data: partner, error: partnerError } = await supabase
       .from("referral_partners")
       .select("id, partner_type")
@@ -33,36 +33,26 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Log action completion for audit trail
+    // Log action completion to audit_log for compliance tracking
     await supabase
-      .from("partner_action_logs")
+      .from("audit_log")
       .insert({
-        action_id: actionId,
-        partner_id: partnerId,
-        partner_type: partnerType,
-        action_type: "action_completed",
-        timestamp: new Date().toISOString(),
+        action: "action_completed",
+        entity_type: "partner_action",
+        entity_id: actionId,
+        user_id: null, // External partner action, not user-initiated
+        after: {
+          action_id: actionId,
+          partner_id: partnerId,
+          partner_type: partnerType,
+          transaction_id: transactionId,
+          completed_at: new Date().toISOString(),
+        },
       })
       .catch((err) => {
-        console.error("[v0] Failed to log action:", err)
-        // Don't fail the request if logging fails
+        console.error("[v0] Failed to log audit entry:", err)
+        // Don't fail the request if audit logging fails
       })
-
-    // Update action status to completed in your actions table
-    // This assumes you have a partner_actions or similar table
-    const { error: updateError } = await supabase
-      .from("partner_actions")
-      .update({ status: "completed", completed_at: new Date().toISOString() })
-      .eq("id", actionId)
-      .eq("partner_id", partnerId)
-
-    if (updateError) {
-      console.error("[v0] Failed to update action:", updateError)
-      return NextResponse.json(
-        { success: false, error: "Failed to complete action" },
-        { status: 500 }
-      )
-    }
 
     return NextResponse.json({ success: true })
   } catch (error) {
