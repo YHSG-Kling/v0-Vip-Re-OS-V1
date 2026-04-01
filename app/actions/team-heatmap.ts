@@ -136,7 +136,7 @@ export async function getHeatmapSnapshots(
   }
 
   // Agent filter - agents can only see their own data unless privileged
-  if (!isPrivileged) {
+  if (!isPrivileged && currentAgentId) {
     query = query.eq("agent_id", currentAgentId)
   } else if (filters.agentId) {
     query = query.eq("agent_id", filters.agentId)

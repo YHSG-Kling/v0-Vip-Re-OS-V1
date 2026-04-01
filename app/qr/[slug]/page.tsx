@@ -34,14 +34,14 @@ export default async function QRLandingPage({ params }: PageProps) {
   let agentPhoto: string | null = null
 
   if (qr.agent_user_id) {
-    const { data: profile } = await supabase
-      .from('user_profiles')
-      .select('full_name, avatar_url')
-      .eq('user_id', qr.agent_user_id)
+    const { data: agent } = await supabase
+      .from('users')
+      .select('first_name, last_name')
+      .eq('id', qr.agent_user_id)
       .maybeSingle()
 
-    agentName = profile?.full_name ?? null
-    agentPhoto = profile?.avatar_url ?? null
+    agentName = agent ? `${agent.first_name || ''} ${agent.last_name || ''}`.trim() || null : null
+    agentPhoto = null // User profiles don't have photos in this schema
   }
 
   // Fetch listing info if linked
