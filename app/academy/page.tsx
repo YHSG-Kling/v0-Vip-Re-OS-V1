@@ -52,7 +52,7 @@ export default function AcademyPage() {
 
   async function loadGamificationData() {
     try {
-      const data = await getAgentPointsAndTier({ agentId })
+      const data = await getAgentPointsAndTier(agentId)
       if (data) {
         setCurrentPoints(data.points)
         setCurrentTier(data.tier)
