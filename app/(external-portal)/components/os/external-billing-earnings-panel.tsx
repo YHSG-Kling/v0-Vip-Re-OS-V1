@@ -55,7 +55,7 @@ export function ExternalBillingEarningsPanel({
 
   const handleDownloadStatement = async () => {
     try {
-      // Create CSV content from earnings
+      // Create CSV content from earnings with partner metadata
       const headers = ["Date", "Description", "Property/Reference", "Amount", "Status"]
       const rows = earnings.map((record) => [
         record.invoiceDate || record.paidDate || "N/A",
@@ -65,17 +65,22 @@ export function ExternalBillingEarningsPanel({
         record.status,
       ])
 
+      // Build CSV with metadata header including partnerId for audit trail
       const csvContent = [
+        `Partner ID: ${partnerId}`,
+        `Export Date: ${new Date().toISOString()}`,
+        `Partner Type: ${partnerType}`,
+        "",
         headers.join(","),
         ...rows.map((row) => row.map((cell) => `"${cell}"`).join(",")),
       ].join("\n")
 
-      // Create and download blob
+      // Create and download blob with partner ID in filename
       const blob = new Blob([csvContent], { type: "text/csv" })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement("a")
       link.href = url
-      link.download = `${partnerType}-${new Date().toISOString().split("T")[0]}-statement.csv`
+      link.download = `${partnerType}-${partnerId}-${new Date().toISOString().split("T")[0]}-statement.csv`
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
