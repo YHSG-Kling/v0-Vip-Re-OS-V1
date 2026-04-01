@@ -305,19 +305,20 @@ export async function getLeaderboard(options: {
 }
 
 // ─── GET TOP 5 WIDGET ─────────────────────────────────────────────────────────
-export async function getLeaderboardWidget() {
+export async function getLeaderboardWidget(params: { agentId: string }) {
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { rankings: [], currentAgentId: null }
 
-  const { data: profile } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
+  // Get agent's brokerage — validate agent exists and belongs to user's organization
+  const { data: agent } = await supabase
+    .from("agents")
+    .select("id, brokerage_id, user_id")
+    .eq("id", params.agentId)
     .maybeSingle()
 
-  if (!profile?.brokerage_id) return { rankings: [], currentAgentId: null }
+  if (!agent?.brokerage_id) return { rankings: [], currentAgentId: null }
 
   // Get current month period label
   const now = new Date()
@@ -333,7 +334,7 @@ export async function getLeaderboardWidget() {
       agent_id,
       agents:agent_id(id, first_name, last_name, gamification_points, profile_image_url)
     `)
-    .eq("brokerage_id", profile.brokerage_id)
+    .eq("brokerage_id", agent.brokerage_id)
     .eq("scope", "agent")
     .eq("metric_type", "points")
     .eq("period_label", periodLabel)
@@ -342,14 +343,8 @@ export async function getLeaderboardWidget() {
 
   if (error) throw error
 
-  const { data: agentData } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
-
   return {
     rankings: rankings || [],
-    currentAgentId: agentData?.id,
+    currentAgentId: params.agentId,
   }
 }
