@@ -69,7 +69,41 @@ export function ExternalNextActionsPanel({
     }
   }
 
-  const handleAction = async (action: NextAction) => {
+  const getActionPriority = (action: NextAction): number => {
+    // Partner-specific action prioritization per Kernel OS contract
+    const priorityMap: Record<typeof partnerType, Record<NextAction['type'], number>> = {
+      vendor: {
+        upload_document: 1,
+        update_status: 2,
+        confirm_milestone: 3,
+        respond_request: 4,
+        review_file: 5,
+      },
+      lender: {
+        confirm_milestone: 1,
+        upload_document: 2,
+        review_file: 3,
+        update_status: 4,
+        respond_request: 5,
+      },
+      title: {
+        confirm_milestone: 1,
+        upload_document: 2,
+        respond_request: 3,
+        review_file: 4,
+        update_status: 5,
+      },
+    }
+    return priorityMap[partnerType][action.type] || 99
+  }
+
+  // Sort actions by partner-specific priority
+  const sortedActions = [...actions].sort((a, b) => {
+    const priorityA = getActionPriority(a)
+    const priorityB = getActionPriority(b)
+    if (priorityA !== priorityB) return priorityA - priorityB
+    return a.priority === "high" ? -1 : 1
+  })
     if (!onCompleteAction) {
       toast.error("This action is not available at this time.")
       return
@@ -115,7 +149,7 @@ export function ExternalNextActionsPanel({
           </div>
         ) : (
           <div className="space-y-2">
-            {actions.slice(0, 5).map((action) => (
+            {sortedActions.slice(0, 5).map((action) => (
               <div
                 key={action.id}
                 className="p-3 bg-muted/50 rounded-lg border-l-4"
@@ -162,9 +196,9 @@ export function ExternalNextActionsPanel({
                 </div>
               </div>
             ))}
-            {actions.length > 5 && (
+            {sortedActions.length > 5 && (
               <Button variant="ghost" size="sm" className="w-full mt-2">
-                View All {actions.length} Actions
+                View All {sortedActions.length} Actions
                 <ChevronRight className="h-4 w-4 ml-1" />
               </Button>
             )}
