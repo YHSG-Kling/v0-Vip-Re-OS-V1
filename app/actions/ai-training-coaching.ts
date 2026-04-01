@@ -190,7 +190,7 @@ export async function generateLearningPath(params: {
   agentId: string
   brokerageId?: string
   focusAreas?: string[]
-  experienceLevel?: "beginner" | "intermediate" | "advanced"
+  experienceLevel?: "new" | "intermediate" | "experienced"
 }) {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
@@ -224,7 +224,7 @@ Generate a structured learning path including:
 
     return {
       success: true,
-      learningPath
+      steps: learningPath
     }
   } catch (error) {
     console.error("[v0] Generate learning path error:", error)
