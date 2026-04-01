@@ -28,6 +28,7 @@ interface ExternalBatchActionsPanelProps {
   items: BatchItem[]
   onBatchConfirm?: (ids: string[]) => Promise<{ success: boolean; count: number; error?: string }>
   onBatchUpdate?: (ids: string[], newStatus: string) => Promise<{ success: boolean; count: number; error?: string }>
+  onBatchSend?: (ids: string[]) => Promise<{ success: boolean; count: number; error?: string }>
 }
 
 export function ExternalBatchActionsPanel({
@@ -36,6 +37,7 @@ export function ExternalBatchActionsPanel({
   items,
   onBatchConfirm,
   onBatchUpdate,
+  onBatchSend,
 }: ExternalBatchActionsPanelProps) {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [processing, setProcessing] = useState(false)
@@ -90,6 +92,25 @@ export function ExternalBatchActionsPanel({
       }
     } catch (error) {
       toast.error("An error occurred")
+    } finally {
+      setProcessing(false)
+    }
+  }
+
+  const handleBatchSend = async () => {
+    if (selectedIds.length === 0 || !onBatchSend) return
+
+    setProcessing(true)
+    try {
+      const result = await onBatchSend(selectedIds)
+      if (result.success) {
+        toast.success(`${result.count} items sent`)
+        setSelectedIds([])
+      } else {
+        toast.error(result.error || "Failed to send items")
+      }
+    } catch (error) {
+      toast.error("An error occurred while sending")
     } finally {
       setProcessing(false)
     }
@@ -181,7 +202,7 @@ export function ExternalBatchActionsPanel({
             </div>
 
             {/* Batch Action Buttons */}
-            <div className="flex gap-2 mt-4 pt-4 border-t">
+            <div className="flex gap-2 mt-4 pt-4 border-t flex-wrap">
               {onBatchConfirm && (
                 <Button
                   className="flex-1"
@@ -190,6 +211,17 @@ export function ExternalBatchActionsPanel({
                 >
                   <CheckCircle2 className="h-4 w-4 mr-1" />
                   Confirm ({selectedIds.length})
+                </Button>
+              )}
+              {onBatchSend && (
+                <Button
+                  variant="secondary"
+                  className="flex-1"
+                  onClick={handleBatchSend}
+                  disabled={selectedIds.length === 0 || processing}
+                >
+                  <Send className="h-4 w-4 mr-1" />
+                  Send ({selectedIds.length})
                 </Button>
               )}
               {onBatchUpdate && (
