@@ -193,7 +193,7 @@ export async function generateLearningPath(params: {
   experienceLevel?: "new" | "intermediate" | "experienced"
 }) {
   if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+    return { success: false, error: "Invalid agent ID", steps: [] }
   }
 
   const supabase = await createClient()
@@ -206,29 +206,40 @@ export async function generateLearningPath(params: {
       .eq("id", params.agentId)
       .maybeSingle()
 
-    const { text: learningPath } = await generateText(
-      `Create a personalized learning path for a real estate agent:
+    const { object: learningPath } = await generateObject({
+      model: "openai/gpt-4o",
+      schema: z.object({
+        steps: z.array(
+          z.object({
+            title: z.string().describe("Clear title of the learning step"),
+            description: z.string().describe("Detailed description of what the agent will learn"),
+            estimated_time_minutes: z.number().describe("Estimated time in minutes to complete"),
+            priority: z.enum(["high", "medium", "low"]).describe("Priority level: high for urgent skills, medium for important, low for nice-to-have"),
+            content_id: z.string().optional().describe("Optional reference to course content or module ID"),
+          })
+        ).min(3).max(8).describe("Array of 3-8 learning steps"),
+      }),
+      prompt: `Create a personalized learning path for a real estate agent:
 
-Experience Level: ${params.experienceLevel || "intermediate"}
+Experience Level: ${params.experienceLevel || "intermediate"} (new = 0-1 years, intermediate = 1-3 years, experienced = 3+ years)
 Focus Areas: ${params.focusAreas?.join(", ") || "general real estate skills"}
 ${agent?.profile ? `Agent Profile: ${JSON.stringify(agent.profile)}` : ""}
 
-Generate a structured learning path including:
-1. Week-by-week schedule
-2. Specific topics to cover
-3. Practical exercises and roleplay scenarios
-4. Milestones and checkpoints
-5. Key performance indicators to track
-6. Recommended resources and certifications`
-    )
+Generate a structured learning path with 5-8 specific, actionable steps. Each step should:
+1. Have a clear, action-oriented title
+2. Include realistic time estimates (15-120 minutes)
+3. Be prioritized: high for urgent foundational skills, medium for important competencies, low for specializations
+4. Progress logically from foundational to advanced concepts
+5. Be practical and implementable within the agent's workflow`,
+    })
 
     return {
       success: true,
-      steps: learningPath
+      steps: learningPath?.steps || []
     }
   } catch (error) {
     console.error("[v0] Generate learning path error:", error)
-    return handleError(error, "generateLearningPath")
+    return { success: false, error: String(error), steps: [] }
   }
 }
 
