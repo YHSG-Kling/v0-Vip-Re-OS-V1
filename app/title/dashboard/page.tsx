@@ -111,7 +111,16 @@ export default async function TitleDashboardPage() {
 
       {/* External Partner OS Panels */}
       <div className="grid lg:grid-cols-2 gap-6">
-        <ExternalActiveFilesPanel partnerType="title" />
+        <ExternalActiveFilesPanel partnerType="title" partnerId={titleCompanyId} files={upcoming.map((t: any) => ({
+          id: t.id,
+          transactionId: t.id,
+          propertyAddress: t.property_address,
+          clientName: t.client_name,
+          status: t.status,
+          closeDate: t.close_date,
+          urgency: 'high',
+          actionRequired: t.status === 'pending',
+        }))} />
         <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} />
       </div>
 

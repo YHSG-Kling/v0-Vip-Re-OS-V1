@@ -123,7 +123,16 @@ export default async function LenderDashboardPage() {
 
       {/* External Partner OS Panels */}
       <div className="grid lg:grid-cols-2 gap-6">
-        <ExternalActiveFilesPanel partnerType="lender" />
+        <ExternalActiveFilesPanel partnerType="lender" partnerId={lenderId} files={active.map((t: any) => ({
+          id: t.id,
+          transactionId: t.id,
+          propertyAddress: t.property_address,
+          clientName: t.client_name,
+          status: t.status,
+          closeDate: t.close_date,
+          urgency: 'medium',
+          actionRequired: false,
+        }))} />
         <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} />
       </div>
 

@@ -123,7 +123,16 @@ export default async function VendorDashboardPage() {
 
       {/* External Partner OS Panels */}
       <div className="grid lg:grid-cols-2 gap-6">
-        <ExternalActiveFilesPanel partnerType="vendor" />
+        <ExternalActiveFilesPanel partnerType="vendor" partnerId={vendorId} files={active.map((b: any) => ({
+          id: b.id,
+          transactionId: b.id,
+          propertyAddress: b.property_address || 'Service Location',
+          clientName: b.client_name,
+          status: b.status,
+          closeDate: b.scheduled_date,
+          urgency: b.status === 'urgent' ? 'high' : 'medium',
+          actionRequired: b.status === 'pending',
+        }))} />
         <ExternalNextActionsPanel
           partnerType="vendor"
           partnerId={vendorId}
