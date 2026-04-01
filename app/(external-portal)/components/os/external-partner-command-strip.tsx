@@ -33,27 +33,28 @@ export function ExternalPartnerCommandStrip({
   const router = useRouter()
   const [refreshing, setRefreshing] = useState(false)
 
+  // partnerId scopes all routes to this specific partner per Kernel OS contract
   const baseRoutes = {
     vendor: {
-      dashboard: "/vendor/dashboard",
-      jobs: "/vendor/jobs",
-      earnings: "/vendor/earnings",
-      portfolio: "/vendor/portfolio",
-      settings: "/vendor/settings",
+      dashboard: `/vendor/dashboard`,
+      jobs: `/vendor/jobs`,
+      earnings: `/vendor/earnings`,
+      portfolio: `/vendor/portfolio`,
+      settings: `/vendor/settings?partnerId=${partnerId}`,
     },
     lender: {
-      dashboard: "/lender/dashboard",
-      pipeline: "/lender/pipeline",
-      documents: "/lender/documents",
-      approvals: "/lender/approvals",
-      settings: "/lender/settings",
+      dashboard: `/lender/dashboard`,
+      pipeline: `/lender/pipeline`,
+      documents: `/lender/documents`,
+      approvals: `/lender/approvals`,
+      settings: `/lender/settings?partnerId=${partnerId}`,
     },
     title: {
-      dashboard: "/title/dashboard",
-      orders: "/title/orders",
-      documents: "/title/documents",
-      closing: "/title/closing",
-      settings: "/title/settings",
+      dashboard: `/title/dashboard`,
+      orders: `/title/orders`,
+      documents: `/title/documents`,
+      closing: `/title/closing`,
+      settings: `/title/settings?partnerId=${partnerId}`,
     },
   }
 
