@@ -143,11 +143,18 @@ export function ExternalBatchActionsPanel({
             <CheckCircle2 className="h-4 w-4" />
             {labels.title}
           </CardTitle>
-          {pendingItems.length > 0 && (
-            <Badge variant="outline" className="text-xs">
-              {pendingItems.length} Pending
-            </Badge>
-          )}
+          <div className="flex gap-2">
+            {readyItems.length > 0 && (
+              <Badge variant="secondary" className="text-xs bg-green-50 text-green-700">
+                {readyItems.length} Ready
+              </Badge>
+            )}
+            {pendingItems.length > 0 && (
+              <Badge variant="outline" className="text-xs">
+                {pendingItems.length} Pending
+              </Badge>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent>
