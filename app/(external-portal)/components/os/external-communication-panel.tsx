@@ -44,8 +44,23 @@ export function ExternalCommunicationPanel({
   const [newMessage, setNewMessage] = useState("")
   const [sending, setSending] = useState(false)
 
-  const unreadCount = messages.filter((m) => m.direction === "inbound" && !m.read).length
-  const displayMessages = expanded ? messages : messages.slice(0, 3)
+  const getMessagePlaceholder = () => {
+    const placeholders: Record<typeof partnerType, string> = {
+      vendor: "Ask about job details, scheduling, or updates...",
+      lender: "Request underwriting status or documentation...",
+      title: "Ask about closing documents or settlement...",
+    }
+    return placeholders[partnerType]
+  }
+
+  const getCardTitle = () => {
+    const titles: Record<typeof partnerType, string> = {
+      vendor: "Vendor Messages",
+      lender: "Lender Communication",
+      title: "Title Company Chat",
+    }
+    return titles[partnerType]
+  }
 
   const handleSend = async () => {
     if (!newMessage.trim() || !onSendMessage) return
@@ -87,7 +102,7 @@ export function ExternalCommunicationPanel({
         <div className="flex items-center justify-between">
           <CardTitle className="text-base flex items-center gap-2">
             <MessageSquare className="h-4 w-4" />
-            Messages
+            {getCardTitle()}
           </CardTitle>
           {unreadCount > 0 && (
             <Badge variant="destructive" className="text-xs">
@@ -156,7 +171,7 @@ export function ExternalCommunicationPanel({
         {onSendMessage && (
           <div className="mt-4 border-t pt-4">
             <Textarea
-              placeholder="Type a message..."
+              placeholder={getMessagePlaceholder()}
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               className="min-h-[60px] text-sm resize-none"
