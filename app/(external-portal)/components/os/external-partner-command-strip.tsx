@@ -131,7 +131,16 @@ export function ExternalPartnerCommandStrip({
           </Button>
         </Link>
 
-        <Button variant="ghost" size="sm" className="h-8 relative">
+        <Button variant="ghost" size="sm" className="h-8 relative" title="Notifications">
+          <Bell className="h-4 w-4" />
+          {pendingActions > 0 && (
+            <Badge className="absolute -top-1 -right-1 h-4 w-4 p-0 flex items-center justify-center text-[10px] bg-yellow-500">
+              {pendingActions}
+            </Badge>
+          )}
+        </Button>
+
+        <Button variant="ghost" size="sm" className="h-8 relative" title="Messages">
           <MessageSquare className="h-4 w-4" />
           {unreadMessages > 0 && (
             <Badge className="absolute -top-1 -right-1 h-4 w-4 p-0 flex items-center justify-center text-[10px] bg-red-500">
