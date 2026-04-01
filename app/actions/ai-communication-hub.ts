@@ -330,12 +330,13 @@ export async function generateSmartResponse(params: {
   incomingMessage: string
   contactId: string
   agentId: string
+  brokerageId: string
   channel: "email" | "sms" | "chat"
   tone?: "formal" | "friendly" | "professional" | "empathetic"
   includeNextSteps?: boolean
 }) {
-  if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid contact or agent ID" }
+  if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
+    return { success: false, error: "Invalid contact, agent, or brokerage ID" }
   }
 
   const supabase = await createClient()
@@ -346,6 +347,7 @@ export async function generateSmartResponse(params: {
       .from("contacts")
       .select("first_name, last_name, contact_type, contact_persona")
       .eq("id", params.contactId)
+      .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
 
     // Get agent's communication style
@@ -353,6 +355,7 @@ export async function generateSmartResponse(params: {
       .from("brand_voice_profile")
       .select("*")
       .eq("agent_id", params.agentId)
+      .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
 
     // Get conversation history
@@ -360,6 +363,7 @@ export async function generateSmartResponse(params: {
       .from("messages")
       .select("*")
       .eq("contact_id", params.contactId)
+      .eq("brokerage_id", params.brokerageId)
       .order("created_at", { ascending: false })
       .limit(10)
 
@@ -401,6 +405,27 @@ Generate ONLY the response message, no explanations.`,
       message: response,
       agentId: params.agentId,
     })
+
+    // Log AI response generation for brokerage audit trail per Kernel OS contract
+    await supabase
+      .from("audit_log")
+      .insert({
+        action: "ai_response_generated",
+        entity_type: "message",
+        entity_id: params.contactId,
+        brokerage_id: params.brokerageId,
+        user_id: params.agentId,
+        after: {
+          channel: params.channel,
+          tone: params.tone || "professional",
+          characterCount: response.length,
+          sentiment: sentimentResult.analysis,
+        },
+      })
+      .catch((err) => {
+        console.error("[v0] Failed to log AI response to audit trail:", err)
+        // Don't fail the request if audit logging fails
+      })
 
     return {
       success: true,
