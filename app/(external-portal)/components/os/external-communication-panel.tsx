@@ -30,7 +30,7 @@ interface ExternalCommunicationPanelProps {
   partnerId: string
   transactionId?: string
   messages: Message[]
-  onSendMessage?: (body: string) => Promise<{ success: boolean; error?: string }>
+  onSendMessage?: (body: string, context: { partnerId: string; partnerType: string; transactionId?: string }) => Promise<{ success: boolean; error?: string }>
 }
 
 export function ExternalCommunicationPanel({
@@ -43,6 +43,9 @@ export function ExternalCommunicationPanel({
   const [expanded, setExpanded] = useState(false)
   const [newMessage, setNewMessage] = useState("")
   const [sending, setSending] = useState(false)
+
+  const unreadCount = messages.filter((m) => m.direction === "inbound" && !m.read).length
+  const displayMessages = expanded ? messages : messages.slice(0, 3)
 
   const getMessagePlaceholder = () => {
     const placeholders: Record<typeof partnerType, string> = {
@@ -67,7 +70,12 @@ export function ExternalCommunicationPanel({
 
     setSending(true)
     try {
-      const result = await onSendMessage(newMessage.trim())
+      // Pass partnerId and context to handler - backend uses this for access control and routing
+      const result = await onSendMessage(newMessage.trim(), {
+        partnerId,
+        partnerType,
+        transactionId,
+      })
       if (result.success) {
         setNewMessage("")
         toast.success("Message sent")
@@ -75,6 +83,7 @@ export function ExternalCommunicationPanel({
         toast.error(result.error || "Failed to send message")
       }
     } catch (error) {
+      console.error("[v0] Error sending message:", error)
       toast.error("An error occurred")
     } finally {
       setSending(false)
