@@ -42,7 +42,7 @@ export function AiTutorPanel({ agentId, brokerageId, currentContext }: AiTutorPa
   const [loading, setLoading] = useState(false)
 
   // Scenario mode state
-  const [scenarioType, setScenarioType] = useState("objection_handling")
+  const [scenarioType, setScenarioType] = useState<"listing_presentation" | "buyer_consultation" | "negotiation" | "objection_handling" | "cold_calling" | "fsbo_conversion">("objection_handling")
   const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">("medium")
   const [scenario, setScenario] = useState<any>(null)
   const [agentResponse, setAgentResponse] = useState("")
@@ -91,10 +91,11 @@ export function AiTutorPanel({ agentId, brokerageId, currentContext }: AiTutorPa
     try {
       const result = await generateCoachingScenario({
         agentId,
+        brokerageId,
         scenarioType,
         difficulty,
       })
-      setScenario(result)
+      setScenario(result?.scenario || null)
     } catch (error) {
       console.error("Error generating scenario:", error)
     } finally {
@@ -108,6 +109,7 @@ export function AiTutorPanel({ agentId, brokerageId, currentContext }: AiTutorPa
     try {
       const result = await evaluatePracticeSession({
         agentId,
+        brokerageId,
         scenarioId: scenario.id || scenarioType,
         response: agentResponse,
       })

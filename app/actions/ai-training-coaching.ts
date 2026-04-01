@@ -48,120 +48,30 @@ export async function analyzeAgentPerformance(params: {
       .select("*")
       .eq("agent_id", params.agentId)
       .order("created_at", { ascending: false })
-      .limit(100)
+      .limit(200)
 
-    // Get agent profile
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("*")
-      .eq("id", params.agentId)
-      .single()
+    const { text: analysis } = await generateText(
+      `Analyze this agent's performance and provide coaching insights:
 
-    const { object: analysis } = await generateObject({
-      model: "openai/gpt-4o",
-      schema: z.object({
-        overallScore: z.number(),
-        performanceGrade: z.enum(["A", "B", "C", "D", "F"]),
-        summary: z.string(),
-        strengths: z.array(z.object({
-          area: z.string(),
-          score: z.number(),
-          evidence: z.string(),
-          recommendation: z.string()
-        })),
-        improvementAreas: z.array(z.object({
-          area: z.string(),
-          currentScore: z.number(),
-          targetScore: z.number(),
-          gap: z.string(),
-          priority: z.enum(["high", "medium", "low"]),
-          actionPlan: z.string()
-        })),
-        metrics: z.object({
-          closedTransactions: z.number(),
-          totalVolume: z.number(),
-          avgDaysToClose: z.number(),
-          leadConversionRate: z.number(),
-          avgCommission: z.number(),
-          clientSatisfaction: z.number(),
-          responseTime: z.string(),
-          followUpRate: z.number()
-        }),
-        skillsAssessment: z.object({
-          prospecting: z.number(),
-          negotiation: z.number(),
-          marketing: z.number(),
-          clientRelations: z.number(),
-          marketKnowledge: z.number(),
-          technology: z.number(),
-          timeManagement: z.number(),
-          communication: z.number()
-        }),
-        comparisonToPeers: z.object({
-          percentile: z.number(),
-          areasAboveAverage: z.array(z.string()),
-          areasBelowAverage: z.array(z.string())
-        }),
-        coachingPriorities: z.array(z.object({
-          priority: z.number(),
-          skill: z.string(),
-          currentLevel: z.string(),
-          targetLevel: z.string(),
-          suggestedResources: z.array(z.string()),
-          estimatedTimeToImprove: z.string()
-        })),
-        weeklyGoals: z.array(z.object({
-          goal: z.string(),
-          metric: z.string(),
-          target: z.number(),
-          currentValue: z.number()
-        }))
-      }),
-      prompt: `Analyze this real estate agent's performance:
+Transactions: ${transactions?.length || 0}
+Contacts: ${contacts?.length || 0}
+Recent Activities: ${activities?.length || 0}
 
-Agent Profile:
-${JSON.stringify(agent || {}, null, 2)}
-
-Transactions (${transactions?.length || 0} total):
-${JSON.stringify(transactions?.slice(0, 20) || [], null, 2)}
-
-Contacts and Interactions:
-${JSON.stringify(contacts?.slice(0, 20)?.map(c => ({
-  status: c.status,
-  source: c.source,
-  interactions: c.interactions?.length || 0
-})) || [], null, 2)}
-
-Recent Activities:
-${JSON.stringify(activities?.slice(0, 20) || [], null, 2)}
-
-Provide comprehensive performance analysis:
-1. Overall performance score and grade
-2. Key strengths with evidence
-3. Areas for improvement with action plans
-4. Skills assessment across 8 core areas
-5. Comparison to industry averages
-6. Coaching priorities
-7. Weekly goals to focus on`
-    })
-
-    // Save analysis
-    const { data: report, error } = await supabase
-      .from("agent_performance_reports")
-      .insert({
-        agent_id: params.agentId,
-        broker_id: params.brokerId,
-        analysis: analysis,
-        timeframe: params.timeframe || "90_days",
-        generated_at: new Date().toISOString()
-      })
-      .select()
-      .single()
+Provide insights on:
+1. Performance strengths
+2. Areas for improvement
+3. Recommended training areas
+4. Commission optimization opportunities`
+    )
 
     return {
       success: true,
       analysis,
-      reportId: report?.id
+      metrics: {
+        transactionCount: transactions?.length || 0,
+        contactCount: contacts?.length || 0,
+        activityCount: activities?.length || 0
+      }
     }
   } catch (error) {
     console.error("[v0] Analyze agent performance error:", error)
@@ -170,150 +80,29 @@ Provide comprehensive performance analysis:
 }
 
 /**
- * Generate personalized learning path for an agent
+ * Generate realistic coaching scenarios for agent training
  */
-export async function generateLearningPath(params: {
+export async function generateCoachingScenario(params: {
   agentId: string
-  focusAreas?: string[]
-  experienceLevel?: "new" | "intermediate" | "experienced"
+  brokerageId: string
+  scenarioType: "listing_presentation" | "buyer_consultation" | "negotiation" | "objection_handling" | "cold_calling" | "fsbo_conversion"
+  difficulty?: "easy" | "medium" | "hard"
 }) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
+  if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
+    return { success: false, error: "Invalid agent or brokerage ID" }
   }
 
   const supabase = await createClient()
 
   try {
-    // Get agent's completed courses
-    const { data: completedCourses } = await supabase
-      .from("agent_courses")
+    // Get brokerage's brand voice profile for consistency
+    const { data: brandVoice } = await supabase
+      .from("brand_voice_profile")
       .select("*")
-      .eq("agent_id", params.agentId)
-      .eq("status", "completed")
+      .eq("brokerage_id", params.brokerageId)
+      .eq("agent_id", null) // Get brokerage-level profile
+      .maybeSingle()
 
-    // Get available courses
-    const { data: availableCourses } = await supabase
-      .from("training_courses")
-      .select("*")
-      .eq("status", "active")
-
-    // Get recent performance analysis
-    const { data: performanceReport } = await supabase
-      .from("agent_performance_reports")
-      .select("analysis")
-      .eq("agent_id", params.agentId)
-      .order("generated_at", { ascending: false })
-      .limit(1)
-      .single()
-
-    const { object: learningPath } = await generateObject({
-      model: "openai/gpt-4o",
-      schema: z.object({
-        overview: z.string(),
-        estimatedDuration: z.string(),
-        modules: z.array(z.object({
-          order: z.number(),
-          title: z.string(),
-          description: z.string(),
-          skillsTargeted: z.array(z.string()),
-          estimatedTime: z.string(),
-          format: z.enum(["video", "reading", "interactive", "practice", "quiz"]),
-          resources: z.array(z.object({
-            type: z.string(),
-            title: z.string(),
-            url: z.string().optional(),
-            duration: z.string().optional()
-          })),
-          assessmentCriteria: z.string(),
-          prerequisite: z.string().optional()
-        })),
-        milestones: z.array(z.object({
-          milestone: z.string(),
-          targetDate: z.string(),
-          reward: z.string().optional()
-        })),
-        practiceScenarios: z.array(z.object({
-          scenario: z.string(),
-          skillsPracticed: z.array(z.string()),
-          difficulty: z.enum(["beginner", "intermediate", "advanced"]),
-          expectedOutcome: z.string()
-        })),
-        mentorshipSuggestions: z.object({
-          recommendedMentorType: z.string(),
-          meetingFrequency: z.string(),
-          discussionTopics: z.array(z.string())
-        }),
-        successMetrics: z.array(z.object({
-          metric: z.string(),
-          baseline: z.string(),
-          target: z.string(),
-          measurementMethod: z.string()
-        }))
-      }),
-      prompt: `Create a personalized learning path:
-
-Experience Level: ${params.experienceLevel || "intermediate"}
-Focus Areas: ${params.focusAreas?.join(", ") || "General improvement"}
-
-Completed Courses:
-${JSON.stringify(completedCourses?.map(c => c.course_name) || [], null, 2)}
-
-Available Courses:
-${JSON.stringify(availableCourses?.map(c => ({
-  name: c.name,
-  category: c.category,
-  difficulty: c.difficulty,
-  duration: c.duration
-})) || [], null, 2)}
-
-Recent Performance Analysis:
-${JSON.stringify(performanceReport?.analysis || {}, null, 2)}
-
-Create:
-1. Customized learning modules in order
-2. Milestone checkpoints
-3. Practice scenarios
-4. Mentorship suggestions
-5. Success metrics to track progress`
-    })
-
-    // Save learning path
-    const { data: path, error } = await supabase
-      .from("agent_learning_paths")
-      .insert({
-        agent_id: params.agentId,
-        learning_path: learningPath,
-        focus_areas: params.focusAreas,
-        status: "active",
-        created_at: new Date().toISOString()
-      })
-      .select()
-      .single()
-
-    return {
-      success: true,
-      learningPath,
-      pathId: path?.id
-    }
-  } catch (error) {
-    console.error("[v0] Generate learning path error:", error)
-    return handleError(error, "generateLearningPath")
-  }
-}
-
-/**
- * Generate role-play coaching scenario
- */
-export async function generateCoachingScenario(params: {
-  agentId: string
-  scenarioType: "listing_presentation" | "buyer_consultation" | "negotiation" | "objection_handling" | "cold_calling" | "fsbo_conversion"
-  difficulty?: "easy" | "medium" | "hard"
-}) {
-  if (!isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid agent ID" }
-  }
-
-  try {
     const { object: scenario } = await generateObject({
       model: "openai/gpt-4o",
       schema: z.object({
@@ -350,20 +139,39 @@ export async function generateCoachingScenario(params: {
           advancedTips: z.array(z.string())
         })
       }),
-      prompt: `Create a realistic coaching scenario:
+      prompt: `Create a realistic coaching scenario for a real estate agent:
 
 Scenario Type: ${params.scenarioType}
-Difficulty: ${params.difficulty || "medium"}
+Difficulty Level: ${params.difficulty || "medium"}
+${brandVoice ? `Brokerage Brand Voice: ${brandVoice.communication_style || "professional"}` : ""}
 
 Generate a detailed role-play scenario including:
-1. Setup and context
-2. Client profile with personality and concerns
+1. Realistic setup and context
+2. Client profile with personality, concerns, and motivations
 3. Clear objectives for the agent
-4. Key points to cover
-5. Dialogue starters with suggested responses
-6. Evaluation criteria
-7. Debrief materials`
+4. Key points to cover (critical, important, nice-to-have)
+5. Dialogue starters with multiple suggested responses and common mistakes
+6. Evaluation criteria with weights and examples
+7. Debrief materials with takeaways, pitfalls, and advanced tips`
     })
+
+    // Log scenario generation for audit trail
+    await supabase
+      .from("audit_log")
+      .insert({
+        action: "coaching_scenario_generated",
+        entity_type: "training_scenario",
+        entity_id: params.agentId,
+        brokerage_id: params.brokerageId,
+        user_id: params.agentId,
+        after: {
+          scenario_type: params.scenarioType,
+          difficulty: params.difficulty || "medium"
+        }
+      })
+      .catch((err) => {
+        console.error("[v0] Failed to log scenario generation:", err)
+      })
 
     return {
       success: true,
@@ -376,13 +184,13 @@ Generate a detailed role-play scenario including:
 }
 
 /**
- * Evaluate agent's practice session and provide feedback
+ * Generate personalized learning path for agent
  */
-export async function evaluatePracticeSession(params: {
+export async function generateLearningPath(params: {
   agentId: string
-  scenarioType: string
-  transcript: string
-  audioUrl?: string
+  brokerageId?: string
+  focusAreas?: string[]
+  experienceLevel?: "beginner" | "intermediate" | "advanced"
 }) {
   if (!isValidUUID(params.agentId)) {
     return { success: false, error: "Invalid agent ID" }
@@ -391,84 +199,107 @@ export async function evaluatePracticeSession(params: {
   const supabase = await createClient()
 
   try {
-    const { object: evaluation } = await generateObject({
-      model: "openai/gpt-4o",
-      schema: z.object({
-        overallScore: z.number(),
-        grade: z.enum(["A", "B", "C", "D", "F"]),
-        summary: z.string(),
-        strengths: z.array(z.object({
-          area: z.string(),
-          example: z.string(),
-          impact: z.string()
-        })),
-        improvementAreas: z.array(z.object({
-          area: z.string(),
-          example: z.string(),
-          suggestion: z.string(),
-          priority: z.enum(["high", "medium", "low"])
-        })),
-        skillScores: z.object({
-          rapport: z.number(),
-          questioning: z.number(),
-          listening: z.number(),
-          valueProposition: z.number(),
-          objectionHandling: z.number(),
-          closing: z.number()
-        }),
-        keyMoments: z.array(z.object({
-          timestamp: z.string().optional(),
-          quote: z.string(),
-          analysis: z.string(),
-          suggestion: z.string()
-        })),
-        languageAnalysis: z.object({
-          powerWords: z.array(z.string()),
-          fillerWords: z.array(z.string()),
-          confidenceLevel: z.enum(["high", "medium", "low"]),
-          toneAssessment: z.string()
-        }),
-        nextSteps: z.array(z.object({
-          action: z.string(),
-          timeframe: z.string(),
-          resource: z.string().optional()
-        }))
-      }),
-      prompt: `Evaluate this practice session:
+    // Get agent's profile for personalization
+    const { data: agent } = await supabase
+      .from("users")
+      .select("*, profile:user_profile(*)")
+      .eq("id", params.agentId)
+      .maybeSingle()
 
-Scenario Type: ${params.scenarioType}
+    const { text: learningPath } = await generateText(
+      `Create a personalized learning path for a real estate agent:
 
-Transcript:
-${params.transcript}
+Experience Level: ${params.experienceLevel || "intermediate"}
+Focus Areas: ${params.focusAreas?.join(", ") || "general real estate skills"}
+${agent?.profile ? `Agent Profile: ${JSON.stringify(agent.profile)}` : ""}
 
-Provide detailed feedback:
-1. Overall score and grade
-2. Specific strengths with examples
-3. Areas for improvement with suggestions
-4. Skill-by-skill scores
-5. Key moments analysis
-6. Language and tone analysis
-7. Specific next steps for improvement`
-    })
-
-    // Save evaluation
-    const { data: saved, error } = await supabase
-      .from("practice_evaluations")
-      .insert({
-        agent_id: params.agentId,
-        scenario_type: params.scenarioType,
-        transcript: params.transcript,
-        evaluation: evaluation,
-        overall_score: evaluation.overallScore,
-        created_at: new Date().toISOString()
-      })
-      .select()
-      .single()
+Generate a structured learning path including:
+1. Week-by-week schedule
+2. Specific topics to cover
+3. Practical exercises and roleplay scenarios
+4. Milestones and checkpoints
+5. Key performance indicators to track
+6. Recommended resources and certifications`
+    )
 
     return {
       success: true,
-      evaluation,
-      evaluationId: saved?.id
+      learningPath
+    }
+  } catch (error) {
+    console.error("[v0] Generate learning path error:", error)
+    return handleError(error, "generateLearningPath")
+  }
+}
+
+
+export async function evaluatePracticeSession(params: {
+  agentId: string
+  brokerageId: string
+  scenarioId?: string
+  response: string
+}) {
+  if (!isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
+    return { success: false, error: "Invalid agent or brokerage ID" }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    // Get brokerage's evaluation standards
+    const { data: evaluationStandards } = await supabase
+      .from("brand_voice_profile")
+      .select("*")
+      .eq("brokerage_id", params.brokerageId)
+      .eq("agent_id", null)
+      .maybeSingle()
+
+    const { object: evaluation } = await generateObject({
+      model: "openai/gpt-4o",
+      schema: z.object({
+        score: z.number().min(0).max(100),
+        feedback: z.string(),
+        improvements: z.array(z.string()),
+        strengths: z.array(z.string()),
+        nextSteps: z.array(z.string())
+      }),
+      prompt: `Evaluate this practice session response:
+
+Response:
+${params.response}
+
+Provide evaluation including:
+1. Overall score (0-100)
+2. Constructive feedback
+3. Areas for improvement (list 3-5)
+4. Strengths demonstrated (list 2-3)
+5. Next steps for skill development (list 3-5)`
+    })
+
+    // Log evaluation for audit trail
+    await supabase
+      .from("audit_log")
+      .insert({
+        action: "practice_session_evaluated",
+        entity_type: "training_evaluation",
+        entity_id: params.agentId,
+        brokerage_id: params.brokerageId,
+        user_id: params.agentId,
+        after: {
+          score: evaluation.score
+        }
+      })
+      .catch((err) => {
+        console.error("[v0] Failed to log evaluation:", err)
+      })
+
+    return {
+      success: true,
+      score: evaluation.score,
+      feedback: evaluation.feedback,
+      improvements: evaluation.improvements,
+      strengths: evaluation.strengths,
+      nextSteps: evaluation.nextSteps
     }
   } catch (error) {
     console.error("[v0] Evaluate practice session error:", error)
