@@ -39,37 +39,85 @@ export default async function LenderTransactionsPage() {
     redirect("/")
   }
 
-  // Get transactions where this user is assigned as lender
-  const { data: assignments } = await supabase
+  // Step 1: Get transaction IDs where this lender is assigned
+  const { data: teamAssignments, error: assignmentError } = await supabase
     .from("deal_team_members")
-    .select(`
-      transaction_id,
-      transaction:transactions(
-        id,
-        property_address,
-        stage,
-        status,
-        contract_price,
-        contract_date,
-        agent:agents(name, email, phone),
-        milestones:transaction_milestones(
-          id,
-          milestone_name,
-          status,
-          milestone_date,
-          completed_at
-        )
-      )
-    `)
+    .select("transaction_id")
     .eq("user_id", user.id)
     .eq("member_type", "lender")
-    .in("transaction.status", ["under_contract", "closing"])
 
-  // Map assignments to transactions and flatten to 1D array per Kernel OS contract
-  // Each lender can only access transactions they're assigned to via deal_team_members
-  const transactions: Transaction[] = (assignments || [])
-    .map(a => a.transaction)
-    .filter((t): t is Transaction => Boolean(t))
+  if (assignmentError) {
+    console.error("[v0] Error fetching lender assignments:", assignmentError)
+    redirect("/")
+  }
+
+  // Step 2: If no assignments, show empty state
+  if (!teamAssignments || teamAssignments.length === 0) {
+    return (
+      <div className="container mx-auto p-6">
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold">My Assigned Transactions</h1>
+          <p className="text-muted-foreground">
+            Update financing milestones and upload documents
+          </p>
+        </div>
+
+        <div className="text-center py-12">
+          <p className="text-muted-foreground">No transactions assigned yet.</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Step 3: Get the actual transaction data for assigned transaction IDs
+  const transactionIds = teamAssignments.map((a: any) => a.transaction_id)
+  const { data: transactionsData, error: txnError } = await supabase
+    .from("transactions")
+    .select(`
+      id,
+      property_address,
+      stage,
+      status,
+      purchase_price,
+      contract_date,
+      close_date,
+      transaction_milestones(
+        id,
+        milestone_name,
+        status,
+        milestone_date,
+        completed_at
+      )
+    `)
+    .in("id", transactionIds)
+    .in("status", ["under_contract", "closing"])
+
+  if (txnError) {
+    console.error("[v0] Error fetching transactions:", txnError)
+    return (
+      <div className="container mx-auto p-6">
+        <p className="text-red-500">Error loading transactions. Please try again.</p>
+      </div>
+    )
+  }
+
+  // Step 4: Map transactions to proper type - handle nested transaction_milestones
+  const transactions: Transaction[] = (transactionsData || []).map((txn: any) => ({
+    id: txn.id,
+    property_address: txn.property_address,
+    stage: txn.stage,
+    status: txn.status,
+    contract_price: txn.purchase_price || 0,
+    contract_date: txn.contract_date,
+    agent: null, // No agent data for lender view
+    milestones: (txn.transaction_milestones || []).map((m: any) => ({
+      id: m.id,
+      milestone_name: m.milestone_name,
+      status: m.status,
+      milestone_date: m.milestone_date,
+      completed_at: m.completed_at,
+    })),
+  }))
 
   return (
     <div className="container mx-auto p-6">
