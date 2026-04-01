@@ -124,7 +124,7 @@ export default async function TitleDashboardPage() {
         <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} />
       </div>
 
-      <ExternalBatchActionsPanel partnerType="title" partnerId={titleCompanyId} />
+      <ExternalBatchActionsPanel partnerType="title" items={[]} />
 
       <div className="grid grid-cols-3 gap-3">
         {[

@@ -24,7 +24,6 @@ interface BatchItem {
 
 interface ExternalBatchActionsPanelProps {
   partnerType: "vendor" | "lender" | "title"
-  partnerId: string
   items: BatchItem[]
   onBatchConfirm?: (ids: string[]) => Promise<{ success: boolean; count: number; error?: string }>
   onBatchUpdate?: (ids: string[], newStatus: string) => Promise<{ success: boolean; count: number; error?: string }>
@@ -33,7 +32,6 @@ interface ExternalBatchActionsPanelProps {
 
 export function ExternalBatchActionsPanel({
   partnerType,
-  partnerId,
   items,
   onBatchConfirm,
   onBatchUpdate,
