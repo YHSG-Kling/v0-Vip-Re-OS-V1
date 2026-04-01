@@ -1,8 +1,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { ClientTransactionTimeline } from "@/components/client-portal/transaction-timeline"
+import { TransactionTimeline } from "@/components/client-portal/transaction-timeline"
 import { ClientMilestones } from "@/components/client-portal/milestones"
-import { ClientPendingApprovals } from "@/components/client-portal/pending-approvals"
+import { PendingApprovals } from "@/components/client-portal/pending-approvals"
 
 export const dynamic = 'force-dynamic'
 
@@ -100,15 +100,14 @@ export default async function ClientTransactionPage() {
       </div>
 
       {pendingApprovals && pendingApprovals.length > 0 && (
-        <ClientPendingApprovals 
+        <PendingApprovals 
           approvals={pendingApprovals}
-          transactionId={transaction.id}
         />
       )}
 
       <ClientMilestones milestones={milestones || []} />
 
-      <ClientTransactionTimeline updates={updates || []} />
+      <TransactionTimeline milestones={updates || []} />
 
       <div className="rounded-lg border p-6 bg-muted/50">
         <h3 className="font-semibold mb-2">Your Agent</h3>
