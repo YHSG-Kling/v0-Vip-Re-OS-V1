@@ -33,9 +33,9 @@ interface ExternalDocStatusPanelProps {
   partnerId: string
   transactionId?: string
   documents: DocumentStatus[]
-  onUpload?: (docType: string) => void
-  onView?: (docId: string) => void
-  onDownload?: (docId: string) => Promise<{ success: boolean; error?: string }>
+  onUpload?: (docType: string, context: { partnerId: string; partnerType: string }) => void
+  onView?: (docId: string, context: { partnerId: string; partnerType: string }) => void
+  onDownload?: (docId: string, context: { partnerId: string; partnerType: string }) => Promise<{ success: boolean; error?: string }>
 }
 
 export function ExternalDocStatusPanel({
@@ -55,7 +55,11 @@ export function ExternalDocStatusPanel({
     
     setDownloading(doc.id)
     try {
-      const result = await onDownload(doc.id)
+      // Pass partnerId context to backend for access control
+      const result = await onDownload(doc.id, {
+        partnerId,
+        partnerType,
+      })
       if (result.success) {
         toast.success("Document downloaded")
       } else {
@@ -168,7 +172,7 @@ export function ExternalDocStatusPanel({
                         variant="outline"
                         size="sm"
                         className="h-7"
-                        onClick={() => onUpload(doc.type)}
+                        onClick={() => onUpload(doc.type, { partnerId, partnerType })}
                       >
                         <Upload className="h-3 w-3 mr-1" />
                         Upload
@@ -180,7 +184,7 @@ export function ExternalDocStatusPanel({
                           variant="ghost"
                           size="sm"
                           className="h-7 w-7 p-0"
-                          onClick={() => onView?.(doc.id)}
+                          onClick={() => onView?.(doc.id, { partnerId, partnerType })}
                           title="View document"
                         >
                           <Eye className="h-4 w-4" />
