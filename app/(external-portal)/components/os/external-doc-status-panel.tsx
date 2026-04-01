@@ -56,10 +56,6 @@ export function ExternalDocStatusPanel({
     ? documents.filter(doc => (doc as any).transactionId === transactionId)
     : documents
 
-  // Kernel OS contract: partnerId identifies which partner these documents belong to
-  // Used for access control validation and audit logging per Kernel OS architecture
-  console.log("[v0] ExternalDocStatusPanel scoped to partner:", { partnerId, partnerType, docCount: documents.length })
-
   const handleDownload = async (doc: DocumentStatus) => {
     if (!onDownload) return
     
@@ -160,64 +156,96 @@ export function ExternalDocStatusPanel({
         ) : (
           <div className="space-y-2">
             {scopedDocuments.map((doc) => (
-              <div
-                key={doc.id}
-                className="p-3 bg-muted/50 rounded-lg"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 flex-1 min-w-0">
-                    {getStatusIcon(doc.status)}
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">
-                        {doc.name}
-                        {doc.required && <span className="text-red-500 ml-1">*</span>}
-                      </p>
-                      <p className="text-xs text-muted-foreground">{doc.type}</p>
+              <div key={doc.id}>
+                <div
+                  className="p-3 bg-muted/50 rounded-lg cursor-pointer hover:bg-muted transition-colors"
+                  onClick={() => setExpandedDoc(expandedDoc === doc.id ? null : doc.id)}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      {getStatusIcon(doc.status)}
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {doc.name}
+                          {doc.required && <span className="text-red-500 ml-1">*</span>}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{doc.type}</p>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {getStatusBadge(doc.status)}
-                    {doc.status === "pending" && onUpload && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7"
-                        onClick={() => onUpload(doc.type, { partnerId, partnerType })}
-                      >
-                        <Upload className="h-3 w-3 mr-1" />
-                        Upload
-                      </Button>
-                    )}
-                    {doc.fileUrl && (
-                      <>
+                    <div className="flex items-center gap-2">
+                      {getStatusBadge(doc.status)}
+                      {doc.status === "pending" && onUpload && (
                         <Button
-                          variant="ghost"
+                          variant="outline"
                           size="sm"
-                          className="h-7 w-7 p-0"
-                          onClick={() => onView?.(doc.id, { partnerId, partnerType })}
-                          title="View document"
+                          className="h-7"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onUpload(doc.type, { partnerId, partnerType })
+                          }}
                         >
-                          <Eye className="h-4 w-4" />
+                          <Upload className="h-3 w-3 mr-1" />
+                          Upload
                         </Button>
-                        {onDownload && (
+                      )}
+                      {doc.fileUrl && (
+                        <>
                           <Button
                             variant="ghost"
                             size="sm"
                             className="h-7 w-7 p-0"
-                            onClick={() => handleDownload(doc)}
-                            disabled={downloading === doc.id}
-                            title="Download document"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              onView?.(doc.id, { partnerId, partnerType })
+                            }}
+                            title="View document"
                           >
-                            <Download className="h-4 w-4" />
+                            <Eye className="h-4 w-4" />
                           </Button>
-                        )}
-                      </>
-                    )}
+                          {onDownload && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleDownload(doc)
+                              }}
+                              disabled={downloading === doc.id}
+                              title="Download document"
+                            >
+                              <Download className="h-4 w-4" />
+                            </Button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
-                {doc.status === "rejected" && doc.rejectionReason && (
-                  <div className="mt-2 p-2 bg-red-50 rounded text-xs text-red-700 border border-red-100">
-                    Rejection reason: {doc.rejectionReason}
+                {expandedDoc === doc.id && (
+                  <div className="p-3 border-l-2 border-muted-foreground/30 ml-6 mt-1 bg-muted/25 rounded text-xs space-y-1">
+                    <div className="flex justify-between">
+                      <span className="font-medium">Document ID:</span>
+                      <span className="text-muted-foreground">{doc.id}</span>
+                    </div>
+                    {doc.dueDate && (
+                      <div className="flex justify-between">
+                        <span className="font-medium">Due Date:</span>
+                        <span className="text-muted-foreground">{doc.dueDate}</span>
+                      </div>
+                    )}
+                    {doc.uploadedAt && (
+                      <div className="flex justify-between">
+                        <span className="font-medium">Uploaded:</span>
+                        <span className="text-muted-foreground">{doc.uploadedAt}</span>
+                      </div>
+                    )}
+                    {doc.status === "rejected" && doc.rejectionReason && (
+                      <div className="p-2 bg-red-50 rounded border border-red-100 mt-2">
+                        <p className="font-medium text-red-700">Rejection Reason:</p>
+                        <p className="text-red-600 mt-1">{doc.rejectionReason}</p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
