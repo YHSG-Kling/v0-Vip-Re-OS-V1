@@ -43,7 +43,7 @@ export default function AcademyPage() {
   const [currentTier, setCurrentTier] = useState<string | undefined>(undefined)
   const [generatingPath, setGeneratingPath] = useState(false)
   const [completedContent, _setCompletedContent] = useState<any[]>([])
-  const [inProgressContent, setInProgressContent] = useState<any[]>([])
+  const [inProgressContent, _setInProgressContent] = useState<any[]>([])
 
   useEffect(() => {
     loadData()
