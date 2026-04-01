@@ -4,7 +4,6 @@ import { createClient } from "@/lib/supabase/server"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import type { ContactFormData } from "@/types/contact"
 import { enrichContact } from "@/app/actions/contact-enrichment"
-import { handleError } from "@/lib/errors"
 
 export async function POST(request: NextRequest) {
   try {

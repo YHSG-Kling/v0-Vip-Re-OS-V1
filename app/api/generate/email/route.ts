@@ -50,6 +50,7 @@ export async function POST(request: NextRequest) {
     })
   } catch (error) {
     console.error("[v0] Error generating email:", error)
-    return handleError(error, "generateEmail")
+    const errorResponse = handleError(error, "generateEmail")
+    return NextResponse.json(errorResponse, { status: 500 })
   }
 }
