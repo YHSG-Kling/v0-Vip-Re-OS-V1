@@ -137,7 +137,11 @@ export default async function VendorDashboardPage() {
           partnerType="vendor"
           partnerId={vendorId}
           actions={[]}
-          onCompleteAction={async (_actionId: string) => ({ success: true })}
+          onCompleteAction={async (_actionId: string, context: { partnerId: string; partnerType: string }) => {
+            // Backend call would go here with access control validation
+            console.log("[v0] Completing action for partner:", context)
+            return { success: true }
+          }}
         />
       </div>
 

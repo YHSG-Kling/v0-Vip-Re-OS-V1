@@ -30,7 +30,7 @@ interface ExternalNextActionsPanelProps {
   partnerType: "vendor" | "lender" | "title"
   partnerId: string
   actions: NextAction[]
-  onCompleteAction: (actionId: string) => Promise<{ success: boolean; error?: string }>
+  onCompleteAction?: (actionId: string, context: { partnerId: string; partnerType: string }) => Promise<{ success: boolean; error?: string }>
 }
 
 export function ExternalNextActionsPanel({
@@ -113,13 +113,18 @@ export function ExternalNextActionsPanel({
 
     setCompletingId(action.id)
     try {
-      const result = await onCompleteAction(action.id)
+      // Pass partnerId and partnerType to backend for access control and audit logging
+      const result = await onCompleteAction(action.id, {
+        partnerId,
+        partnerType,
+      })
       if (result.success) {
         toast.success("Action completed")
       } else {
         toast.error(result.error || "Failed to complete action")
       }
     } catch (error) {
+      console.error("[v0] Error completing action:", error)
       toast.error("An error occurred")
     } finally {
       setCompletingId(null)
