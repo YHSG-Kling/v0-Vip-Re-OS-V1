@@ -53,6 +53,38 @@ export function ExternalBillingEarningsPanel({
     }).format(amount)
   }
 
+  const handleDownloadStatement = async () => {
+    try {
+      // Create CSV content from earnings
+      const headers = ["Date", "Description", "Property/Reference", "Amount", "Status"]
+      const rows = earnings.map((record) => [
+        record.invoiceDate || record.paidDate || "N/A",
+        record.description,
+        record.propertyAddress || record.jobId || "N/A",
+        formatCurrency(record.amount),
+        record.status,
+      ])
+
+      const csvContent = [
+        headers.join(","),
+        ...rows.map((row) => row.map((cell) => `"${cell}"`).join(",")),
+      ].join("\n")
+
+      // Create and download blob
+      const blob = new Blob([csvContent], { type: "text/csv" })
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `${partnerType}-${new Date().toISOString().split("T")[0]}-statement.csv`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error("Failed to download statement:", error)
+    }
+  }
+
   const getStatusBadge = (status: EarningRecord["status"]) => {
     switch (status) {
       case "paid":
@@ -74,12 +106,23 @@ export function ExternalBillingEarningsPanel({
             <DollarSign className="h-4 w-4" />
             {partnerType === "vendor" ? "Earnings" : "Billing"}
           </CardTitle>
-          <Link href={partnerType === "vendor" ? "/vendor/earnings" : "#"}>
-            <Button variant="ghost" size="sm" className="h-7 text-xs">
-              View All
-              <ChevronRight className="h-3 w-3 ml-1" />
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={handleDownloadStatement}
+              title="Download statement as CSV"
+            >
+              <Download className="h-3 w-3" />
             </Button>
-          </Link>
+            <Link href={partnerType === "vendor" ? "/vendor/earnings" : "#"}>
+              <Button variant="ghost" size="sm" className="h-7 text-xs">
+                View All
+                <ChevronRight className="h-3 w-3 ml-1" />
+              </Button>
+            </Link>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
