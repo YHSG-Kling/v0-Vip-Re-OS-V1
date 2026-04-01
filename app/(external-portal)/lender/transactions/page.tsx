@@ -12,7 +12,7 @@ interface Transaction {
   status: string
   contract_price: number
   contract_date: string
-  agent: { name: string; email: string; phone: string }[] | null
+  agent: { name: string; email: string; phone: string } | null
   milestones: Array<{
     id: string
     milestone_name: string
