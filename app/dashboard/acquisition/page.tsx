@@ -78,13 +78,22 @@ export default async function AcquisitionPage() {
       .gte("submitted_at", startOfMonthISO),
 
     // Agent's active listings for the open house quick-create selector
-    supabase
-      .from("listings")
-      .select("id, address, city, state")
-      .eq("agent_id", agentId)
-      .in("status", ["active", "coming_soon"])
-      .order("created_at", { ascending: false })
-      .limit(20),
+    // Brokers see all brokerage listings; agents see only their own
+    isAdminOrBroker
+      ? supabase
+          .from("listings")
+          .select("id, address, city, state")
+          .eq("brokerage_id", brokerageId)
+          .in("status", ["active", "coming_soon"])
+          .order("created_at", { ascending: false })
+          .limit(20)
+      : supabase
+          .from("listings")
+          .select("id, address, city, state")
+          .eq("agent_id", agentId)
+          .in("status", ["active", "coming_soon"])
+          .order("created_at", { ascending: false })
+          .limit(20),
   ])
 
   const recentCards = cardScansResult.data ?? []
