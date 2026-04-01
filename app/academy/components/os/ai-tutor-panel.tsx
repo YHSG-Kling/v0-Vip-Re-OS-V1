@@ -195,7 +195,7 @@ export function AiTutorPanel({ agentId, brokerageId, currentContext }: AiTutorPa
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-sm font-medium mb-2 block">Scenario Type</label>
-                <Select value={scenarioType} onValueChange={setScenarioType}>
+                <Select value={scenarioType} onValueChange={(v) => setScenarioType(v as "listing_presentation" | "buyer_consultation" | "negotiation" | "objection_handling" | "cold_calling" | "fsbo_conversion")}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
