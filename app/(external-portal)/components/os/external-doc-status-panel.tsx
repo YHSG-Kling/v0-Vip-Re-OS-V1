@@ -35,6 +35,7 @@ interface ExternalDocStatusPanelProps {
   documents: DocumentStatus[]
   onUpload?: (docType: string) => void
   onView?: (docId: string) => void
+  onDownload?: (docId: string) => Promise<{ success: boolean; error?: string }>
 }
 
 export function ExternalDocStatusPanel({
@@ -44,8 +45,29 @@ export function ExternalDocStatusPanel({
   documents,
   onUpload,
   onView,
+  onDownload,
 }: ExternalDocStatusPanelProps) {
   const [expandedDoc, setExpandedDoc] = useState<string | null>(null)
+  const [downloading, setDownloading] = useState<string | null>(null)
+
+  const handleDownload = async (doc: DocumentStatus) => {
+    if (!onDownload) return
+    
+    setDownloading(doc.id)
+    try {
+      const result = await onDownload(doc.id)
+      if (result.success) {
+        toast.success("Document downloaded")
+      } else {
+        toast.error(result.error || "Failed to download document")
+      }
+    } catch (error) {
+      console.error("[v0] Error downloading document:", error)
+      toast.error("An error occurred")
+    } finally {
+      setDownloading(null)
+    }
+  }
 
   const getStatusIcon = (status: DocumentStatus["status"]) => {
     switch (status) {
@@ -139,14 +161,29 @@ export function ExternalDocStatusPanel({
                       </Button>
                     )}
                     {doc.fileUrl && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 w-7 p-0"
-                        onClick={() => onView?.(doc.id)}
-                      >
-                        <Eye className="h-4 w-4" />
-                      </Button>
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0"
+                          onClick={() => onView?.(doc.id)}
+                          title="View document"
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                        {onDownload && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 w-7 p-0"
+                            onClick={() => handleDownload(doc)}
+                            disabled={downloading === doc.id}
+                            title="Download document"
+                          >
+                            <Download className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
