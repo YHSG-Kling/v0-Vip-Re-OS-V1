@@ -104,6 +104,8 @@ export function ExternalNextActionsPanel({
     if (priorityA !== priorityB) return priorityA - priorityB
     return a.priority === "high" ? -1 : 1
   })
+
+  const handleAction = async (action: NextAction) => {
     if (!onCompleteAction) {
       toast.error("This action is not available at this time.")
       return
