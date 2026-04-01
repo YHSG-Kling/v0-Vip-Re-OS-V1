@@ -123,7 +123,7 @@ export default async function VendorDashboardPage() {
 
       {/* External Partner OS Panels */}
       <div className="grid lg:grid-cols-2 gap-6">
-        <ExternalActiveFilesPanel partnerType="vendor" partnerId={vendorId} />
+        <ExternalActiveFilesPanel partnerType="vendor" />
         <ExternalNextActionsPanel
           partnerType="vendor"
           partnerId={vendorId}

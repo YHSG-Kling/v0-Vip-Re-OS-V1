@@ -123,7 +123,7 @@ export default async function LenderDashboardPage() {
 
       {/* External Partner OS Panels */}
       <div className="grid lg:grid-cols-2 gap-6">
-        <ExternalActiveFilesPanel partnerType="lender" partnerId={lenderId} />
+        <ExternalActiveFilesPanel partnerType="lender" />
         <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} />
       </div>
 

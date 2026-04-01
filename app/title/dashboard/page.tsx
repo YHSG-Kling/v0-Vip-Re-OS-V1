@@ -111,7 +111,7 @@ export default async function TitleDashboardPage() {
 
       {/* External Partner OS Panels */}
       <div className="grid lg:grid-cols-2 gap-6">
-        <ExternalActiveFilesPanel partnerType="title" partnerId={titleCompanyId} />
+        <ExternalActiveFilesPanel partnerType="title" />
         <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} />
       </div>
 

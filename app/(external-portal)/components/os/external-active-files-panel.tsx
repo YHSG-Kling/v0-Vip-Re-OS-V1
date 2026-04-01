@@ -20,14 +20,12 @@ interface ActiveFile {
 
 interface ExternalActiveFilesPanelProps {
   partnerType: "vendor" | "lender" | "title"
-  partnerId: string
   files: ActiveFile[]
   onViewFile?: (fileId: string) => void
 }
 
 export function ExternalActiveFilesPanel({
   partnerType,
-  partnerId,
   files,
   onViewFile,
 }: ExternalActiveFilesPanelProps) {
