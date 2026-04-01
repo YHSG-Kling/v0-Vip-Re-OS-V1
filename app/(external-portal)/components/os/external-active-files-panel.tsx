@@ -57,11 +57,11 @@ export function ExternalActiveFilesPanel({
   const getDetailLink = (file: ActiveFile) => {
     switch (partnerType) {
       case "vendor":
-        return `/vendor/jobs/${file.id}`
+        return `/vendor/${partnerId}/jobs/${file.id}`
       case "lender":
-        return `/portal/lender/${file.transactionId}`
+        return `/lender/${partnerId}/transactions/${file.transactionId}`
       case "title":
-        return `/portal/title/${file.transactionId}`
+        return `/title/${partnerId}/orders/${file.transactionId}`
       default:
         return "#"
     }
