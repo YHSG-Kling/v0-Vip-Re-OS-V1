@@ -20,8 +20,8 @@ export default async function TransactionPipelinePage() {
     return <div>Brokerage not found</div>
   }
 
-  // Fetch all transactions in pipeline stages
-  const { data: transactions } = await supabase
+  // Fetch all transactions in pipeline stages with agent details
+  const { data: transactionData } = await supabase
     .from("transactions")
     .select(`
       id,
@@ -31,7 +31,7 @@ export default async function TransactionPipelinePage() {
       contract_price,
       contract_date,
       created_at,
-      agent:agents(id, name),
+      agent_id,
       milestones:transaction_milestones(
         id,
         milestone_name,
@@ -43,6 +43,34 @@ export default async function TransactionPipelinePage() {
     .eq("brokerage_id", profile.brokerage_id)
     .in("status", ["under_contract", "closing"])
     .order("created_at", { ascending: false })
+
+  // Map transaction data to include agent details from joined agent lookup
+  let transactions: any[] = []
+  if (transactionData && transactionData.length > 0) {
+    // Get unique agent IDs
+    const agentIds = [...new Set(transactionData.map((t: any) => t.agent_id).filter(Boolean))]
+    
+    // Fetch agent details for all agents
+    const { data: agents } = agentIds.length > 0
+      ? await supabase
+          .from("agents")
+          .select("id, name")
+          .in("id", agentIds)
+      : { data: [] }
+
+    const agentMap = agents?.reduce((acc: any, agent: any) => {
+      acc[agent.id] = agent
+      return acc
+    }, {}) || {}
+
+    // Map transactions with agent details
+    transactions = transactionData.map((t: any) => ({
+      ...t,
+      agent: t.agent_id && agentMap[t.agent_id]
+        ? { id: agentMap[t.agent_id].id, name: agentMap[t.agent_id].name }
+        : null,
+    }))
+  }
 
   return (
     <div className="container mx-auto p-6">
