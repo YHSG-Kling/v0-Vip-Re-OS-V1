@@ -45,6 +45,14 @@ export function ExternalBatchActionsPanel({
   const pendingItems = items.filter((i) => i.status !== "completed")
   const readyItems = items.filter((i) => i.status === "ready")
 
+  // Kernel OS contract: each partner type has domain-specific action labels
+  const partnerLabels: Record<typeof partnerType, { confirm: string; send: string; complete: string; title: string }> = {
+    vendor: { confirm: "Confirm Jobs", send: "Submit Work Orders", complete: "Mark Completed", title: "Vendor Batch Actions" },
+    lender: { confirm: "Confirm Approvals", send: "Send to Underwriting", complete: "Mark Cleared", title: "Lender Batch Actions" },
+    title: { confirm: "Confirm Orders", send: "Send to Settlement", complete: "Mark Closed", title: "Title Batch Actions" },
+  }
+  const labels = partnerLabels[partnerType]
+
   const toggleItem = (id: string) => {
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
@@ -135,7 +143,7 @@ export function ExternalBatchActionsPanel({
         <div className="flex items-center justify-between">
           <CardTitle className="text-base flex items-center gap-2">
             <CheckCircle2 className="h-4 w-4" />
-            Batch Actions
+            {labels.title}
           </CardTitle>
           {pendingItems.length > 0 && (
             <Badge variant="outline" className="text-xs">
@@ -215,7 +223,7 @@ export function ExternalBatchActionsPanel({
                   disabled={selectedIds.length === 0 || processing}
                 >
                   <CheckCircle2 className="h-4 w-4 mr-1" />
-                  Confirm ({selectedIds.length})
+                  {labels.confirm} ({selectedIds.length})
                 </Button>
               )}
               {onBatchSend && (
@@ -226,7 +234,7 @@ export function ExternalBatchActionsPanel({
                   disabled={selectedIds.length === 0 || processing}
                 >
                   <Send className="h-4 w-4 mr-1" />
-                  Send ({selectedIds.length})
+                  {labels.send} ({selectedIds.length})
                 </Button>
               )}
               {onBatchUpdate && (
@@ -237,7 +245,7 @@ export function ExternalBatchActionsPanel({
                   disabled={selectedIds.length === 0 || processing}
                 >
                   <RefreshCw className="h-4 w-4 mr-1" />
-                  Mark Complete
+                  {labels.complete}
                 </Button>
               )}
             </div>
