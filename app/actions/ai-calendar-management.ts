@@ -8,67 +8,39 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
 
-// ============================================
-// AI CALENDAR & SCHEDULING MANAGEMENT
-// Smart scheduling with AI optimization
-// ============================================
-
-// ============================================
-// APPOINTMENT CRUD OPERATIONS
-// ============================================
+/**
+ * AI CALENDAR & SCHEDULING MANAGEMENT
+ * 
+ * Maps to calendar_events table per Kernel OS schema:
+ * - entity_id: contact or listing ID being scheduled
+ * - entity_type: 'contact' or 'listing'
+ * - start_at: appointment start time
+ * - end_at: appointment end time
+ * - event_type: 'showing', 'inspection', 'closing', etc.
+ * - brokerage_id: ownership context
+ */
 
 export async function getAppointments(params?: { agentId?: string; contactId?: string; startDate?: string; endDate?: string }) {
   try {
     const supabase = await createClient()
     
-    // Query showings without joins first to avoid foreign key errors
+    // Query calendar_events (canonical calendar table per Kernel OS)
     let query = supabase
-      .from("showings")
+      .from("calendar_events")
       .select("*")
-      .order("scheduled_at", { ascending: true })
+      .order("start_at", { ascending: true })
 
-    if (params?.agentId) query = query.eq("agent_id", params.agentId)
-    if (params?.contactId) query = query.eq("contact_id", params.contactId)
-    if (params?.startDate) query = query.gte("scheduled_at", params.startDate)
-    if (params?.endDate) query = query.lte("scheduled_at", params.endDate)
+    // Filter by contact (entity_type='contact' and entity_id=contactId)
+    if (params?.contactId) {
+      query = query.eq("entity_type", "contact").eq("entity_id", params.contactId)
+    }
+
+    if (params?.startDate) query = query.gte("start_at", params.startDate)
+    if (params?.endDate) query = query.lte("end_at", params.endDate)
 
     const { data: appointments, error } = await query
 
     if (error) throw error
-
-    // Manually fetch related data if needed
-    if (appointments && appointments.length > 0) {
-      const contactIds = appointments.map(a => a.contact_id).filter(Boolean)
-      const listingIds = appointments.map(a => a.listing_id).filter(Boolean)
-
-      let contacts = []
-      let listings = []
-
-      if (contactIds.length > 0) {
-        const { data: contactsData } = await supabase
-          .from("contacts")
-          .select("*")
-          .in("id", contactIds)
-        contacts = contactsData || []
-      }
-
-      if (listingIds.length > 0) {
-        const { data: listingsData } = await supabase
-          .from("listings")
-          .select("*")
-          .in("id", listingIds)
-        listings = listingsData || []
-      }
-
-      // Merge related data
-      const enrichedAppointments = appointments.map(appointment => ({
-        ...appointment,
-        contact: contacts.find(c => c.id === appointment.contact_id),
-        listing: listings.find(l => l.id === appointment.listing_id),
-      }))
-
-      return { success: true, appointments: enrichedAppointments }
-    }
 
     return { success: true, appointments: appointments || [] }
   } catch (error) {
@@ -86,25 +58,35 @@ export async function createAppointment(params: {
   location?: string
   notes?: string
   type?: string
+  brokerageId: string
 }) {
   try {
     const supabase = await createClient()
 
-    // Calculate duration in minutes from start/end times
-    const durationMinutes = params.endTime && params.startTime
-      ? Math.round((new Date(params.endTime).getTime() - new Date(params.startTime).getTime()) / 60000)
-      : 30
+    // Determine entity for calendar_events
+    const entityId = params.contactId || params.listingId
+    const entityType = params.contactId ? "contact" : (params.listingId ? "listing" : "contact")
 
+    if (!entityId) {
+      return { success: false, error: "Either contactId or listingId required" }
+    }
+
+    // Insert to calendar_events table per Kernel OS schema
     const { data, error } = await supabase
-      .from("showings")
+      .from("calendar_events")
       .insert({
-        agent_id: params.agentId,
-        contact_id: params.contactId || null,
-        listing_id: params.listingId || null,
-        notes: params.title + (params.notes ? ` - ${params.notes}` : ""),
-        scheduled_at: params.startTime,
-        duration_minutes: durationMinutes,
-        status: "scheduled",
+        entity_id: entityId,
+        entity_type: entityType,
+        start_at: params.startTime,
+        end_at: params.endTime,
+        event_type: params.type || "showing",
+        brokerage_id: params.brokerageId,
+        metadata: {
+          title: params.title,
+          location: params.location,
+          notes: params.notes,
+          agentId: params.agentId,
+        },
       })
       .select()
       .maybeSingle()
@@ -120,23 +102,19 @@ export async function createAppointment(params: {
   }
 }
 
-export async function updateAppointment(appointmentId: string, updates: any) {
+export async function updateAppointment(appointmentId: string, updates: Record<string, unknown>) {
   try {
     const supabase = await createClient()
 
-    // Remap appointment columns to showings columns
-    const showingUpdates: any = { updated_at: new Date().toISOString() }
-    if (updates.start_time) showingUpdates.scheduled_at = updates.start_time
-    if (updates.title) showingUpdates.notes = updates.title
-    if (updates.notes) showingUpdates.notes = (showingUpdates.notes || "") + " - " + updates.notes
-    if (updates.agent_id) showingUpdates.agent_id = updates.agent_id
-    if (updates.contact_id) showingUpdates.contact_id = updates.contact_id
-    if (updates.listing_id) showingUpdates.listing_id = updates.listing_id
-    if (updates.status) showingUpdates.status = updates.status
+    // Map appointment fields to calendar_events fields
+    const calendarUpdates: Record<string, unknown> = {}
+    if (updates.start_time) calendarUpdates.start_at = updates.start_time
+    if (updates.end_time) calendarUpdates.end_at = updates.end_time
+    if (updates.event_type) calendarUpdates.event_type = updates.event_type
 
     const { data, error } = await supabase
-      .from("showings")
-      .update(showingUpdates)
+      .from("calendar_events")
+      .update(calendarUpdates)
       .eq("id", appointmentId)
       .select()
       .maybeSingle()
@@ -156,12 +134,11 @@ export async function cancelAppointment(appointmentId: string, reason?: string) 
   try {
     const supabase = await createClient()
 
+    // Delete calendar event (or mark cancelled if schema supports status field)
     const { data, error } = await supabase
-      .from("showings")
+      .from("calendar_events")
       .update({
-        status: "cancelled",
-        notes: reason ? `Cancelled: ${reason}` : "Cancelled",
-        updated_at: new Date().toISOString(),
+        metadata: { cancelled: true, cancelledReason: reason },
       })
       .eq("id", appointmentId)
       .select()
@@ -193,35 +170,19 @@ export async function optimizeDailySchedule(params: {
     const supabase = await createClient()
     const targetDate = new Date(params.date)
 
-    // Get all scheduled items for the day
+    // Get all calendar events for the day
     const { data: appointments } = await supabase
-      .from("showings")
-      .select(`
-        *,
-        contacts(*),
-        listings(*)
-      `)
-      .eq("agent_id", params.agentId)
-      .gte("scheduled_at", targetDate.toISOString())
-      .lt("scheduled_at", new Date(targetDate.getTime() + 24 * 60 * 60 * 1000).toISOString())
-      .order("scheduled_at")
+      .from("calendar_events")
+      .select("*")
+      .gte("start_at", targetDate.toISOString())
+      .lt("start_at", new Date(targetDate.getTime() + 24 * 60 * 60 * 1000).toISOString())
+      .order("start_at")
 
     const { data: tasks } = await supabase
       .from("tasks")
       .select("*")
-      .eq("agent_id", params.agentId)
       .eq("due_date", params.date)
       .eq("status", "pending")
-
-    const { data: showings } = await supabase
-      .from("showings")
-      .select(`
-        *,
-        listings(*),
-        contacts(*)
-      `)
-      .eq("agent_id", params.agentId)
-      .eq("showing_date", params.date)
 
     const { object: optimizedSchedule } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
