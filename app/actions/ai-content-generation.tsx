@@ -2322,7 +2322,10 @@ export async function enhancedGenerateListingDescription(params: {
 // COST TRACKING & ANALYTICS
 // ============================================
 
-export async function calculateAICost(usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number }, model: string = "openai/gpt-4o"): Promise<number> {
+export async function calculateAICost(
+  usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number },
+  model: string = "openai/gpt-4o"
+): Promise<number> {
   / Pricing per 1M tokens (as of 2026)
   const pricing: Record<string, { prompt: number; completion: number }> = {
     "openai/gpt-4o": { prompt: 2.50, completion: 10.0 },
