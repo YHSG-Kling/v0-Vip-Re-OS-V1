@@ -172,25 +172,23 @@ export async function sendMessage(params: {
       .single()
 
     // Fire-and-forget: log message provider activity without blocking response
-    serviceClient
-      .from("message_provider_logs")
-      .insert({
-        brokerage_id:        agentForLog?.brokerage_id ?? null,
-        message_id:          message.id,
-        provider_key:        dispatchResult.providerKey,
-        channel:             params.channel,
-        direction:           "outbound",
-        provider_message_id: dispatchResult.messageId ?? null,
-        provider_status:     dispatchResult.success ? "sent" : "failed",
-        error_message:       dispatchResult.error ?? null,
-        created_at:          now,
-      })
-      .then(async () => {
-        // Log successful insert
-      })
-      .catch(async (err) => {
+    ;(async () => {
+      try {
+        await serviceClient.from("message_provider_logs").insert({
+          brokerage_id:        agentForLog?.brokerage_id ?? null,
+          message_id:          message.id,
+          provider_key:        dispatchResult.providerKey,
+          channel:             params.channel,
+          direction:           "outbound",
+          provider_message_id: dispatchResult.messageId ?? null,
+          provider_status:     dispatchResult.success ? "sent" : "failed",
+          error_message:       dispatchResult.error ?? null,
+          created_at:          now,
+        })
+      } catch (err) {
         // Silent fail for logging - don't block message send on log failure
-      })
+      }
+    })()
 
     revalidatePath("/dashboard/communications/inbox")
     return { success: true, message }

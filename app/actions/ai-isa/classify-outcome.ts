@@ -178,7 +178,8 @@ export async function classifyISAOutcome(
           channel:            SUPPRESS_PHONE_OUTCOMES.has(outcome) ? 'phone' : 'all',
           source:             'ai_isa',
           created_at:         now,
-        }).then(() => {}).catch(() => {}) // duplicate rows are acceptable
+        }) // fire-and-forget: duplicate rows are acceptable
+        .catch(() => {}) // silent fail on duplicate key error
       }
     } else {
       // Lead-side suppression

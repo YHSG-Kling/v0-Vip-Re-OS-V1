@@ -121,7 +121,8 @@ export async function sendDocumentForSignature(params: {
       doc_type:        docType,
       signer_count:    signers.length,
     },
-  }).then(() => {}).catch(() => {})
+  })
+  .catch(() => {}) // fire-and-forget: silent fail on audit log errors
 
   revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true, signatureId: sig.id }
