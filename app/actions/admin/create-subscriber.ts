@@ -165,25 +165,28 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
     }
 
     // Step 5: Audit log — activities has no metadata column; use notes as JSON string
-    await service
-      .from("activities")
-      .insert({
-        activity_type: "superadmin.subscriber.created",
-        agent_id: callerUser.id,
-        brokerage_id: brokerageId,
-        title: `New subscriber provisioned: ${params.brokerageName}`,
-        notes: JSON.stringify({
-          admin_email: params.adminEmail,
-          tier: params.tierName,
-          billing_cycle: params.billingCycle,
-          subscription_id: subscription.id,
-          notes: params.notes || "",
-          timestamp: new Date().toISOString(),
-        }),
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .catch(() => {})
+    try {
+      await service
+        .from("activities")
+        .insert({
+          activity_type: "superadmin.subscriber.created",
+          agent_id: callerUser.id,
+          brokerage_id: brokerageId,
+          title: `New subscriber provisioned: ${params.brokerageName}`,
+          notes: JSON.stringify({
+            admin_email: params.adminEmail,
+            tier: params.tierName,
+            billing_cycle: params.billingCycle,
+            subscription_id: subscription.id,
+            notes: params.notes || "",
+            timestamp: new Date().toISOString(),
+          }),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+    } catch {
+      // Non-fatal: audit log failures don't block subscriber creation
+    }
 
     // Step 6: Send invite email via Supabase auth — non-fatal, but result is surfaced
     let inviteSucceeded = false
