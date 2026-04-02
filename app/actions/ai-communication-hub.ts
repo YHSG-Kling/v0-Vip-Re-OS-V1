@@ -410,25 +410,28 @@ Generate ONLY the response message, no explanations.`,
     })
 
     // Log AI response generation for brokerage audit trail per Kernel OS contract
-    await supabase
-      .from("audit_log")
-      .insert({
-        action: "ai_response_generated",
-        entity_type: "message",
-        entity_id: params.contactId,
-        brokerage_id: params.brokerageId,
-        user_id: params.agentId,
-        after: {
-          channel: params.channel,
-          tone: params.tone || "professional",
-          characterCount: response.length,
-          sentiment: sentimentResult.success ? sentimentResult.analysis : null,
-        },
-      })
-      .catch((err) => {
-        console.error("[v0] Failed to log AI response to audit trail:", err)
-        // Don't fail the request if audit logging fails
-      })
+    // Fire-and-forget to avoid blocking response
+    ;(async () => {
+      try {
+        await supabase
+          .from("audit_log")
+          .insert({
+            action: "ai_response_generated",
+            entity_type: "message",
+            entity_id: params.contactId,
+            brokerage_id: params.brokerageId,
+            user_id: params.agentId,
+            after: {
+              channel: params.channel,
+              tone: params.tone || "professional",
+              characterCount: response.length,
+              sentiment: sentimentResult.success ? sentimentResult.analysis : null,
+            },
+          })
+      } catch (err) {
+        // Silent fail - audit logging should not block response generation
+      }
+    })()
 
     return {
       success: true,
