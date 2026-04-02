@@ -90,11 +90,14 @@ export async function trackBehavior(sessionData: {
         .order("timestamp", { ascending: false })
         .limit(20)
 
+      const promptPageList = pageHistory?.map((p: Record<string, unknown>) => p.page_visited).join(", ") || "None"
+      const calculatorList = pageHistory?.filter((p: Record<string, unknown>) => (p.action_taken as string | null)?.includes("calculator")).map((p: Record<string, unknown>) => p.action_taken).join(", ") || "None"
+
       const prompt = `Analyze user behavior to determine real estate intent:
 
 Behavior Data:
-- Pages viewed: ${pageHistory?.map((p) => p.page_visited).join(", ")}
-- Calculators used: ${pageHistory?.filter((p) => p.action_taken?.includes("calculator")).map((p) => p.action_taken).join(", ")}
+- Pages viewed: ${promptPageList}
+- Calculators used: ${calculatorList}
 - Search terms: ${sessionData.search_terms?.join(", ") || "None"}
 - Time spent: ${sessionData.time_spent} seconds
 - Total sessions: ${totalSessions}
@@ -117,19 +120,23 @@ Investor signals: ROI calculators, rental income tools, market analysis pages`
 
       try {
         const intentData = await generateAIJSON(prompt)
-        const intent = intentData.data
+        const intent = intentData.data as Record<string, unknown> | null
+
+        if (!intent) {
+          return { success: true, signalId }
+        }
 
         // Update behavioral signal with AI insights
         await supabase
           .from("behavioral_signals")
           .update({
-            intent_type: intent.intent_type,
-            intent_confidence_score: intent.confidence,
+            intent_type: intent.intent_type as string | null,
+            intent_confidence_score: intent.confidence as number | null,
           })
           .eq("id", signalId)
 
         // Flag for enrichment if high intent and multiple sessions
-        if (intent.confidence >= 70 && totalSessions >= 3) {
+        if ((intent.confidence as number) >= 70 && totalSessions >= 3) {
           await supabase.from("intelligence_signals_log").insert({
             lead_profile_id: signalId,
             signal_type: "high_intent_behavioral",
@@ -514,37 +521,38 @@ export async function enrichLeadData(leadId: string) {
   }
 }
 
-async function enrichWithPeopleData(leadId: string, lead: any) {
+async function enrichWithPeopleData(leadId: string, lead: Record<string, unknown>) {
   const supabase = createServiceClient()
   const peopleData = new PeopleDataClient()
 
   try {
     const enrichedData = await peopleData.enrich({
-      email: lead.email,
-      phone: lead.phone,
-      firstName: lead.first_name,
-      lastName: lead.last_name,
+      email: lead.email as string | undefined,
+      phone: lead.phone as string | undefined,
+      firstName: lead.first_name as string | undefined,
+      lastName: lead.last_name as string | undefined,
     })
 
     if (enrichedData) {
       await supabase.from("lead_people_data").insert({
         lead_id: leadId,
-        demographic_data: enrichedData.demographics,
-        employment_data: enrichedData.employment,
-        financial_indicators: enrichedData.financial,
-        life_events: enrichedData.lifeEvents,
-        social_presence: enrichedData.social,
-        contact_enrichment: enrichedData.additionalContacts,
+        demographic_data: enrichedData.demographics as Record<string, unknown> | null,
+        employment_data: enrichedData.employment as Record<string, unknown> | null,
+        financial_indicators: enrichedData.financial as Record<string, unknown> | null,
+        life_events: enrichedData.lifeEvents as Record<string, unknown>[] | null,
+        social_presence: enrichedData.social as Record<string, unknown> | null,
+        contact_enrichment: enrichedData.additionalContacts as Record<string, unknown>[] | null,
         data_source: "peopledata",
       })
 
       // Collect OSINT data from social profiles
-      if (enrichedData.social?.profiles) {
-        for (const profile of enrichedData.social.profiles) {
+      const socialProfiles = enrichedData.social as Record<string, unknown> | null
+      if (socialProfiles?.profiles) {
+        for (const profile of (socialProfiles.profiles as Record<string, unknown>[])) {
           await supabase.from("lead_osint_data").insert({
             lead_id: leadId,
             data_type: "social_profile",
-            data_source: profile.platform,
+            data_source: (profile.platform as string) || "unknown",
             data_content: profile,
             confidence_score: 0.85,
           })
@@ -556,42 +564,51 @@ async function enrichWithPeopleData(leadId: string, lead: any) {
   }
 }
 
-async function enrichWithPropertyOwnership(leadId: string, lead: any) {
+async function enrichWithPropertyOwnership(leadId: string, lead: Record<string, unknown>) {
   const supabase = createServiceClient()
   const batchData = new BatchDataClient()
 
   try {
-    let properties = []
+    let properties: Record<string, unknown>[] = []
 
     if (lead.address) {
-      properties = await batchData.searchByAddress(lead.address, lead.city, lead.state)
+      properties = await batchData.searchByAddress(
+        lead.address as string,
+        lead.city as string,
+        lead.state as string
+      )
     } else if (lead.first_name && lead.last_name && lead.city) {
-      properties = await batchData.searchByName(lead.first_name, lead.last_name, lead.city, lead.state)
+      properties = await batchData.searchByName(
+        lead.first_name as string,
+        lead.last_name as string,
+        lead.city as string,
+        lead.state as string
+      )
     }
 
     for (const property of properties) {
-      const purchaseDate = new Date(property.purchase_date)
+      const purchaseDate = new Date(property.purchase_date as string)
       const now = new Date()
       const ownershipMonths = Math.floor((now.getTime() - purchaseDate.getTime()) / (1000 * 60 * 60 * 24 * 30))
 
       await supabase.from("lead_property_ownership").insert({
         lead_id: leadId,
-        property_address: property.address,
+        property_address: property.address as string,
         property_details: {
           bedrooms: property.bedrooms,
           bathrooms: property.bathrooms,
           sqft: property.square_feet,
           year_built: property.year_built,
           lot_size: property.lot_size,
-        },
-        estimated_value: property.estimated_value,
-        equity_estimate: property.estimated_value - (property.mortgage_balance || 0),
+        } as Record<string, unknown>,
+        estimated_value: property.estimated_value as number,
+        equity_estimate: ((property.estimated_value as number) - ((property.mortgage_balance as number) || 0)),
         mortgage_data: property.mortgage,
-        purchase_date: property.purchase_date,
+        purchase_date: property.purchase_date as string,
         ownership_length_months: ownershipMonths,
-        property_tax: property.annual_tax,
-        is_primary_residence: property.owner_occupied,
-        motivation_indicators: {},
+        property_tax: property.annual_tax as number,
+        is_primary_residence: property.owner_occupied as boolean,
+        motivation_indicators: {} as Record<string, unknown>,
         data_source: "batchdata",
       })
     }

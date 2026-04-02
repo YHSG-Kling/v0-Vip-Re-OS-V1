@@ -51,15 +51,15 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   const supabase = await createClient()
 
   // Try to gather lead data - handle tables that may not exist
-  let lead: any = null
-  let leadIntelligence: any = null
-  let behavioralData: any[] = []
-  let engagementScores: any = null
-  let propertyOwnership: any[] = []
-  let peopleData: any = null
-  let motivatedSellerSignals: any[] = []
-  let propertyInteractions: any[] = []
-  let chatSessions: any[] = []
+  let lead: unknown = null
+  let leadIntelligence: unknown = null
+  let behavioralData: unknown[] = []
+  let engagementScores: unknown = null
+  let propertyOwnership: unknown[] = []
+  let peopleData: unknown = null
+  let motivatedSellerSignals: unknown[] = []
+  let propertyInteractions: unknown[] = []
+  let chatSessions: unknown[] = []
 
   // Get base lead data - try leads table first, then contacts
   const { data: leadData, error: leadError } = await supabase
@@ -81,8 +81,8 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
     if (contactData) {
       lead = {
         ...contactData,
-        lead_source: contactData.source || "unknown",
-        last_contact_date: contactData.last_contact_date || contactData.updated_at
+        lead_source: (contactData as Record<string, unknown>).source || "unknown",
+        last_contact_date: (contactData as Record<string, unknown>).last_contact_date || (contactData as Record<string, unknown>).updated_at
       }
     }
   }
@@ -90,6 +90,8 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   if (!lead) {
     return { error: "Lead not found" }
   }
+
+  const leadRecord = lead as Record<string, unknown>
 
   // Try to get intelligence data
   try {
@@ -171,29 +173,29 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   const prompt = `You are an advanced real estate AI that predicts lead conversion probability.
 
 Lead Profile:
-- Name: ${lead.first_name || "Unknown"} ${lead.last_name || ""}
-- Source: ${lead.lead_source || lead.source || "Unknown"}
+- Name: ${(leadRecord.first_name as string | null) || "Unknown"} ${(leadRecord.last_name as string | null) || ""}
+- Source: ${(leadRecord.lead_source as string | null) || (leadRecord.source as string | null) || "Unknown"}
 - Days Since First Contact: ${daysSinceFirstContact}
-- Last Contact: ${lead.last_contact_date || "Never"}
-- Email: ${lead.email || "Not provided"}
-- Phone: ${lead.phone || "Not provided"}
+- Last Contact: ${(leadRecord.last_contact_date as string | null) || "Never"}
+- Email: ${(leadRecord.email as string | null) || "Not provided"}
+- Phone: ${(leadRecord.phone as string | null) || "Not provided"}
 
 Behavioral Signals:
 - Email Opens: ${emailOpens}
-- Property Views: ${propertyInteractions.length}
-- Engagement Score: ${engagementScores?.overall_score || 0}/100
+- Property Views: ${(propertyInteractions as Record<string, unknown>[]).length}
+- Engagement Score: ${(engagementScores as Record<string, unknown> | null)?.overall_score as number || 0}/100
 
 Intelligence:
-- Buyer/Seller Type: ${leadIntelligence?.buyer_seller_type || "Unknown"}
-- Price Range: ${leadIntelligence?.price_range || "Unknown"}
-- Timeline: ${leadIntelligence?.timeline || "Unknown"}
-- Motivation Score: ${leadIntelligence?.motivation_score || 0}/100
-- Qualification Score: ${leadIntelligence?.qualification_score || 0}/100
+- Buyer/Seller Type: ${(leadIntelligence as Record<string, unknown> | null)?.buyer_seller_type as string || "Unknown"}
+- Price Range: ${(leadIntelligence as Record<string, unknown> | null)?.price_range as string || "Unknown"}
+- Timeline: ${(leadIntelligence as Record<string, unknown> | null)?.timeline as string || "Unknown"}
+- Motivation Score: ${(leadIntelligence as Record<string, unknown> | null)?.motivation_score as number || 0}/100
+- Qualification Score: ${(leadIntelligence as Record<string, unknown> | null)?.qualification_score as number || 0}/100
 
 Financial Indicators:
-- Property Ownership: ${propertyOwnership.length} properties
-- Estimated Income: $${peopleData?.financial_indicators?.estimated_income?.toLocaleString() || "Unknown"}
-- Motivated Seller Signals: ${motivatedSellerSignals.length}
+- Property Ownership: ${(propertyOwnership as Record<string, unknown>[]).length} properties
+- Estimated Income: $${((peopleData as Record<string, unknown> | null)?.financial_indicators as Record<string, unknown> | null)?.estimated_income as number || 0}
+- Motivated Seller Signals: ${(motivatedSellerSignals as Record<string, unknown>[]).length}
 
 Based on ALL this data, predict:
 
@@ -291,22 +293,24 @@ Respond with JSON only:
 }
 
 function extractFactors(
-  lead: any,
-  intelligence: any,
-  engagement: any,
-  interactions: any[]
-): any[] {
-  const factors = []
+  lead: Record<string, unknown>,
+  intelligence: unknown,
+  engagement: unknown,
+  interactions: unknown[]
+): Record<string, unknown>[] {
+  const factors: Record<string, unknown>[] = []
+  const engagementRecord = engagement as Record<string, unknown> | null
+  const intelligenceRecord = intelligence as Record<string, unknown> | null
 
-  if (engagement?.overall_score > 70) {
+  if ((engagementRecord?.overall_score as number) > 70) {
     factors.push({
       factor: "high_engagement",
       weight: 0.3,
-      value: engagement.overall_score,
+      value: engagementRecord?.overall_score,
     })
   }
 
-  if (interactions?.length >= 5) {
+  if ((interactions || []).length >= 5) {
     factors.push({
       factor: "active_property_viewing",
       weight: 0.25,
@@ -314,28 +318,29 @@ function extractFactors(
     })
   }
 
-  if (intelligence?.timeline === "immediate") {
+  if ((intelligenceRecord?.timeline as string) === "immediate") {
     factors.push({ factor: "urgent_timeline", weight: 0.15, value: 1 })
   }
 
-  if (intelligence?.motivation_score > 70) {
+  if ((intelligenceRecord?.motivation_score as number) > 70) {
     factors.push({
       factor: "high_motivation",
       weight: 0.2,
-      value: intelligence.motivation_score,
+      value: intelligenceRecord?.motivation_score,
     })
   }
 
   return factors
 }
 
-function calculateOptimalContactTime(behavioralData: any[]): string {
+function calculateOptimalContactTime(behavioralData: unknown[]): string {
   // Analyze past engagement patterns
   const hourCounts: Record<number, number> = {}
 
-  behavioralData.forEach((e: any) => {
-    if (e.occurred_at) {
-      const hour = new Date(e.occurred_at).getHours()
+  (behavioralData || []).forEach((e: unknown) => {
+    const record = e as Record<string, unknown> | null
+    if (record?.occurred_at) {
+      const hour = new Date(record.occurred_at as string).getHours()
       hourCounts[hour] = (hourCounts[hour] || 0) + 1
     }
   })

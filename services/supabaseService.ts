@@ -215,7 +215,7 @@ export const supabaseService = {
     }
   },
 
-  async createTransaction(transaction: any) {
+  async createTransaction(transaction: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("transactions").insert(transaction).select().single()
@@ -227,7 +227,7 @@ export const supabaseService = {
     }
   },
 
-  async updateTransaction(id: string, updates: any) {
+  async updateTransaction(id: string, updates: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("transactions").update(updates).eq("id", id).select().single()
@@ -274,7 +274,7 @@ export const supabaseService = {
     }
   },
 
-  async createListing(listing: any) {
+  async createListing(listing: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("listings").insert(listing).select().single()
@@ -286,7 +286,7 @@ export const supabaseService = {
     }
   },
 
-  async updateListing(id: string, updates: any) {
+  async updateListing(id: string, updates: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("listings").update(updates).eq("id", id).select().single()
@@ -325,7 +325,7 @@ export const supabaseService = {
     return this.getUsers("agent")
   },
 
-  async createUser(user: any) {
+  async createUser(user: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("users").insert(user).select().single()
@@ -337,7 +337,7 @@ export const supabaseService = {
     }
   },
 
-  async updateUser(id: string, updates: any) {
+  async updateUser(id: string, updates: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("users").update(updates).eq("id", id).select().single()
@@ -372,7 +372,7 @@ export const supabaseService = {
     }
   },
 
-  async createVendor(vendor: any) {
+  async createVendor(vendor: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("vendors").insert(vendor).select().single()
@@ -408,7 +408,7 @@ export const supabaseService = {
     }
   },
 
-  async createCopilotPlan(plan: any) {
+  async createCopilotPlan(plan: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("copilot_plans").insert(plan).select().single()
@@ -439,7 +439,7 @@ export const supabaseService = {
     }
   },
 
-  async updatePlanTask(id: string, updates: any) {
+  async updatePlanTask(id: string, updates: Record<string, unknown>) {
     try {
       const supabase = getSupabaseAdmin()
       const { data, error } = await supabase.from("plan_tasks").update(updates).eq("id", id).select().single()

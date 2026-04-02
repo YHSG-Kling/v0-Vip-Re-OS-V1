@@ -58,7 +58,7 @@ export async function updateBrandVoiceProfile(data: {
   avoidWords?: string[]
   targetAudience?: string
   brandPersonality?: string
-  contentGuidelines?: any
+  contentGuidelines?: Record<string, unknown>
   examplePosts?: string[]
 }) {
   const supabase = await createClient()
@@ -116,9 +116,9 @@ export async function saveContentTemplate(data: {
   templateName: string
   contentType: string
   category: string
-  structure: any
+  structure: Record<string, unknown>
   placeholders?: string[]
-  seoGuidelines?: any
+  seoGuidelines?: Record<string, unknown>
   exampleOutput?: string
 }) {
   const supabase = await createClient()
@@ -184,7 +184,7 @@ export async function createGeneratedContent(data: {
   seoKeywords?: string[]
   hashtags?: string[]
   targetAudience?: string
-  metadata?: any
+  metadata?: Record<string, unknown>
   scheduledFor?: string
 }) {
   const supabase = await createClient()
@@ -216,7 +216,7 @@ export async function createGeneratedContent(data: {
 export async function updateContentStatus(contentId: string, status: string, publishedUrl?: string) {
   const supabase = await createClient()
 
-  const updateData: any = {
+  const updateData: Record<string, unknown> = {
     status,
     updated_at: new Date().toISOString(),
   }
@@ -487,7 +487,11 @@ export async function createContentABTest(data: {
   return test
 }
 
-export async function updateABTestResults(testId: string, results: any) {
+export async function updateABTestResults(testId: string, results: {
+  variantA: Record<string, unknown>
+  variantB: Record<string, unknown>
+  winner?: string
+}) {
   const supabase = await createClient()
 
   const { data: test, error } = await supabase

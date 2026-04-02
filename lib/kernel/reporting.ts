@@ -418,9 +418,9 @@ export async function loadReportingWorkspace(
 
     const totalReviews = reviews?.length ?? 0
     const avgRating = totalReviews > 0
-      ? reviews!.reduce((s, r) => s + (r.rating ?? 0), 0) / totalReviews
+      ? (reviews ?? []).reduce((s, r: Record<string, unknown>) => s + ((r.rating as number) ?? 0), 0) / totalReviews
       : 0
-    const responded = reviews?.filter(r => r.response_text).length ?? 0
+    const responded = (reviews ?? []).filter((r: Record<string, unknown>) => r.response_text).length ?? 0
     const responseRate = totalReviews > 0 ? Math.round((responded / totalReviews) * 100) : 0
 
     // Pipeline count from transactions
@@ -909,20 +909,21 @@ export async function generateReputationReport(
 
     const totalReviews = reviews?.length ?? 0
     const avgRating    = totalReviews > 0
-      ? parseFloat(((reviews ?? []).reduce((s, r) => s + (r.rating ?? 0), 0) / totalReviews).toFixed(1))
+      ? parseFloat((((reviews ?? []).reduce((s: number, r: Record<string, unknown>) => s + ((r.rating as number) ?? 0), 0)) / totalReviews).toFixed(1))
       : 0
-    const responded    = (reviews ?? []).filter(r => r.response_text).length
+    const responded    = (reviews ?? []).filter((r: Record<string, unknown>) => r.response_text).length
     const responseRate = totalReviews > 0 ? Math.round((responded / totalReviews) * 100) : 0
 
     // By platform
     const platformMap = new Map<string, { count: number; ratingSum: number; responded: number }>()
     for (const r of reviews ?? []) {
-      const plat = r.platform ?? "other"
+      const review = r as Record<string, unknown>
+      const plat = (review.platform as string) ?? "other"
       if (!platformMap.has(plat)) platformMap.set(plat, { count: 0, ratingSum: 0, responded: 0 })
       const p = platformMap.get(plat)!
       p.count++
-      p.ratingSum += r.rating ?? 0
-      if (r.response_text) p.responded++
+      p.ratingSum += (review.rating as number) ?? 0
+      if (review.response_text) p.responded++
     }
 
     const byPlatform = Array.from(platformMap.entries()).map(([platform, p]) => ({
