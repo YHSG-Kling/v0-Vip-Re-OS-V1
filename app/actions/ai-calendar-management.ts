@@ -224,11 +224,7 @@ export async function optimizeDailySchedule(params: {
 Date: ${params.date}
 
 Appointments:
-${appointments?.map((a: any) => `- ${a.scheduled_at}: ${a.notes} at ${a.location || 'TBD'}`).join('\n') || 'None'}
-
-Showings:
-${showings?.map((s: any) => `- ${s.showing_time}: ${s.listings?.address} for ${s.contacts?.first_name}`).join('\n') || 'None'}
-
+${appointments?.map((a: any) => `- ${a.start_at}: ${a.metadata?.title || a.event_type || 'Appointment'} at ${a.metadata?.location || 'TBD'}`).join('\n') || 'None'}
 Tasks Due:
 ${tasks?.map((t: any) => `- ${t.title} (Priority: ${t.priority})`).join('\n') || 'None'}
 
@@ -240,13 +236,7 @@ Optimize for:
 5. Maximize productivity`,
     })
 
-    // Save optimized schedule
-    await supabase.from("daily_schedules").upsert({
-      agent_id: params.agentId,
-      schedule_date: params.date,
-      optimized_schedule: optimizedSchedule,
-      productivity_score: optimizedSchedule.productivityScore,
-    })
+    // daily_schedules table does not exist in schema — schedule returned to caller
 
     return { success: true, optimizedSchedule }
   } catch (error) {
@@ -273,7 +263,7 @@ export async function suggestAppointmentSlots(params: {
       .from("users")
       .select("working_hours, time_zone, calendar_preferences")
       .eq("id", params.agentId)
-      .single()
+      .maybeSingle()
 
     // Get existing showings for next 2 weeks
     const startDate = new Date()
@@ -291,7 +281,7 @@ export async function suggestAppointmentSlots(params: {
       .from("contacts")
       .select("preferred_contact_time, time_zone")
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
 
     const { object: suggestions } = await generateObject({
       model: resolveModel("anthropic/claude-sonnet-4-20250514"),
