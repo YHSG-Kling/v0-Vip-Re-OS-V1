@@ -29,6 +29,7 @@ import { AgentStaleContactsPanel } from "./components/agent-stale-contacts-panel
 import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
 import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
+import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
