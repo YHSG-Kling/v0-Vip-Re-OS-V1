@@ -422,12 +422,18 @@ async function analyzeLeadTemperatureFromMessage(
   
   // Get previous session lead temperature to consider history
   const supabase = await createClient()
-  const { data: session } = await supabase
-    .from("conversations")
-    .select("lead_temperature")
-    .eq("id", sessionId)
-    .single()
-    .catch(() => ({ data: null }))
+  let session: any = null
+  try {
+    const result = await supabase
+      .from("conversations")
+      .select("lead_temperature")
+      .eq("id", sessionId)
+      .single()
+    session = result.data
+  } catch (err) {
+    console.error("[v0] Error fetching session lead temperature:", err)
+    session = null
+  }
   
   // Start with score weighted by previous temperature
   let score = 50 // Start neutral
