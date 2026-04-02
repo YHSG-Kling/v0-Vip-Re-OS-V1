@@ -101,22 +101,23 @@ export async function createSubscriber(params: CreateSubscriberParams): Promise<
     const userId = newUser.id
 
     // Step 2b: Seed agent_onboarding row so first-login lands in onboarding flow
-    await service
-      .from("agent_onboarding")
-      .insert({
-        agent_id: userId,
-        user_id: userId,
-        brokerage_id: brokerageId,
-        status: "not_started",
-        current_day: 1,
-        start_date: new Date().toISOString().split("T")[0],
-        completion_percentage: 0,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .catch(() => {
-        // Non-fatal: onboarding record will be created on first login if missing
-      })
+    try {
+      await service
+        .from("agent_onboarding")
+        .insert({
+          agent_id: userId,
+          user_id: userId,
+          brokerage_id: brokerageId,
+          status: "not_started",
+          current_day: 1,
+          start_date: new Date().toISOString().split("T")[0],
+          completion_percentage: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+    } catch {
+      // Non-fatal: onboarding record will be created on first login if missing
+    }
 
     // Step 3: Create Stripe customer
     let stripeCustomerId = params.stripeCustomerId || null
