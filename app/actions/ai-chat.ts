@@ -419,6 +419,23 @@ async function analyzeLeadTemperatureFromMessage(
   indicators: string[]
 }> {
   const messageLower = message.toLowerCase().trim()
+  
+  // Get previous session lead temperature to consider history
+  const supabase = await createClient()
+  const { data: session } = await supabase
+    .from("conversations")
+    .select("lead_temperature")
+    .eq("id", sessionId)
+    .single()
+    .catch(() => ({ data: null }))
+  
+  // Start with score weighted by previous temperature
+  let score = 50 // Start neutral
+  if (session?.lead_temperature === "hot") {
+    score += 15 // Boost if previously hot
+  } else if (session?.lead_temperature === "cold") {
+    score -= 15 // Lower expectations if previously cold
+  }
 
   // Hot indicators - positive, engaged, ready to act
   const hotIndicators = [
@@ -446,7 +463,6 @@ async function analyzeLeadTemperatureFromMessage(
     { pattern: /^(ok|k|fine|whatever|idk)$/gi, weight: -20 }, // Short dismissive
   ]
 
-  let score = 50 // Start neutral
   const foundIndicators: string[] = []
 
   // Check hot indicators
