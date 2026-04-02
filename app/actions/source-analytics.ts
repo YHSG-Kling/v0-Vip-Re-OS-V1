@@ -371,7 +371,7 @@ export async function getSourcePerformance(
     for (const m of sourceMap.values()) {
       const key = `${m.source}::${m.source_family}`
       const agentMap = contactAgentCounts[key] ?? leadAgentCounts[key] ?? {}
-      const agentCountsArr = Object.entries(agentMap).sort((a, b) => b[1] - a[1])
+      const agentCountsArr = (Object.entries(agentMap) as Array<[string, number]>).sort((a, b) => b[1] - a[1])
       m.agent_count = agentCountsArr.length
       if (agentCountsArr.length > 0) {
         m.top_agent_id = agentCountsArr[0][0]
@@ -748,7 +748,7 @@ Explain what's working, where breakdown is happening, and what action should be 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // exportSourceCSV — returns CSV string
-// ─────────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────���──
 
 export async function exportSourceCSV(
   filter: SourceAnalyticsFilter

@@ -341,7 +341,7 @@ function calculateOptimalContactTime(behavioralData: any[]): string {
   })
 
   const bestHour =
-    Object.entries(hourCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "14" // Default to 2pm
+    (Object.entries(hourCounts) as Array<[string, number]>).sort((a, b) => b[1] - a[1])[0]?.[0] || "14" // Default to 2pm
 
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)

@@ -306,8 +306,8 @@ export async function optimizeSendTime(params: { contactId: string; agentId: str
       hourOpenCounts[hour] = (hourOpenCounts[hour] || 0) + 1
     }
 
-    const bestDay = Object.entries(dayOpenCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "Tuesday"
-    const bestHour = Object.entries(hourOpenCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 9
+    const bestDay = (Object.entries(dayOpenCounts) as Array<[string, number]>).sort((a, b) => b[1] - a[1])[0]?.[0] || "Tuesday"
+    const bestHour = (Object.entries(hourOpenCounts) as Array<[string, number]>).sort((a, b) => b[1] - a[1])[0]?.[0] || 9
 
     return {
       recommendedTime: `${String(bestHour).padStart(2, "0")}:00`,
