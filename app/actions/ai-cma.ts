@@ -92,7 +92,7 @@ export async function generateAICMA(params: CMAParams) {
 
   try {
     // 1. Fetch comparable properties from database/MLS
-    const comparables = await fetchComparableProperties(params, supabase)
+    const comparables = await fetchComparableProperties(params)
 
     // 2. Get market trends data
     const marketTrends = await analyzeMarketTrends(params, supabase)
@@ -163,8 +163,7 @@ export async function generateAICMA(params: CMAParams) {
  * Returns empty array when neither API is configured and AI flag is off.
  */
 async function fetchComparableProperties(
-  params: CMAParams,
-  supabase: any
+  params: CMAParams
 ): Promise<ComparableProperty[]> {
   const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
   const { fetchHouseCanaryComps } = await import("@/lib/external/housecanary-client")
