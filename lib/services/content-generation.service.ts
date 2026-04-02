@@ -3,7 +3,7 @@
 import { runPipelineSimple } from "@/lib/ai"
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
-import { CONTENT_TYPES } from "@/lib/constants"
+import { CONTENT_TYPES, type ContentType } from "@/lib/constants"
 import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 
 // ============================================
@@ -14,15 +14,16 @@ import { handleError, ValidationError, NotFoundError } from "@/lib/errors"
 
 export interface ContentGenerationParams {
   agentId: string
-  contentType: keyof typeof CONTENT_TYPES
+  contentType: ContentType
   targetAudience?: string
   propertyId?: string
   contactId?: string
   transactionId?: string
   customPrompt?: string
-  platform?: "facebook" | "instagram" | "linkedin" | "twitter" | "tiktok"
+  platform?: "facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "email"
   emailType?: "welcome" | "follow_up" | "property_alert" | "market_update" | "check_in" | "reengagement" | "newsletter"
   metadata?: Record<string, any>
+  context?: Record<string, unknown>
 }
 
 export interface ContentGenerationResult {
@@ -59,7 +60,7 @@ export async function generateContent(params: ContentGenerationParams): Promise<
     const generatedContent = await generateContentWithAI(params, contextData)
 
     // Save to database
-    const { data: savedContent, error } = await supabase
+        const { data: savedContent, error } = await supabase
       .from("ai_generated_content")
       .insert({
         agent_id: params.agentId,
@@ -77,9 +78,12 @@ export async function generateContent(params: ContentGenerationParams): Promise<
         approval_status: "pending",
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    if (!savedContent) {
+      throw new NotFoundError("Generated content was not saved")
+    }
 
     return {
       success: true,
@@ -331,7 +335,7 @@ function parseAIResponse(text: string, params: ContentGenerationParams) {
  */
 export async function bulkGenerateContent(params: {
   agentId: string
-  contentType: keyof typeof CONTENT_TYPES
+  contentType: ContentType
   targets: string[] // Property IDs, Contact IDs, etc.
   platform?: string
 }): Promise<{ success: boolean; generated: number; failed: number }> {
