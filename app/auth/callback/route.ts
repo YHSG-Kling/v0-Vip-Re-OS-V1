@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { handleAuthCallback } from '@/app/actions/auth'
-import { AUTH_ROUTES } from '@/app/constants/auth'
 import { createServiceClient } from '@/lib/supabase/service'
 
 export async function GET(request: NextRequest) {

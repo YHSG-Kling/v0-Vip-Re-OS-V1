@@ -225,7 +225,21 @@ export {
 // ============================================
 // WORKFLOWS
 // ============================================
-export { executeWorkflow, getWorkflowStatus } from "./workflows"
+export {
+  executeAITool,
+  checkFairHousingCompliance,
+  generateCopilotPlan,
+  startSmartDrip,
+  sendMessage,
+  calculateListingMetrics,
+  triggerCMAPackage,
+  grantPortalAccess,
+  triggerComplianceChecklist,
+  generateScriptContent,
+  sendNewsletterCampaign,
+  retryFailedWorkflow,
+  logUserActivity,
+} from "./workflows"
 
 // ============================================
 // APPOINTMENTS & CALENDAR
