@@ -152,24 +152,42 @@ async function generateSmartReply(context: any): Promise<string> {
   // This is a placeholder - in production, integrate with AI SDK
   const { contactName, lastMessage, tone } = context
 
-  // Simple template-based responses for now
-  const templates = {
-    greeting: `Hi ${contactName}! Thanks for reaching out. I'd be happy to help you with your real estate needs. What are you looking for?`,
-    inquiry: `Thanks for your question! Let me get back to you with detailed information shortly. In the meantime, is there anything specific I can help you with?`,
-    showing: `I'd love to show you this property! What times work best for you this week? I can also send you more details about the home.`,
-    professional: `Thank you for contacting me, ${contactName}. I'll review your inquiry and get back to you within the hour with a comprehensive response.`,
+  // Response templates in different tones
+  const templates: Record<string, Record<string, string>> = {
+    professional: {
+      greeting: `Hi ${contactName}! Thanks for reaching out. I'd be happy to help you with your real estate needs. What are you looking for?`,
+      inquiry: `Thank you for your question. I'll get back to you with detailed information shortly. In the meantime, is there anything specific I can help you with?`,
+      showing: `I'd love to show you this property! What times work best for you this week? I can also send you more details about the home.`,
+      default: `Thank you for contacting me, ${contactName}. I'll review your inquiry and get back to you within the hour with a comprehensive response.`,
+    },
+    friendly: {
+      greeting: `Hey ${contactName}! 👋 Thanks for reaching out! I'd love to help you find your dream home. What are you looking for?`,
+      inquiry: `Great question! I'm excited to help you out. Let me get you some detailed info - what specifically would you like to know more about?`,
+      showing: `That sounds great! I'd love to show you this one. When are you free this week? I'm pretty flexible!`,
+      default: `Thanks so much for getting in touch, ${contactName}! I'm looking forward to chatting with you. I'll get back to you ASAP!`,
+    },
+    casual: {
+      greeting: `Hey ${contactName}, thanks for hitting me up! What can I help you with?`,
+      inquiry: `Good question! Let me get back to you with the details. Anything else you want to know?`,
+      showing: `Want to check it out? I've got availability this week!`,
+      default: `Thanks for reaching out, ${contactName}. I'll get back to you soon!`,
+    },
   }
 
-  // Simple keyword matching (replace with actual AI)
+  // Get templates for selected tone (default to professional if not found)
+  const selectedTone = (tone && templates[tone.toLowerCase()]) ? tone.toLowerCase() : "professional"
+  const toneTemplates = templates[selectedTone] || templates.professional
+
+  // Simple keyword matching to select template
   if (lastMessage.toLowerCase().includes("show") || lastMessage.toLowerCase().includes("tour")) {
-    return templates.showing
+    return toneTemplates.showing
   } else if (lastMessage.toLowerCase().includes("price") || lastMessage.toLowerCase().includes("worth")) {
-    return templates.inquiry
+    return toneTemplates.inquiry
   } else if (lastMessage.toLowerCase().includes("hi") || lastMessage.toLowerCase().includes("hello")) {
-    return templates.greeting
+    return toneTemplates.greeting
   }
 
-  return templates.professional
+  return toneTemplates.default
 }
 
 // Track behavioral event for lead scoring
