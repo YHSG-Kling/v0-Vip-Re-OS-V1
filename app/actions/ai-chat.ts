@@ -5,7 +5,6 @@ import { requirePermission } from "@/lib/security"
 import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
-import { handleError } from "@/lib/errors"
 
 // =====================================================
 // CHAT SESSION MANAGEMENT
