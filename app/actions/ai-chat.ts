@@ -269,14 +269,26 @@ async function checkMessageCompliance(message: string, sessionId: string): Promi
   // Check for cold lead channel restrictions
   if (session?.contacts?.lead_temperature === "cold") {
     const coldLeadChannels = ["email", "print_mail"]
+    const currentChannel = session?.contact_channel || "email" // default to email
     const mentionsSMSOrCall = /\b(call|phone|text|sms|message)\b/gi.test(message)
 
-    if (mentionsSMSOrCall) {
+    // Block if message mentions SMS/call AND current channel is not in allowed list
+    if (mentionsSMSOrCall && !coldLeadChannels.includes(currentChannel)) {
       issues.push({
         type: "cold_lead_channel_violation",
         phrase: "Contact method mentioned",
         severity: "blocking",
         alternative: "Cold leads can only be contacted via email or print mail per compliance",
+      })
+    }
+    
+    // Also block if proposing to use disallowed channels
+    if (!coldLeadChannels.includes(currentChannel) && mentionsSMSOrCall) {
+      issues.push({
+        type: "cold_lead_channel_violation",
+        phrase: "Attempted contact outside allowed channels",
+        severity: "blocking",
+        alternative: "Switch to email or print mail for this cold lead",
       })
     }
   }
