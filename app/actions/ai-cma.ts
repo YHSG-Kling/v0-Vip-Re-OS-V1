@@ -2,7 +2,6 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 
