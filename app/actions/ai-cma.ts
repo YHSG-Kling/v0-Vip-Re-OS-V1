@@ -339,16 +339,26 @@ async function analyzeMarketTrends(
   const medianPrice = marketData?.[0]?.median_sale_price || params.squareFeet * 250
   const inventory = marketData?.[0]?.active_listings || 100
 
-  // Determine market type
+  // Determine market type based on DOM (days on market)
   let marketType: "sellers" | "balanced" | "buyers" = "balanced"
   let inventoryLevel: "low" | "balanced" | "high" = "balanced"
 
+  // Market type determined by DOM (speed of sale)
   if (avgDOM < 20) {
     marketType = "sellers"
-    inventoryLevel = "low"
   } else if (avgDOM > 60) {
     marketType = "buyers"
-    inventoryLevel = "high"
+  }
+
+  // Inventory level determined by active listings count
+  // Adjust thresholds based on typical market conditions
+  const monthsOfSupply = (inventory / 20) // Approximate monthly sales = inventory / avg sales per month
+  if (monthsOfSupply < 2) {
+    inventoryLevel = "low" // Less than 2 months supply = seller's market
+  } else if (monthsOfSupply > 6) {
+    inventoryLevel = "high" // More than 6 months supply = buyer's market
+  } else {
+    inventoryLevel = "balanced"
   }
 
   // Calculate seasonal factor (spring/summer premium)
