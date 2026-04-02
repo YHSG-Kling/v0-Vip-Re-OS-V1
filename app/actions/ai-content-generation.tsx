@@ -705,12 +705,12 @@ export async function generateSocialPost(params: {
     }
 
     revalidatePath("/dashboard/content/social")
-    return { 
-      success: true, 
-      data: result.content, 
-      contentId: result.contentId,
-      caption: result.metadata?.caption || result.content,
-      hashtags: result.metadata?.hashtags || [],
+        return {
+      success: true,
+      data: result.content,
+      contentId: result.content?.id,
+      caption: result.content?.generated_content,
+      hashtags: result.content?.hashtags ?? [],
     }
   } catch (error) {
     console.error("Generate social post error:", error)
@@ -756,12 +756,12 @@ export async function generateEmail(params: {
     }
 
     revalidatePath("/dashboard/content/email")
-    return { 
-      success: true, 
-      data: result.content, 
-      contentId: result.contentId,
-      subject: result.metadata?.subject,
-      body: result.metadata?.body || result.content,
+        return {
+      success: true,
+      data: result.content,
+      contentId: result.content?.id,
+      subject: result.content?.subject,
+      body: result.content?.generated_content,
     }
   } catch (error) {
     console.error("Generate email error:", error)
