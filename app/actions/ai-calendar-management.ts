@@ -517,7 +517,13 @@ export async function suggestMeetingTimes(params: {
           reasoning: z.string(),
         })),
       }),
-      prompt: `Suggest ${duration}-minute meeting slots considering existing appointments and business hours.`,
+      prompt: `Suggest ${duration}-minute meeting slots for the next ${daysAhead} days.
+
+Existing appointments:
+${existingAppointments?.map((a: any) => `- ${a.scheduled_at} (${a.duration_minutes} minutes)`).join('\n') || 'None scheduled'}
+
+Business hours: 9 AM - 6 PM
+Return 5 best available time slots with scores (higher = better). Avoid scheduling during existing appointments.`,
     })
 
     return { success: true, suggestions: suggestions.suggestedSlots }
