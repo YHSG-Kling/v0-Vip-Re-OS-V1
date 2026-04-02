@@ -141,7 +141,7 @@ export interface ComplianceContext {
   requiresTCPACheck: boolean
   contactId?: string
   userId?: string
-  brokerageId?: string
+  brokerageId?: string | null
   contentType?: "email" | "sms" | "social" | "listing" | "internal"
 }
 
@@ -155,7 +155,7 @@ export interface AIRequest {
   compliance?: ComplianceContext
   metadata: {
     userId: string
-    brokerageId: string
+    brokerageId?: string | null
     teamId?: string | null
     agentId?: string | null
     feature?: string
@@ -204,7 +204,7 @@ async function checkCompliance(
         .from("contacts")
         .select("dnc_status")
         .eq("id", context.contactId)
-        .single()
+        .maybeSingle()
       
       if (contact?.dnc_status === true) {
         const violation: ComplianceViolation = {
@@ -519,7 +519,7 @@ export interface RoutedTextRequest {
   feature?: string
   /** Optional — used only for usage logging, not routing */
   userId?: string
-  brokerageId?: string
+  brokerageId?: string | null
   agentId?: string
 }
 
@@ -603,7 +603,7 @@ export async function generatePublicContent(
   prompt: string,
   metadata: {
     userId: string
-    brokerageId: string
+    brokerageId?: string | null
     teamId?: string
     agentId?: string
     contentType: "email" | "sms" | "social" | "listing"
@@ -638,7 +638,7 @@ export async function generateOutboundMessage(
   contactId: string,
   metadata: {
     userId: string
-    brokerageId: string
+    brokerageId?: string | null
     teamId?: string
     agentId?: string
     contentType: "email" | "sms"
