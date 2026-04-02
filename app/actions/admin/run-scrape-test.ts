@@ -66,7 +66,7 @@ export async function runScrapeTestAction(marketId: string, source: string) {
       const rawSellers = await batchdata.getMotivatedSellerData(location)
 
       for (const r of rawSellers.slice(0, 10)) {
-        const raw       = r as Record<string, unknown>
+        const raw       = r as unknown as Record<string, unknown>
         const firstName = (raw.firstName ?? raw.first_name ?? raw.owner_name?.toString().split(' ')[0] ?? '') as string
         const lastName  = (raw.lastName  ?? raw.last_name  ?? raw.owner_name?.toString().split(' ').slice(1).join(' ') ?? '') as string
         const rawScore  = raw.motivationConfidence ?? raw.motivation_score ?? 0.5
