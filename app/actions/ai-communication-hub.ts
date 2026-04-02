@@ -422,7 +422,7 @@ Generate ONLY the response message, no explanations.`,
           channel: params.channel,
           tone: params.tone || "professional",
           characterCount: response.length,
-          sentiment: sentimentResult.analysis,
+          sentiment: sentimentResult.success ? sentimentResult.analysis : null,
         },
       })
       .catch((err) => {
@@ -435,7 +435,7 @@ Generate ONLY the response message, no explanations.`,
       draft: response,
       characterCount: response.length,
       channel: params.channel,
-      sentiment: sentimentResult.analysis,
+      sentiment: sentimentResult.success ? sentimentResult.analysis : null,
     }
   } catch (error) {
     return handleError(error, "generateSmartResponse")
