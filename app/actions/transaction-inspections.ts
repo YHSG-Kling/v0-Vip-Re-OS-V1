@@ -379,8 +379,6 @@ export async function updateEarnestMoneyAction(params: {
       brokerageId:   params.brokerageId,
       milestoneName: "earnest_money_due",
       completedBy:   userData.user?.id ?? "system",
-    }).catch(() => {
-      // Milestone may not exist, ignore error
     })
 
     await supabase.from("lifecycle_events").insert({

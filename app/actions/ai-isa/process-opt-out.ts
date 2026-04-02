@@ -104,7 +104,6 @@ export async function processOptOut(params: OptOutParams): Promise<{
       entity_id: entityId,
       message_type: channel,
     })
-    .catch(() => {})
 
   // Agent notification via activities (uses notes: text, not metadata)
   const { data: entity } = await supabase
@@ -138,7 +137,6 @@ export async function processOptOut(params: OptOutParams): Promise<{
         priority: "high",
         notes: notesPayload,
       })
-      .catch(() => {})
   }
 
   // Kernel event — downstream automation stops automatically
@@ -148,7 +146,7 @@ export async function processOptOut(params: OptOutParams): Promise<{
     entityType,
     entityId,
     metadata: { channel, source, globalDNC },
-  }).catch(() => {})
+  })
 
   return { success: true, channelsSuppressed, globalDNC }
 }

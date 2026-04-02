@@ -231,7 +231,7 @@ export async function GET(request: Request) {
             leads_created: sourceLeadsCreated,
             api_cost: sourceCostUsd,
             error_message: sourceErr?.message ?? null,
-          }).eq("id", execRecord?.id).catch(() => {})
+          }).eq("id", execRecord?.id)
 
           territorySpendUsd += sourceCostUsd
         }

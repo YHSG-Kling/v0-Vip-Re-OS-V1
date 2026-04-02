@@ -300,7 +300,6 @@ export async function runScrapeSourcesChronologically(
     })
     .select('id')
     .maybeSingle()
-    .catch(() => ({ data: null }))
 
   const cronLogId = (cronLog as any)?.id ?? null
 

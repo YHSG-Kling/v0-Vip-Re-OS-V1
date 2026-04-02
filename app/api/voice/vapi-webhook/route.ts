@@ -219,7 +219,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
               brokerage_id: brokerageId,
               status: "pending",
               source: "inbound_call",
-            }).catch(() => {})
+            })
           }
         }
       }
