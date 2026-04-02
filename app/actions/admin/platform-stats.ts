@@ -1,5 +1,4 @@
 import { createServiceClient } from "@/lib/supabase/service"
-import { createClient } from "@/lib/supabase/server"
 
 export async function getAdminStats() {
   const service = createServiceClient()
