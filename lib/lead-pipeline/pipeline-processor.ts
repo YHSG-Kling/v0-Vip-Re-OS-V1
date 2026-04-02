@@ -457,5 +457,9 @@ async function findBestMatch(
 // ─── Audit logging ────────────────────────────────────────────────────────────
 
 async function logDeduplication(log: any, supabase: Awaited<ReturnType<typeof createClient>>) {
-  await supabase.from('lead_deduplication_log').insert(log).catch(() => {})
+  try {
+    await supabase.from('lead_deduplication_log').insert(log)
+  } catch (err: unknown) {
+    // Silent fail - logging should not block deduplication
+  }
 }

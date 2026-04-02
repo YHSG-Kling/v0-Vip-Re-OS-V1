@@ -1004,18 +1004,31 @@ export async function calculateCommissions(transactionId: string) {
     const writes: Promise<unknown>[] = []
 
     if (!existing || existing.length === 0) {
-      writes.push(supabase.from("commission_distributions").insert(distributions).catch(() => {}))
+      writes.push(
+        (async () => {
+          try {
+            return await supabase.from("commission_distributions").insert(distributions)
+          } catch (err: unknown) {
+            // Silent fail - commission logging should not block transaction
+          }
+        })()
+      )
     }
 
     if (!capData?.is_capped && brokerageFee > 0) {
       const newPaid = (capData?.cap_paid_to_date ?? 0) + brokerageFee
       const nowCapped = newPaid >= (capData?.cap_amount ?? 999999)
       writes.push(
-        supabase
-          .from("agent_cap_tracking")
-          .update({ cap_paid_to_date: newPaid, is_capped: nowCapped })
-          .eq("agent_id", transaction.agent_id)
-          .catch(() => {}),
+        (async () => {
+          try {
+            return await supabase
+              .from("agent_cap_tracking")
+              .update({ cap_paid_to_date: newPaid, is_capped: nowCapped })
+              .eq("agent_id", transaction.agent_id)
+          } catch (err: unknown) {
+            // Silent fail - cap tracking should not block transaction
+          }
+        })()
       )
     }
 
