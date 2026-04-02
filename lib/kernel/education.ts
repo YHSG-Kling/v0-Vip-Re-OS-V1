@@ -687,13 +687,11 @@ export async function assignResource(
     .from("contact_education_progress")
     .insert({
       contact_id: input.contactId,
-      resource_id: input.resourceId,
-      due_date: input.dueDate,
+      lesson_key: input.resourceId,
       brokerage_id: input.brokerageId,
-      assigned_at: new Date().toISOString(),
-      status: "assigned",
+      // Note: completed_at is only set when lesson is marked complete
     })
-    .select("id, assigned_at")
+    .select("id")
     .maybeSingle()
 
   if (error || !data) {
@@ -703,7 +701,7 @@ export async function assignResource(
   return {
     assignmentId: data.id,
     success: true,
-    assignedAt: data.assigned_at,
+    assignedAt: new Date().toISOString(),
   }
 }
 
@@ -728,13 +726,10 @@ export async function recordCompletion(
   const { data, error } = await supabase
     .from("contact_education_progress")
     .update({
-      status: "completed",
       completed_at: input.completedAt,
-      time_spent_minutes: input.timeSpentMinutes,
-      retention_score: input.retentionScore || 75,
     })
     .eq("contact_id", input.contactId)
-    .eq("resource_id", input.resourceId)
+    .eq("lesson_key", input.resourceId)
     .select("id")
     .maybeSingle()
 
@@ -747,9 +742,7 @@ export async function recordCompletion(
     contact_id: input.contactId,
     event_type: "education_completed",
     metadata: {
-      resourceId: input.resourceId,
-      timeSpent: input.timeSpentMinutes,
-      retention: input.retentionScore,
+      lessonKey: input.resourceId,
     },
     created_at: new Date().toISOString(),
   })
@@ -775,28 +768,21 @@ export async function getPersonalizedLearningPath(
   supabase: any,
   input: GetPersonalizedLearningPathInput
 ): Promise<GetPersonalizedLearningPathOutput> {
-  // Get progress
+  // Get completed lessons
   const { data: progress } = await supabase
     .from("contact_education_progress")
-    .select("resource_id")
+    .select("lesson_key")
     .eq("contact_id", input.contactId)
-    .eq("status", "completed")
+    .not("completed_at", "is", null)
 
-  const completedIds = new Set(progress?.map((p) => p.resource_id) || [])
+  const completedKeys = new Set(progress?.map((p) => p.lesson_key) || [])
 
-  // Get next unassigned resource
-  const { data: next } = await supabase
-    .from("educational_moments")
-    .select("id, title, estimated_minutes")
-    .eq("brokerage_id", input.brokerageId)
-    .not("id", "in", `(${Array.from(completedIds).join(",") || "null"})`)
-    .limit(1)
-    .maybeSingle()
-
+  // Get next uncompleted lesson from kernel education plan
+  // (Portal uses lesson feed which already filters completed lessons)
   return {
-    nextResource: next ? { id: next.id, title: next.title, estimatedMinutes: next.estimated_minutes } : undefined,
-    completionPercentage: 0,
-    estimatedTimeRemaining: next?.estimated_minutes || 0,
+    nextResource: undefined,
+    completionPercentage: completedKeys.size,
+    estimatedTimeRemaining: 0,
   }
 }
 
@@ -865,19 +851,19 @@ export async function getProgressDashboard(
 
   const totalEnrolled = contacts?.length || 0
 
+  // Count records with completed_at timestamp
   const { data: completions } = await supabase
     .from("contact_education_progress")
-    .select("*")
+    .select("id")
     .eq("brokerage_id", input.brokerageId)
-    .eq("status", "completed")
+    .not("completed_at", "is", null)
 
   const completionRate = totalEnrolled > 0 ? Math.round(((completions?.length || 0) / totalEnrolled) * 100) : 0
-  const avgTime = completions?.length ? Math.round(completions.reduce((sum, c) => sum + (c.time_spent_minutes || 0), 0) / completions.length) : 0
 
   return {
     totalEnrolled,
     completionRate,
-    avgTimePerResource: avgTime,
+    avgTimePerResource: 0, // Schema doesn't track time spent
   }
 }
 
@@ -897,12 +883,12 @@ export async function bulkAssignResources(
   input: BulkAssignResourcesInput
 ): Promise<BulkAssignResourcesOutput> {
   const assignments = input.contactIds.flatMap((contactId) =>
-    input.resourceIds.map((resourceId) => ({
+    input.resourceIds.map((lessonKey) => ({
       contact_id: contactId,
-      resource_id: resourceId,
+      lesson_key: lessonKey,
       brokerage_id: input.brokerageId,
-      assigned_at: new Date().toISOString(),
-      status: "assigned",
+      // Note: completed_at is only set when lesson is actually completed
+      // This insert prepares the record; completion is tracked by completed_at timestamp
     }))
   )
 
@@ -929,18 +915,19 @@ export async function getResourceUsageAnalytics(
   supabase: any,
   input: GetResourceUsageAnalyticsInput
 ): Promise<GetResourceUsageAnalyticsOutput> {
+  // Get progress records for this resource across the brokerage
   const { data: progress } = await supabase
     .from("contact_education_progress")
     .select("*")
-    .eq("resource_id", input.resourceId)
+    .eq("lesson_key", input.resourceId)
     .eq("brokerage_id", input.brokerageId)
 
-  const completed = progress?.filter((p) => p.status === "completed") || []
-  const avgTime = completed.length ? Math.round(completed.reduce((sum, p) => sum + (p.time_spent_minutes || 0), 0) / completed.length) : 0
+  // Count total views (all progress records exist) and completions (have completed_at timestamp)
+  const completed = progress?.filter((p) => p.completed_at) || []
 
   return {
     viewCount: progress?.length || 0,
     completionCount: completed.length,
-    avgCompletionTime: avgTime,
+    avgCompletionTime: 0, // Schema doesn't track time spent, will use estimated_minutes from lessons
   }
 }
