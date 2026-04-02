@@ -409,6 +409,9 @@ Generate ONLY the response message, no explanations.`,
       agentId: params.agentId,
     })
 
+    // Union narrowing: check success before accessing analysis
+    const sentimentAnalysis = sentimentResult.success ? sentimentResult.analysis : null
+
     // Log AI response generation for brokerage audit trail per Kernel OS contract
     // Fire-and-forget to avoid blocking response
     ;(async () => {
@@ -425,7 +428,7 @@ Generate ONLY the response message, no explanations.`,
               channel: params.channel,
               tone: params.tone || "professional",
               characterCount: response.length,
-              sentiment: sentimentResult.success ? sentimentResult.analysis : null,
+              sentiment: sentimentAnalysis,
             },
           })
       } catch (err) {
@@ -438,7 +441,7 @@ Generate ONLY the response message, no explanations.`,
       draft: response,
       characterCount: response.length,
       channel: params.channel,
-      sentiment: sentimentResult.success ? sentimentResult.analysis : null,
+      sentiment: sentimentAnalysis,
     }
   } catch (error) {
     return handleError(error, "generateSmartResponse")
@@ -546,10 +549,19 @@ export async function prioritizeInbox(params: {
           agentId: params.agentId,
         })
 
+        // Union narrowing: check success before accessing analysis
+        if (!sentiment.success) {
+          return {
+            ...msg,
+            analysis: null,
+            priority: 3, // default priority if analysis fails
+          }
+        }
+
         return {
           ...msg,
           analysis: sentiment.analysis,
-          priority: sentiment.analysis?.suggestedPriority || 3,
+          priority: sentiment.analysis.suggestedPriority || 3,
         }
       })
     )
