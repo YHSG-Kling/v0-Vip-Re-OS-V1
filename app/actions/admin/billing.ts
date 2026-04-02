@@ -14,7 +14,6 @@ import {
   type LoadRevenueSummaryInput,
   type LoadRevenueSummaryOutput,
 } from "@/lib/kernel/billing"
-import { createServiceClient } from "@/lib/supabase/service"
 
 /**
  * Record a usage event from within the app
