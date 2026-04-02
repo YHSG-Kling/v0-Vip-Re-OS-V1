@@ -127,18 +127,21 @@ export async function updateUser({ userId, updates }: UpdateUserParams): Promise
   }
 
   // ── 8. Audit log ──────────────────────────────────────────────────────────
-  await service
-    .from("activities")
-    .insert({
-      activity_type: "admin.user.updated",
-      agent_id:      user.id,
-      brokerage_id:  caller?.brokerage_id ?? null,
-      title:         `User updated: ${userId}`,
-      description:   JSON.stringify({ before, after: patch, updated_by: user.id }),
-      created_at:    new Date().toISOString(),
-      updated_at:    new Date().toISOString(),
-    })
-    .catch(() => {})
+  try {
+    await service
+      .from("activities")
+      .insert({
+        activity_type: "admin.user.updated",
+        agent_id:      user.id,
+        brokerage_id:  caller?.brokerage_id ?? null,
+        title:         `User updated: ${userId}`,
+        description:   JSON.stringify({ before, after: patch, updated_by: user.id }),
+        created_at:    new Date().toISOString(),
+        updated_at:    new Date().toISOString(),
+      })
+  } catch (err: unknown) {
+    console.error("[v0] Audit log error:", err)
+  }
 
   return { success: true }
 }

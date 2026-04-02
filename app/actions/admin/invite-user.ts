@@ -112,27 +112,33 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   }
 
   // ── 6. Upsert users table row so user appears in admin panel immediately ──
-  const { data: upsertedUser } = await service
-    .from("users")
-    .upsert(
-      {
-        email:        params.email,
-        first_name:   params.firstName || null,
-        last_name:    params.lastName || null,
-        user_type:    requestedRole,
-        role:         requestedRole, // keep legacy role field in sync
-        brokerage_id: resolvedBrokerageId,
-        team_id:      resolvedTeamId,
-        is_contact:   false,
-        created_by:   user.id,
-        created_at:   new Date().toISOString(),
-        updated_at:   new Date().toISOString(),
-      },
-      { onConflict: "email" }
-    )
-    .select("id")
-    .maybeSingle()
-    .catch(() => ({ data: null }))
+  let upsertedUser: any = null
+  try {
+    const result = await service
+      .from("users")
+      .upsert(
+        {
+          email:        params.email,
+          first_name:   params.firstName || null,
+          last_name:    params.lastName || null,
+          user_type:    requestedRole,
+          role:         requestedRole, // keep legacy role field in sync
+          brokerage_id: resolvedBrokerageId,
+          team_id:      resolvedTeamId,
+          is_contact:   false,
+          created_by:   user.id,
+          created_at:   new Date().toISOString(),
+          updated_at:   new Date().toISOString(),
+        },
+        { onConflict: "email" }
+      )
+      .select("id")
+      .maybeSingle()
+    
+    upsertedUser = result.data
+  } catch (err: unknown) {
+    console.error("[v0] Upsert users error:", err)
+  }
 
   const resolvedUserId = newUserId ?? upsertedUser?.id ?? null
 
@@ -171,22 +177,25 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   }
 
   // ── 9. Audit log to activities ────────────────────────────────────────────
-  await service
-    .from("activities")
-    .insert({
-      activity_type: "admin.user.invited",
-      agent_id:      user.id,
-      brokerage_id:  resolvedBrokerageId,
-      title:         `User invited: ${params.email}`,
-      notes:         JSON.stringify({
-        user_type:    requestedRole,
-        brokerage_id: resolvedBrokerageId,
-        invited_by:   user.id,
-      }),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .catch(() => {})
+  try {
+    await service
+      .from("activities")
+      .insert({
+        activity_type: "admin.user.invited",
+        agent_id:      user.id,
+        brokerage_id:  resolvedBrokerageId,
+        title:         `User invited: ${params.email}`,
+        notes:         JSON.stringify({
+          user_type:    requestedRole,
+          brokerage_id: resolvedBrokerageId,
+          invited_by:   user.id,
+        }),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+  } catch (err: unknown) {
+    console.error("[v0] Audit log error:", err)
+  }
 
   return { success: true }
 }
