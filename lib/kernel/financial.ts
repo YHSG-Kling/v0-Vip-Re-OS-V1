@@ -30,6 +30,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "./events"
 import { processKernelEvent } from "./notification-engine"
 
+
 // ─── CONSTANTS & ENUMS ────────────────────────────────────────────────────────
 
 const COMMISSION_STATUS_TRANSITIONS: Record<string, string[]> = {
@@ -146,6 +147,27 @@ export interface FinancialExportResult {
 }
 
 // ─── INPUT CONTRACTS ──────────────────────────────────────────────────────────
+export interface CreateCommissionRecordInput {
+  ctx: FinancialActorContext
+  agentId: string
+  transactionId: string
+  grossCommission: number
+  splitPercentage: number
+  brokerageFee?: number
+  franchiseFee?: number
+  additionalFees?: Array<{ name: string; amount: number }>
+}
+
+export interface CreatedCommissionRecord {
+  id: string
+  grossCommission: number
+  agentSplit: number
+  brokerageShare: number
+  agentGross: number
+  feesTotal: number
+  cappedAmount: number
+  agentNet: number
+}
 
 export interface LoadFinancialWorkspaceInput {
   ctx: FinancialActorContext
@@ -746,7 +768,114 @@ export async function createExpenseRecord(
     return { success: false, error: String(error) }
   }
 }
+export async function createCommissionRecord(
+  input: CreateCommissionRecordInput
+): Promise<KernelFinancialResult<CreatedCommissionRecord>> {
+  const { ctx, agentId, transactionId, grossCommission, splitPercentage, brokerageFee, franchiseFee, additionalFees } = input
+  const supabase = createServiceClient()
 
+  try {
+    const { data: agentProfile } = await supabase
+      .from("agents")
+      .select("cap_amount, cap_current")
+      .eq("user_id", agentId)
+      .maybeSingle()
+
+    const agentSplit = splitPercentage
+    const flatBrokerageFee = brokerageFee || 0
+    const franchisePct = franchiseFee || 0
+
+    let additionalFeesTotal = 0
+    const feeBreakdown: Array<{ name: string; amount: number; type: string }> = []
+
+    if (flatBrokerageFee > 0) {
+      feeBreakdown.push({ name: "Brokerage Fee", amount: flatBrokerageFee, type: "flat" })
+      additionalFeesTotal += flatBrokerageFee
+    }
+
+    if (franchisePct > 0) {
+      const franchiseAmount = grossCommission * (franchisePct / 100)
+      feeBreakdown.push({ name: "Franchise Fee", amount: franchiseAmount, type: "percentage" })
+      additionalFeesTotal += franchiseAmount
+    }
+
+    if (additionalFees?.length) {
+      for (const fee of additionalFees) {
+        feeBreakdown.push({ name: fee.name, amount: fee.amount, type: "flat" })
+        additionalFeesTotal += fee.amount
+      }
+    }
+
+    const brokerageShare = grossCommission * ((100 - agentSplit) / 100)
+    const agentGross = grossCommission * (agentSplit / 100)
+    const agentNetBase = agentGross - additionalFeesTotal
+
+    let cappedAmount = 0
+    if (agentProfile?.cap_amount && agentProfile?.cap_current) {
+      const remainingToCap = agentProfile.cap_amount - agentProfile.cap_current
+      if (remainingToCap <= 0) {
+        cappedAmount = brokerageShare
+      }
+    }
+
+    const agentNet = agentNetBase + cappedAmount
+
+    const { data: commission, error } = await supabase
+      .from("commissions")
+      .insert({
+        agent_id: agentId,
+        transaction_id: transactionId,
+        gross_commission: grossCommission,
+        agent_split_percentage: agentSplit,
+        brokerage_share: brokerageShare,
+        agent_gross: agentGross,
+        fees_total: additionalFeesTotal,
+        fee_breakdown: feeBreakdown,
+        capped_amount: cappedAmount,
+        agent_net: agentNet,
+        status: "pending",
+        created_at: new Date().toISOString(),
+      })
+      .select("id")
+      .maybeSingle()
+
+    if (error || !commission) {
+      return { success: false, error: error?.message || "Failed to create commission record" }
+    }
+
+    if (agentProfile && !cappedAmount) {
+      await supabase
+        .from("agents")
+        .update({
+          cap_current: (agentProfile.cap_current || 0) + brokerageShare,
+        })
+        .eq("user_id", agentId)
+    }
+
+    await processKernelEvent({
+      event: KernelEvent.COMMISSION_UPDATED,
+      brokerageId: ctx.brokerageId,
+      entityType: "commission",
+      entityId: commission.id,
+    }).catch(() => {})
+
+    return {
+      success: true,
+      data: {
+        id: commission.id,
+        grossCommission,
+        agentSplit,
+        brokerageShare,
+        agentGross,
+        feesTotal: additionalFeesTotal,
+        cappedAmount,
+        agentNet,
+      },
+    }
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
 /**
  * exportFinancialReport — CSV/PDF export with audit trail
  */
