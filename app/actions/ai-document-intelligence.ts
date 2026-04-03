@@ -59,7 +59,7 @@ export async function aiClassifyDocument(params: {
         documentType: z.string().describe("Type of document (e.g., purchase_agreement, listing_agreement, disclosure, addendum, inspection_report, loan_estimate)"),
         category: z.string().describe("Category (transaction, compliance, marketing, client, financial)"),
         confidence: z.number().describe("Confidence score 0-1"),
-        extractedData: z.record(z.any()).describe("Key extracted data fields"),
+        extractedData: z.record(z.string(), z.any()).describe("Key extracted data fields"),
         complianceFlags: z.array(z.string()).describe("Any compliance issues found"),
         missingFields: z.array(z.string()).describe("Required fields that appear to be missing"),
         suggestedActions: z.array(z.string()).describe("Recommended next actions"),
