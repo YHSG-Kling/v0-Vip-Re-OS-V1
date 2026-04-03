@@ -15,6 +15,9 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail, dispatchVideo, dispatchDirectMail } from "@/lib/providers/dispatch"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { KernelEvent } from "@/lib/kernel/events"
+import { buildActorContext } from "@/lib/kernel/actor-context"
+import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * AI Inside Sales Agent (ISA) System
@@ -668,11 +671,26 @@ export async function retryGhostContact(params: {
   if (contactErr || !contact) return { success: false, error: "Contact not found" }
 
   // Compliance gate
-  const compliance = await evaluateOutbound({
-    actorContext: { brokerageId: params.brokerageId, userId: user.id },
-    messageType: params.channel === "email" ? "email" : "sms",
-    content: "Ghost recovery re-engagement",
-  })
+  const agentContext = await getAgentContext()
+
+const compliance = await evaluateKernelOutbound({
+  actorContext: buildActorContext({
+    userId: user.id,
+    brokerageId: params.brokerageId,
+    role: agentContext.role,
+  }),
+  journeyType: "buyer",
+  persona: "other",
+  messageType: "email",
+  content: `Test touch for campaign ${params.campaignId}`,
+  contact: {
+    id: params.campaignId,
+    status: "new",
+    dnc_status: false,
+    tcpa_consent: true,
+    isa_reengage_allowed: false,
+  },
+})
   if (!compliance.allowed) {
     return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
   }
