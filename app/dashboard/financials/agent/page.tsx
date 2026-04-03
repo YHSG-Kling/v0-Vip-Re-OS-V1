@@ -27,7 +27,7 @@ import {
 } from "../components/os"
 import { getProviderConnectionStatus } from "@/app/actions/accounting-sync"
 import { AgentFinancialsClient } from "./agent-financials-client"
-import { loadAgentFinancialSummaryAction } from "@/app/actions/financial-kernel"
+import { loadAgentFinancialDashboardSummaryAction } from "@/app/actions/financial-kernel"
 
 export const dynamic = "force-dynamic"
 
@@ -46,10 +46,10 @@ export default async function AgentFinancialsPage() {
   const currentYear = new Date().getFullYear()
 
   // Load agent financial summary via kernel command (replaces 16 individual DB queries)
-  const financialSummaryResult = await loadAgentFinancialSummaryAction({
-    agentId,
-    brokerageId,
-  })
+const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
+  agentId,
+  brokerageId,
+})
 
   if (!financialSummaryResult.success) {
     redirect("/login")
