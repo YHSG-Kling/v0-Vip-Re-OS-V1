@@ -383,43 +383,7 @@ export async function loadAgentFinancialSummary(
     return { success: false, error: String(error) }
   }
 }
-export async function loadAgentProfitLossSummary(
-  input: LoadAgentFinancialSummaryInput
-): Promise<KernelFinancialResult<AgentProfitLossSummary>> {
-  try {
-    const base = await loadAgentFinancialSummary(input)
-    if (!base.success || !base.data) {
-      return { success: false, error: base.error || "Failed to load agent financial summary" }
-    }
 
-    const service = createServiceClient()
-
-    const { data: expenses, error: expensesError } = await service
-      .from("business_expenses")
-      .select("amount")
-      .eq("agent_id", input.agentId)
-
-    if (expensesError) {
-      return { success: false, error: expensesError.message }
-    }
-
-    const totalIncome = base.data.ytdAgentNet ?? 0
-    const totalExpenses = (expenses ?? []).reduce((sum: number, row: any) => sum + (row.amount || 0), 0)
-
-    return {
-      success: true,
-      data: {
-        agentId: input.agentId,
-        totalIncome,
-        totalExpenses,
-        netProfit: totalIncome - totalExpenses,
-        closedTransactions: base.data.ytdTransactionCount ?? 0,
-      },
-    }
-  } catch (error) {
-    return { success: false, error: error instanceof Error ? error.message : String(error) }
-  }
-}
 /**
  * loadBrokerageFinancialSummary — Brokerage-wide earnings + splits
  */
@@ -1052,6 +1016,44 @@ export async function emailFinancialReport(
     return { success: false, error: String(error) }
   }
 }
+export async function loadAgentProfitLossSummary(
+  input: LoadAgentFinancialSummaryInput
+): Promise<KernelFinancialResult<AgentProfitLossSummary>> {
+  try {
+    const base = await loadAgentFinancialSummary(input)
+    if (!base.success || !base.data) {
+      return { success: false, error: base.error || "Failed to load agent financial summary" }
+    }
+
+    const service = createServiceClient()
+
+    const { data: expenses, error: expensesError } = await service
+      .from("business_expenses")
+      .select("amount")
+      .eq("agent_id", input.agentId)
+
+    if (expensesError) {
+      return { success: false, error: expensesError.message }
+    }
+
+    const totalIncome = base.data.ytdAgentNet ?? 0
+    const totalExpenses = (expenses ?? []).reduce((sum: number, row: any) => sum + (row.amount || 0), 0)
+
+    return {
+      success: true,
+      data: {
+        agentId: input.agentId,
+        totalIncome,
+        totalExpenses,
+        netProfit: totalIncome - totalExpenses,
+        closedTransactions: base.data.ytdTransactionCount ?? 0,
+      },
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 export async function loadAgentFinancialDashboardSummary(
   input: LoadAgentFinancialSummaryInput
 ): Promise<KernelFinancialResult<AgentFinancialDashboardSummary>> {
