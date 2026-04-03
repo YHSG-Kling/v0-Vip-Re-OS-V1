@@ -1,5 +1,10 @@
 "use server"
 
+type QueryResult<T> = {
+  data: T | null
+  error: { message?: string } | null
+}
+
 type RowResult<T> =
   | { success: true; data: T }
   | { success: false; error: string }
@@ -14,18 +19,14 @@ function getErrorMessage(error: unknown): string {
   return "Unknown database error"
 }
 
-/**
- * Required row lookup.
- * Use when the row MUST exist for the workflow to continue.
- */
 export async function expectSingle<T>(
-  query: Promise<{ data: T | null; error: { message: string } | null }>,
+  query: Promise<QueryResult<T>>,
   notFoundMessage = "Required record not found"
 ): Promise<RowResult<T>> {
   try {
     const { data, error } = await query
     if (error) {
-      return { success: false, error: error.message }
+      return { success: false, error: error.message || notFoundMessage }
     }
     if (!data) {
       return { success: false, error: notFoundMessage }
@@ -36,17 +37,13 @@ export async function expectSingle<T>(
   }
 }
 
-/**
- * Optional row lookup.
- * Use when null is a valid outcome.
- */
 export async function maybeSingleRow<T>(
-  query: Promise<{ data: T | null; error: { message: string } | null }>
+  query: Promise<QueryResult<T>>
 ): Promise<OptionalRowResult<T>> {
   try {
     const { data, error } = await query
     if (error) {
-      return { success: false, error: error.message }
+      return { success: false, error: error.message || "Optional query failed" }
     }
     return { success: true, data: data ?? null }
   } catch (error) {
