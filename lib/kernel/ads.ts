@@ -21,7 +21,7 @@
 import { generateText } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
-import { evaluateOutbound } from "./compliance"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { applyBrandVoice } from "./brand-voice"
 import { canAccessFeature, incrementFeatureUsage } from "./0.1-feature-access"
 
