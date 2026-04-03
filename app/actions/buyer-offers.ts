@@ -169,7 +169,19 @@ export async function resolveFormSource(buyerId: string, brokerageId: string): P
 }
 
 // ─── STRATEGY RECOMMENDATION ─────────────────────────────────────────────────
+// ─── TYPES ───────────────────────────────────────────────────────────────────
 
+export interface StrategyRecommendation {
+  strategy: string
+  confidence: number
+  reasoning: string
+  suggestedPrice?: number
+  competitivenessScore?: number
+  escalationClause?: boolean
+  daysToClose?: number
+  contingencies?: string[]
+  generatedAt: string
+}
 export async function getOrGenerateStrategyRecommendation(
   contactId: string,
   listingId: string | null,
