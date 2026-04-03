@@ -969,6 +969,89 @@ export async function exportFinancialReport(
     if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
       return { success: false, error: "Insufficient permissions to export reports" }
     }
+
+    // TODO: Implement CSV/PDF generation logic
+    // For now, return a placeholder blob URL
+    const generatedAt = new Date().toISOString()
+    const filename = `financial-report-${reportType}-${generatedAt.split("T")[0]}.${format}`
+
+    // Emit lifecycle event
+    await supabase
+      .from("lifecycle_events")
+      .insert({
+        entity_type: "financial_report",
+        entity_id:   brokerageId,
+        event_type:  format === "csv" ? KernelEvent.REPORT_EXPORTED_CSV : KernelEvent.REPORT_EXPORTED_PDF,
+        metadata:    { reportType, dateFrom, dateTo, filename },
+        created_at:  generatedAt,
+      })
+
+    return {
+      success: true,
+      data: {
+        fileUrl:     `https://storage.example.com/${filename}`,  // Placeholder
+        format,
+        generatedAt,
+      },
+    }
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
+/**
+ * emailFinancialReport — Send report via email_queue
+ */
+export async function emailFinancialReport(
+  input: EmailFinancialReportInput
+): Promise<KernelFinancialResult<{ queuedAt: string; recipients: string[] }>> {
+  const { ctx, brokerageId, recipients, reportType, subject, message } = input
+  const supabase = createServiceClient()
+
+  try {
+    // Guard: only authorized users can email reports
+    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
+      return { success: false, error: "Insufficient permissions to email reports" }
+    }
+
+    const queuedAt = new Date().toISOString()
+
+    // Insert to email_queue
+    const { error: queueError } = await supabase
+      .from("email_queue")
+      .insert({
+        recipient_email:  recipients.join(","),
+        subject:          subject ?? `Financial Report - ${reportType}`,
+        template_type:    "financial_report",
+        variables:        { reportType, message, brokerageId },
+        priority:         "normal",
+        scheduled_for:    queuedAt,
+        created_at:       queuedAt,
+      })
+
+    if (queueError) {
+      return { success: false, error: `Queue failed: ${queueError.message}` }
+    }
+
+    // Emit lifecycle event
+    await supabase
+      .from("lifecycle_events")
+      .insert({
+        entity_type: "email_report",
+        entity_id:   brokerageId,
+        event_type:  KernelEvent.REPORT_EMAILED,
+        metadata:    { reportType, recipients, subject },
+        created_at:  queuedAt,
+      })
+
+    return {
+      success: true,
+      data: { queuedAt, recipients },
+    }
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
 export async function loadAgentFinancialDashboardSummary(
   input: LoadAgentFinancialSummaryInput
 ): Promise<KernelFinancialResult<AgentFinancialDashboardSummary>> {
@@ -1089,87 +1172,5 @@ export async function loadAgentFinancialDashboardSummary(
     }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }
-  }
-}
-    // TODO: Implement CSV/PDF generation logic
-    // For now, return a placeholder blob URL
-    const generatedAt = new Date().toISOString()
-    const filename = `financial-report-${reportType}-${generatedAt.split("T")[0]}.${format}`
-
-    // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        entity_type: "financial_report",
-        entity_id:   brokerageId,
-        event_type:  format === "csv" ? KernelEvent.REPORT_EXPORTED_CSV : KernelEvent.REPORT_EXPORTED_PDF,
-        metadata:    { reportType, dateFrom, dateTo, filename },
-        created_at:  generatedAt,
-      })
-
-    return {
-      success: true,
-      data: {
-        fileUrl:     `https://storage.example.com/${filename}`,  // Placeholder
-        format,
-        generatedAt,
-      },
-    }
-  } catch (error) {
-    return { success: false, error: String(error) }
-  }
-}
-
-/**
- * emailFinancialReport — Send report via email_queue
- */
-export async function emailFinancialReport(
-  input: EmailFinancialReportInput
-): Promise<KernelFinancialResult<{ queuedAt: string; recipients: string[] }>> {
-  const { ctx, brokerageId, recipients, reportType, subject, message } = input
-  const supabase = createServiceClient()
-
-  try {
-    // Guard: only authorized users can email reports
-    if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
-      return { success: false, error: "Insufficient permissions to email reports" }
-    }
-
-    const queuedAt = new Date().toISOString()
-
-    // Insert to email_queue
-    const { error: queueError } = await supabase
-      .from("email_queue")
-      .insert({
-        recipient_email:  recipients.join(","),
-        subject:          subject ?? `Financial Report - ${reportType}`,
-        template_type:    "financial_report",
-        variables:        { reportType, message, brokerageId },
-        priority:         "normal",
-        scheduled_for:    queuedAt,
-        created_at:       queuedAt,
-      })
-
-    if (queueError) {
-      return { success: false, error: `Queue failed: ${queueError.message}` }
-    }
-
-    // Emit lifecycle event
-    await supabase
-      .from("lifecycle_events")
-      .insert({
-        entity_type: "email_report",
-        entity_id:   brokerageId,
-        event_type:  KernelEvent.REPORT_EMAILED,
-        metadata:    { reportType, recipients, subject },
-        created_at:  queuedAt,
-      })
-
-    return {
-      success: true,
-      data: { queuedAt, recipients },
-    }
-  } catch (error) {
-    return { success: false, error: String(error) }
   }
 }
