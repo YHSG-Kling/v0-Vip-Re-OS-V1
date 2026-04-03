@@ -2,20 +2,20 @@
 // Thin "use server" wrapper for kernel financial commands.
 // Resolves actor context (userId → agentId → brokerageId) and delegates to kernel.
 // No DB logic here — pure delegation.
+// app/actions/financial-kernel.ts
+// Thin "use server" wrapper for kernel financial commands.
+// Resolves actor context (userId → agentId → brokerageId) and delegates to kernel.
+// No DB logic here — pure delegation.
 
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
-  loadAgentFinancialDashboardSummary,
-  loadAgentProfitLossSummary,
-} from "@/lib/kernel/financial"
-import {
-  loadAgentFinancialDashboardSummary,
-  loadAgentProfitLossSummary,
   loadFinancialWorkspace,
   loadAgentFinancialSummary,
+  loadAgentFinancialDashboardSummary,
+  loadAgentProfitLossSummary,
   loadBrokerageFinancialSummary,
   loadCommissionQueue,
   loadCommissionDistributions,
@@ -39,6 +39,7 @@ import {
   type ExportFinancialReportInput,
   type EmailFinancialReportInput,
   type KernelFinancialResult,
+  type AgentFinancialSummary,
   type AgentProfitLossSummary,
   type AgentFinancialDashboardSummary,
 } from "@/lib/kernel/financial"
@@ -55,12 +56,13 @@ async function getFinancialActorContext(): Promise<FinancialActorContext> {
   const { agentId, brokerageId, role } = await getAgentContext()
 
   return {
-    userId:      user.id,
+    userId: user.id,
     agentId,
     brokerageId,
-    userType:    (role ?? "agent") as "agent" | "team_lead" | "broker" | "admin" | "superadmin",
+    userType: (role ?? "agent") as "agent" | "team_lead" | "broker" | "admin" | "superadmin" | "contact" | "tc" | "compliance_manager" | "vendor",
   }
 }
+
 type FinancialContextResolution =
   | { success: true; ctx: FinancialActorContext }
   | { success: false; error: string; ctx?: undefined }
@@ -85,6 +87,7 @@ async function resolveFinancialContext(
     }
   }
 }
+
 // ─── EXPORTED SERVER ACTIONS ──────────────────────────────────────────────────────
 
 export async function loadFinancialWorkspaceAction() {
@@ -95,6 +98,18 @@ export async function loadFinancialWorkspaceAction() {
     return { success: false, error: String(error) }
   }
 }
+
+export async function loadAgentFinancialSummaryAction(
+  input: Omit<LoadAgentFinancialSummaryInput, "ctx">
+): Promise<KernelFinancialResult<AgentFinancialSummary>> {
+  try {
+    const ctx = await getFinancialActorContext()
+    return await loadAgentFinancialSummary({ ...input, ctx })
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
+
 export async function loadAgentFinancialDashboardSummaryAction(params: {
   agentId: string
   brokerageId?: string
@@ -108,7 +123,7 @@ export async function loadAgentFinancialDashboardSummaryAction(params: {
     }
   }
 
-  return loadAgentFinancialDashboardSummary({
+  return await loadAgentFinancialDashboardSummary({
     ctx: ctx.ctx,
     agentId: params.agentId,
     periodType: "ytd",
@@ -128,7 +143,7 @@ export async function loadAgentProfitLossSummaryAction(params: {
     }
   }
 
-  return loadAgentProfitLossSummary({
+  return await loadAgentProfitLossSummary({
     ctx: ctx.ctx,
     agentId: params.agentId,
     periodType: "ytd",
@@ -146,7 +161,9 @@ export async function loadBrokerageFinancialSummaryAction(
   }
 }
 
-export async function loadCommissionQueueAction(input: Omit<LoadCommissionQueueInput, "ctx">) {
+export async function loadCommissionQueueAction(
+  input: Omit<LoadCommissionQueueInput, "ctx">
+) {
   try {
     const ctx = await getFinancialActorContext()
     return await loadCommissionQueue({ ...input, ctx })
@@ -166,7 +183,9 @@ export async function loadCommissionDistributionsAction(
   }
 }
 
-export async function recalculateCommissionStateAction(input: Omit<RecalculateCommissionStateInput, "ctx">) {
+export async function recalculateCommissionStateAction(
+  input: Omit<RecalculateCommissionStateInput, "ctx">
+) {
   try {
     const ctx = await getFinancialActorContext()
     return await recalculateCommissionState({ ...input, ctx })
@@ -175,7 +194,9 @@ export async function recalculateCommissionStateAction(input: Omit<RecalculateCo
   }
 }
 
-export async function markCommissionApprovedAction(input: Omit<MarkCommissionApprovedInput, "ctx">) {
+export async function markCommissionApprovedAction(
+  input: Omit<MarkCommissionApprovedInput, "ctx">
+) {
   try {
     const ctx = await getFinancialActorContext()
     return await markCommissionApproved({ ...input, ctx })
@@ -184,7 +205,9 @@ export async function markCommissionApprovedAction(input: Omit<MarkCommissionApp
   }
 }
 
-export async function markCommissionPaidAction(input: Omit<MarkCommissionPaidInput, "ctx">) {
+export async function markCommissionPaidAction(
+  input: Omit<MarkCommissionPaidInput, "ctx">
+) {
   try {
     const ctx = await getFinancialActorContext()
     return await markCommissionPaid({ ...input, ctx })
@@ -193,7 +216,9 @@ export async function markCommissionPaidAction(input: Omit<MarkCommissionPaidInp
   }
 }
 
-export async function createExpenseRecordAction(input: Omit<CreateExpenseRecordInput, "ctx">) {
+export async function createExpenseRecordAction(
+  input: Omit<CreateExpenseRecordInput, "ctx">
+) {
   try {
     const ctx = await getFinancialActorContext()
     return await createExpenseRecord({ ...input, ctx })
@@ -201,7 +226,10 @@ export async function createExpenseRecordAction(input: Omit<CreateExpenseRecordI
     return { success: false, error: String(error) }
   }
 }
-export async function createCommissionRecordAction(input: Omit<CreateCommissionRecordInput, "ctx">) {
+
+export async function createCommissionRecordAction(
+  input: Omit<CreateCommissionRecordInput, "ctx">
+) {
   try {
     const ctx = await getFinancialActorContext()
     return await createCommissionRecord({ ...input, ctx })
@@ -209,7 +237,10 @@ export async function createCommissionRecordAction(input: Omit<CreateCommissionR
     return { success: false, error: String(error) }
   }
 }
-export async function exportFinancialReportAction(input: Omit<ExportFinancialReportInput, "ctx">) {
+
+export async function exportFinancialReportAction(
+  input: Omit<ExportFinancialReportInput, "ctx">
+) {
   try {
     const ctx = await getFinancialActorContext()
     return await exportFinancialReport({ ...input, ctx })
@@ -218,7 +249,9 @@ export async function exportFinancialReportAction(input: Omit<ExportFinancialRep
   }
 }
 
-export async function emailFinancialReportAction(input: Omit<EmailFinancialReportInput, "ctx">) {
+export async function emailFinancialReportAction(
+  input: Omit<EmailFinancialReportInput, "ctx">
+) {
   try {
     const ctx = await getFinancialActorContext()
     return await emailFinancialReport({ ...input, ctx })
