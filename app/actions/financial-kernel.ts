@@ -8,6 +8,10 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
+  loadAgentFinancialDashboardSummary,
+  loadAgentProfitLossSummary,
+} from "@/lib/kernel/financial"
+import {
   loadFinancialWorkspace,
   loadAgentFinancialSummary,
   loadBrokerageFinancialSummary,
@@ -63,7 +67,33 @@ export async function loadFinancialWorkspaceAction() {
     return { success: false, error: String(error) }
   }
 }
+export async function loadAgentFinancialDashboardSummaryAction(params: {
+  agentId: string
+  brokerageId?: string
+}) {
+  const ctx = await resolveFinancialContext(params.brokerageId)
+  if (!ctx.success || !ctx.ctx) return { success: false, error: ctx.error }
 
+  return loadAgentFinancialDashboardSummary({
+    ctx: ctx.ctx,
+    agentId: params.agentId,
+    periodType: "ytd",
+  })
+}
+
+export async function loadAgentProfitLossSummaryAction(params: {
+  agentId: string
+  brokerageId?: string
+}) {
+  const ctx = await resolveFinancialContext(params.brokerageId)
+  if (!ctx.success || !ctx.ctx) return { success: false, error: ctx.error }
+
+  return loadAgentProfitLossSummary({
+    ctx: ctx.ctx,
+    agentId: params.agentId,
+    periodType: "ytd",
+  })
+}
 export async function loadAgentFinancialSummaryAction(input: Omit<LoadAgentFinancialSummaryInput, "ctx">) {
   try {
     const ctx = await getFinancialActorContext()
