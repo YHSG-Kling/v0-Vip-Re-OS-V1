@@ -736,13 +736,27 @@ export async function approveAdCreative(input: ApproveAdCreativeInput): Promise<
     // Compliance check
     const contentText = `${creative.headline || ""}\n${creative.primary_text || ""}\n${creative.description || ""}`
     const complianceResult = await evaluateOutbound({
-      brokerageId: ctx.brokerageId,
-      content: contentText,
-      messageType: "ad_copy",
-      contactId: null,
-    })
+  actorContext: {
+    userId: ctx.userId,
+    brokerageId: ctx.brokerageId,
+    role: ctx.userType === "admin" ? "admin" : "agent",
+  },
+  journeyType: "seller",
+  persona: "other",
+  messageType: "email",
+  content: contentText,
+  contact: {
+    id: "",
+    first_name: "",
+    last_name: "",
+    contact_type: "seller",
+    tcpa_consent: true,
+    isa_reengage_allowed: false,
+    dnc_status: false,
+  },
+})
 
-    if (complianceResult.status === "blocked") {
+if (!complianceResult.allowed) {
       return {
         success: false,
         error: `Compliance violation: ${complianceResult.violations?.join(", ") || "Content not allowed"}`,
@@ -759,13 +773,9 @@ export async function approveAdCreative(input: ApproveAdCreativeInput): Promise<
 
     if (error) throw error
 
-    return { success: true, creative: updatedCreative }
-  } catch (err) {
     return {
-      success: false,
-      error: err instanceof Error ? err.message : "approveAdCreative failed",
-    }
-  }
+  success: false,
+  error: `Compliance violation: ${complianceResult.violations?.join(", ") || "Content not allowed"}`,
 }
 
 // ─── COMMAND 10: loadAdPerformance ────────────────────────────────────────────
