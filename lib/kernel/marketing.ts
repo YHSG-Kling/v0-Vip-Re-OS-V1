@@ -979,13 +979,18 @@ export async function createPodcastEpisodeKernel(
   input: CreatePodcastEpisodeInput
 ): Promise<KernelMarketingResult<{ episodeId: string }>> {
   const { ctx } = input
-  if (!input.title?.trim()) return { success: false, error: "Episode title is required." }
+
+  if (!input.title?.trim()) {
+    return { success: false, error: "Episode title is required." }
+  }
 
   const access = await canAccessFeature(ctx.userId, "podcast_generation")
-  if (!access.allowed) return { success: false, error: access.reason ?? "Podcast generation access denied" }
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Podcast generation access denied" }
+  }
 
   if (input.script) {
-        const compliance = await evaluateKernelOutbound({
+    const compliance = await evaluateKernelOutbound({
       actorContext: {
         userId: ctx.userId,
         role: "agent",
@@ -994,7 +999,7 @@ export async function createPodcastEpisodeKernel(
       journeyType: "seller",
       persona: "seller",
       messageType: "ai",
-      content: script,
+      content: input.script,
       contact: {
         id: ctx.userId,
         status: "active",
@@ -1002,44 +1007,63 @@ export async function createPodcastEpisodeKernel(
     })
 
     if (isComplianceBlocked(compliance)) {
-      return { success: false, blockedReason: getComplianceReason(compliance) ?? "Compliance failed", error: "Podcast script failed compliance check." }
+      return {
+        success: false,
+        blockedReason: getComplianceReason(compliance) ?? "Compliance failed",
+        error: "Podcast script failed compliance check.",
+      }
     }
 
     const brandVoice = await applyKernelBrandVoice({
-    brokerageId: ctx.brokerageId,
-    actorUserId: ctx.userId,
-    actorRole: "agent",
-    journeyType: "seller",
-    persona: "seller",
-    messageType: "email",
-    content: input.script ?? input.description ?? input.title,
-  })
+      brokerageId: ctx.brokerageId,
+      actorUserId: ctx.userId,
+      actorRole: "agent",
+      journeyType: "seller",
+      persona: "seller",
+      messageType: "email",
+      content: input.script ?? input.description ?? input.title,
+    })
+
+    if (isBrandVoiceBlocked(brandVoice)) {
+      return {
+        success: false,
+        blockedReason: brandVoice.violations[0] ?? "Brand voice compliance failed",
+        error: "Podcast script failed brand voice check.",
+      }
+    }
+  }
 
   const supabase = await createServiceClient()
   const { data, error } = await supabase
     .from("podcast_episodes")
     .insert({
-      brokerage_id:   ctx.brokerageId,
-      agent_id:       ctx.agentId   ?? null,
-      title:          input.title.trim(),
-      description:    input.description ?? null,
-      script:         input.script   ?? null,
-      keywords:       input.keywords ?? [],
+      brokerage_id: ctx.brokerageId,
+      agent_id: ctx.agentId ?? null,
+      title: input.title.trim(),
+      description: input.description ?? null,
+      script: input.script ?? null,
+      keywords: input.keywords ?? [],
       publish_channels: input.publishChannels ?? [],
-      template_id:    input.templateId ?? null,
+      template_id: input.templateId ?? null,
       primary_voice_id: input.voiceId ?? null,
-      category:       input.category  ?? null,
-      status:         "draft",
-      created_at:     new Date().toISOString(),
-      updated_at:     new Date().toISOString(),
+      category: input.category ?? null,
+      status: "draft",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     })
     .select("id")
     .single()
 
-  if (error || !data) return { success: false, error: error?.message ?? "Insert failed" }
+  if (error || !data) {
+    return { success: false, error: error?.message ?? "Insert failed" }
+  }
 
   await incrementFeatureUsage(ctx.userId, "podcast_generation")
-  return { success: true, data: { episodeId: data.id } }
+
+  return {
+    success: true,
+    data: { episodeId: data.id },
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
