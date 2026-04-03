@@ -30,8 +30,8 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
+import { evaluateKernelOutbound, isComplianceBlocked, getComplianceReason } from "@/lib/kernel/adapters/compliance"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -194,7 +194,15 @@ export async function createNewsletterCampaign(
   const access = await canAccessFeature(ctx.userId, "email_campaigns")
   if (!access.allowed) return { success: false, error: access.reason ?? "Feature access denied" }
 
-  const brandVoice = await applyBrandVoice({ brokerageId: ctx.brokerageId, agentId: ctx.agentId })
+    const brandVoice = await applyKernelBrandVoice({
+    brokerageId: ctx.brokerageId,
+    actorUserId: ctx.userId,
+    actorRole: "agent",
+    journeyType: "seller",
+    persona: "seller",
+    messageType: "email",
+    content: content ?? subjectLine,
+  })
 
   const supabase = await createServiceClient()
   const { data, error } = await supabase
@@ -294,17 +302,24 @@ export async function scheduleNewsletterSend(params: {
   if (campaign.status === "sent") return { success: false, error: "Campaign has already been sent." }
 
   // Compliance gate — every outbound must pass
-  const compliance = await evaluateOutbound({
-    content:       campaign.content,
-    subjectLine:   campaign.subject_line,
-    channel:       "email",
-    brokerageId:   params.brokerageId,
-    agentId:       params.agentId,
-    actorUserId:   params.userId,
+    const compliance = await evaluateKernelOutbound({
+    actorContext: {
+      userId: params.userId,
+      role: "agent",
+      brokerageId: params.brokerageId,
+    },
+    journeyType: "seller",
+    persona: "seller",
+    messageType: "email",
+    content: campaign.content,
+    contact: {
+      id: params.userId,
+      status: "active",
+    },
   })
 
-  if (!compliance.passed) {
-    return { success: false, blockedReason: compliance.reason ?? "Compliance check failed", error: "Outbound compliance failed." }
+  if (isComplianceBlocked(compliance)) {
+    return { success: false, blockedReason: getComplianceReason(compliance) ?? "Compliance check failed", error: "Outbound compliance failed." }
   }
 
   // Count subscribers for estimated delivery
@@ -616,7 +631,15 @@ export async function createBlogPost(
   const access = await canAccessFeature(ctx.userId, "seo_blog_engine")
   if (!access.allowed) return { success: false, error: access.reason ?? "Feature access denied" }
 
-  const brandVoice = await applyBrandVoice({ brokerageId: ctx.brokerageId, agentId: ctx.agentId })
+    const brandVoice = await applyKernelBrandVoice({
+    brokerageId: ctx.brokerageId,
+    actorUserId: ctx.userId,
+    actorRole: "agent",
+    journeyType: "seller",
+    persona: "seller",
+    messageType: "email",
+    content: input.content || input.title || input.keywords.join(", "),
+  })
 
   let generatedTitle = input.title || ""
   let content        = input.content || ""
@@ -624,9 +647,9 @@ export async function createBlogPost(
   let slug           = ""
 
   if (!content && input.keywords.length > 0) {
-    const systemPrompt = `You are a real estate content writer. Write in a ${brandVoice.tone ?? "professional"} style.
-${brandVoice.customInstructions ?? ""}
-${brandVoice.prohibitedWords?.length ? `Avoid: ${brandVoice.prohibitedWords.join(", ")}` : ""}`
+        const systemPrompt = `You are a real estate content writer. Write in a professional style.
+${brandVoice.notes.length ? `Brand guidance: ${brandVoice.notes.join(" | ")}` : ""}
+${brandVoice.violations.length ? `Avoid: ${brandVoice.violations.join(", ")}` : ""}`
 
     const userPrompt = `Write a 600-800 word SEO blog post about: ${input.keywords.join(", ")}.
 ${input.title ? `Title: ${input.title}` : "Create an engaging title."}
@@ -652,15 +675,23 @@ Return valid JSON: {"title":"...","slug":"...","excerpt":"...","content":"..."}`
   }
 
   // Outbound compliance gate
-  const compliance = await evaluateOutbound({
+  const compliance = await evaluateKernelOutbound({
+    actorContext: {
+      userId: ctx.userId,
+      role: "agent",
+      brokerageId: ctx.brokerageId,
+    },
+    journeyType: "seller",
+    persona: "seller",
+    messageType: "email",
     content,
-    channel:     "blog",
-    brokerageId: ctx.brokerageId,
-    agentId:     ctx.agentId,
-    actorUserId: ctx.userId,
+    contact: {
+      id: ctx.userId,
+      status: "active",
+    },
   })
-  if (!compliance.passed) {
-    return { success: false, blockedReason: compliance.reason, error: "Blog content failed compliance check." }
+  if (isComplianceBlocked(compliance)) {
+    return { success: false, blockedReason: getComplianceReason(compliance), error: "Blog content failed compliance check." }
   }
 
   const supabase = await createServiceClient()
@@ -954,19 +985,35 @@ export async function createPodcastEpisodeKernel(
   if (!access.allowed) return { success: false, error: access.reason ?? "Podcast generation access denied" }
 
   if (input.script) {
-    const compliance = await evaluateOutbound({
-      content:     input.script,
-      channel:     "podcast",
-      brokerageId: ctx.brokerageId,
-      agentId:     ctx.agentId,
-      actorUserId: ctx.userId,
+        const compliance = await evaluateKernelOutbound({
+      actorContext: {
+        userId: ctx.userId,
+        role: "agent",
+        brokerageId: ctx.brokerageId,
+      },
+      journeyType: "seller",
+      persona: "seller",
+      messageType: "ai",
+      content: script,
+      contact: {
+        id: ctx.userId,
+        status: "active",
+      },
     })
-    if (!compliance.passed) {
-      return { success: false, blockedReason: compliance.reason, error: "Script content failed compliance check." }
-    }
-  }
 
-  const brandVoice = await applyBrandVoice({ brokerageId: ctx.brokerageId, agentId: ctx.agentId })
+    if (isComplianceBlocked(compliance)) {
+      return { success: false, blockedReason: getComplianceReason(compliance) ?? "Compliance failed", error: "Podcast script failed compliance check." }
+    }
+
+    const brandVoice = await applyKernelBrandVoice({
+    brokerageId: ctx.brokerageId,
+    actorUserId: ctx.userId,
+    actorRole: "agent",
+    journeyType: "seller",
+    persona: "seller",
+    messageType: "email",
+    content: input.script ?? input.description ?? input.title,
+  })
 
   const supabase = await createServiceClient()
   const { data, error } = await supabase
