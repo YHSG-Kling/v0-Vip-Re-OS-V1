@@ -405,39 +405,66 @@ export async function aiGenerateProfitLossReport(params: {
       throw new Error(summaryResult.error || "Failed to load agent financial summary")
     }
 
-    const summary = summaryResult.data
+   type FinancialSummaryCompat = {
+  totalIncome?: number
+  totalCommissionRevenue?: number
+  totalExpenses?: number
+  netProfit?: number
+  netIncome?: number
+  closedTransactions?: number
+  total_income?: number
+  total_commission_revenue?: number
+  total_expenses?: number
+  net_profit?: number
+  net_income?: number
+  closed_transactions?: number
+}
 
-    // Keep expense detail query only for category breakdown + deductible math
-    const { data: expenses } = await supabase
-      .from("business_expenses")
-      .select("category, amount, is_deductible, deduction_percentage")
-      .eq("agent_id", params.agentId)
-      .gte("expense_date", params.startDate)
-      .lte("expense_date", params.endDate)
+const summary = summaryResult.data as unknown as FinancialSummaryCompat
 
-    const totalIncome =
-      typeof summary.totalIncome === "number"
-        ? summary.totalIncome
-        : typeof summary.totalCommissionRevenue === "number"
-          ? summary.totalCommissionRevenue
+// Keep expense detail query only for category breakdown + deductible math
+const { data: expenses } = await supabase
+  .from("business_expenses")
+  .select("category, amount, is_deductible, deduction_percentage")
+  .eq("agent_id", params.agentId)
+  .gte("expense_date", params.startDate)
+  .lte("expense_date", params.endDate)
+
+const totalIncome =
+  typeof summary.totalIncome === "number"
+    ? summary.totalIncome
+    : typeof summary.total_income === "number"
+      ? summary.total_income
+      : typeof summary.totalCommissionRevenue === "number"
+        ? summary.totalCommissionRevenue
+        : typeof summary.total_commission_revenue === "number"
+          ? summary.total_commission_revenue
           : 0
 
-    const totalExpenses =
-      typeof summary.totalExpenses === "number"
-        ? summary.totalExpenses
-        : expenses?.reduce((sum: number, e: any) => sum + (e.amount || 0), 0) || 0
+const totalExpenses =
+  typeof summary.totalExpenses === "number"
+    ? summary.totalExpenses
+    : typeof summary.total_expenses === "number"
+      ? summary.total_expenses
+      : expenses?.reduce((sum: number, e: any) => sum + (e.amount || 0), 0) || 0
 
-    const netProfit =
-      typeof summary.netProfit === "number"
-        ? summary.netProfit
-        : typeof summary.netIncome === "number"
-          ? summary.netIncome
+const netProfit =
+  typeof summary.netProfit === "number"
+    ? summary.netProfit
+    : typeof summary.net_profit === "number"
+      ? summary.net_profit
+      : typeof summary.netIncome === "number"
+        ? summary.netIncome
+        : typeof summary.net_income === "number"
+          ? summary.net_income
           : totalIncome - totalExpenses
 
-    const transactionCount =
-      typeof summary.closedTransactions === "number"
-        ? summary.closedTransactions
-        : 0
+const transactionCount =
+  typeof summary.closedTransactions === "number"
+    ? summary.closedTransactions
+    : typeof summary.closed_transactions === "number"
+      ? summary.closed_transactions
+      : 0
 
     const expensesByCategory: Record<string, number> = {}
     expenses?.forEach((e: any) => {
