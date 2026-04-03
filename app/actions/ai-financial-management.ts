@@ -237,14 +237,14 @@ export async function aiCalculateCommission(params: CommissionEntry) {
         listings(address, city, sale_price)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
 
     // Get agent's commission structure
     const { data: agentProfile } = await supabase
       .from("agents")
       .select("commission_split, brokerage_id, cap_amount, cap_current")
       .eq("user_id", params.agentId)
-      .single()
+      .maybeSingle()
 
     // Calculate commission breakdown
     const grossCommission = params.grossCommission
@@ -663,7 +663,7 @@ async function syncCommissionToQuickBooks(commission: any) {
     .from("users")
     .select("brokerage_id")
     .eq("id", commission.agent_id)
-    .single()
+    .maybeSingle()
 
   if (!agent?.brokerage_id) {
     console.log("[v0] Agent brokerage not found, skipping sync")
@@ -677,7 +677,7 @@ async function syncCommissionToQuickBooks(commission: any) {
     .eq("brokerage_id", agent.brokerage_id)
     .eq("provider_name", "quickbooks")
     .eq("is_active", true)
-    .single()
+    .maybeSingle()
 
   if (!integration) {
     console.log("[v0] QuickBooks not connected, skipping sync")
@@ -849,7 +849,7 @@ Create a detailed budget with monthly allocations:
         created_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .smaybeSingle()
 
     if (error) throw error
 
@@ -905,18 +905,20 @@ export async function getCommissionRecords(params?: {
     }
 
     if (params.startDate) {
-      commissions = commissions.filter((c: any) => {
-        const createdAt = c.createdAt || c.created_at
-        return createdAt ? createdAt >= params.startDate : true
-      })
-    }
+  const startDate = params.startDate
+  commissions = commissions.filter((c: any) => {
+    const createdAt = c.createdAt || c.created_at
+    return createdAt ? createdAt >= startDate : true
+  })
+}
 
-    if (params.endDate) {
-      commissions = commissions.filter((c: any) => {
-        const createdAt = c.createdAt || c.created_at
-        return createdAt ? createdAt <= params.endDate : true
-      })
-    }
+   if (params.endDate) {
+  const endDate = params.endDate
+  commissions = commissions.filter((c: any) => {
+    const createdAt = c.createdAt || c.created_at
+    return createdAt ? createdAt <= endDate : true
+  })
+}
 
     return {
       success: true,
