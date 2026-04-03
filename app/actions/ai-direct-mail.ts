@@ -443,7 +443,9 @@ export async function createDirectMailCampaign(params: {
       campaignName: params.campaignName,
       targetAudience: params.targetAudience,
       designUrl: params.designTemplate ?? undefined,
-      copyText: null,
+      copyText: [params.campaignName, params.targetAudience]
+  .filter(Boolean)
+  .join(" "),
       quantity,
       mailingDate: params.sendDate ?? undefined,
       perPieceCost,
