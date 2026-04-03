@@ -393,13 +393,33 @@ export async function sendNewsletterNow(params: {
   if (campaign.status === "sent") return { success: false, error: "Campaign has already been sent." }
 
   const compliance = await evaluateOutbound({
-    content:     campaign.content,
-    subjectLine: campaign.subject_line,
-    channel:     "email",
+  actorContext: {
+    userId: params.userId,
     brokerageId: params.brokerageId,
-    agentId:     params.agentId,
-    actorUserId: params.userId,
-  })
+    role: "agent",
+  },
+  journeyType: "seller",
+  persona: "other",
+  messageType: "email",
+  content: [campaign.subject_line, campaign.content].filter(Boolean).join("\n\n"),
+  contact: {
+    id: "",
+    first_name: "",
+    last_name: "",
+    contact_type: "seller",
+    tcpa_consent: true,
+    isa_reengage_allowed: false,
+    dnc_status: false,
+  },
+})
+
+if (!compliance.allowed) {
+  return {
+    success: false,
+    blockedReason: compliance.blockedReason ?? compliance.violations[0],
+    error: "Compliance check failed.",
+  }
+}
   if (!compliance.passed) {
     return { success: false, blockedReason: compliance.reason, error: "Compliance check failed." }
   }
