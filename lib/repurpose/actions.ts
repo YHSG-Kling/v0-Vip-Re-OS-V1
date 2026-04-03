@@ -9,8 +9,8 @@ import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { evaluateKernelOutbound, isComplianceBlocked } from "@/lib/kernel/adapters/compliance"
+import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { generateAIResponse } from "@/lib/ai"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
@@ -145,17 +145,17 @@ export async function executePipeline(params: {
         const generatedContent = aiResponse.text
 
         // ── Apply brand voice ──
-        const brandResult = await applyBrandVoice({
+        const brandResult = await applyKernelBrandVoice({
           brokerageId: params.brokerageId,
           actorUserId: userId,
           actorRole: "agent",
-          journeyType: "seller",
+          journeyType: "marketing",
           persona: "seller",
           messageType: "social",
           content: generatedContent,
         })
 
-        if (brandResult.violations.length > 0) {
+        if (isBrandVoiceBlocked(brandResult)) {
           outputs.push({
             outputType: format,
             outputRefTable: config.outputTable,
@@ -168,16 +168,20 @@ export async function executePipeline(params: {
         }
 
         // ── Evaluate outbound compliance ──
-        const complianceResult = await evaluateOutbound({
-          actorContext: { userId, brokerageId: params.brokerageId },
-          journeyType: "seller",
+        const complianceResult = await evaluateKernelOutbound({
+          actorContext: {
+            userId,
+            role: "agent",
+            brokerageId: params.brokerageId,
+          },
+          journeyType: "marketing",
           persona: "seller",
           messageType: "social",
           content: generatedContent,
-          contact: { id: userId, status: "active" as const },
+          contact: { id: userId, status: "active" },
         })
 
-        if (!complianceResult.allowed) {
+        if (isComplianceBlocked(complianceResult)) {
           outputs.push({
             outputType: format,
             outputRefTable: config.outputTable,
