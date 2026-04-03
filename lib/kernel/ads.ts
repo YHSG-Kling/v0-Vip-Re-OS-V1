@@ -711,82 +711,11 @@ export async function previewAdCreative(input: PreviewAdCreativeInput): Promise<
 // Tables written: ad_creative_variations
 // Returns: creative
 
-export async function approveAdCreative(input: ApproveAdCreativeInput): Promise<KernelAdsResult> {
+export async function approveAdCreative(input: {
+  ctx: KernelContext
+  creativeVariationId: string
+}): Promise<KernelAdsResult> {
   const { ctx, creativeVariationId } = input
-
-  if (!ctx.brokerageId || !creativeVariationId) {
-    return { success: false, error: "brokerageId and creativeVariationId required" }
-  }
-
-  try {
-    const supabase = createServiceClient()
-
-    // Load creative
-    const { data: creative } = await supabase
-      .from("ad_creative_variations")
-      .select("*, ad_campaigns(*)")
-      .eq("id", creativeVariationId)
-      .eq("brokerage_id", ctx.brokerageId)
-      .maybeSingle()
-
-    if (!creative) {
-      return { success: false, error: "Creative not found" }
-    }
-
-    // Compliance check
-    const contentText = `${creative.headline || ""}\n${creative.primary_text || ""}\n${creative.description || ""}`
-    const complianceResult = await evaluateOutbound({
-  actorContext: {
-    userId: ctx.userId,
-    brokerageId: ctx.brokerageId,
-    role: ctx.userType === "admin" ? "admin" : "agent",
-  },
-  journeyType: "seller",
-  persona: "other",
-  messageType: "email",
-  content: contentText,
-  contact: {
-    id: "",
-    first_name: "",
-    last_name: "",
-    contact_type: "seller",
-    tcpa_consent: true,
-    isa_reengage_allowed: false,
-    dnc_status: false,
-  },
-})
-
-if (!complianceResult.allowed) {
-}return {
-        success: false,
-        error: `Compliance violation: ${complianceResult.violations?.join(", ") || "Content not allowed"}`,
-      }
-    }
-
-    // Update to approved
-    const { data: updatedCreative, error } = await supabase
-      .from("ad_creative_variations")
-      .update({ approval_status: "approved", updated_at: new Date().toISOString() })
-      .eq("id", creativeVariationId)
-      .select()
-      .maybeSingle()
-
-    if (error) throw error
-
-    return {
-  success: false,
-  error: `Compliance violation: ${complianceResult.violations?.join(", ") || "Content not allowed"}`,
-}
-
-// ─── COMMAND 10: loadAdPerformance ────────────────────────────────────────────
-// Loads ad performance data for campaigns. Returns real spend, impressions, clicks, conversions, ROI.
-//
-// Tables read: ad_performance, ad_campaigns
-// Tables written: none
-// Returns: performance data array
-
-export async function loadAdPerformance(input: LoadAdPerformanceInput): Promise<KernelAdsResult> {
-  const { ctx, campaignId, dateFrom, dateTo } = input
 
   if (!ctx.brokerageId) {
     return { success: false, error: "brokerageId required" }
@@ -795,36 +724,70 @@ export async function loadAdPerformance(input: LoadAdPerformanceInput): Promise<
   try {
     const supabase = createServiceClient()
 
-    let query = supabase
-      .from("ad_performance")
-      .select(`
-        *,
-        ad_campaigns!inner(id, campaign_name, platform)
-      `)
-      .eq("ad_campaigns.brokerage_id", ctx.brokerageId)
-      .order("captured_at", { ascending: false })
+    const { data: creative, error: creativeError } = await supabase
+      .from("ad_creative_variations")
+      .select("*")
+      .eq("id", creativeVariationId)
+      .eq("brokerage_id", ctx.brokerageId)
+      .maybeSingle()
 
-    if (campaignId) {
-      query = query.eq("ad_campaign_id", campaignId)
+    if (creativeError) {
+      throw creativeError
     }
 
-    if (dateFrom) {
-      query = query.gte("captured_at", dateFrom)
+    if (!creative) {
+      return { success: false, error: "Creative not found" }
     }
 
-    if (dateTo) {
-      query = query.lte("captured_at", dateTo)
+    const contentText = `${creative.headline || ""}\n${creative.primary_text || ""}\n${creative.description || ""}`
+
+    const complianceResult = await evaluateOutbound({
+      actorContext: {
+        userId: ctx.userId,
+        brokerageId: ctx.brokerageId,
+        role: ctx.userType === "admin" ? "admin" : "agent",
+      },
+      journeyType: "seller",
+      persona: "other",
+      messageType: "email",
+      content: contentText,
+      contact: {
+        id: "",
+        first_name: "",
+        last_name: "",
+        contact_type: "seller",
+        tcpa_consent: true,
+        isa_reengage_allowed: false,
+        dnc_status: false,
+      },
+    })
+
+    if (!complianceResult.allowed) {
+      return {
+        success: false,
+        error: `Compliance violation: ${complianceResult.violations?.join(", ") || "Content not allowed"}`,
+      }
     }
 
-    const { data: performance, error } = await query.limit(500)
+    const { data: updatedCreative, error } = await supabase
+      .from("ad_creative_variations")
+      .update({
+        approval_status: "approved",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", creativeVariationId)
+      .select()
+      .maybeSingle()
 
-    if (error) throw error
+    if (error) {
+      throw error
+    }
 
-    return { success: true, performance: performance || [] }
+    return { success: true, creative: updatedCreative }
   } catch (err) {
     return {
       success: false,
-      error: err instanceof Error ? err.message : "loadAdPerformance failed",
+      error: err instanceof Error ? err.message : "approveAdCreative failed",
     }
   }
 }
