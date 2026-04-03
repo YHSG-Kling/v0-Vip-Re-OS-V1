@@ -405,7 +405,7 @@ export async function aiGenerateProfitLossReport(params: {
       throw new Error(summaryResult.error || "Failed to load agent financial summary")
     }
 
-    const summary = summaryResult.data as Record<string, unknown>
+    const summary = summaryResult.data
 
     // Keep expense detail query only for category breakdown + deductible math
     const { data: expenses } = await supabase
