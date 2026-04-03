@@ -18,7 +18,7 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { buildActorContext } from "@/lib/kernel/actor-context"
 import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-
+import { buildActorContext } from "@/lib/kernel/actor-context"
 /**
  * AI Inside Sales Agent (ISA) System
  * Autonomous outbound calling with Vapi.ai for lead qualification and appointment booking
@@ -239,11 +239,28 @@ export async function sendCampaignTestTouch(params: {
   if (!user) return { success: false, error: "Unauthenticated" }
 
   // Compliance gate
-  const compliance = await evaluateOutbound({
-    actorContext: { brokerageId: params.brokerageId, userId: user.id },
-    messageType:  "email",
-    content:      `Test touch for campaign ${params.campaignId}`,
-  })
+  // Compliance gate
+// Compliance gate
+const compliance = await evaluateOutbound({
+  actorContext: buildActorContext({
+    brokerageId: params.brokerageId,
+    userId: user.id,
+    role: "agent",
+  }),
+  journeyType: "buyer",
+  persona: "other",
+  messageType: "email",
+  content: `Test touch for campaign ${params.campaignId}`,
+  contact: {
+    id: params.campaignId,
+    first_name: "",
+    last_name: "",
+    contact_type: "buyer",
+    tcpa_consent: true,
+    isa_reengage_allowed: false,
+    dnc_status: false,
+  },
+})
   if (!compliance.allowed) {
     return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
   }
