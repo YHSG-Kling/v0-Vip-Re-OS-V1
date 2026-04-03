@@ -12,6 +12,8 @@ import {
   loadAgentProfitLossSummary,
 } from "@/lib/kernel/financial"
 import {
+  loadAgentFinancialDashboardSummary,
+  loadAgentProfitLossSummary,
   loadFinancialWorkspace,
   loadAgentFinancialSummary,
   loadBrokerageFinancialSummary,
@@ -36,6 +38,9 @@ import {
   type CreateExpenseRecordInput,
   type ExportFinancialReportInput,
   type EmailFinancialReportInput,
+  type KernelFinancialResult,
+  type AgentProfitLossSummary,
+  type AgentFinancialDashboardSummary,
 } from "@/lib/kernel/financial"
 
 // Get actor context for all commands
@@ -56,7 +61,30 @@ async function getFinancialActorContext(): Promise<FinancialActorContext> {
     userType:    (role ?? "agent") as "agent" | "team_lead" | "broker" | "admin" | "superadmin",
   }
 }
+type FinancialContextResolution =
+  | { success: true; ctx: FinancialActorContext }
+  | { success: false; error: string; ctx?: undefined }
 
+async function resolveFinancialContext(
+  brokerageId?: string
+): Promise<FinancialContextResolution> {
+  try {
+    const ctx = await getFinancialActorContext()
+
+    return {
+      success: true,
+      ctx: {
+        ...ctx,
+        brokerageId: brokerageId ?? ctx.brokerageId,
+      },
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
 // ─── EXPORTED SERVER ACTIONS ──────────────────────────────────────────────────────
 
 export async function loadFinancialWorkspaceAction() {
@@ -81,26 +109,44 @@ export async function loadAgentFinancialDashboardSummaryAction(params: {
   })
 }
 
+export async function loadAgentFinancialDashboardSummaryAction(params: {
+  agentId: string
+  brokerageId?: string
+}): Promise<KernelFinancialResult<AgentFinancialDashboardSummary>> {
+  const ctx = await resolveFinancialContext(params.brokerageId)
+
+  if (!ctx.success || !ctx.ctx) {
+    return {
+      success: false,
+      error: ctx.error || "Failed to resolve financial context",
+    }
+  }
+
+  return loadAgentFinancialDashboardSummary({
+    ctx: ctx.ctx,
+    agentId: params.agentId,
+    periodType: "ytd",
+  })
+}
+
 export async function loadAgentProfitLossSummaryAction(params: {
   agentId: string
   brokerageId?: string
-}) {
+}): Promise<KernelFinancialResult<AgentProfitLossSummary>> {
   const ctx = await resolveFinancialContext(params.brokerageId)
-  if (!ctx.success || !ctx.ctx) return { success: false, error: ctx.error }
+
+  if (!ctx.success || !ctx.ctx) {
+    return {
+      success: false,
+      error: ctx.error || "Failed to resolve financial context",
+    }
+  }
 
   return loadAgentProfitLossSummary({
     ctx: ctx.ctx,
     agentId: params.agentId,
     periodType: "ytd",
   })
-}
-export async function loadAgentFinancialSummaryAction(input: Omit<LoadAgentFinancialSummaryInput, "ctx">) {
-  try {
-    const ctx = await getFinancialActorContext()
-    return await loadAgentFinancialSummary({ ...input, ctx })
-  } catch (error) {
-    return { success: false, error: String(error) }
-  }
 }
 
 export async function loadBrokerageFinancialSummaryAction(
