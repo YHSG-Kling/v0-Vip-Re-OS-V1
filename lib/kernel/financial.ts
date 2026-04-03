@@ -383,7 +383,43 @@ export async function loadAgentFinancialSummary(
     return { success: false, error: String(error) }
   }
 }
+export async function loadAgentProfitLossSummary(
+  input: LoadAgentFinancialSummaryInput
+): Promise<KernelFinancialResult<AgentProfitLossSummary>> {
+  try {
+    const base = await loadAgentFinancialSummary(input)
+    if (!base.success || !base.data) {
+      return { success: false, error: base.error || "Failed to load agent financial summary" }
+    }
 
+    const service = createServiceClient()
+
+    const { data: expenses, error: expensesError } = await service
+      .from("business_expenses")
+      .select("amount")
+      .eq("agent_id", input.agentId)
+
+    if (expensesError) {
+      return { success: false, error: expensesError.message }
+    }
+
+    const totalIncome = base.data.ytdAgentNet ?? 0
+    const totalExpenses = (expenses ?? []).reduce((sum: number, row: any) => sum + (row.amount || 0), 0)
+
+    return {
+      success: true,
+      data: {
+        agentId: input.agentId,
+        totalIncome,
+        totalExpenses,
+        netProfit: totalIncome - totalExpenses,
+        closedTransactions: base.data.ytdTransactionCount ?? 0,
+      },
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
 /**
  * loadBrokerageFinancialSummary — Brokerage-wide earnings + splits
  */
@@ -933,7 +969,128 @@ export async function exportFinancialReport(
     if (!["broker", "admin", "superadmin"].includes(ctx.userType)) {
       return { success: false, error: "Insufficient permissions to export reports" }
     }
+export async function loadAgentFinancialDashboardSummary(
+  input: LoadAgentFinancialSummaryInput
+): Promise<KernelFinancialResult<AgentFinancialDashboardSummary>> {
+  try {
+    const base = await loadAgentFinancialSummary(input)
+    if (!base.success || !base.data) {
+      return { success: false, error: base.error || "Failed to load agent financial summary" }
+    }
 
+    const service = createServiceClient()
+
+    const [
+      expensesResult,
+      pendingResult,
+      splitsResult,
+      bonusesResult,
+      trendResult,
+      profileResult,
+      agentResult,
+      pipelineResult,
+      historyResult,
+    ] = await Promise.all([
+      service
+        .from("business_expenses")
+        .select("id, category, amount, description, receipt_url, expense_date")
+        .eq("agent_id", input.agentId),
+
+      service
+        .from("agent_commissions")
+        .select("*")
+        .eq("agent_id", input.agentId)
+        .in("status", ["calculated", "approved"]),
+
+      service
+        .from("commission_distributions")
+        .select("*")
+        .eq("agent_id", input.agentId),
+
+      service
+        .from("bonus_credits")
+        .select("*")
+        .eq("agent_id", input.agentId),
+
+      service
+        .from("agent_commissions")
+        .select("gross_commission, agent_commission, close_date, paid_at")
+        .eq("agent_id", input.agentId),
+
+      service
+        .from("agent_commission_profiles")
+        .select("*")
+        .eq("agent_id", input.agentId)
+        .order("effective_date", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+
+      service
+        .from("agents")
+        .select("*")
+        .eq("id", input.agentId)
+        .maybeSingle(),
+
+      service
+        .from("transactions")
+        .select("*")
+        .eq("agent_id", input.agentId)
+        .in("status", ["active", "pending"]),
+
+      service
+        .from("agent_commissions")
+        .select("*")
+        .eq("agent_id", input.agentId)
+        .order("created_at", { ascending: false })
+        .limit(50),
+    ])
+
+    if (expensesResult.error) return { success: false, error: expensesResult.error.message }
+    if (pendingResult.error) return { success: false, error: pendingResult.error.message }
+    if (splitsResult.error) return { success: false, error: splitsResult.error.message }
+    if (bonusesResult.error) return { success: false, error: bonusesResult.error.message }
+    if (trendResult.error) return { success: false, error: trendResult.error.message }
+    if (profileResult.error) return { success: false, error: profileResult.error.message }
+    if (agentResult.error) return { success: false, error: agentResult.error.message }
+    if (pipelineResult.error) return { success: false, error: pipelineResult.error.message }
+    if (historyResult.error) return { success: false, error: historyResult.error.message }
+
+    return {
+      success: true,
+      data: {
+        agentId: input.agentId,
+        mtdEarnings: {
+          gross_commission: base.data.mtdGCI,
+          agent_net: base.data.mtdAgentNet,
+        },
+        ytdEarnings: {
+          gross_commission: base.data.ytdGCI,
+          agent_net: base.data.ytdAgentNet,
+        },
+        expenses: expensesResult.data ?? [],
+        pendingCommissions: pendingResult.data ?? [],
+        teamSplits: splitsResult.data ?? [],
+        bonusCredits: bonusesResult.data ?? [],
+        monthlyTrendData: trendResult.data ?? [],
+        ytdTransactionCount: base.data.ytdTransactionCount,
+        commissionProfile: profileResult.data ?? null,
+        capTracking: {
+          capAmount: base.data.capAmount,
+          capPaidToDate: base.data.capPaidToDate,
+          capIsCapped: base.data.capIsCapped,
+          capProgressPct: base.data.capProgressPct,
+          anniversaryStart: base.data.anniversaryStart,
+          anniversaryEnd: base.data.anniversaryEnd,
+        },
+        agentData: agentResult.data ?? null,
+        pipelineTransactions: pipelineResult.data ?? [],
+        earningsHistory: historyResult.data ?? [],
+      },
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
     // TODO: Implement CSV/PDF generation logic
     // For now, return a placeholder blob URL
     const generatedAt = new Date().toISOString()
