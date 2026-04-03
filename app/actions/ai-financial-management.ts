@@ -556,7 +556,7 @@ Provide comprehensive analysis:
         generated_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -612,7 +612,7 @@ async function syncExpenseToQuickBooks(expense: any) {
     .eq("brokerage_id", agent.brokerage_id)
     .eq("provider_name", "quickbooks")
     .eq("is_active", true)
-    .single()
+    .maybeSingle()
 
   if (!integration) {
     console.log("[v0] QuickBooks not connected, skipping sync")
@@ -849,7 +849,7 @@ Create a detailed budget with monthly allocations:
         created_at: new Date().toISOString(),
       })
       .select()
-      .smaybeSingle()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -968,7 +968,7 @@ export async function trackDeposit(params: {
         created_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
