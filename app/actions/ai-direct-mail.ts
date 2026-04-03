@@ -15,6 +15,12 @@ import {
   processKernelEvent,
 } from "@/lib/kernel"
 import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
+import {
+  createMailCampaign,
+  addRecipients,
+  sendCampaign,
+  logResponse,
+} from "@/app/actions/direct-mail"
 
 // ============================================
 // AI DIRECT MAIL SYSTEM
@@ -256,7 +262,7 @@ export async function aiSelectTargetAudience(params: {
         secondarySegments: z.array(
           z.object({
             name: z.string(),
-            ccriteria: z.record(z.string(), z.any()),
+            criteria: z.record(z.string(), z.any()),
             estimatedCount: z.number(),
             priority: z.number(),
           })
@@ -414,65 +420,58 @@ export async function createDirectMailCampaign(params: {
       return { success: false, error: "Invalid agent ID" }
     }
 
-    // ── Kernel Gate: canAccessFeature ──
     const access = await canAccessFeature(params.agentId, "direct_mail")
     if (!access.allowed) {
       return { success: false, error: access.reason ?? "Direct mail feature not available" }
     }
 
-    const supabase = await createClient()
+    const quantity =
+      params.budget && params.budget > 0
+        ? Math.max(1, Math.floor(params.budget / 0.79))
+        : 100
 
-    // Generate QR code tracking URL if enabled
+    const perPieceCost =
+      params.budget && quantity > 0
+        ? Number((params.budget / quantity).toFixed(2))
+        : 0.79
+// Generate QR code tracking URL if enabled
     const trackingId = params.trackingEnabled ? `dm-${Date.now()}-${Math.random().toString(36).substr(2, 9)}` : null
 
-    const { data: campaign, error } = await supabase
-      .from("direct_mail_campaigns")
-      .insert({
-        agent_id: params.agentId,
-        name: params.name,
-        mail_type: params.mailType,
-        template_type: params.templateType,
-        headline: params.headline,
-        body_text: params.bodyText,
-        call_to_action: params.callToAction,
-        target_criteria: params.targetCriteria,
-        quantity: params.quantity,
-        scheduled_date: params.scheduledDate,
-        tracking_id: trackingId,
-        tracking_url: trackingId ? `${process.env.NEXT_PUBLIC_APP_URL}/t/${trackingId}` : null,
-        status: params.scheduledDate ? "scheduled" : "draft",
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-
-    // ── Increment usage counter ──
-    await incrementFeatureUsage(params.agentId, "direct_mail")
-
-    // ── Fire kernel event ──
-    await processKernelEvent({
-      event: KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED,
+    const campaignResult = await createMailCampaign({
       brokerageId: params.brokerageId,
-      entityType: "direct_mail_campaign",
-      entityId: campaign.id,
-    }).catch((err) => {
-      console.error("[AI Direct Mail] Event processing failed (non-blocking):", err)
+      agentId: params.agentId,
+      campaignName: params.campaignName,
+      targetAudience: params.targetAudience,
+      designUrl: params.designTemplate ?? undefined,
+      copyText: null,
+      quantity,
+      mailingDate: params.sendDate ?? undefined,
+      perPieceCost,
+      createdBy: params.agentId,
     })
+
+    if (!campaignResult.success) {
+      return {
+        success: false,
+        error: campaignResult.error || "Failed to create direct mail campaign",
+      }
+    }
 
     revalidatePath("/content-studio")
     revalidatePath("/dashboard/campaigns/mail")
 
     return {
       success: true,
-      campaign,
-      trackingUrl: campaign.tracking_url,
+      campaign: campaignResult.campaign,
+      trackingUrl: null,
     }
   } catch (error) {
     console.error("[AI Direct Mail] Create campaign error:", error)
     return handleError(error, "createDirectMailCampaign")
   }
 }
+
+   
 
 // ============================================
 // 6. VALIDATE MAILING LIST
@@ -494,14 +493,11 @@ export async function validateMailingList(params: {
       return { success: false, error: "Invalid agent ID" }
     }
 
-    const supabase = await createClient()
-
     const validationResults: any[] = []
     let validCount = 0
     let invalidCount = 0
 
     for (const address of params.addresses) {
-      // Basic validation (in production, use Lob or SmartyStreets API)
       const isValid =
         address.address1?.length > 5 &&
         address.city?.length > 2 &&
@@ -525,21 +521,36 @@ export async function validateMailingList(params: {
       }
     }
 
-    // Save validated addresses
-    await supabase.from("direct_mail_recipients").insert(
-      validationResults
-        .filter((r) => r.status === "valid")
-        .map((r) => ({
-          campaign_id: params.campaignId,
-          name: r.name,
-          address1: r.address1,
-          address2: r.address2,
+    const validRecipients = validationResults
+      .filter((r) => r.status === "valid")
+      .map((r) => {
+        const [firstName, ...rest] = String(r.name || "").trim().split(" ")
+        const lastName = rest.join(" ")
+
+        return {
+          firstName: firstName || "Resident",
+          lastName: lastName || "Current",
+          addressLine1: r.address1,
+          addressLine2: r.address2 ?? undefined,
           city: r.city,
           state: r.state,
           zip: r.zip,
-          status: "pending",
-        }))
-    )
+        }
+      })
+
+    if (validRecipients.length > 0) {
+      const recipientResult = await addRecipients({
+        campaignId: params.campaignId,
+        recipients: validRecipients,
+      })
+
+      if (!recipientResult.success) {
+        return {
+          success: false,
+          error: recipientResult.error || "Failed to save recipients",
+        }
+      }
+    }
 
     return {
       success: true,
@@ -559,80 +570,41 @@ export async function validateMailingList(params: {
 // ============================================
 // 7. SUBMIT TO PRINT FULFILLMENT
 // ============================================
-export async function submitToPrintFulfillment(params: { campaignId: string; agentId: string; brokerageId: string }) {
+export async function submitToPrintFulfillment(params: {
+  campaignId: string
+  agentId: string
+  brokerageId: string
+  teamId?: string
+}) {
   try {
     if (!isValidUUID(params.campaignId) || !isValidUUID(params.agentId)) {
       return { success: false, error: "Invalid IDs" }
     }
 
-    // ── Kernel Gate: canAccessFeature ──
-    const access = await canAccessFeature(params.agentId, "direct_mail")
-    if (!access.allowed) {
-      return { success: false, error: access.reason ?? "Direct mail feature not available" }
-    }
-
-    const supabase = await createClient()
-
-    // Get campaign and recipients
-    const { data: campaign } = await supabase
-      .from("direct_mail_campaigns")
-      .select("*")
-      .eq("id", params.campaignId)
-      .single()
-
-    const { data: recipients } = await supabase
-      .from("direct_mail_recipients")
-      .select("*")
-      .eq("campaign_id", params.campaignId)
-      .eq("status", "pending")
-
-    if (!campaign || !recipients?.length) {
-      return { success: false, error: "Campaign or recipients not found" }
-    }
-
-    // In production, integrate with Lob, Click2Mail, or similar
-    // For now, simulate submission
-    const fulfillmentResponse = {
-      orderId: `order-${Date.now()}`,
-      estimatedDelivery: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-      quantity: recipients.length,
-      cost: recipients.length * 0.79, // Estimated cost per piece
-    }
-
-    // Update campaign status
-    await supabase
-      .from("direct_mail_campaigns")
-      .update({
-        status: "submitted",
-        fulfillment_order_id: fulfillmentResponse.orderId,
-        submitted_at: new Date().toISOString(),
-        estimated_delivery: fulfillmentResponse.estimatedDelivery,
-        total_cost: fulfillmentResponse.cost,
-      })
-      .eq("id", params.campaignId)
-
-    // Update recipient statuses
-    await supabase
-      .from("direct_mail_recipients")
-      .update({ status: "submitted" })
-      .eq("campaign_id", params.campaignId)
-
-    // ── Fire kernel event ──
-    await processKernelEvent({
-      event: KernelEvent.DIRECT_MAIL_SENT,
+    const result = await sendCampaign({
+      campaignId: params.campaignId,
+      actorUserId: params.agentId,
       brokerageId: params.brokerageId,
-      entityType: "direct_mail_campaign",
-      entityId: params.campaignId,
-    }).catch((err) => {
-      console.error("[AI Direct Mail] Event processing failed (non-blocking):", err)
+      teamId: params.teamId,
     })
+
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error || "Failed to submit campaign to print fulfillment",
+      }
+    }
 
     revalidatePath("/content-studio")
     revalidatePath("/dashboard/campaigns/mail")
 
     return {
       success: true,
-      fulfillment: fulfillmentResponse,
+      fulfillment: {
+        orderId: result.lobOrderId,
+        quantity: result.piecesMailed,
+        provider: result.provider,
+      },
     }
   } catch (error) {
     console.error("[AI Direct Mail] Fulfillment error:", error)
@@ -651,27 +623,36 @@ export async function trackCampaignResponse(params: {
   try {
     const supabase = await createClient()
 
-    // Find campaign by tracking ID
     const { data: campaign } = await supabase
       .from("direct_mail_campaigns")
-      .select("id, agent_id")
+      .select("id, brokerage_id")
       .eq("tracking_id", params.trackingId)
-      .single()
+      .maybeSingle()
 
     if (!campaign) {
       return { success: false, error: "Campaign not found" }
     }
 
-    // Log the response
-    await supabase.from("direct_mail_responses").insert({
-      campaign_id: campaign.id,
-      response_type: params.responseType,
-      metadata: params.metadata,
-      responded_at: new Date().toISOString(),
+    const responseTypeMap: Record<string, "qr_scan" | "landing_visit" | "call" | "form_submit"> = {
+      qr_scan: "qr_scan",
+      call: "call",
+      website_visit: "landing_visit",
+      form_submission: "form_submit",
+    }
+
+    const result = await logResponse({
+      brokerageId: campaign.brokerage_id,
+      campaignId: campaign.id,
+      responseType: responseTypeMap[params.responseType],
+      responseMetadata: params.metadata,
     })
 
-    // Update campaign response count
-    await supabase.rpc("increment_mail_responses", { campaign_id: campaign.id })
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error || "Failed to track response",
+      }
+    }
 
     return { success: true }
   } catch (error) {
@@ -702,19 +683,25 @@ export async function getDirectMailAnalytics(params: { agentId: string; campaign
 
     const { data: campaigns } = await query
 
-    const analytics = campaigns?.map((c) => ({
-      id: c.id,
-      name: c.name,
-      quantity: c.quantity,
-      responses: c.responses?.[0]?.count || 0,
-      responseRate: c.quantity > 0 ? ((c.responses?.[0]?.count || 0) / c.quantity) * 100 : 0,
-      cost: c.total_cost,
-      costPerResponse:
-        c.responses?.[0]?.count > 0 ? c.total_cost / c.responses[0].count : c.total_cost,
-      status: c.status,
-      sentDate: c.submitted_at,
-    }))
+ const analytics = campaigns?.map((c) => {
+  const responseCount = c.responses?.[0]?.count || 0
+  const totalCost =
+    typeof c.total_cost === "number"
+      ? c.total_cost
+      : (c.per_piece_cost || 0) * (c.quantity || 0)
 
+  return {
+    id: c.id,
+    name: c.campaign_name,
+    quantity: c.quantity,
+    responses: responseCount,
+    responseRate: c.quantity > 0 ? (responseCount / c.quantity) * 100 : 0,
+    cost: totalCost,
+    costPerResponse: responseCount > 0 ? totalCost / responseCount : totalCost,
+    status: c.status,
+    sentDate: c.submitted_at ?? c.mailing_date ?? null,
+  }
+})
     return { success: true, analytics }
   } catch (error) {
     console.error("[AI Direct Mail] Analytics error:", error)
