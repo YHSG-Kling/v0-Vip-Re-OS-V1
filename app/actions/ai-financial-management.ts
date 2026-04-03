@@ -400,7 +400,7 @@ export async function aiGenerateProfitLossReport(params: {
   agentId: params.agentId,
 })
 
-if (!summaryResult.success) {
+if (!summaryResult.success || !summaryResult.data) {
   throw new Error(summaryResult.error || "Failed to load agent financial summary")
 }
 
