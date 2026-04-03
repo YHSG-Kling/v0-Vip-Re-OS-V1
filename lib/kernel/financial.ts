@@ -67,7 +67,50 @@ export interface KernelFinancialResult<T = void> {
 }
 
 // ─── READ-ONLY TYPES ──────────────────────────────────────────────────────────
+export interface AgentProfitLossSummary {
+  agentId: string
+  totalIncome: number
+  totalExpenses: number
+  netProfit: number
+  closedTransactions: number
+}
 
+export interface AgentFinancialDashboardSummary {
+  agentId: string
+  mtdEarnings: {
+    gross_commission: number
+    agent_net: number
+  }
+  ytdEarnings: {
+    gross_commission: number
+    agent_net: number
+  }
+  expenses: Array<{
+    id: string
+    category: string
+    amount: number
+    description: string | null
+    receipt_url: string | null
+    expense_date: string
+  }>
+  pendingCommissions: any[]
+  teamSplits: any[]
+  bonusCredits: any[]
+  monthlyTrendData: any[]
+  ytdTransactionCount: number
+  commissionProfile: any | null
+  capTracking: {
+    capAmount: number
+    capPaidToDate: number
+    capIsCapped: boolean
+    capProgressPct: number
+    anniversaryStart: string
+    anniversaryEnd: string
+  }
+  agentData: any | null
+  pipelineTransactions: any[]
+  earningsHistory: any[]
+}
 export interface FinancialWorkspace {
   agentId:      string
   brokerageId:  string
