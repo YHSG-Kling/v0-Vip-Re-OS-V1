@@ -32,7 +32,7 @@ import {
   type CreateExpenseRecordInput,
   type ExportFinancialReportInput,
   type EmailFinancialReportInput,
-} @/lib/kernel/financial
+} from "@/lib/kernel/financial"
 
 // Get actor context for all commands
 async function getFinancialActorContext(): Promise<FinancialActorContext> {
