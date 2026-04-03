@@ -248,7 +248,7 @@ export async function aiSelectTargetAudience(params: {
       schema: z.object({
         primarySegment: z.object({
           name: z.string(),
-          criteria: z.record(z.any()),
+          criteria: z.record(z.string(), z.any()),
           estimatedCount: z.number(),
           estimatedResponseRate: z.number(),
           reasoning: z.string(),
@@ -256,7 +256,7 @@ export async function aiSelectTargetAudience(params: {
         secondarySegments: z.array(
           z.object({
             name: z.string(),
-            criteria: z.record(z.any()),
+            ccriteria: z.record(z.string(), z.any()),
             estimatedCount: z.number(),
             priority: z.number(),
           })
