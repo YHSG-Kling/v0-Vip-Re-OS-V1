@@ -9,11 +9,9 @@
 import { createClient } from "@/lib/supabase/server"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import {
-  canAccessFeature,
-  processKernelEvent,
-  KernelEvent,
-} from "@/lib/kernel"
+import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import { KernelEvent } from "@/lib/kernel/events"
 
 // ============================================
 // TYPES
