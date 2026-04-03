@@ -19,6 +19,8 @@ import {
   createExpenseRecord,
   exportFinancialReport,
   emailFinancialReport,
+  createCommissionRecord,
+  type CreateCommissionRecordInput,
   type FinancialActorContext,
   type LoadAgentFinancialSummaryInput,
   type LoadBrokerageFinancialSummaryInput,
@@ -137,7 +139,14 @@ export async function createExpenseRecordAction(input: Omit<CreateExpenseRecordI
     return { success: false, error: String(error) }
   }
 }
-
+export async function createCommissionRecordAction(input: Omit<CreateCommissionRecordInput, "ctx">) {
+  try {
+    const ctx = await getFinancialActorContext()
+    return await createCommissionRecord({ ...input, ctx })
+  } catch (error) {
+    return { success: false, error: String(error) }
+  }
+}
 export async function exportFinancialReportAction(input: Omit<ExportFinancialReportInput, "ctx">) {
   try {
     const ctx = await getFinancialActorContext()
