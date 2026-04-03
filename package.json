@@ -9,6 +9,7 @@
     "lint": "next lint",
     "start": "next start",
     "type-check": "tsc --noEmit"
+    "check:kernel-client-leaks": "rg -n \"from ['\\\"]@/lib/kernel['\\\"]\" app lib"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.46",
