@@ -146,4 +146,3 @@ export function isComplianceBlocked(result: ComplianceResult): boolean {
 export function getComplianceReason(result: ComplianceResult): string | undefined {
   return result.blockedReason ?? result.violations[0]
 }
-}
