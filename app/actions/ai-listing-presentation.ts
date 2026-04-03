@@ -221,6 +221,7 @@ export async function generateSellerNetSheet(params: {
     // TODO: Commission Engine 8.0 — replace with getDefaultCommissionStructure()
     // Commission math must not live in presentation layer.
     const commission = 0
+    const commissionRate = params.commissionRate ?? 3
     
     const { object: netSheet } = await generateObject({
       model: resolveModel("openai/gpt-4o"),
