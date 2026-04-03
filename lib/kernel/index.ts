@@ -2,7 +2,7 @@
 // Single entry-point for the kernel layer.
 // Import from '@/lib/kernel' — never from individual kernel files outside this layer.
 // No default exports.
-
+import "server-only"
 export { KernelEvent } from "./events"
 export { CalendarEventType } from "./calendar-types"
 export type { CalendarEventMetadata, KernelCalendarEvent } from "./calendar-types"
