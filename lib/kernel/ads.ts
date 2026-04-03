@@ -757,7 +757,7 @@ export async function approveAdCreative(input: ApproveAdCreativeInput): Promise<
 })
 
 if (!complianceResult.allowed) {
-      return {
+}return {
         success: false,
         error: `Compliance violation: ${complianceResult.violations?.join(", ") || "Content not allowed"}`,
       }
