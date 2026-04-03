@@ -98,20 +98,6 @@ export async function loadFinancialWorkspaceAction() {
 export async function loadAgentFinancialDashboardSummaryAction(params: {
   agentId: string
   brokerageId?: string
-}) {
-  const ctx = await resolveFinancialContext(params.brokerageId)
-  if (!ctx.success || !ctx.ctx) return { success: false, error: ctx.error }
-
-  return loadAgentFinancialDashboardSummary({
-    ctx: ctx.ctx,
-    agentId: params.agentId,
-    periodType: "ytd",
-  })
-}
-
-export async function loadAgentFinancialDashboardSummaryAction(params: {
-  agentId: string
-  brokerageId?: string
 }): Promise<KernelFinancialResult<AgentFinancialDashboardSummary>> {
   const ctx = await resolveFinancialContext(params.brokerageId)
 
