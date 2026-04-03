@@ -11,11 +11,10 @@ import { z } from "zod"
 import {
   canAccessFeature,
   incrementFeatureUsage,
-  applyBrandVoice,
-  evaluateOutbound,
   KernelEvent,
   processKernelEvent,
 } from "@/lib/kernel"
+import { applyKernelBrandVoice, isBrandVoiceBlocked } from "@/lib/kernel/adapters/brand-voice"
 
 // ============================================
 // AI DIRECT MAIL SYSTEM
@@ -121,18 +120,18 @@ Create the primary copy plus 2 variants with different approaches.`,
     })
 
     // ── Apply brand voice compliance ──
-    const brandResult = await applyBrandVoice({
+        const brandResult = await applyKernelBrandVoice({
       brokerageId: params.brokerageId,
       teamId: params.teamId,
       actorUserId: params.agentId,
       actorRole: "agent",
-      journeyType: "seller",
+      journeyType: "marketing",
       persona: "seller",
       messageType: "email",
       content: `${copy.headline} ${copy.bodyText} ${copy.callToAction}`,
     })
 
-    if (brandResult.blocked) {
+    if (isBrandVoiceBlocked(brandResult)) {
       return {
         success: false,
         error: "Brand voice compliance failed",
