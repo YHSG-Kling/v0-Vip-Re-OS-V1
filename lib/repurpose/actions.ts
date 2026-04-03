@@ -170,7 +170,7 @@ export async function executePipeline(params: {
         // ── Evaluate outbound compliance ──
         const complianceResult = await evaluateOutbound({
           actorContext: { userId, brokerageId: params.brokerageId },
-          journeyType: "marketing",
+          journeyType: "seller",
           persona: "seller",
           messageType: "social",
           content: generatedContent,
