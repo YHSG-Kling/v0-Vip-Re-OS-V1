@@ -400,23 +400,8 @@ export async function aiGenerateProfitLossReport(params: {
   agentId: params.agentId,
 })
 
-    if (!summaryResult.success || !summaryResult.data) {
-      throw new Error(summaryResult.error || "Failed to load agent financial summary")
-    }
-
-   type FinancialSummaryCompat = {
-  totalIncome?: number
-  totalCommissionRevenue?: number
-  totalExpenses?: number
-  netProfit?: number
-  netIncome?: number
-  closedTransactions?: number
-  total_income?: number
-  total_commission_revenue?: number
-  total_expenses?: number
-  net_profit?: number
-  net_income?: number
-  closed_transactions?: number
+if (!summaryResult.success) {
+  throw new Error(summaryResult.error || "Failed to load agent financial summary")
 }
 
 const summary = summaryResult.data
@@ -429,6 +414,7 @@ const { data: expenses } = await supabase
   .lte("expense_date", params.endDate)
 
 const totalIncome = summary.totalIncome
+
 const totalExpenses =
   typeof summary.totalExpenses === "number"
     ? summary.totalExpenses
