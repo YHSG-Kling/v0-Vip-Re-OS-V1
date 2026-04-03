@@ -9,7 +9,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/index"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { calculateLeadScore, evaluateRoutingEligibility } from "@/lib/lead-governance/index"
 
 // ─── VALID TRANSITIONS ────────────────────────────────────────────────────────
