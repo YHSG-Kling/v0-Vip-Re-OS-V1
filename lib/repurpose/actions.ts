@@ -149,7 +149,7 @@ export async function executePipeline(params: {
           brokerageId: params.brokerageId,
           actorUserId: userId,
           actorRole: "agent",
-          journeyType: "marketing",
+          journeyType: "seller",
           persona: "seller",
           messageType: "social",
           content: generatedContent,
