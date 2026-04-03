@@ -16,7 +16,7 @@
  *
  * NOTE: runtime must stay "nodejs" — AI SDK generateText is NOT edge-compatible.
  */
-
+import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
 import { NextRequest, NextResponse } from "next/server"
 import { generateText } from "ai"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
@@ -107,12 +107,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
           .eq("id", existingContact.id)
 
         // Block if DNC / call_stop_flag / restricted state that has opted out
-        const complianceResult = await evaluateOutbound({
-          contact: existingContact,
-          channel: 'phone',
-          content: '',
-          actorContext: { brokerageId, actorType: 'ai_isa' },
-        })
+        const complianceResult = await evaluateKernelOutbound({
+  actorContext: {
+    userId: "system",
+    brokerageId,
+    role: "isa",
+  },
+  journeyType: "buyer",
+  persona: "other",
+  messageType: "phone",
+  content: "",
+  contact: {
+    id: existingContact.id,
+    status: existingContact.status,
+    dnc_status: existingContact.dnc_status ?? false,
+    tcpa_consent: existingContact.tcpa_consent ?? false,
+    isa_reengage_allowed: existingContact.isa_reengage_allowed ?? false,
+  },
+})
         const blocked = !complianceResult.allowed
         const violations = complianceResult.violations ?? []
 
