@@ -97,7 +97,7 @@ export async function acceptAIISAHandoff(params: {
 }
 
   // Notify the actor that handoff is complete
- try( await supabase
+ try{ await supabase
     .from('notifications')
     .insert({
       brokerage_id: lead.brokerage_id,
