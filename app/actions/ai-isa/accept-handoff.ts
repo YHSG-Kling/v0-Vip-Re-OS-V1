@@ -111,7 +111,9 @@ export async function acceptAIISAHandoff(params: {
       priority: 'high',
       created_at: new Date().toISOString(),
     })
-    .catch(() => {})
+} catch {
+  // non-blocking notification write
+}
 
   // Emit lifecycle event
   await supabase
