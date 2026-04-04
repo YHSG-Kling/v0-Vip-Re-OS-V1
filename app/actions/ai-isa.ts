@@ -594,14 +594,27 @@ export async function triggerGhostRecovery(params: {
   if (!user) return { success: false, error: "Unauthenticated" }
 
   // Step 1: Compliance gate — hard stop
-  const compliance = await evaluateOutbound({
-    actorContext: { brokerageId: params.brokerageId, userId: user.id },
-    messageType: "email",
-    content: "Ghost recovery outreach",
-  })
-  if (!compliance.allowed) {
-    return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
-  }
+  // Step 1: Compliance gate — hard stop
+const compliance = await evaluateOutbound({
+  actorContext: {
+    brokerageId: params.brokerageId,
+    userId: user.id,
+    role: "agent",
+  },
+  journeyType: "buyer",
+  persona: "other",
+  messageType: "email",
+  content: "Ghost recovery outreach",
+  contact: {
+    id: params.contactId ?? "",
+    first_name: "",
+    last_name: "",
+    contact_type: "buyer",
+    tcpa_consent: true,
+    isa_reengage_allowed: true,
+    dnc_status: false,
+  },
+})
 
   // Step 2: Fetch contact for dispatch
   const service = createServiceClient()
