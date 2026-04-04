@@ -113,7 +113,7 @@ export async function acceptAIISAHandoff(params: {
     })
 } catch {
   // non-blocking notification write
-}
+};
 
   // Emit lifecycle event
   await supabase
