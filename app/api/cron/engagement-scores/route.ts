@@ -60,7 +60,6 @@ export async function GET(req: NextRequest) {
           .from("contacts")
           .update({ engagement_score: score, updated_at: new Date().toISOString() })
           .eq("id", contactId)
-          .catch(() => {})
 
         processed++
       } catch (err: any) {
@@ -69,10 +68,9 @@ export async function GET(req: NextRequest) {
     }
   } catch (err: any) {
     errors.push(`Engagement scores cron failed: ${err.message}`)
-    await supabase
+    void supabase
       .from("automation_errors")
       .insert({ cron_job: "engagement-scores", error_message: err.message, occurred_at: ranAt })
-      .catch(() => {})
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

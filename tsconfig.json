@@ -18,10 +18,8 @@
     "jsx": "react-jsx",
     "incremental": true,
     "forceConsistentCasingInFileNames": true,
-    // Temporary: Disabled to reduce compiler blocker noise during Kernel OS repair.
-    // Re-enable after build is green and unused vars have been cleaned up.
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "plugins": [
       {

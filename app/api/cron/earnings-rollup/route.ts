@@ -82,10 +82,9 @@ export async function GET(req: NextRequest) {
     }
   } catch (err: any) {
     errors.push(`Earnings rollup failed: ${err.message}`)
-    await supabase
+    void supabase
       .from("automation_errors")
       .insert({ cron_job: "earnings-rollup", error_message: err.message, occurred_at: ranAt })
-      .catch(() => {})
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

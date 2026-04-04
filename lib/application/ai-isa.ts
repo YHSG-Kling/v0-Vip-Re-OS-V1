@@ -198,7 +198,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     .catch(() => null)
 
   // Write vapi_voice_calls billing row
-  await supabase
+  void supabase
     .from("vapi_voice_calls")
     .insert({
       voice_call_id: voiceCallRow?.id ?? null,
@@ -207,9 +207,6 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
       assistant_id:  campaign.vapi_assistant_id ?? null,
       agent_id:      loginId,
       contact_id:    contactId,
-    })
-    .catch((err: any) => {
-      console.error("[AI-ISA] vapi_voice_calls insert failed:", err.message)
     })
 
   // Write ai_isa_calls with correct build34 columns — no campaign_id/login_id/vapi_call_id/call_status/attempt_number

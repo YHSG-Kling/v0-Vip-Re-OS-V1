@@ -32,7 +32,7 @@ export async function logTransactionDelay(params: {
   if (error) return { success: false, error: error.message }
 
   if (params.notifyClient) {
-    await supabase
+    void supabase
       .from("transparency_updates")
       .insert({
         transaction_id: params.transactionId,
@@ -41,9 +41,8 @@ export async function logTransactionDelay(params: {
         is_visible_to_client: true,
         agent_id: userId,
       })
-      .catch(() => {})
 
-    await supabase
+    void supabase
       .from("timeline_transparency")
       .update({ communicated_to_client: true })
       .eq("transaction_id", params.transactionId)

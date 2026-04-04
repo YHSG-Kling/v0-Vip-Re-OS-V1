@@ -73,17 +73,15 @@ export async function createPortalInviteForContact(params: {
         .eq("id", existing.id)
     }
 
-    // 6. Non-blocking welcome message
-    supabase
-      .from("client_portal_messages")
-      .insert({
-        contact_id: contactId,
-        brokerage_id: brokerageId,
-        direction: "outbound",
-        body: `Hi ${contact.first_name ?? "there"}, your client portal is ready. Log in to track your journey.`,
-      })
-      .then(() => {})
-      .catch(() => {})
+  // 6. Non-blocking welcome message
+  void supabase
+    .from("client_portal_messages")
+    .insert({
+      contact_id: contactId,
+      brokerage_id: brokerageId,
+      direction: "outbound",
+      body: `Hi ${contact.first_name ?? "there"}, your client portal is ready. Log in to track your journey.`,
+    })
 
     return { success: true, inviteId: existing.id }
   }
@@ -124,7 +122,7 @@ export async function createPortalInviteForContact(params: {
   }
 
   // 6. Non-blocking welcome message
-  supabase
+  void supabase
     .from("client_portal_messages")
     .insert({
       contact_id: contactId,
@@ -132,8 +130,6 @@ export async function createPortalInviteForContact(params: {
       direction: "outbound",
       body: `Hi ${contact.first_name ?? "there"}, your client portal is ready. Log in to track your journey.`,
     })
-    .then(() => {})
-    .catch(() => {})
 
   return { success: true, inviteId: newInvite.id }
 }

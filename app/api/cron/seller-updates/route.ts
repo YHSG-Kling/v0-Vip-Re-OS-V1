@@ -67,10 +67,9 @@ export async function GET(req: NextRequest) {
     }
   } catch (err: any) {
     errors.push(`Seller updates cron failed: ${err.message}`)
-    await supabase
+    void supabase
       .from("automation_errors")
       .insert({ cron_job: "seller-updates", error_message: err.message, occurred_at: ranAt })
-      .catch(() => {})
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

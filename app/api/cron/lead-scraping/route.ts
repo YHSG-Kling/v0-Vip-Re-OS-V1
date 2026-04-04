@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ZenrowsClient, BatchDataClient, PeopleDataClient, ApifyClient } from "@/lib/external"
+import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
 import {
@@ -49,14 +49,14 @@ export async function GET(request: Request) {
   await recordCronStartAction({ context_id: contextId })
 
   // Emit SCRAPING_CRON_STARTED lifecycle event
-  await serviceClient.from("lifecycle_events").insert({
+  void serviceClient.from("lifecycle_events").insert({
     entity_type:  "system",
     entity_id:    cronLogId ?? "00000000-0000-0000-0000-000000000000",
     event_type:   KernelEvent.SCRAPING_CRON_STARTED,
     brokerage_id: null,
     metadata:     { triggered_by: "cron", context_id: contextId },
     created_at:   new Date().toISOString(),
-  }).catch(() => {})
+  })
 
   console.log("[Lead Scraping Cron] Starting scheduled scraping with full enrichment pipeline...")
 
@@ -66,8 +66,6 @@ export async function GET(request: Request) {
   const zenrows   = new ZenrowsClient()
   const batchdata = new BatchDataClient()
   const peopledata = new PeopleDataClient()
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const apify     = new ApifyClient()
 
   const validation = {
     validateContact: async (params: { email?: string | null; phone?: string | null }) => {
@@ -326,7 +324,7 @@ export async function GET(request: Request) {
             leads_created: leadsCreated,
             api_cost: 0, // BatchData cost tracked separately via vendor_usage_tracking
             error_message: sourceErr?.message ?? null,
-          }).eq("id", execRecord?.id).catch(() => {})
+          }).eq("id", execRecord?.id)
         }
       }
 

@@ -186,8 +186,6 @@ export async function checkBrandCompliance(
     entityType: contentType,
     entityId:   contentId,
     metadata:   { passed, violations },
-  }).catch(() => {
-    // Non-blocking — compliance result is returned regardless of notification outcome
   })
 
   // ── Step 7: UPDATE content record ─────────────────────────────────────────

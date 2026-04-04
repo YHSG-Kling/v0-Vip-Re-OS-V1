@@ -70,11 +70,10 @@ export async function POST(req: NextRequest) {
     const contactId = checkInResult.contact_id
 
     // Update the attendee record with the resolved contact ID (in case kernel didn't already do it)
-    await supabase
+    void supabase
       .from("open_house_attendees")
       .update({ contact_id: contactId })
       .eq("id", attendeeId)
-      .catch(() => {}) // Already updated by kernel, this is just a safety measure
 
     return NextResponse.json({
       success: true,

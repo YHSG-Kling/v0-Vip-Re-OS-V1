@@ -72,7 +72,6 @@ export async function GET(req: NextRequest) {
             },
             { onConflict: "brokerage_id,snapshot_date" }
           )
-          .catch(() => {})
 
         processed++
       } catch (err: any) {
@@ -81,10 +80,9 @@ export async function GET(req: NextRequest) {
     }
   } catch (err: any) {
     errors.push(`Team heatmap snapshot failed: ${err.message}`)
-    await supabase
+    void supabase
       .from("automation_errors")
       .insert({ cron_job: "team-heatmap-snapshot", error_message: err.message, occurred_at: ranAt })
-      .catch(() => {})
     await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
   }
 

@@ -191,11 +191,10 @@ export async function createOrRepairUserDomainRecords(
       if (existingAgent) {
         agentId = existingAgent.id
         // Ensure brokerage matches (repair case)
-        await service
+        void service
           .from("agents")
           .update({ brokerage_id: brokerageId, ...(teamId ? { team_id: teamId } : {}) })
           .eq("id", agentId)
-          .catch(() => {})
       } else {
         // Create agents row — only real schema columns
         const { data: newAgent } = await service
@@ -230,7 +229,6 @@ export async function createOrRepairUserDomainRecords(
               structure_type: "standard",
               created_at:   new Date().toISOString(),
             })
-            .catch(() => {}) // Non-fatal: defaults can be set post-onboarding
 
           created.push("agent_commission_profiles")
         }

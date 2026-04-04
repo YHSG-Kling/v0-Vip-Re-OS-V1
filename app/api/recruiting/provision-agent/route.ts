@@ -82,9 +82,8 @@ export async function POST(req: Request) {
       )
       .select("id")
       .maybeSingle()
-      .catch(() => ({ data: null }))
 
-    const resolvedUserId = upsertedUser?.id ?? newUserId
+    const resolvedUserId = upsertedUser?.data?.id ?? newUserId
 
     // Create agents row
     let agentId: string | null = null
@@ -106,8 +105,7 @@ export async function POST(req: Request) {
         )
         .select("id")
         .maybeSingle()
-        .catch(() => ({ data: null }))
-      agentId = agentRow?.id ?? null
+      agentId = agentRow?.data?.id ?? null
 
       // Default commission profile
       if (agentId) {
