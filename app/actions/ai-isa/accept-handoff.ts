@@ -97,7 +97,7 @@ export async function acceptAIISAHandoff(params: {
 }
 
   // Notify the actor that handoff is complete
-  await supabase
+ try( await supabase
     .from('notifications')
     .insert({
       brokerage_id: lead.brokerage_id,
@@ -113,9 +113,10 @@ export async function acceptAIISAHandoff(params: {
     })
 } catch {
   // non-blocking notification write
-};
+}
 
   // Emit lifecycle event
+  try {
   await supabase
     .from('lifecycle_events')
     .insert({
@@ -126,7 +127,9 @@ export async function acceptAIISAHandoff(params: {
       metadata: { actorUserId: params.actorUserId, contactId, assignedAgentId },
       created_at: new Date().toISOString(),
     })
-    .catch(() => {})
+} catch {
+  // non-blocking notification write
+}
 
   return { success: true, contactId }
 }
