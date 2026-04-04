@@ -595,10 +595,17 @@ export async function generateListingDescription(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
-  const supabase = await createClient()
-  const startTime = Date.now()
-
   try {
+    // ── LAYER 0.1: Feature Access Gate ────────────────────────────────────────
+    const agentContext = await getAgentContext()
+    const featureCheck = await canAccessFeature(agentContext.userId, "ai_listing_generation")
+    if (!featureCheck.allowed) {
+      return { success: false, error: featureCheck.reason || "Feature access denied" }
+    }
+
+    const supabase = await createClient()
+    const startTime = Date.now()
+
     let propertyData = params.propertyDetails
     if (params.propertyId && isValidUUID(params.propertyId)) {
       const { data } = await supabase.from("listings").select("*").eq("id", params.propertyId).single()
@@ -612,9 +619,6 @@ export async function generateListingDescription(params: {
       .maybeSingle()
 
     const prompt = buildListingDescriptionPrompt(propertyData, params, brandVoice)
-
-    // Get agent context for AI routing
-    const agentContext = await getAgentContext()
 
     const response = await generateAIResponse({
       prompt,
@@ -656,6 +660,9 @@ export async function generateListingDescription(params: {
       success: true,
     })
 
+    // ── LAYER 0.1: Track usage after successful generation ──────────────────
+    await incrementFeatureUsage(agentContext.userId, "ai_listing_generation")
+
     revalidatePath("/dashboard/content")
     return { success: true, data: result, contentId: savedContent?.id }
   } catch (error) {
@@ -687,6 +694,13 @@ export async function generateSocialPost(params: {
   }
 
   try {
+    // ── LAYER 0.1: Feature Access Gate ────────────────────────────────────────
+    const agentContext = await getAgentContext()
+    const featureCheck = await canAccessFeature(agentContext.userId, "ai_social_content")
+    if (!featureCheck.allowed) {
+      return { success: false, error: featureCheck.reason || "Feature access denied" }
+    }
+
     // Use consolidated content generation service
     const result = await generateContent({
       agentId: params.agentId,
@@ -704,8 +718,11 @@ export async function generateSocialPost(params: {
       return { success: false, error: result.error || "Failed to generate social post" }
     }
 
+    // ── LAYER 0.1: Track usage after successful generation ──────────────────
+    await incrementFeatureUsage(agentContext.userId, "ai_social_content")
+
     revalidatePath("/dashboard/content/social")
-        return {
+    return {
       success: true,
       data: result.content,
       contentId: result.content?.id,
