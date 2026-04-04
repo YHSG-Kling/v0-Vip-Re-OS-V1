@@ -85,15 +85,16 @@ export async function acceptAIISAHandoff(params: {
   }
 
   // Mark lifecycle state and stamp handed_to_agent_at
+  try {
   await supabase
-    .from('leads')
-    .update({
-      lifecycle_state: 'converted',
-      ai_isa_owner: false,
-      handed_to_agent_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+    .from("notifications")
+    .insert({
+      // keep the same payload already in your file
+      created_at: new Date().toISOString(),
     })
-    .eq('id', lead.id)
+} catch {
+  // non-blocking notification write
+}
 
   // Notify the actor that handoff is complete
   await supabase
