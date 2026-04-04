@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { ZenrowsClient, BatchDataClient, PeopleDataClient } from "@/lib/external"
+import { ZenrowsClient, BatchDataClient, PeopleDataClient, ApifyClient } from "@/lib/external"
 import { processRawRecord } from "@/lib/lead-pipeline"
 import { createScrapingJob, updateScrapingJob } from "@/app/actions/lead-scraping-config"
 import {
@@ -66,6 +66,7 @@ export async function GET(request: Request) {
   const zenrows   = new ZenrowsClient()
   const batchdata = new BatchDataClient()
   const peopledata = new PeopleDataClient()
+  const apify     = new ApifyClient()
 
   const validation = {
     validateContact: async (params: { email?: string | null; phone?: string | null }) => {
