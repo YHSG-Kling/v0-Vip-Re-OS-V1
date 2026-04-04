@@ -1,5 +1,6 @@
 "use server"
-
+import { buildActorContext } from "@/lib/kernel/actor-context"
+import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
 import { isValidUUID } from "@/lib/validations"
 import {
   launchAIISACampaignService,
@@ -23,7 +24,42 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
  * AI Inside Sales Agent (ISA) System
  * Autonomous outbound calling with Vapi.ai for lead qualification and appointment booking
  */
-
+async function runAiIsaComplianceCheck(params: {
+  userId: string
+  brokerageId: string
+  journeyType?: "buyer" | "seller" | "marketing"
+  persona?: string
+  messageType: "email" | "sms" | "phone"
+  content: string
+  contactId: string
+  contactType?: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
+  status?: string
+  dncStatus?: boolean
+  tcpaConsent?: boolean
+  isaReengageAllowed?: boolean
+}) {
+  return evaluateKernelOutbound({
+    actorContext: buildActorContext({
+      userId: params.userId,
+      brokerageId: params.brokerageId,
+      role: "agent",
+    }),
+    journeyType: params.journeyType ?? "buyer",
+    persona: params.persona ?? "other",
+    messageType: params.messageType,
+    content: params.content,
+    contact: {
+      id: params.contactId,
+      first_name: "",
+      last_name: "",
+      contact_type: params.contactType ?? "buyer",
+      status: params.status ?? "new",
+      dnc_status: params.dncStatus ?? false,
+      tcpa_consent: params.tcpaConsent ?? true,
+      isa_reengage_allowed: params.isaReengageAllowed ?? false,
+    },
+  })
+}
 // Launch AI ISA campaign
 export async function launchAIISACampaign(params: {
   campaignType: string
@@ -241,25 +277,19 @@ export async function sendCampaignTestTouch(params: {
   // Compliance gate
   // Compliance gate
 // Compliance gate
-const compliance = await evaluateOutbound({
-  actorContext: buildActorContext({
-    brokerageId: params.brokerageId,
-    userId: user.id,
-    role: "agent",
-  }),
+const compliance = await runAiIsaComplianceCheck({
+  userId: user.id,
+  brokerageId: params.brokerageId,
   journeyType: "buyer",
   persona: "other",
   messageType: "email",
   content: `Test touch for campaign ${params.campaignId}`,
-  contact: {
-    id: params.campaignId,
-    first_name: "",
-    last_name: "",
-    contact_type: "buyer",
-    tcpa_consent: true,
-    isa_reengage_allowed: false,
-    dnc_status: false,
-  },
+  contactId: params.campaignId,
+  contactType: "buyer",
+  status: "new",
+  dncStatus: false,
+  tcpaConsent: true,
+  isaReengageAllowed: false,
 })
   if (!compliance.allowed) {
     return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
@@ -595,25 +625,19 @@ export async function triggerGhostRecovery(params: {
 
   // Step 1: Compliance gate — hard stop
   // Step 1: Compliance gate — hard stop
-const compliance = await evaluateOutbound({
-  actorContext: {
-    brokerageId: params.brokerageId,
-    userId: user.id,
-    role: "agent",
-  },
+const compliance = await runAiIsaComplianceCheck({
+  userId: user.id,
+  brokerageId: params.brokerageId,
   journeyType: "buyer",
   persona: "other",
   messageType: "email",
   content: "Ghost recovery outreach",
-  contact: {
-    id: params.contactId ?? "",
-    first_name: "",
-    last_name: "",
-    contact_type: "buyer",
-    tcpa_consent: true,
-    isa_reengage_allowed: true,
-    dnc_status: false,
-  },
+  contactId: params.contactId,
+  contactType: "buyer",
+  status: "new",
+  dncStatus: false,
+  tcpaConsent: true,
+  isaReengageAllowed: true,
 })
 
   // Step 2: Fetch contact for dispatch
@@ -703,23 +727,19 @@ export async function retryGhostContact(params: {
   // Compliance gate
   const agentContext = await getAgentContext()
 
-const compliance = await evaluateKernelOutbound({
-  actorContext: buildActorContext({
-    userId: user.id,
-    brokerageId: params.brokerageId,
-    role: agentContext.role,
-  }),
+const compliance = await runAiIsaComplianceCheck({
+  userId: user.id,
+  brokerageId: params.brokerageId,
   journeyType: "buyer",
   persona: "other",
-  messageType: "email",
-  content: `Test touch for campaign ${params.campaignId}`,
-  contact: {
-    id: params.campaignId,
-    status: "new",
-    dnc_status: false,
-    tcpa_consent: true,
-    isa_reengage_allowed: false,
-  },
+  messageType: params.channel === "sms" ? "sms" : params.channel === "phone" ? "phone" : "email",
+  content: "Ghost recovery retry outreach",
+  contactId: params.contactId,
+  contactType: "buyer",
+  status: "new",
+  dncStatus: false,
+  tcpaConsent: true,
+  isaReengageAllowed: true,
 })
   if (!compliance.allowed) {
     return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
