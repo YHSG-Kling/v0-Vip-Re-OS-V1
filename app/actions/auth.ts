@@ -1,155 +1,130 @@
 'use server'
 
-import { AUTH_MESSAGES } from '@/app/constants/auth'
 import { createClient } from '@/lib/supabase/server'
+import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { AUTH_MESSAGES } from '@/app/constants/auth'
 
-interface AuthFailure {
-  success: false
-  error: string
+type ActionError = {
+  message: string
   code?: string
 }
 
-interface AuthSuccess {
-  success: true
+type LoginResult =
+  | { success: true; user: { id: string; email: string | null }; role: string; brokerageId: string | null }
+  | { success: false; error: ActionError }
+
+type CallbackResult =
+  | { success: true; userId: string; email: string | null }
+  | { success: false; error: ActionError }
+
+type RegisterResult =
+  | { success: true; user: { id: string; email: string | null }; needsEmailConfirmation: boolean }
+  | { success: false; error: ActionError }
+
+function normalizeAuthError(error: unknown, fallbackMessage: string): ActionError {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const e = error as { message?: string; code?: string }
+    return {
+      message: e.message || fallbackMessage,
+      code: e.code,
+    }
+  }
+
+  return { message: fallbackMessage }
 }
 
-interface LoginSuccess extends AuthSuccess {
-  user: {
-    id: string
-    email: string | undefined
-  }
-  session: {
-    accessToken: string
-    refreshToken: string
-    expiresAt?: number
-  }
-}
-
-interface CallbackSuccess extends AuthSuccess {
-  userId: string
-  user: {
-    id: string
-    email: string | undefined
-  }
-}
-
-interface RegisterSuccess extends AuthSuccess {
-  user: {
-    id: string
-    email: string | undefined
-  } | null
-  session: {
-    accessToken: string
-    refreshToken: string
-    expiresAt?: number
-  } | null
-  emailConfirmationRequired: boolean
-}
-
-function mapAuthError(error: unknown, fallback: string): AuthFailure {
-  const message = error instanceof Error ? error.message : fallback
-  const lower = message.toLowerCase()
-
-  if (lower.includes('invalid login credentials')) {
-    return { success: false, error: AUTH_MESSAGES.INVALID_CREDENTIALS, code: 'invalid_credentials' }
-  }
-  if (lower.includes('email not confirmed')) {
-    return { success: false, error: 'Please confirm your email before signing in.', code: 'email_not_confirmed' }
-  }
-  if (lower.includes('user already registered')) {
-    return { success: false, error: AUTH_MESSAGES.EMAIL_EXISTS, code: 'email_exists' }
-  }
-  if (lower.includes('password')) {
-    return { success: false, error: message, code: 'invalid_password' }
-  }
-
-  return { success: false, error: message || fallback, code: 'auth_error' }
-}
-
-function requireEmail(email: string | undefined | null): string {
-  return email ?? ''
-}
-
-export async function loginUser(email: string, password: string): Promise<LoginSuccess | AuthFailure> {
+export async function loginUser(email: string, password: string): Promise<LoginResult> {
   try {
     const supabase = await createClient()
 
     const { data, error } = await supabase.auth.signInWithPassword({
-      email: email.trim().toLowerCase(),
+      email,
       password,
     })
 
     if (error) {
-      return mapAuthError(error, AUTH_MESSAGES.SIGN_IN_ERROR)
-    }
-
-    if (!data.user || !data.session) {
       return {
         success: false,
-        error: 'Login failed. No authenticated session was returned.',
-        code: 'missing_session',
+        error: normalizeAuthError(error, AUTH_MESSAGES.SIGN_IN_ERROR),
       }
-    }
-
-    return {
-      success: true,
-      user: {
-        id: data.user.id,
-        email: requireEmail(data.user.email),
-      },
-      session: {
-        accessToken: data.session.access_token,
-        refreshToken: data.session.refresh_token,
-        expiresAt: data.session.expires_at,
-      },
-    }
-  } catch (error) {
-    return mapAuthError(error, 'An unexpected error occurred during login.')
-  }
-}
-
-export async function handleAuthCallback(code: string): Promise<CallbackSuccess | AuthFailure> {
-  try {
-    const supabase = await createClient()
-    const { data, error } = await supabase.auth.exchangeCodeForSession(code)
-
-    if (error) {
-      return mapAuthError(error, 'Failed to handle auth callback.')
     }
 
     if (!data.user) {
       return {
         success: false,
-        error: 'No authenticated user returned from callback.',
-        code: 'missing_user',
+        error: { message: AUTH_MESSAGES.SIGN_IN_ERROR },
+      }
+    }
+
+    const ctx = await getAgentContext()
+
+    return {
+      success: true,
+      user: {
+        id: data.user.id,
+        email: data.user.email ?? null,
+      },
+      role: ctx.isAuthenticated ? ctx.userType : ((data.user.user_metadata?.user_type as string | undefined) ?? 'agent'),
+      brokerageId: ctx.isAuthenticated ? ctx.brokerageId : ((data.user.user_metadata?.brokerage_id as string | undefined) ?? null),
+    }
+  } catch (error) {
+    return {
+      success: false,
+      error: normalizeAuthError(error, 'An unexpected error occurred during login'),
+    }
+  }
+}
+
+export async function handleAuthCallback(code: string): Promise<CallbackResult> {
+  try {
+    const supabase = await createClient()
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code)
+
+    if (error) {
+      return {
+        success: false,
+        error: normalizeAuthError(error, 'Failed to exchange auth code for session'),
+      }
+    }
+
+    if (!data.user) {
+      return {
+        success: false,
+        error: { message: 'No authenticated user returned from callback', code: 'no_user' },
       }
     }
 
     return {
       success: true,
       userId: data.user.id,
-      user: {
-        id: data.user.id,
-        email: requireEmail(data.user.email),
-      },
+      email: data.user.email ?? null,
     }
   } catch (error) {
-    return mapAuthError(error, 'Failed to handle auth callback.')
+    return {
+      success: false,
+      error: normalizeAuthError(error, 'Failed to handle auth callback'),
+    }
   }
 }
 
-export async function signOut(): Promise<AuthSuccess | AuthFailure> {
+export async function signOut(): Promise<{ success: boolean; error?: ActionError }> {
   try {
     const supabase = await createClient()
     const { error } = await supabase.auth.signOut()
 
     if (error) {
-      return mapAuthError(error, AUTH_MESSAGES.SIGN_OUT_ERROR)
+      return {
+        success: false,
+        error: normalizeAuthError(error, AUTH_MESSAGES.SIGN_OUT_ERROR),
+      }
     }
 
     return { success: true }
   } catch (error) {
-    return mapAuthError(error, AUTH_MESSAGES.SIGN_OUT_ERROR)
+    return {
+      success: false,
+      error: normalizeAuthError(error, 'Failed to sign out'),
+    }
   }
 }
 
@@ -161,8 +136,8 @@ export async function getCurrentUser() {
       error,
     } = await supabase.auth.getUser()
 
-    if (error || !user) return null
-    return user
+    if (error) return null
+    return user ?? null
   } catch {
     return null
   }
@@ -173,43 +148,48 @@ export async function registerUser(
   password: string,
   firstName: string,
   lastName: string
-): Promise<RegisterSuccess | AuthFailure> {
+): Promise<RegisterResult> {
   try {
     const supabase = await createClient()
 
     const { data, error } = await supabase.auth.signUp({
-      email: email.trim().toLowerCase(),
+      email,
       password,
       options: {
         data: {
           first_name: firstName,
           last_name: lastName,
+          full_name: `${firstName} ${lastName}`.trim(),
         },
       },
     })
 
     if (error) {
-      return mapAuthError(error, AUTH_MESSAGES.SIGN_UP_ERROR)
+      return {
+        success: false,
+        error: normalizeAuthError(error, AUTH_MESSAGES.SIGN_UP_ERROR),
+      }
+    }
+
+    if (!data.user) {
+      return {
+        success: false,
+        error: { message: AUTH_MESSAGES.SIGN_UP_ERROR },
+      }
     }
 
     return {
       success: true,
-      user: data.user
-        ? {
-            id: data.user.id,
-            email: requireEmail(data.user.email),
-          }
-        : null,
-      session: data.session
-        ? {
-            accessToken: data.session.access_token,
-            refreshToken: data.session.refresh_token,
-            expiresAt: data.session.expires_at,
-          }
-        : null,
-      emailConfirmationRequired: !data.session,
+      user: {
+        id: data.user.id,
+        email: data.user.email ?? null,
+      },
+      needsEmailConfirmation: !data.session,
     }
   } catch (error) {
-    return mapAuthError(error, 'An unexpected error occurred during registration.')
+    return {
+      success: false,
+      error: normalizeAuthError(error, 'An unexpected error occurred during registration'),
+    }
   }
 }
