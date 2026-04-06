@@ -1,62 +1,62 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
-import { getAgentContext } from '@/lib/identity/get-agent-context'
-import { AUTH_MESSAGES } from '@/app/constants/auth'
 
-type ActionError = {
-  message: string
-  code?: string
+type AuthUserSummary = {
+  id: string
+  email: string | null
 }
 
-type LoginResult =
-  | { success: true; user: { id: string; email: string | null }; role: string; brokerageId: string | null }
-  | { success: false; error: ActionError }
+type AuthActionResult =
+  | { success: true; user: AuthUserSummary }
+  | { success: false; error: string }
 
-type CallbackResult =
-  | { success: true; userId: string; email: string | null }
-  | { success: false; error: ActionError }
-
-type RegisterResult =
-  | { success: true; user: { id: string; email: string | null }; needsEmailConfirmation: boolean }
-  | { success: false; error: ActionError }
-
-function normalizeAuthError(error: unknown, fallbackMessage: string): ActionError {
-  if (error && typeof error === 'object' && 'message' in error) {
-    const e = error as { message?: string; code?: string }
-    return {
-      message: e.message || fallbackMessage,
-      code: e.code,
+type RegisterActionResult =
+  | {
+      success: true
+      user: {
+        id: string
+        email: string | null
+      } | null
+      needsEmailConfirmation: boolean
     }
-  }
+  | { success: false; error: string }
 
-  return { message: fallbackMessage }
-}
+type CallbackActionResult =
+  | { success: true; userId: string; user: AuthUserSummary }
+  | {
+      success: false
+      error: {
+        code: string
+        message: string
+      }
+    }
 
-export async function loginUser(email: string, password: string): Promise<LoginResult> {
+export async function loginUser(
+  email: string,
+  password: string
+): Promise<AuthActionResult> {
   try {
     const supabase = await createClient()
 
     const { data, error } = await supabase.auth.signInWithPassword({
-      email,
+      email: email.trim(),
       password,
     })
 
     if (error) {
       return {
         success: false,
-        error: normalizeAuthError(error, AUTH_MESSAGES.SIGN_IN_ERROR),
+        error: error.message,
       }
     }
 
     if (!data.user) {
       return {
         success: false,
-        error: { message: AUTH_MESSAGES.SIGN_IN_ERROR },
+        error: 'Login failed. No user returned.',
       }
     }
-
-    const ctx = await getAgentContext()
 
     return {
       success: true,
@@ -64,50 +64,65 @@ export async function loginUser(email: string, password: string): Promise<LoginR
         id: data.user.id,
         email: data.user.email ?? null,
       },
-      role: ctx.isAuthenticated ? ctx.userType : ((data.user.user_metadata?.user_type as string | undefined) ?? 'agent'),
-      brokerageId: ctx.isAuthenticated ? ctx.brokerageId : ((data.user.user_metadata?.brokerage_id as string | undefined) ?? null),
     }
   } catch (error) {
+    console.error('[auth.loginUser] unexpected error:', error)
     return {
       success: false,
-      error: normalizeAuthError(error, 'An unexpected error occurred during login'),
+      error: 'An unexpected error occurred during login.',
     }
   }
 }
 
-export async function handleAuthCallback(code: string): Promise<CallbackResult> {
+export async function handleAuthCallback(
+  code: string
+): Promise<CallbackActionResult> {
   try {
     const supabase = await createClient()
+
     const { data, error } = await supabase.auth.exchangeCodeForSession(code)
 
     if (error) {
       return {
         success: false,
-        error: normalizeAuthError(error, 'Failed to exchange auth code for session'),
+        error: {
+          code: error.code ?? 'auth_callback_failed',
+          message: error.message,
+        },
       }
     }
 
     if (!data.user) {
       return {
         success: false,
-        error: { message: 'No authenticated user returned from callback', code: 'no_user' },
+        error: {
+          code: 'auth_callback_no_user',
+          message: 'No user was returned after exchanging the auth code.',
+        },
       }
     }
 
     return {
       success: true,
       userId: data.user.id,
-      email: data.user.email ?? null,
+      user: {
+        id: data.user.id,
+        email: data.user.email ?? null,
+      },
     }
   } catch (error) {
+    console.error('[auth.handleAuthCallback] unexpected error:', error)
     return {
       success: false,
-      error: normalizeAuthError(error, 'Failed to handle auth callback'),
+      error: {
+        code: 'auth_callback_unexpected',
+        message: 'Failed to handle auth callback.',
+      },
     }
   }
 }
 
-export async function signOut(): Promise<{ success: boolean; error?: ActionError }> {
+export async function signOut(): Promise<{ success: true } | { success: false; error: string }> {
   try {
     const supabase = await createClient()
     const { error } = await supabase.auth.signOut()
@@ -115,20 +130,21 @@ export async function signOut(): Promise<{ success: boolean; error?: ActionError
     if (error) {
       return {
         success: false,
-        error: normalizeAuthError(error, AUTH_MESSAGES.SIGN_OUT_ERROR),
+        error: error.message,
       }
     }
 
     return { success: true }
   } catch (error) {
+    console.error('[auth.signOut] unexpected error:', error)
     return {
       success: false,
-      error: normalizeAuthError(error, 'Failed to sign out'),
+      error: 'Failed to sign out.',
     }
   }
 }
 
-export async function getCurrentUser() {
+export async function getCurrentUser(): Promise<AuthUserSummary | null> {
   try {
     const supabase = await createClient()
     const {
@@ -136,9 +152,16 @@ export async function getCurrentUser() {
       error,
     } = await supabase.auth.getUser()
 
-    if (error) return null
-    return user ?? null
-  } catch {
+    if (error || !user) {
+      return null
+    }
+
+    return {
+      id: user.id,
+      email: user.email ?? null,
+    }
+  } catch (error) {
+    console.error('[auth.getCurrentUser] unexpected error:', error)
     return null
   }
 }
@@ -148,18 +171,17 @@ export async function registerUser(
   password: string,
   firstName: string,
   lastName: string
-): Promise<RegisterResult> {
+): Promise<RegisterActionResult> {
   try {
     const supabase = await createClient()
 
     const { data, error } = await supabase.auth.signUp({
-      email,
+      email: email.trim(),
       password,
       options: {
         data: {
-          first_name: firstName,
-          last_name: lastName,
-          full_name: `${firstName} ${lastName}`.trim(),
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
         },
       },
     })
@@ -167,29 +189,25 @@ export async function registerUser(
     if (error) {
       return {
         success: false,
-        error: normalizeAuthError(error, AUTH_MESSAGES.SIGN_UP_ERROR),
-      }
-    }
-
-    if (!data.user) {
-      return {
-        success: false,
-        error: { message: AUTH_MESSAGES.SIGN_UP_ERROR },
+        error: error.message,
       }
     }
 
     return {
       success: true,
-      user: {
-        id: data.user.id,
-        email: data.user.email ?? null,
-      },
+      user: data.user
+        ? {
+            id: data.user.id,
+            email: data.user.email ?? null,
+          }
+        : null,
       needsEmailConfirmation: !data.session,
     }
   } catch (error) {
+    console.error('[auth.registerUser] unexpected error:', error)
     return {
       success: false,
-      error: normalizeAuthError(error, 'An unexpected error occurred during registration'),
+      error: 'An unexpected error occurred during registration.',
     }
   }
 }
