@@ -1,58 +1,29 @@
-import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { LenderTransactionList } from "@/components/external-portal/lender-transaction-list"
+import { getAgentContext } from "@/lib/identity"
+import { toCanonicalRole } from "@/lib/security"
+import { createClient } from "@/lib/supabase/server"
 
-export const dynamic = 'force-dynamic'
-
-// Type matching LenderTransactionList Transaction interface
-interface Transaction {
-  id: string
-  property_address: string
-  stage: string
-  status: string
-  contract_price: number
-  contract_date: string
-  agent: { name: string; email: string; phone: string } | null
-  milestones: Array<{
-    id: string
-    milestone_name: string
-    status: string
-    milestone_date: string | null
-    completed_at: string | null
-  }>
-}
+export const dynamic = "force-dynamic"
 
 export default async function LenderTransactionsPage() {
+  // ── Kernel OS: identity resolution ──────────────────────────────────────
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect("/login")
+
+  // toCanonicalRole handles legacy "TC", "LENDER" etc.
+  const userRole = toCanonicalRole(ctx.userType)
+  if (userRole !== "lender") redirect("/")
+
   const supabase = await createClient()
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-
-  // Get lender's profile
-  const { data: profile } = await supabase
-    .from("users")
-    .select("id, role")
-    .eq("id", user.id)
-    .single()
-
-  if (profile?.role !== 'lender') {
-    redirect("/")
-  }
-
-  // Step 1: Get transaction IDs where this lender is assigned
-  const { data: teamAssignments, error: assignmentError } = await supabase
-    .from("deal_team_members")
+  // ── lender_portal_users: user_id, transaction_id, brokerage_id ──────────
+  const { data: lenderAssignments } = await supabase
+    .from("lender_portal_users")
     .select("transaction_id")
-    .eq("user_id", user.id)
-    .eq("member_type", "lender")
+    .eq("user_id", ctx.userId)
 
-  if (assignmentError) {
-    console.error("[v0] Error fetching lender assignments:", assignmentError)
-    redirect("/")
-  }
-
-  // Step 2: If no assignments, show empty state
-  if (!teamAssignments || teamAssignments.length === 0) {
+  if (!lenderAssignments || lenderAssignments.length === 0) {
     return (
       <div className="container mx-auto p-6">
         <div className="mb-6">
@@ -61,7 +32,6 @@ export default async function LenderTransactionsPage() {
             Update financing milestones and upload documents
           </p>
         </div>
-
         <div className="text-center py-12">
           <p className="text-muted-foreground">No transactions assigned yet.</p>
         </div>
@@ -69,9 +39,11 @@ export default async function LenderTransactionsPage() {
     )
   }
 
-  // Step 3: Get the actual transaction data for assigned transaction IDs
-  const transactionIds = teamAssignments.map((a: any) => a.transaction_id)
-  const { data: transactionsData, error: txnError } = await supabase
+  const transactionIds = lenderAssignments
+    .map((a: any) => a.transaction_id)
+    .filter(Boolean)
+
+  const { data: transactionsData } = await supabase
     .from("transactions")
     .select(`
       id,
@@ -92,25 +64,16 @@ export default async function LenderTransactionsPage() {
     .in("id", transactionIds)
     .in("status", ["under_contract", "closing"])
 
-  if (txnError) {
-    console.error("[v0] Error fetching transactions:", txnError)
-    return (
-      <div className="container mx-auto p-6">
-        <p className="text-red-500">Error loading transactions. Please try again.</p>
-      </div>
-    )
-  }
-
-  // Step 4: Map transactions to proper type - handle nested transaction_milestones
-  const transactions: Transaction[] = (transactionsData || []).map((txn: any) => ({
+  // Map to LenderTransactionList shape — purchase_price → contract_price
+  const transactions = (transactionsData ?? []).map((txn: any) => ({
     id: txn.id,
-    property_address: txn.property_address,
-    stage: txn.stage,
-    status: txn.status,
-    contract_price: txn.purchase_price || 0,
-    contract_date: txn.contract_date,
-    agent: null, // No agent data for lender view
-    milestones: (txn.transaction_milestones || []).map((m: any) => ({
+    property_address: txn.property_address ?? "",
+    stage: txn.stage ?? "",
+    status: txn.status ?? "",
+    contract_price: txn.purchase_price ?? 0,
+    contract_date: txn.contract_date ?? "",
+    agent: null, // not exposed in lender view
+    milestones: (txn.transaction_milestones ?? []).map((m: any) => ({
       id: m.id,
       milestone_name: m.milestone_name,
       status: m.status,
@@ -128,9 +91,9 @@ export default async function LenderTransactionsPage() {
         </p>
       </div>
 
-      <LenderTransactionList 
+      <LenderTransactionList
         transactions={transactions}
-        lenderId={user.id}
+        lenderId={ctx.userId}
       />
     </div>
   )
