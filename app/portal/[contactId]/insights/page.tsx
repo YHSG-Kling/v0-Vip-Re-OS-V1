@@ -1,24 +1,36 @@
-import { createClient } from "@/lib/supabase/server"
 import { notFound } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { TrendingUp, TrendingDown, DollarSign, Home, Clock, Target, BarChart3, PieChart } from "lucide-react"
+import {
+  TrendingUp, TrendingDown, DollarSign, Home,
+  Clock, Target, BarChart3, PieChart,
+} from "lucide-react"
+import { createClient } from "@/lib/supabase/server"
 
-export default async function InsightsPage({ params }: { params: { contactId: string } }) {
+export default async function InsightsPage({
+  params,
+}: {
+  params: Promise<{ contactId: string }>
+}) {
+  // ── Async params — Next.js 15+ requirement ───────────────────────────────
   const { contactId } = await params
+
   const supabase = await createClient()
 
-  const { data: contact } = await supabase.from("contacts").select("*").eq("id", contactId).single()
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("id", contactId)
+    .single()
 
-  if (!contact) {
-    notFound()
-  }
+  if (!contact) notFound()
 
-  const isBuyer = contact.contact_type === "buyer" || contact.contact_persona?.includes("buyer")
+  const isBuyer =
+    contact.contact_type === "buyer" ||
+    contact.contact_persona?.includes("buyer")
   const isInvestor = contact.contact_persona === "investor"
 
-  // Demo market data
   const marketData = {
     medianPrice: 425000,
     priceChange: 3.2,
@@ -29,7 +41,6 @@ export default async function InsightsPage({ params }: { params: { contactId: st
     listToSaleRatio: 98.5,
   }
 
-  // Demo investment metrics (for investors)
   const investmentMetrics = {
     portfolioValue: 2450000,
     totalUnits: 12,
@@ -51,7 +62,6 @@ export default async function InsightsPage({ params }: { params: { contactId: st
         </p>
       </div>
 
-      {/* Market Overview */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -59,9 +69,13 @@ export default async function InsightsPage({ params }: { params: { contactId: st
             <DollarSign className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">${marketData.medianPrice.toLocaleString()}</div>
+            <div className="text-2xl font-bold">
+              ${marketData.medianPrice.toLocaleString()}
+            </div>
             <div
-              className={`flex items-center text-xs ${marketData.priceChange >= 0 ? "text-green-600" : "text-red-600"}`}
+              className={`flex items-center text-xs ${
+                marketData.priceChange >= 0 ? "text-green-600" : "text-red-600"
+              }`}
             >
               {marketData.priceChange >= 0 ? (
                 <TrendingUp className="w-3 h-3 mr-1" />
@@ -82,7 +96,9 @@ export default async function InsightsPage({ params }: { params: { contactId: st
           <CardContent>
             <div className="text-2xl font-bold">{marketData.daysOnMarket}</div>
             <div
-              className={`flex items-center text-xs ${marketData.domChange <= 0 ? "text-green-600" : "text-red-600"}`}
+              className={`flex items-center text-xs ${
+                marketData.domChange <= 0 ? "text-green-600" : "text-red-600"
+              }`}
             >
               {marketData.domChange <= 0 ? (
                 <TrendingDown className="w-3 h-3 mr-1" />
@@ -100,9 +116,13 @@ export default async function InsightsPage({ params }: { params: { contactId: st
             <Home className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{marketData.inventory.toLocaleString()}</div>
+            <div className="text-2xl font-bold">
+              {marketData.inventory.toLocaleString()}
+            </div>
             <div
-              className={`flex items-center text-xs ${marketData.inventoryChange >= 0 ? "text-green-600" : "text-red-600"}`}
+              className={`flex items-center text-xs ${
+                marketData.inventoryChange >= 0 ? "text-green-600" : "text-red-600"
+              }`}
             >
               {marketData.inventoryChange >= 0 ? (
                 <TrendingUp className="w-3 h-3 mr-1" />
@@ -121,13 +141,16 @@ export default async function InsightsPage({ params }: { params: { contactId: st
             <Target className="w-4 h-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{marketData.listToSaleRatio}%</div>
-            <div className="text-xs text-muted-foreground">Sellers getting {marketData.listToSaleRatio}% of asking</div>
+            <div className="text-2xl font-bold">
+              {marketData.listToSaleRatio}%
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Sellers getting {marketData.listToSaleRatio}% of asking
+            </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Investor Portfolio (if investor) */}
       {isInvestor && (
         <Card>
           <CardHeader>
@@ -141,7 +164,9 @@ export default async function InsightsPage({ params }: { params: { contactId: st
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
               <div>
                 <p className="text-sm text-muted-foreground">Total Portfolio Value</p>
-                <p className="text-2xl font-bold">${(investmentMetrics.portfolioValue / 1000000).toFixed(2)}M</p>
+                <p className="text-2xl font-bold">
+                  ${(investmentMetrics.portfolioValue / 1000000).toFixed(2)}M
+                </p>
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Total Units</p>
@@ -152,15 +177,18 @@ export default async function InsightsPage({ params }: { params: { contactId: st
                 <p className="text-2xl font-bold">{investmentMetrics.avgCapRate}%</p>
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Cash-on-Cash Return</p>
-                <p className="text-2xl font-bold text-green-600">{investmentMetrics.avgCashOnCash}%</p>
+                <p className="text-sm text-muted-foreground">Cash-on-Cash</p>
+                <p className="text-2xl font-bold text-green-600">
+                  {investmentMetrics.avgCashOnCash}%
+                </p>
               </div>
             </div>
-
             <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="p-4 bg-muted/50 rounded-lg">
                 <p className="text-sm text-muted-foreground">Monthly Rental Income</p>
-                <p className="text-xl font-bold">${investmentMetrics.monthlyIncome.toLocaleString()}</p>
+                <p className="text-xl font-bold">
+                  ${investmentMetrics.monthlyIncome.toLocaleString()}
+                </p>
               </div>
               <div className="p-4 bg-muted/50 rounded-lg">
                 <p className="text-sm text-muted-foreground">Occupancy Rate</p>
@@ -171,14 +199,15 @@ export default async function InsightsPage({ params }: { params: { contactId: st
               </div>
               <div className="p-4 bg-muted/50 rounded-lg">
                 <p className="text-sm text-muted-foreground">YoY Appreciation</p>
-                <p className="text-xl font-bold text-green-600">+{investmentMetrics.appreciation}%</p>
+                <p className="text-xl font-bold text-green-600">
+                  +{investmentMetrics.appreciation}%
+                </p>
               </div>
             </div>
           </CardContent>
         </Card>
       )}
 
-      {/* Market Trends */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -189,48 +218,34 @@ export default async function InsightsPage({ params }: { params: { contactId: st
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            <div>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm">Buyer Demand</span>
-                <span className="text-sm font-medium">High</span>
+            {[
+              { label: "Buyer Demand", value: 78, level: "High" },
+              { label: "Seller Activity", value: 55, level: "Moderate" },
+              { label: "Price Stability", value: 85, level: "Strong" },
+              { label: "Interest Rate Impact", value: 45, level: "Moderate" },
+            ].map((item) => (
+              <div key={item.label}>
+                <div className="flex justify-between mb-1">
+                  <span className="text-sm">{item.label}</span>
+                  <span className="text-sm font-medium">{item.level}</span>
+                </div>
+                <Progress value={item.value} className="h-2" />
               </div>
-              <Progress value={78} className="h-2" />
-            </div>
-            <div>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm">Seller Activity</span>
-                <span className="text-sm font-medium">Moderate</span>
-              </div>
-              <Progress value={55} className="h-2" />
-            </div>
-            <div>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm">Price Stability</span>
-                <span className="text-sm font-medium">Strong</span>
-              </div>
-              <Progress value={85} className="h-2" />
-            </div>
-            <div>
-              <div className="flex justify-between mb-1">
-                <span className="text-sm">Interest Rate Impact</span>
-                <span className="text-sm font-medium">Moderate</span>
-              </div>
-              <Progress value={45} className="h-2" />
-            </div>
+            ))}
           </div>
-
           <div className="mt-6 p-4 bg-blue-50 dark:bg-blue-950 rounded-lg">
-            <h4 className="font-medium text-blue-900 dark:text-blue-100">Market Summary</h4>
+            <h4 className="font-medium text-blue-900 dark:text-blue-100">
+              Market Summary
+            </h4>
             <p className="text-sm text-blue-800 dark:text-blue-200 mt-1">
               {isBuyer
-                ? "The current market favors prepared buyers. With inventory increasing and days on market slightly decreasing, now is a good time to make competitive offers on well-priced homes."
-                : "Sellers are seeing strong results with homes selling at 98.5% of list price on average. Proper pricing and presentation remain key to a quick sale."}
+                ? "The current market favors prepared buyers. Inventory is increasing and well-priced homes are moving quickly — get pre-approved now to stay competitive."
+                : "Sellers are seeing strong results with homes selling at 98.5% of list price. Proper pricing and presentation remain key to a quick sale."}
             </p>
           </div>
         </CardContent>
       </Card>
 
-      {/* Personalized Recommendations */}
       <Card>
         <CardHeader>
           <CardTitle>Personalized Recommendations</CardTitle>
@@ -243,20 +258,19 @@ export default async function InsightsPage({ params }: { params: { contactId: st
                 <div className="flex items-start gap-3 p-3 bg-green-50 dark:bg-green-950 rounded-lg">
                   <Badge className="bg-green-600">Tip</Badge>
                   <p className="text-sm">
-                    Consider getting pre-approved now to strengthen your position when making offers.
+                    Get pre-approved now to strengthen your offers.
                   </p>
                 </div>
                 <div className="flex items-start gap-3 p-3 bg-blue-50 dark:bg-blue-950 rounded-lg">
                   <Badge className="bg-blue-600">Insight</Badge>
                   <p className="text-sm">
-                    Homes in your price range are selling within 3 weeks. Be ready to act quickly on properties you
-                    love.
+                    Homes in your range are selling within 3 weeks — be ready to act quickly.
                   </p>
                 </div>
                 <div className="flex items-start gap-3 p-3 bg-amber-50 dark:bg-amber-950 rounded-lg">
                   <Badge className="bg-amber-600">Alert</Badge>
                   <p className="text-sm">
-                    New listings matching your criteria are posted most frequently on Thursday and Friday.
+                    New listings in your criteria post most frequently Thursday and Friday.
                   </p>
                 </div>
               </>
@@ -265,13 +279,13 @@ export default async function InsightsPage({ params }: { params: { contactId: st
                 <div className="flex items-start gap-3 p-3 bg-green-50 dark:bg-green-950 rounded-lg">
                   <Badge className="bg-green-600">Tip</Badge>
                   <p className="text-sm">
-                    Spring market is approaching - consider listing soon to capture peak buyer activity.
+                    Spring market is approaching — list soon to capture peak buyer activity.
                   </p>
                 </div>
                 <div className="flex items-start gap-3 p-3 bg-blue-50 dark:bg-blue-950 rounded-lg">
                   <Badge className="bg-blue-600">Insight</Badge>
                   <p className="text-sm">
-                    Homes with professional photos receive 61% more views. Schedule a photo session before listing.
+                    Homes with professional photos receive 61% more views.
                   </p>
                 </div>
               </>
