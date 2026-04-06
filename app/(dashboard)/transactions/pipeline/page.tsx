@@ -1,4 +1,3 @@
-import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { TransactionPipelineView } from "@/components/transactions/pipeline-view"
 import { getAgentContext } from "@/lib/identity"
