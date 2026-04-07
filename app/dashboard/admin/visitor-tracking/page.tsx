@@ -56,7 +56,7 @@ export default function VisitorTrackingPage() {
         return
       }
 
-      setProfile(prof as Profile)
+      setProfile({ ...prof, brokerage_id: prof.brokerage_id ?? '' } as Profile)
 
       const { data: rows, error: fetchErr } = await supabase
         .from('website_visitors')
