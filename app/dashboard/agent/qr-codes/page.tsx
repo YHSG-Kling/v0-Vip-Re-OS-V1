@@ -1,34 +1,31 @@
 import { notFound } from 'next/navigation'
+import { getAgentContext } from '@/lib/identity'
+import { toCanonicalRoleOrDefault } from '@/lib/security'
 import { createClient } from '@/lib/supabase/server'
 import QRCodesClient from './QRCodesClient'
 
 export default async function AgentQRCodesPage() {
+  // Kernel OS: getAgentContext — canonical identity
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) notFound()
+
+  const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
+  if (!['agent', 'admin', 'broker', 'superadmin'].includes(userRole)) notFound()
+  if (!ctx.brokerageId) notFound()
+
   const supabase = await createClient()
-
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) notFound()
-
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('brokerage_id, user_type')
-    .eq('user_id', user.id)
-    .single()
-
-  if (!profile || !['agent', 'admin', 'broker'].includes(profile.user_type ?? '')) {
-    notFound()
-  }
 
   const { data: qrCodes } = await supabase
     .from('qr_codes')
     .select('id, slug, label, purpose, scan_count, lead_count, is_active, created_at')
-    .eq('agent_user_id', user.id)
+    .eq('agent_user_id', ctx.userId)
     .order('created_at', { ascending: false })
 
   return (
     <QRCodesClient
       qrCodes={qrCodes ?? []}
-      agentUserId={user.id}
-      brokerageId={profile.brokerage_id}
+      agentUserId={ctx.userId}
+      brokerageId={ctx.brokerageId}
     />
   )
 }
