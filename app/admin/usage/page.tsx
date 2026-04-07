@@ -40,6 +40,8 @@ export default async function UsageMeteringDashboard() {
   if (!profile || !["broker", "admin", "superadmin"].includes(profile.user_type ?? "")) {
     redirect("/dashboard")
   }
+  // Kernel guard: brokerage_id must be present for all dashboard queries
+  if (!profile.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = profile.brokerage_id
   const now = new Date()
