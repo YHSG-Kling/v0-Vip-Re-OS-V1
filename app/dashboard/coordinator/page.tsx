@@ -4,6 +4,8 @@ import { Progress } from "@/components/ui/progress"
 import { Button } from "@/components/ui/button"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { getAgentContext } from "@/lib/identity"
+import { toCanonicalRoleOrDefault } from "@/lib/security"
 import { CoordinatorTransactionList } from "@/app/components/features/dashboard/coordinator/transaction-list"
 import { DeadlineTracking } from "@/app/components/features/dashboard/coordinator/deadline-tracking"
 import { MilestoneQueue } from "@/app/components/features/dashboard/coordinator/milestone-queue"
@@ -28,15 +30,15 @@ export default async function CoordinatorDashboard({
   searchParams: Promise<{ coordinatorId?: string }>
 }) {
   const params = await searchParams
+  // Kernel OS: getAgentContext — canonical identity, one DB call
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect("/login")
+
+  const userRole = toCanonicalRoleOrDefault(ctx.userType, "agent")
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) redirect("/login")
-
-  // Get user data to check brokerage
-  const { data: userData } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
+  // Provide compat alias for downstream code expecting userData shape
+  const userData = { brokerage_id: ctx.brokerageId, user_type: ctx.userType }
+  const user = { id: ctx.userId }
 
   // Get coordinator ID from params or lookup by user
   let coordinatorId = params.coordinatorId
