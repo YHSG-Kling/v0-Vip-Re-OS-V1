@@ -33,7 +33,7 @@ export default async function ISACalendarPage() {
     .eq("id", user.id)
     .single()
 
-  if (!profile) {
+  if (!profile || !profile.brokerage_id) {
     redirect("/dashboard/onboarding")
   }
 
