@@ -7,6 +7,7 @@
 // No direct DB calls here. Every mutation goes through the kernel.
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity"
 import { redirect } from "next/navigation"
 import {
   createVendorRecord,
@@ -26,19 +27,12 @@ import {
 // ─── INTERNAL: resolve actor context ─────────────────────────────────────────
 
 async function resolveActor(): Promise<{ userId: string; brokerageId: string }> {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("id, brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
-
-  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
-
-  return { userId: user.id, brokerageId: profile.brokerage_id }
+  // Kernel OS: getAgentContext — canonical identity, fully typed, never raw auth
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect("/login")
+  if (!ctx.brokerageId) redirect("/dashboard/onboarding")
+  // After redirect guards, TypeScript knows brokerageId is non-null
+  return { userId: ctx.userId, brokerageId: ctx.brokerageId }
 }
 
 // ─── ACTION: createVendorRecordAction ────────────────────────────────────────
