@@ -46,6 +46,9 @@ export enum KernelEvent {
   OFFER_ACCEPTED                            = 'offer_accepted',
   OFFER_REJECTED                            = 'offer_rejected',
   OPEN_HOUSE_SCHEDULED                      = 'open_house_scheduled',
+  OPEN_HOUSE_CONTACT_RESOLVED               = 'open_house_contact_resolved',
+  OPEN_HOUSE_ATTENDEE_CREATED               = 'open_house_attendee_created',
+  OPEN_HOUSE_FOLLOW_UP_QUEUED               = 'open_house_follow_up_queued',
   CMA_GENERATED                             = 'cma_generated',
   PRICE_ALERT_TRIGGERED                     = 'price_alert_triggered',
   BRAND_COMPLIANCE_PASSED                   = 'brand_compliance_passed',
@@ -120,6 +123,10 @@ export enum KernelEvent {
   ISA_MAX_TOUCHES_REACHED        = 'isa_max_touches_reached',
   ISA_APPOINTMENT_SCHEDULED      = 'isa_appointment_scheduled',
   ISA_OUTREACH_PAUSED            = 'isa_outreach_paused',
+
+  // ── Opt-Out & Suppression ────────────────────────────────────────────────
+  CONTACT_DNC_SET                = 'contact_dnc_set',
+  CONTACT_CHANNEL_OPT_OUT        = 'contact_channel_opt_out',
 
   // ── Consent & TCPA ──────────────────────────���────────────────────────────
   CONSENT_RECEIVED               = 'consent_received',
@@ -234,7 +241,7 @@ export enum KernelEvent {
   VIDEO_HIGH_PERFORMER_DETECTED  = 'video_high_performer_detected',
   VIDEO_LOW_PERFORMER_DETECTED   = 'video_low_performer_detected',
 
-  // ── Layer 9 — Marketing & Automation ────────────────────────────────────
+  // ── Layer 9 — Marketing & Automation ──────��─────────────────────────────
   MARKETING_CAMPAIGN_CREATED         = 'marketing_campaign_created',
   MARKETING_CAMPAIGN_APPROVED        = 'marketing_campaign_approved',
   MARKETING_CAMPAIGN_LAUNCHED        = 'marketing_campaign_launched',
@@ -263,9 +270,11 @@ export enum KernelEvent {
   BLOG_POST_GENERATED                = 'blog_post_generated',
   BLOG_POST_PUBLISHED                = 'blog_post_published',
 
-  // ── Layer 9.7 — Newsletter ───────────────────────────────────────────────
+  // ── Layer 9.7 — Newsletter / Email Campaigns ─────────────────────────────
   NEWSLETTER_SCHEDULED               = 'newsletter_scheduled',
   NEWSLETTER_SENT                    = 'newsletter_sent',
+  EMAIL_CAMPAIGN_CREATED             = 'email_campaign_created',
+  EMAIL_CAMPAIGN_SENT                = 'email_campaign_sent',
 
   // ── Layer 9.8 — Podcast ──────────────────────────────────────────────────
   PODCAST_EPISODE_GENERATED          = 'podcast_episode_generated',
@@ -372,6 +381,17 @@ export enum KernelEvent {
   RECRUITING_ROI_CALCULATED          = 'recruiting_roi_calculated',
   GAMIFICATION_BADGE_AWARDED         = 'gamification_badge_awarded',
 
+  // ── Financial Kernel Manager (lib/kernel/financial.ts) ────────────────────────
+  COMMISSION_APPROVED                = 'commission_approved',
+  COMMISSION_STATE_RECALCULATED      = 'commission_state_recalculated',
+  EXPENSE_CREATED                    = 'expense_created',
+  EXPENSE_DELETED                    = 'expense_deleted',
+
+  // ── Cron Execution Logging Kernel (lib/kernel/cron-logging.ts) ─────────────────
+  CRON_STARTED                       = 'cron_started',
+  CRON_COMPLETED_SUCCESS             = 'cron_completed_success',
+  CRON_FAILED                        = 'cron_failed',
+
   // ── Layer 7 — Lifetime Customer & Referrals ─────────────────────────────────
   PAST_CLIENT_TOUCHPOINT_SENT        = 'past_client_touchpoint_sent',
   ANNIVERSARY_TRIGGERED              = 'anniversary_triggered',
@@ -398,11 +418,31 @@ export enum KernelEvent {
   HOME_VALUE_ESTIMATE_REQUESTED      = 'home_value_estimate_requested',
   HOME_VALUE_CONTACT_CREATED         = 'home_value_contact_created',
 
+  // ── Reporting OS (lib/kernel/reporting.ts) ──────────────────────────────────
+  REPORT_GENERATED                   = 'report_generated',
+  REPORT_EXPORTED_CSV                = 'report_exported_csv',
+  REPORT_EXPORTED_PDF                = 'report_exported_pdf',
+  REPORT_EMAILED                     = 'report_emailed',
+  REPORT_VIEWED                      = 'report_viewed',
+
+  // ── Reputation / Reviews / Referrals (lib/kernel/reputation.ts) ────────────
+  REVIEW_REQUEST_SENT                = 'review_request_sent',
+  REVIEW_RECEIVED                    = 'review_received',
+  REVIEW_RESPONSE_PUBLISHED          = 'review_response_published',
+  REFERRAL_CREATED                   = 'referral_created',
+  REFERRAL_ADVANCED                  = 'referral_advanced',
+  REFERRAL_CONVERTED                 = 'referral_converted',
+
   // ── Vendor Marketplace ──────────────────────────────────────────────────────
   VENDOR_BOOKING_CREATED             = 'vendor_booking_created',
   VENDOR_BOOKING_COMPLETED           = 'vendor_booking_completed',
   VENDOR_REVIEW_SUBMITTED            = 'vendor_review_submitted',
   VENDOR_ASSIGNED_TO_TRANSACTION     = 'vendor_assigned_to_transaction',
+  // Kernel-owned vendor commands (lib/kernel/vendors.ts)
+  VENDOR_RECORD_CREATED              = 'vendor_record_created',
+  VENDOR_RECORD_UPDATED              = 'vendor_record_updated',
+  VENDOR_ASSIGNED_TO_LISTING         = 'vendor_assigned_to_listing',
+  VENDOR_DELIVERABLE_ATTACHED        = 'vendor_deliverable_attached',
 
   // ── Layer 13 — Voice ────────────────────────────────────────────────────────
   VOICE_COMMAND_RECEIVED             = 'voice_command_received',
@@ -428,4 +468,92 @@ export enum KernelEvent {
   MESSAGE_CREATED                    = 'message_created',
   SYSTEM_SYNC_TRIGGERED              = 'system_sync_triggered',
   SYSTEM_SYNC_COMPLETED              = 'system_sync_completed',
+
+  // ── Raw Lead Scraping / Acquisition Pipeline OS ─────────────────────────
+  // Emitted by lib/kernel/scraping.ts and app/api/cron/lead-scraping/route.ts.
+  // Rule: AI ISA events (ISA_QUALIFICATION_STARTED etc.) are NEVER emitted
+  //       for raw records. They fire only after RAW_RECORD_PROMOTED.
+  SCRAPE_SOURCE_RUN_STARTED          = 'scrape_source_run_started',
+  SCRAPE_SOURCE_RUN_COMPLETED        = 'scrape_source_run_completed',
+  SCRAPE_SOURCE_RUN_FAILED           = 'scrape_source_run_failed',
+  SCRAPE_BATCH_RETRIED               = 'scrape_batch_retried',
+  RAW_RECORD_CREATED                 = 'raw_record_created',
+  RAW_RECORD_TERRITORY_GATED         = 'raw_record_territory_gated',
+  RAW_RECORD_IDENTITY_GATED          = 'raw_record_identity_gated',
+  RAW_RECORD_DEDUPLICATED            = 'raw_record_deduplicated',
+  RAW_RECORD_ENRICHED                = 'raw_record_enriched',
+  RAW_RECORD_VIABILITY_GATED         = 'raw_record_viability_gated',
+  RAW_RECORD_PROMOTED                = 'raw_record_promoted',
+  RAW_RECORD_FAILED                  = 'raw_record_failed',
+  RAW_RECORD_MERGED                  = 'raw_record_merged',
+  SCRAPING_BUDGET_EXHAUSTED          = 'scraping_budget_exhausted',
+  SCRAPING_CRON_STARTED              = 'scraping_cron_started',
+  SCRAPING_CRON_COMPLETED            = 'scraping_cron_completed',
+  SCRAPING_CRON_FAILED               = 'scraping_cron_failed',
+
+  // ── CRM / Contact OS ────────────────────────────────────────────────────
+  // Emitted by lib/kernel/crm.ts and app/actions/contacts.ts.
+  // Downstream: notification rules, automation triggers, audit log.
+  CONTACT_CREATED                    = 'contact_created',
+  CONTACT_UPDATED                    = 'contact_updated',
+  CONTACT_ARCHIVED                   = 'contact_archived',
+  CONTACT_MERGED                     = 'contact_merged',
+  CONTACT_DEDUP_MATCH_FOUND          = 'contact_dedup_match_found',
+  CONTACT_ENRICHMENT_QUEUED          = 'contact_enrichment_queued',
+  CONTACT_ENRICHED                   = 'contact_enriched',
+  CONTACT_SUPPRESSION_APPLIED        = 'contact_suppression_applied',
+  CONTACT_SUPPRESSION_CLEARED        = 'contact_suppression_cleared',
+  CONTACT_SOURCE_ATTRIBUTION_SET     = 'contact_source_attribution_set',
+  CONTACT_LEAD_CONVERTED             = 'contact_lead_converted',
+  CONTACT_AGENT_ASSIGNED             = 'contact_agent_assigned',
+  CONTACT_AGENT_NOTIFIED             = 'contact_agent_notified',
+  CONTACT_FOLLOWUP_DRAFT_GENERATED   = 'contact_followup_draft_generated',
+
+  // ── User Provisioning & Onboarding OS ──────────────────────────────────
+  // These events are emitted by lib/kernel/users.ts and lib/kernel/onboarding.ts.
+  // Downstream: dashboard routing, notification rules, automation triggers.
+  USER_INVITED                       = 'user_invited',
+  USER_PROVISIONED                   = 'user_provisioned',
+  USER_DOMAIN_RECORDS_CREATED        = 'user_domain_records_created',
+  USER_DOMAIN_RECORDS_REPAIRED       = 'user_domain_records_repaired',
+  USER_ROLE_ASSIGNED                 = 'user_role_assigned',
+  USER_ROLE_CHANGED                  = 'user_role_changed',
+  USER_BROKERAGE_ASSIGNED            = 'user_brokerage_assigned',
+  USER_TEAM_ASSIGNED                 = 'user_team_assigned',
+  USER_ONBOARDING_STARTED            = 'user_onboarding_started',
+  USER_ONBOARDING_STEP_COMPLETED     = 'user_onboarding_step_completed',
+  USER_ONBOARDING_COMPLETED          = 'user_onboarding_completed',
+  USER_ONBOARDING_STALLED            = 'user_onboarding_stalled',
+  USER_ACCOUNT_INCOMPLETE            = 'user_account_incomplete',
+  USER_ACCOUNT_REPAIRED              = 'user_account_repaired',
+  USER_FIRST_LOGIN                   = 'user_first_login',
+  USER_INVITATION_ACCEPTED           = 'user_invitation_accepted',
+  USER_DEACTIVATED                   = 'user_deactivated',
+  USER_REACTIVATED                   = 'user_reactivated',
+
+  // ── Offer OS (lib/kernel/offers.ts) ─────────────────────────────────────────
+  // Buyer-side: offer creation, esign, outcome.
+  // Seller-side: analysis, comparison, counter, accept/reject.
+  // Counter history is stored in offers table via parent_offer_id + offer_type='counter'.
+  OFFER_OS_DRAFT_STARTED             = 'offer_os_draft_started',
+  OFFER_OS_CREATED                   = 'offer_os_created',
+  OFFER_OS_SENT_FOR_ESIGN            = 'offer_os_sent_for_esign',
+  OFFER_OS_ESIGN_COMPLETED           = 'offer_os_esign_completed',
+  OFFER_OS_SUBMITTED                 = 'offer_os_submitted',
+  OFFER_OS_AI_ANALYZED               = 'offer_os_ai_analyzed',
+  OFFER_OS_AI_COMPARED               = 'offer_os_ai_compared',
+  OFFER_OS_COUNTERED                 = 'offer_os_countered',
+  OFFER_OS_COUNTER_RESPONDED         = 'offer_os_counter_responded',
+  OFFER_OS_ACCEPTED                  = 'offer_os_accepted',
+  OFFER_OS_REJECTED                  = 'offer_os_rejected',
+  OFFER_OS_WITHDRAWN                 = 'offer_os_withdrawn',
+  OFFER_OS_OUTCOME_RECORDED          = 'offer_os_outcome_recorded',
+
+  // ── Forms, E-Sign & Smart Property Workflow OS (lib/kernel/forms.ts) ─────────
+  // Rule: ESIGN_ENVELOPE_REQUESTED already exists above (Layer 11).
+  // These are the additional forms-kernel-specific events.
+  FORM_DRAFT_SAVED                   = 'form_draft_saved',
+  FORM_SUBMITTED                     = 'form_submitted',
+  ESIGN_SIGNED_COMPLETED             = 'esign_signed_completed',
+  BUYER_PROPERTY_ACTION_RECORDED     = 'buyer_property_action_recorded',
 }

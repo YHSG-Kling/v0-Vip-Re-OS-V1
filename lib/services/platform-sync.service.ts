@@ -537,8 +537,8 @@ export async function syncGoogleCalendarEvent(params: {
       .from("platform_credentials")
       .select("*")
       .eq("agent_id", params.agentId)
-      .eq("platform", "google_calendar")
-      .single()
+      .eq("platform", "dotloop")
+      .maybeSingle()
 
     if (!credentials?.access_token) {
       return { success: false, error: "Google Calendar not connected" }

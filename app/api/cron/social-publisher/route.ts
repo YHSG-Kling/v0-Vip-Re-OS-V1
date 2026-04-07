@@ -1,28 +1,52 @@
 import { createClient } from "@/lib/supabase/server"
 import { NextResponse } from "next/server"
+import { publishToSocialPlatform } from "@/lib/social/publisher"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
 
 export async function GET(request: Request) {
-  try {
-    // Verify cron secret
-    const authHeader = request.headers.get("authorization")
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+  // Verify cron secret
+  const authHeader = request.headers.get("authorization")
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
 
+  const contextResult = await createCronRunContextAction({
+    cron_name: "social-publisher",
+    cron_path: "/app/api/cron/social-publisher/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[SocialPublisher] Failed to record cron start:", startRecordResult.error)
+  }
+
+  try {
     const supabase = await createClient()
     const now = new Date()
 
-    // Get posts scheduled for now or earlier
+    // Fetch posts scheduled for now or earlier that are approved (or don't require approval)
+    // JOIN to the single linked social_media_account via social_account_id FK
     const { data: posts, error } = await supabase
       .from("social_posts")
       .select(`
         *,
-        social_media_accounts!inner(platform, access_token, refresh_token, account_id)
+        social_media_accounts!social_posts_social_account_id_fkey(
+          id, platform, access_token, refresh_token, account_id, is_active
+        )
       `)
       .eq("status", "scheduled")
+      .in("approval_status", ["approved", "pending"]) // pending = no broker approval required
       .lte("scheduled_for", now.toISOString())
       .order("scheduled_for", { ascending: true })
       .limit(20)
@@ -31,71 +55,130 @@ export async function GET(request: Request) {
 
     const results = []
 
-    for (const post of posts || []) {
-      try {
-        // Update status to publishing
-        await supabase.from("social_posts").update({ status: "publishing" }).eq("id", post.id)
+    for (const post of posts ?? []) {
+      const account = post.social_media_accounts as any
 
-        const publishResults: any = {}
-
-        // Publish to each platform
-        for (const platform of post.platforms) {
-          const account = (post.social_media_accounts as any[]).find((acc: any) => acc.platform === platform)
-
-          if (!account) {
-            console.log(`[v0] No account found for platform: ${platform}`)
-            continue
-          }
-
-          try {
-            const postId = await publishToSocialPlatform(platform, {
-              content: post.content,
-              mediaUrls: post.media_urls,
-              accessToken: account.access_token,
-              accountId: account.account_id,
-            })
-
-            publishResults[`${platform}_post_id`] = postId
-
-            // Initialize analytics row
-            await supabase.from("social_post_analytics").insert({
-              social_post_id: post.id,
-              platform: platform,
-            })
-          } catch (platformError: any) {
-            console.error(`[v0] Failed to publish to ${platform}:`, platformError.message)
-            publishResults[`${platform}_error`] = platformError.message
-          }
-        }
-
-        // Update post with results
-        await supabase
-          .from("social_posts")
-          .update({
-            status: "published",
-            published_at: new Date().toISOString(),
-            ...publishResults,
-          })
-          .eq("id", post.id)
-
-        results.push({ postId: post.id, status: "published", platforms: post.platforms })
-      } catch (postError: any) {
-        console.error(`[v0] Failed to publish post ${post.id}:`, postError.message)
-
-        // Update post as failed
+      if (!account || !account.is_active) {
+        // Mark as failed — no active account
         await supabase
           .from("social_posts")
           .update({
             status: "failed",
-            failed_at: new Date().toISOString(),
-            error_message: postError.message,
-            retry_count: (post.retry_count || 0) + 1,
+            error_message: "No active social account linked to this post",
+            updated_at: new Date().toISOString(),
           })
           .eq("id", post.id)
 
-        results.push({ postId: post.id, status: "failed", error: postError.message })
+        results.push({ postId: post.id, status: "failed", error: "No active account" })
+        continue
+      }
+
+      // Mark as publishing
+      await supabase
+        .from("social_posts")
+        .update({ status: "publishing", updated_at: new Date().toISOString() })
+        .eq("id", post.id)
+
+      try {
+        const publishResult = await publishToSocialPlatform(post.platform, {
+          content: post.content,
+          mediaUrls: post.media_urls ?? [],
+          hashtags: post.hashtags ?? [],
+          accessToken: account.access_token,
+          accountId: account.account_id ?? account.id,
+        })
+
+        if (!publishResult.success) {
+          throw new Error(publishResult.error ?? `Failed to publish to ${post.platform}`)
+        }
+
+        const externalPostId = publishResult.externalPostId ?? null
+
+        // Mark as published
+        await supabase
+          .from("social_posts")
+          .update({
+            status: "published",
+            external_post_id: externalPostId,
+            published_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", post.id)
+
+        // Write publish log (success)
+        await supabase.from("social_publish_log").insert({
+          social_post_id: post.id,
+          brokerage_id: post.brokerage_id,
+          platform: post.platform,
+          account_id: account.id,
+          external_post_id: externalPostId,
+          publish_status: "published",
+          published_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+        })
+
+        // Seed analytics row so engagement tracking can start
+        await supabase.from("social_engagement_tracking").insert({
+          social_post_id: post.id,
+          brokerage_id: post.brokerage_id,
+          platform: post.platform,
+          impressions_count: 0,
+          likes_count: 0,
+          comments_count: 0,
+          shares_count: 0,
+          saves_count: 0,
+          clicks_count: 0,
+          leads_generated: 0,
+          captured_at: new Date().toISOString(),
+        })
+
+        results.push({ postId: post.id, status: "published", platform: post.platform, externalPostId })
+      } catch (publishError: any) {
+        console.error(`[social-publisher] Failed to publish post ${post.id}:`, publishError.message)
+
+        // Increment error_count (existing column) for circuit-breaker tracking
+        const { data: current } = await supabase
+          .from("social_posts")
+          .select("error_count")
+          .eq("id", post.id)
+          .maybeSingle()
+
+        const newErrorCount = (current?.error_count ?? 0) + 1
+
+        await supabase
+          .from("social_posts")
+          .update({
+            status: "failed",
+            error_message: publishError.message,
+            error_count: newErrorCount,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", post.id)
+
+        // Write publish log (failure)
+        await supabase.from("social_publish_log").insert({
+          social_post_id: post.id,
+          brokerage_id: post.brokerage_id,
+          platform: post.platform,
+          account_id: account.id,
+          publish_status: "failed",
+          error_message: publishError.message,
+          created_at: new Date().toISOString(),
+        })
+
+        results.push({ postId: post.id, status: "failed", error: publishError.message })
       }
     }
+
+    const published = results.filter((r) => r.status === "published").length
+    const failed = results.filter((r) => r.status === "failed").length
+
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: results.length,
+      output_count: published,
+      metadata: { processed: results.length, published, failed },
+    })
 
     return NextResponse.json({
       success: true,
@@ -103,175 +186,8 @@ export async function GET(request: Request) {
       results,
     })
   } catch (error: any) {
-    console.error("[v0] Social publishing cron error:", error)
-    return NextResponse.json({ error: "Social publishing failed", message: error.message }, { status: 500 })
+    console.error("[social-publisher] Cron error:", error)
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    return NextResponse.json({ error: "Social publishing failed", message: error.message, context_id: contextId }, { status: 500 })
   }
-}
-
-// Helper function to publish to social platforms
-async function publishToSocialPlatform(
-  platform: string,
-  params: {
-    content: string
-    mediaUrls?: string[]
-    accessToken: string
-    accountId: string
-  },
-): Promise<string> {
-  switch (platform) {
-    case "facebook":
-      return await publishToFacebook(params)
-    case "instagram":
-      return await publishToInstagram(params)
-    case "linkedin":
-      return await publishToLinkedIn(params)
-    case "twitter":
-      return await publishToTwitter(params)
-    default:
-      throw new Error(`Platform ${platform} not supported`)
-  }
-}
-
-async function publishToFacebook(params: any): Promise<string> {
-  // Meta Graph API implementation
-  const hasMedia = params.mediaUrls && params.mediaUrls.length > 0
-
-  if (hasMedia) {
-    // Photo/video post
-    const response = await fetch(`https://graph.facebook.com/v18.0/${params.accountId}/photos`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        url: params.mediaUrls[0],
-        caption: params.content,
-        access_token: params.accessToken,
-      }),
-    })
-
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.error?.message || "Facebook API error")
-    return data.id
-  } else {
-    // Text post
-    const response = await fetch(`https://graph.facebook.com/v18.0/${params.accountId}/feed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: params.content,
-        access_token: params.accessToken,
-      }),
-    })
-
-    const data = await response.json()
-    if (!response.ok) throw new Error(data.error?.message || "Facebook API error")
-    return data.id
-  }
-}
-
-async function publishToInstagram(params: any): Promise<string> {
-  // Instagram Graph API (requires Business/Creator account)
-  if (!params.mediaUrls || params.mediaUrls.length === 0) {
-    throw new Error("Instagram requires media")
-  }
-
-  // Step 1: Create media container
-  const containerResponse = await fetch(`https://graph.facebook.com/v18.0/${params.accountId}/media`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      image_url: params.mediaUrls[0],
-      caption: params.content,
-      access_token: params.accessToken,
-    }),
-  })
-
-  const containerData = await containerResponse.json()
-  if (!containerResponse.ok) throw new Error(containerData.error?.message || "Instagram API error")
-
-  // Step 2: Publish container
-  const publishResponse = await fetch(`https://graph.facebook.com/v18.0/${params.accountId}/media_publish`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      creation_id: containerData.id,
-      access_token: params.accessToken,
-    }),
-  })
-
-  const publishData = await publishResponse.json()
-  if (!publishResponse.ok) throw new Error(publishData.error?.message || "Instagram publish error")
-  return publishData.id
-}
-
-async function publishToLinkedIn(params: any): Promise<string> {
-  // LinkedIn API v2 implementation
-  const hasMedia = params.mediaUrls && params.mediaUrls.length > 0
-
-  const shareData: any = {
-    author: `urn:li:person:${params.accountId}`,
-    lifecycleState: "PUBLISHED",
-    specificContent: {
-      "com.linkedin.ugc.ShareContent": {
-        shareCommentary: {
-          text: params.content,
-        },
-        shareMediaCategory: hasMedia ? "IMAGE" : "NONE",
-      },
-    },
-    visibility: {
-      "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC",
-    },
-  }
-
-  if (hasMedia) {
-    shareData.specificContent["com.linkedin.ugc.ShareContent"].media = [
-      {
-        status: "READY",
-        media: params.mediaUrls[0],
-      },
-    ]
-  }
-
-  const response = await fetch("https://api.linkedin.com/v2/ugcPosts", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.accessToken}`,
-      "Content-Type": "application/json",
-      "X-Restli-Protocol-Version": "2.0.0",
-    },
-    body: JSON.stringify(shareData),
-  })
-
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.message || "LinkedIn API error")
-  return data.id
-}
-
-async function publishToTwitter(params: any): Promise<string> {
-  // Twitter API v2 implementation
-  // Note: Requires OAuth 2.0 with proper scopes
-  const tweetData: any = {
-    text: params.content,
-  }
-
-  if (params.mediaUrls && params.mediaUrls.length > 0) {
-    // Twitter requires uploading media first, then referencing media_id
-    // This is a simplified version
-    tweetData.media = {
-      media_ids: [], // Would need to upload media first
-    }
-  }
-
-  const response = await fetch("https://api.twitter.com/2/tweets", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(tweetData),
-  })
-
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.detail || "Twitter API error")
-  return data.data.id
 }

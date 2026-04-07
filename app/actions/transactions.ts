@@ -99,9 +99,106 @@ export async function updateMilestone(
   return TransactionService.updateMilestone(milestoneId, updates)
 }
 
+/**
+ * Set whether a milestone is visible to the client in the portal.
+ * Writes to transaction_milestones.is_client_visible (live schema column).
+ */
+export async function setMilestoneClientVisibility(
+  milestoneId: string,
+  isVisible: boolean,
+): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(milestoneId)) return { success: false, error: "Invalid milestone ID" }
+  return TransactionService.updateMilestone(milestoneId, { is_client_visible: isVisible } as any)
+}
+
 export async function getClosingChecklist(transactionId: string) {
   if (!isValidUUID(transactionId)) return { success: false, error: "Invalid transaction ID" }
   return TransactionService.getClosingChecklist(transactionId)
+}
+
+// ============================================
+// TRANSACTION LIFECYCLE — CLOSE / REOPEN / CLOSE PREP
+// ============================================
+
+/**
+ * Close a transaction. Sets status=closed, stage=CLOSED, close_date to today if not set.
+ * Writes a timeline entry and emits lifecycle_events record.
+ */
+export async function closeTransaction(params: {
+  transactionId: string
+  brokerageId: string
+  agentId: string
+  reason?: string
+}): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
+  if (!isValidUUID(params.brokerageId)) return { success: false, error: "Invalid brokerage ID" }
+
+  const { closeTransactionCommand } = await import("@/lib/kernel/transactions")
+  return closeTransactionCommand(params)
+}
+
+/**
+ * Reopen a closed transaction. Requires broker/admin role.
+ * Sets status=active, stage=CLOSING_PREP, writes audit trail.
+ */
+export async function reopenTransactionIfAuthorized(params: {
+  transactionId: string
+  brokerageId: string
+  requestingUserId: string
+  requestingUserRole: string
+  reason: string
+}): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
+  if (!["broker", "admin"].includes(params.requestingUserRole)) {
+    return { success: false, error: "Only brokers and admins can reopen transactions." }
+  }
+
+  const { reopenTransactionCommand } = await import("@/lib/kernel/transactions")
+  return reopenTransactionCommand(params)
+}
+
+// ============================================
+// COMMISSIONS
+// ============================================
+
+/**
+ * Recalculate commission state from agent_commission_profiles and transaction purchase_price.
+ * Upserts transaction_commissions rows and writes commission_calculations record.
+ */
+export async function recalculateCommissionState(params: {
+  transactionId: string
+  brokerageId: string
+  agentId: string
+}): Promise<{ success: boolean; error?: string; data?: unknown }> {
+  if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
+
+  const { recalculateCommissionStateCommand } = await import("@/lib/kernel/transactions")
+  return recalculateCommissionStateCommand(params)
+}
+
+// ============================================
+// CLIENT COMMUNICATIONS
+// ============================================
+
+/**
+ * Emit a client-friendly plain-language update to the portal and client_friendly_updates table.
+ * Respects channel eligibility and consent before any send.
+ */
+export async function emitClientFriendlyUpdate(params: {
+  transactionId: string
+  brokerageId: string
+  agentId: string
+  contactId: string
+  updateType: string
+  updateText: string
+  tone?: string
+  sendVia?: string
+}): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(params.transactionId)) return { success: false, error: "Invalid transaction ID" }
+  if (!isValidUUID(params.contactId)) return { success: false, error: "Invalid contact ID" }
+
+  const { emitClientFriendlyUpdateCommand } = await import("@/lib/kernel/transactions")
+  return emitClientFriendlyUpdateCommand(params)
 }
 
 export async function updateChecklistItem(itemId: string, completed: boolean) {

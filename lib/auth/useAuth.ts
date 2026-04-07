@@ -65,6 +65,12 @@ export function useAuth(): AuthState {
       return
     }
 
+    // 8-second hard timeout — guarantees loading always terminates.
+    const timeoutId = setTimeout(() => {
+      setError(new Error('Auth session timed out. Please try again.'))
+      setLoading(false)
+    }, 8000)
+
     try {
       const { data: { user: authUser } } = await client.auth.getUser()
 
@@ -75,17 +81,45 @@ export function useAuth(): AuthState {
         return
       }
 
-      // Fetch extended profile + roles in parallel
+      // Fetch specific columns only (not *) to avoid pulling sensitive fields.
+      // Use maybeSingle() so a missing `users` row returns null (no PGRST116 throw).
+      // Source priority: users.user_type > role_assignments.role > agents row > auth metadata > 'agent'
       const [{ data: userData }, { data: rolesData }] = await Promise.all([
-        client.from('users').select('*').eq('id', authUser.id).single(),
-        client.from('user_role_assignments').select('role, brokerage_id, team_id, agent_id, vendor_id').eq('user_id', authUser.id),
+        client.from('users')
+          .select('id, first_name, last_name, brokerage_id, user_type, team_id')
+          .eq('id', authUser.id)
+          .maybeSingle(),
+        client.from('user_role_assignments')
+          .select('role, brokerage_id, team_id, agent_id, vendor_id')
+          .eq('user_id', authUser.id),
       ])
 
-      // Priority: auth metadata > role assignments > users table > default
-      const rawRole: string = authUser.user_metadata?.user_type
-        || rolesData?.[0]?.role
-        || userData?.user_type
-        || 'agent'
+      // If users row is missing, check the agents table as a fallback
+      let agentFallback: { id: string; brokerage_id: string } | null = null
+      if (!userData) {
+        const { data: agentRow } = await client
+          .from('agents')
+          .select('id, brokerage_id')
+          .eq('user_id', authUser.id)
+          .maybeSingle()
+        agentFallback = agentRow
+      }
+
+      // Source priority:
+      //  1. users.user_type   (DB — most authoritative, but requires RLS to allow read)
+      //  2. user_role_assignments.role (DB — explicit role grant)
+      //  3. auth.user_metadata.user_type (set at invite/signup time — no RLS needed)
+      //  4. agents row exists → 'agent'
+      //  5. hard fallback → 'agent'
+      const metaRole = (authUser.user_metadata?.user_type as string | undefined)
+        || (authUser.user_metadata?.role as string | undefined)
+
+      const rawRole: string =
+        userData?.user_type ||
+        rolesData?.[0]?.role ||
+        metaRole ||
+        (agentFallback ? 'agent' : null) ||
+        'agent'
       
       const canonicalRole = toCanonicalRoleOrDefault(rawRole, 'agent')
       const persona: string | null = authUser.user_metadata?.contact_persona ?? null
@@ -100,21 +134,22 @@ export function useAuth(): AuthState {
       const ctx: UserContext = {
         id: authUser.id,
         email: authUser.email ?? '',
-        firstName: userData?.first_name ?? '',
-        lastName: userData?.last_name ?? '',
+        firstName: userData?.first_name ?? (authUser.user_metadata?.first_name as string | undefined) ?? '',
+        lastName: userData?.last_name ?? (authUser.user_metadata?.last_name as string | undefined) ?? '',
         roles: resolvedRoles,
-        brokerageId: rolesData?.[0]?.brokerage_id ?? userData?.brokerage_id,
+        brokerageId: rolesData?.[0]?.brokerage_id ?? userData?.brokerage_id ?? agentFallback?.brokerage_id,
         teamId: rolesData?.[0]?.team_id ?? userData?.team_id,
-        agentId: rolesData?.[0]?.agent_id ?? undefined,
+        agentId: rolesData?.[0]?.agent_id ?? agentFallback?.id ?? undefined,
         vendorId: rolesData?.[0]?.vendor_id ?? undefined,
       }
 
       const domainUser: User = {
         id: authUser.id,
         email: authUser.email,
-        name: userData?.full_name
-          || `${userData?.first_name ?? ''} ${userData?.last_name ?? ''}`.trim()
-          || authUser.user_metadata?.full_name
+        name: `${userData?.first_name ?? ''} ${userData?.last_name ?? ''}`.trim()
+          || (authUser.user_metadata?.full_name as string | undefined)
+          || (authUser.user_metadata?.name as string | undefined)
+          || authUser.email?.split('@')[0]
           || 'User',
         role: canonicalRole,
       }
@@ -125,7 +160,39 @@ export function useAuth(): AuthState {
       setUserPersona(persona)
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Auth error'))
+      // Even on error, try to set a minimal context from the Supabase auth user
+      // so the dashboard can redirect instead of spinning indefinitely.
+      try {
+        const client = supabase.current
+        if (client) {
+          const { data: { user: authUser } } = await client.auth.getUser()
+          if (authUser) {
+            const fallbackRole = toCanonicalRoleOrDefault(
+              (authUser.user_metadata?.user_type as string | undefined) ?? 'agent',
+              'agent'
+            )
+            const fallbackUser: User = {
+              id: authUser.id,
+              email: authUser.email,
+              name: authUser.email?.split('@')[0] ?? 'User',
+              role: fallbackRole,
+            }
+            setUser(fallbackUser)
+            setRole(fallbackRole)
+            setUserContext({
+              id: authUser.id,
+              email: authUser.email ?? '',
+              firstName: '',
+              lastName: '',
+              roles: [fallbackRole],
+            })
+          }
+        }
+      } catch {
+        // ignore secondary error — loading will still be cleared below
+      }
     } finally {
+      clearTimeout(timeoutId)
       setLoading(false)
     }
   }, [])

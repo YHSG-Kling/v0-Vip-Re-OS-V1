@@ -1,10 +1,14 @@
 import { createClient } from "@supabase/supabase-js"
 import { NextResponse } from "next/server"
+import { requireAdminMaintenanceAccess } from "@/lib/auth/require-admin-maintenance-access"
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-export async function POST() {
+export async function POST(request: Request) {
+  const auth = await requireAdminMaintenanceAccess(request)
+  if (!auth.authorized) return auth.response
+
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
     return NextResponse.json({ error: "Missing Supabase environment variables" }, { status: 500 })
   }

@@ -12,14 +12,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    // Get user profile and verify role
+    // Get user profile and verify role — user_type is canonical; role is legacy fallback
     const { data: profile } = await supabase
       .from("users")
-      .select("role, brokerage_id")
+      .select("user_type, role, brokerage_id")
       .eq("id", user.id)
       .single()
 
-    if (!profile || !["broker", "admin"].includes(profile.role ?? "")) {
+    const resolvedType = profile?.user_type ?? profile?.role ?? ""
+    if (!profile || !["broker", "admin"].includes(resolvedType)) {
       return NextResponse.json({ error: "Forbidden: broker or admin role required" }, { status: 403 })
     }
 

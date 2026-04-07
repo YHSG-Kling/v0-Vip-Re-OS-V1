@@ -4,9 +4,9 @@ import { Progress } from "@/components/ui/progress"
 import { Button } from "@/components/ui/button"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { CoordinatorTransactionList } from "@/components/coordinator/transaction-list"
-import { DeadlineTracking } from "@/components/coordinator/deadline-tracking"
-import { MilestoneQueue } from "@/components/coordinator/milestone-queue"
+import { CoordinatorTransactionList } from "@/app/components/features/dashboard/coordinator/transaction-list"
+import { DeadlineTracking } from "@/app/components/features/dashboard/coordinator/deadline-tracking"
+import { MilestoneQueue } from "@/app/components/features/dashboard/coordinator/milestone-queue"
 import { HealthOverview } from "@/components/coordinator/health-overview"
 import {
   CoordinatorCommandStrip,
@@ -20,6 +20,7 @@ import {
 } from "./components/os"
 import { AlertCircle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar } from "lucide-react"
 import Link from "next/link"
+import { TcFastActionPanel } from "./components/tc-fast-action-panel"
 
 export default async function CoordinatorDashboard({
   searchParams,
@@ -35,7 +36,7 @@ export default async function CoordinatorDashboard({
   if (!user) redirect("/login")
 
   // Get user data to check brokerage
-  const { data: userData } = await supabase.from("users").select("brokerage_id, role").eq("id", user.id).single()
+  const { data: userData } = await supabase.from("users").select("brokerage_id, user_type").eq("id", user.id).maybeSingle()
 
   // Get coordinator ID from params or lookup by user
   let coordinatorId = params.coordinatorId
@@ -47,11 +48,11 @@ export default async function CoordinatorDashboard({
       .select("*")
       .eq("user_id", user.id)
       .eq("is_active", true)
-      .single()
+      .maybeSingle()
     coordinator = tc
     coordinatorId = tc?.id
   } else {
-    const { data: tc } = await supabase.from("transaction_coordinators").select("*").eq("id", coordinatorId).single()
+    const { data: tc } = await supabase.from("transaction_coordinators").select("*").eq("id", coordinatorId).maybeSingle()
     coordinator = tc
   }
 
@@ -82,7 +83,7 @@ export default async function CoordinatorDashboard({
               <Button variant="outline" asChild>
                 <Link href="/dashboard">Return to Dashboard</Link>
               </Button>
-              {(userData?.role === "broker" || userData?.role === "admin") && (
+              {(userData?.user_type === "broker" || userData?.user_type === "admin") && (
                 <Button asChild>
                   <Link href="/dashboard/settings/team/tc">Setup TC Profile</Link>
                 </Button>
@@ -246,6 +247,20 @@ export default async function CoordinatorDashboard({
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <ClosingPrepPanel brokerageId={brokerageId || ""} />
       </div>
+
+      {/* TC Fast Actions Panel */}
+      {transactions.length > 0 && (
+        <TcFastActionPanel
+          transactions={transactions.map((t: any) => ({
+            id: t.id,
+            property_address: t.property_address ?? "",
+            stage: t.stage,
+          }))}
+          agentId={user.id}
+          brokerageId={brokerageId || ""}
+          userRole={userData?.user_type ?? "tc"}
+        />
+      )}
 
       {/* Key Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

@@ -1,7 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
@@ -47,7 +49,7 @@ export async function generateMarketReport(params: {
 
     // Generate AI market analysis
     const { object: analysis } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         summary: z.string(),
         marketCondition: z.enum(["buyers_market", "sellers_market", "balanced"]),
@@ -173,7 +175,7 @@ export async function predictPropertyPrice(params: {
       .limit(20)
 
     const { object: prediction } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         estimatedPrice: z.number(),
         priceRangeLow: z.number(),
@@ -253,7 +255,7 @@ export async function getMarketAlerts(params: {
       .limit(50)
 
     const { object: alerts } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         alerts: z.array(z.object({
           type: z.enum(["price_change", "new_listing", "market_shift", "opportunity", "warning"]),
@@ -323,7 +325,7 @@ export async function analyzeNeighborhood(params: {
       .limit(50)
 
     const { object: analysis } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         overview: z.string(),
         demographics: z.object({

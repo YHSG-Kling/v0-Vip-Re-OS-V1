@@ -1,7 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -52,12 +54,12 @@ export async function aiClassifyDocument(params: {
     const textToAnalyze = params.documentText || document.document_name
 
     const { object } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         documentType: z.string().describe("Type of document (e.g., purchase_agreement, listing_agreement, disclosure, addendum, inspection_report, loan_estimate)"),
         category: z.string().describe("Category (transaction, compliance, marketing, client, financial)"),
         confidence: z.number().describe("Confidence score 0-1"),
-        extractedData: z.record(z.any()).describe("Key extracted data fields"),
+        extractedData: z.record(z.string(), z.any()).describe("Key extracted data fields"),
         complianceFlags: z.array(z.string()).describe("Any compliance issues found"),
         missingFields: z.array(z.string()).describe("Required fields that appear to be missing"),
         suggestedActions: z.array(z.string()).describe("Recommended next actions"),
@@ -117,7 +119,7 @@ export async function aiAnalyzeContract(params: {
 
   try {
     const { object } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         summary: z.string().describe("Executive summary of the contract"),
         keyTerms: z.array(z.object({
@@ -205,7 +207,7 @@ export async function aiCheckDisclosures(params: {
     const documentNames = documents?.map(d => d.document_name).join(", ") || "None uploaded"
 
     const { object } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         requiredDisclosures: z.array(z.object({
           name: z.string(),
@@ -296,7 +298,7 @@ export async function aiVerifySignatures(params: {
       .maybeSingle()
 
     const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Analyze signature requirements for this document:
       
 Document: ${document.document_name}
@@ -400,7 +402,7 @@ Context: ${JSON.stringify(params.context)}`,
     }
 
     const { text } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `${prompts[params.documentType]}
 
 Agent: ${agent?.first_name} ${agent?.last_name}
@@ -463,7 +465,7 @@ export async function aiCompareDocuments(params: {
     }
 
     const { object } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         summary: z.string(),
         changes: z.array(z.object({
@@ -532,7 +534,7 @@ export async function aiGenerateDocumentReminders(params: {
     }
 
     const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Generate document deadline reminders for this transaction:
 
 Transaction: ${JSON.stringify(transaction)}

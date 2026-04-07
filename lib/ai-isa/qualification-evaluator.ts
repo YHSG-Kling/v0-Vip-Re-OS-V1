@@ -1,6 +1,7 @@
 'use server'
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { KernelEvent } from '@/lib/kernel/events'
 
 export interface QualificationSignals {
   confirmedIntent: boolean
@@ -71,23 +72,153 @@ export async function persistQualificationSignals(
   signals: QualificationSignals
 ) {
   const supabase = createServiceClient()
-  
-  console.log('[AI ISA] Persisting qualification signals for lead:', leadId, signals)
-  
-  // Update lead stage if ready for agent
-  if (signals.readinessForAgent) {
-    const { handleConsentReceived } = await import('@/lib/kernel/lead-acquisition-handlers')
-    const { data: lead } = await supabase
+
+  // Step 1: Persist qualification record with current signals
+  const { data: lead, error: leadError } = await supabase
+    .from('leads')
+    .select('brokerage_id, first_name, last_name, email, phone, source, lead_score, agent_id')
+    .eq('id', leadId)
+    .single()
+
+  if (leadError || !lead) {
+    console.error('[AI ISA] persistQualificationSignals: lead not found', leadId)
+    return
+  }
+
+  const qualificationScore = signals.readinessForAgent
+    ? 85
+    : signals.confirmedIntent
+    ? 60
+    : signals.urgency === 'high'
+    ? 45
+    : 25
+
+  // Insert qualification record
+  const { data: qualRecord } = await supabase
+    .from('ai_isa_qualifications')
+    .insert({
+      lead_id: leadId,
+      brokerage_id: lead.brokerage_id,
+      qualification_score: qualificationScore,
+      stage: signals.readinessForAgent ? 'qualified' : signals.confirmedIntent ? 'in_progress' : 'initial',
+      qualification_result: signals.readinessForAgent ? 'qualified' : 'pending',
+      qualification_signals: signals as unknown as Record<string, unknown>,
+    })
+    .select('id')
+    .single()
+
+  // If NOT ready for agent, stop here — AI-ISA continues working this lead
+  if (!signals.readinessForAgent) {
+    return
+  }
+
+  // ── FULL HANDOFF CHAIN (readinessForAgent = true) ────────────────────────
+
+  // Step 2: Transition lifecycle via the OFFICIAL handler chain.
+  //         lead-acquisition-handlers.ts is the SOLE writer of lifecycle_state.
+  //         handleConsentReceived: isa_qualifying → consented (valid transition)
+  //         This also stamps stage_entered_at and fires CONSENT_RECEIVED event.
+  const { handleConsentReceived } = await import('@/lib/kernel/lead-acquisition-handlers')
+  await handleConsentReceived({
+    leadId,
+    brokerageId: lead.brokerage_id,
+    consentSource: 'reply',
+  })
+
+  // Clear AI ISA ownership now that the lead has been consented
+  await supabase
+    .from('leads')
+    .update({
+      ai_isa_owner: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', leadId)
+
+  // Step 3: Run governLead — selects agent and evaluates routing eligibility
+  const { governLead } = await import('@/app/actions/lead-governance/govern-lead')
+  const govResult = await governLead(leadId, lead.brokerage_id)
+
+  if (!govResult.success) {
+    console.error('[AI ISA] governLead failed for lead', leadId, govResult.message)
+    return
+  }
+
+  const assignedAgentId = govResult.agentAssigned
+
+  // Step 4: If agent is available, run full assignment + contact creation
+  if (assignedAgentId) {
+    const { handleLeadAssigned } = await import('@/lib/kernel/lead-acquisition-handlers')
+    await handleLeadAssigned({
+      leadId,
+      brokerageId: lead.brokerage_id,
+      agentId: assignedAgentId,
+      method: 'ai_isa_qualified',
+      scoreAtAssignment: govResult.score,
+    })
+
+    // Step 4a: Stamp handed_to_agent_at
+    await supabase
       .from('leads')
-      .select('brokerage_id')
+      .update({
+        handed_to_agent_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
       .eq('id', leadId)
-      .single()
-    if (lead) {
-      await handleConsentReceived({
-        leadId,
-        brokerageId: lead.brokerage_id,
-        consentSource: 'reply'
+
+    // Step 5: Insert notification to the assigned agent's user record
+    // Look up the agent's user_id
+    const { data: agentRow } = await supabase
+      .from('agents')
+      .select('user_id')
+      .eq('id', assignedAgentId)
+      .maybeSingle()
+
+    if (agentRow?.user_id) {
+      await supabase.from('notifications').insert({
+        user_id: agentRow.user_id,
+        brokerage_id: lead.brokerage_id,
+        type: 'new_contact_assigned',
+        title: `${lead.first_name ?? 'A lead'} is ready for you`,
+        body: `AI-ISA confirmed intent. Review their profile and make first contact.`,
+        entity_type: 'lead',
+        entity_id: leadId,
+        is_read: false,
+        priority: 'high',
+        created_at: new Date().toISOString(),
       })
     }
+
+    // Step 6: Update qualification record with agent assignment
+    if (qualRecord?.id) {
+      await supabase
+        .from('ai_isa_qualifications')
+        .update({
+          assigned_to_agent_id: assignedAgentId,
+          assigned_at: new Date().toISOString(),
+          qualified_at: new Date().toISOString(),
+          qualification_result: 'qualified',
+        })
+        .eq('id', qualRecord.id)
+    }
+
+    // Emit lifecycle event for the handoff
+    await supabase.from('lifecycle_events').insert({
+      entity_type: 'lead',
+      entity_id: leadId,
+      event_type: KernelEvent.LEAD_ASSIGNED,
+      brokerage_id: lead.brokerage_id,
+      metadata: { assignedAgentId, source: 'ai_isa_qualification', score: qualificationScore },
+      created_at: new Date().toISOString(),
+    })
+  } else {
+    // No agent available yet — log for manual assignment
+    await supabase.from('lifecycle_events').insert({
+      entity_type: 'lead',
+      entity_id: leadId,
+      event_type: KernelEvent.LEAD_READY_FOR_ASSIGNMENT,
+      brokerage_id: lead.brokerage_id,
+      metadata: { source: 'ai_isa_qualification', score: qualificationScore },
+      created_at: new Date().toISOString(),
+    })
   }
 }

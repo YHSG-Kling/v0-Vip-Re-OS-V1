@@ -31,16 +31,25 @@ export default async function OpenHouseSignInPage({ params }: Props) {
       )
     `)
     .eq("id", eventId)
-    .single()
+    .maybeSingle()
 
   if (!event || event.status === "cancelled") notFound()
 
-  // Load agent info
-  const { data: agent } = await supabase
+  // Load agent info — users table has first_name, last_name (no full_name)
+  const { data: agentUser } = await supabase
     .from("users")
-    .select("id, full_name, avatar_url, email")
+    .select("id, first_name, last_name, email")
     .eq("id", event.agent_id)
     .maybeSingle()
+
+  const agent = agentUser
+    ? {
+        id: agentUser.id,
+        full_name: [agentUser.first_name, agentUser.last_name].filter(Boolean).join(" ") || null,
+        avatar_url: null as string | null,
+        email: agentUser.email,
+      }
+    : null
 
   // Load brokerage branding from global_settings
   const listing = event.listings as any

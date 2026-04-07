@@ -4,9 +4,11 @@ import { Progress } from "@/components/ui/progress"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { getBrokerageDashboard, forecastBrokerageRevenue, trackLicenseExpirations } from "@/app/actions/multi-persona"
 import { getRecruitingROISummary, getRecruitingCostBreakdown, getBreakEvenAnalysis } from "@/app/actions/recruiting-roi"
-import { getHighFatigueBuyers, getBrokerageFatigueAlerts } from "@/app/actions/fatigue"
+import { getHighFatigueBuyers, getBrokerageFatigueAlerts } from "@/app/actions/buyer-fatigue"
+import { getSystemProviderStatus } from "@/app/actions/settings/provider-settings-actions"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import Link from "next/link"
 import {
   Building2,
   Users,
@@ -16,10 +18,13 @@ import {
   Shield,
   FileText,
   Activity,
+  Brain,
+  ArrowRight,
+  BarChart3,
 } from "lucide-react"
-import { BrokerageAgentList } from "@/components/brokerage/agent-list"
-import { BrokerageRevenueChart } from "@/components/brokerage/revenue-chart"
-import { BrokerageComplianceOverview } from "@/components/brokerage/compliance-overview"
+import { BrokerageAgentList } from "@/app/components/features/dashboard/brokerage/agent-list"
+import { BrokerageRevenueChart } from "@/app/components/features/dashboard/brokerage/revenue-chart"
+import { BrokerageComplianceOverview } from "@/app/components/features/dashboard/brokerage/compliance-overview"
 import {
   BrokerCommandStrip,
   BrokerRiskRadar,
@@ -34,6 +39,9 @@ import {
   type BrokerPriority,
   type BrokerAction,
 } from "./components/command-center"
+import { BrokerRecruitingActionBar } from "./components/broker-recruiting-action-bar"
+import { BrokerProviderHealthActions } from "./components/broker-provider-health-actions"
+import { BrokerTeamAssignmentBar } from "./components/broker-team-assignment-bar"
 
 export default async function BrokerageDashboard({
   searchParams,
@@ -50,8 +58,17 @@ export default async function BrokerageDashboard({
 
   let brokerageId = params.brokerageId
   if (!brokerageId) {
-    const { data: brokerage } = await supabase.from("brokerages").select("id").eq("owner_id", user.id).single()
-    brokerageId = brokerage?.id
+    // Look up via users.brokerage_id — brokerages table has no owner_id column
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("brokerage_id, user_type")
+      .eq("id", user.id)
+      .maybeSingle()
+    // Guard: only broker/admin/superadmin may access this dashboard
+    if (!userRow?.brokerage_id || !["broker", "admin", "superadmin"].includes(userRow.user_type ?? "")) {
+      redirect("/dashboard")
+    }
+    brokerageId = userRow.brokerage_id
   }
 
   if (!brokerageId) {
@@ -79,6 +96,9 @@ export default async function BrokerageDashboard({
     fatigueAlertsResult,
     dealHealthResult,
     transactionsResult,
+    providerStatusResult,
+    unassignedLeadsResult,
+    pendingDistributionsResult,
   ] = await Promise.all([
     getBrokerageDashboard(brokerageId),
     forecastBrokerageRevenue(brokerageId, 3),
@@ -123,10 +143,39 @@ export default async function BrokerageDashboard({
       .from("transactions")
       .select("id, property_address, close_date, agent_id, contact_id")
       .eq("brokerage_id", brokerageId)
-      .in("stage", ["active", "pending", "contingent"])
+      .in("stage", ["active", "pending", "contingent"]),
+    // Provider health status
+    getSystemProviderStatus().catch(() => ({ directMailEnabled: true, videoEnabled: true })),
+    // Unassigned leads count
+    supabase
+      .from("leads")
+      .select("id", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId)
+      .is("assigned_agent_id", null)
+      .eq("is_active", true),
+    // Pending brokerage commission distributions
+    supabase
+      .from("commission_distributions")
+      .select("id, calculated_amount, status, created_at, transaction_id")
+      .eq("brokerage_id", brokerageId)
+      .eq("distribution_type", "brokerage")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(20),
   ])
 
   const { agents, activeTransactions, complianceRate, totalGCI, pendingCommissions } = dashboard
+
+  const pendingDistributions = pendingDistributionsResult.data ?? []
+  const totalPendingBrokerageCommission = pendingDistributions.reduce(
+    (sum: number, d: { calculated_amount: number | null }) => sum + (d.calculated_amount ?? 0),
+    0,
+  )
+  const now = new Date()
+  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+  const expectedThisMonth = pendingDistributions.filter((d: { created_at: string }) => {
+    return new Date(d.created_at) >= thisMonthStart
+  }).reduce((sum: number, d: { calculated_amount: number | null }) => sum + (d.calculated_amount ?? 0), 0)
 
   // Process fatigue data
   const fatigueBuyers = (fatigueResult.success ? fatigueResult.buyers : []) || []
@@ -337,12 +386,16 @@ export default async function BrokerageDashboard({
     daysSearching: b.days_searching,
   }))
 
-  // Provider status (mock for now - can be wired to real integrations)
+  // Real provider status from settings
   const providerStatus = [
-    { name: "MLS Sync", status: "healthy" as const, lastSync: "2 min ago" },
-    { name: "Email Integration", status: "healthy" as const, lastSync: "5 min ago" },
-    { name: "Calendar Sync", status: "healthy" as const, lastSync: "10 min ago" },
+    { name: "Direct Mail", status: (providerStatusResult.directMailEnabled ? "healthy" : "degraded") as "healthy" | "degraded" | "failing" },
+    { name: "Video", status: (providerStatusResult.videoEnabled ? "healthy" : "degraded") as "healthy" | "degraded" | "failing" },
   ]
+  const unassignedLeadsCount = unassignedLeadsResult.count ?? 0
+
+  // Alias destructured names to match JSX references
+  const licenseStatus = expirations as { expiringLicenses: any[]; expiredLicenses: any[] } ?? { expiringLicenses: [], expiredLicenses: [] }
+  const forecast = forecastData as any
 
   // Agent performance (derived from dashboard agents)
   const agentPerformance = (agents || []).slice(0, 5).map((agent: any) => ({
@@ -418,6 +471,96 @@ export default async function BrokerageDashboard({
           </CardContent>
         </Card>
       )}
+
+      {/* Pending Commission Receivables */}
+      {pendingDistributions.length > 0 && (
+        <Card className="border-amber-200">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <DollarSign className="h-5 w-5 text-amber-600" />
+                Pending Commission Receivables
+              </CardTitle>
+              <div className="flex items-center gap-4 text-sm text-right">
+                <div>
+                  <p className="text-xs text-muted-foreground">Total Pending</p>
+                  <p className="font-bold text-amber-700">
+                    {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(totalPendingBrokerageCommission)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Expected This Month</p>
+                  <p className="font-bold text-green-700">
+                    {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(expectedThisMonth)}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-1">
+              {pendingDistributions.slice(0, 8).map((d: { id: string; transaction_id: string; calculated_amount: number | null; created_at: string }) => (
+                <div key={d.id} className="flex items-center justify-between py-1.5 border-b border-border/50 last:border-0">
+                  <Link
+                    href={`/dashboard/transactions/${d.transaction_id}/cda`}
+                    className="text-sm text-foreground underline-offset-2 hover:underline"
+                  >
+                    View CDA
+                  </Link>
+                  <div className="flex items-center gap-4 text-sm">
+                    <span className="text-muted-foreground">{new Date(d.created_at).toLocaleDateString()}</span>
+                    <span className="font-medium">
+                      {new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(d.calculated_amount ?? 0)}
+                    </span>
+                    <Badge variant="secondary" className="text-xs">Pending</Badge>
+                  </div>
+                </div>
+              ))}
+              {pendingDistributions.length > 8 && (
+                <p className="text-xs text-muted-foreground text-center pt-1">
+                  +{pendingDistributions.length - 8} more pending
+                </p>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Source Performance CTA */}
+      <Link href="/dashboard/analytics/source">
+        <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
+          <CardContent className="py-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <BarChart3 className="h-5 w-5 text-foreground shrink-0" />
+              <div>
+                <p className="text-sm font-semibold">Source Performance</p>
+                <p className="text-xs text-muted-foreground">
+                  Attribution and ROI by acquisition source — raw, lead, and direct contact funnels
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+          </CardContent>
+        </Card>
+      </Link>
+
+      {/* Intelligence Center CTA */}
+      <Link href="/dashboard/brokerage/intelligence">
+        <Card className="border-foreground/10 bg-muted/30 hover:bg-muted/50 transition-colors cursor-pointer">
+          <CardContent className="py-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <Brain className="h-5 w-5 text-foreground shrink-0" />
+              <div>
+                <p className="text-sm font-semibold">Intelligence Center</p>
+                <p className="text-xs text-muted-foreground">
+                  See your full operational picture — system health, farm, deals, market & more
+                </p>
+              </div>
+            </div>
+            <ArrowRight className="h-4 w-4 text-muted-foreground shrink-0" />
+          </CardContent>
+        </Card>
+      </Link>
 
       {/* Key Metrics Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
@@ -527,8 +670,25 @@ export default async function BrokerageDashboard({
             summary={recruitingROI}
             costBreakdown={costBreakdown}
           />
+          <BrokerRecruitingActionBar
+            brokerageId={brokerageId}
+            breakEvenAnalysis={breakEvenAnalysis}
+            costBreakdown={costBreakdown}
+          />
           <BrokerActionStack actions={brokerActions} />
         </div>
+      </div>
+
+      {/* Provider Health + Team Assignment — full width correction row */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <BrokerProviderHealthActions
+          providerStatus={providerStatus}
+          brokerageId={brokerageId}
+        />
+        <BrokerTeamAssignmentBar
+          unassignedLeadsCount={unassignedLeadsCount}
+          brokerageId={brokerageId}
+        />
       </div>
 
       {/* Team Performance Panel */}

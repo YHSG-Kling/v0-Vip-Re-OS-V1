@@ -15,6 +15,8 @@ export interface PortalMessage {
   brokerage_id: string
   body: string
   direction: "agent_to_client" | "client_to_agent"
+  channel: string
+  read: boolean
   created_at: string
   read_at: string | null
   transaction_id?: string | null
@@ -24,6 +26,8 @@ export interface SendMessageParams {
   contactId: string
   messageBody: string
   direction: "agent_to_client" | "client_to_agent"
+  /** Communication channel — used for unified inbox filtering. Defaults to 'portal'. */
+  channel?: string
   transactionId?: string
 }
 
@@ -57,7 +61,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       return { success: false, error: "Unauthorized" }
     }
 
-    const { contactId, messageBody, direction, transactionId } = params
+    const { contactId, messageBody, direction, channel = "portal", transactionId } = params
 
     // Validate message body
     if (!messageBody || messageBody.trim().length === 0) {
@@ -73,12 +77,12 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
       return { success: false, error: "Agent profile not found" }
     }
 
-    // Validate access to this contact
+    // Validate access to this contact — maybeSingle() so missing rows don't throw PGRST116
     const { data: contact, error: contactError } = await supabase
       .from("contacts")
       .select("id, agent_id, brokerage_id")
       .eq("id", contactId)
-      .single()
+      .maybeSingle()
 
     if (contactError || !contact) {
       return { success: false, error: "Contact not found" }
@@ -91,7 +95,7 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
         .from("agents")
         .select("brokerage_id")
         .eq("id", agentId)
-        .single()
+        .maybeSingle()
 
       if (!agent || agent.brokerage_id !== contact.brokerage_id) {
         return { success: false, error: "No access to this contact" }
@@ -107,13 +111,15 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
         brokerage_id: contact.brokerage_id,
         body: messageBody.trim(),
         direction,
+        channel,
+        read: false,
         transaction_id: transactionId || null,
         read_at: null,
       })
       .select()
-      .single()
+      .maybeSingle()
 
-    if (insertError) {
+    if (insertError || !message) {
       console.error("[Portal Messages] Insert error:", insertError)
       return { success: false, error: "Failed to send message" }
     }
@@ -168,10 +174,10 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
     // Update unread messages
     const { data, error: updateError } = await supabase
       .from("client_portal_messages")
-      .update({ read_at: new Date().toISOString() })
+      .update({ read: true, read_at: new Date().toISOString() })
       .eq("contact_id", contactId)
       .eq("direction", direction)
-      .is("read_at", null)
+      .eq("read", false)
       .select("id")
 
     if (updateError) {
@@ -246,6 +252,9 @@ export async function getPortalMessages(contactId: string): Promise<{
 export async function generateAIDraft(params: {
   contactId: string
   transactionId?: string
+  /** Optional: passed from CRM page — used for agent context but not required for draft generation */
+  agentId?: string
+  conversationId?: string
 }): Promise<{
   success: boolean
   draft?: string
@@ -265,12 +274,12 @@ export async function generateAIDraft(params: {
 
     const { contactId, transactionId } = params
 
-    // Get contact info
+    // Get contact info — use maybeSingle() so missing rows return null instead of PGRST116
     const { data: contact } = await supabase
       .from("contacts")
       .select("first_name, contact_type, buyer_stage")
       .eq("id", contactId)
-      .single()
+      .maybeSingle()
 
     if (!contact) {
       return { success: false, error: "Contact not found" }
@@ -308,11 +317,12 @@ export async function generateAIDraft(params: {
     const contactName = contact.first_name || "there"
     const contactStage = contact.buyer_stage || contact.contact_type || "client"
 
-    // Generate draft using AI SDK
+    // Generate draft using AI SDK v6 via Vercel AI Gateway
     const { generateText } = await import("ai")
+    const { gateway } = await import("@ai-sdk/gateway")
 
     const { text: draft } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: gateway("anthropic/claude-sonnet-4-5"),
       system: `You are a helpful real estate assistant drafting a professional, warm message for an agent to send to their client. 
 Keep messages concise (2-3 sentences), friendly, and action-oriented.
 Never include placeholder text like [AGENT NAME] - the agent will personalize.

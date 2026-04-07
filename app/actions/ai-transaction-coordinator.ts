@@ -2,7 +2,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
@@ -62,7 +64,7 @@ export async function analyzeTransactionHealth(params: {
     }
 
     const { object: analysis } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         healthScore: z.number().min(0).max(100),
         riskLevel: z.enum(["low", "medium", "high", "critical"]),
@@ -176,7 +178,7 @@ export async function predictAndManageDeadlines(params: {
     }
 
     const { object: deadlineAnalysis } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         predictedCloseDate: z.string(),
         confidence: z.number(),
@@ -274,7 +276,7 @@ export async function generateSmartTasks(params: {
     const currentStage = params.stage || transaction.status
 
     const { object: tasks } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         tasks: z.array(z.object({
           title: z.string(),
@@ -387,7 +389,7 @@ export async function draftTransactionCommunication(params: {
     )
 
     const { text: communication } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       prompt: `Draft a professional ${params.communicationType} communication for a real estate transaction:
 
 From: ${agent?.first_name} ${agent?.last_name} (Agent)
@@ -456,7 +458,7 @@ export async function monitorTransactionRisks(agentId: string) {
     }
 
     const { object: riskAnalysis } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         overallRiskLevel: z.enum(["low", "medium", "high", "critical"]),
         transactionRisks: z.array(z.object({
@@ -537,7 +539,7 @@ export async function prepareForClosing(params: {
     }
 
     const { object: closingPrep } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         readinessScore: z.number(),
         daysUntilClosing: z.number(),
@@ -634,7 +636,7 @@ export async function generatePostClosingPlan(params: {
     }
 
     const { object: postClosingPlan } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         immediateFollowUp: z.array(z.object({
           action: z.string(),

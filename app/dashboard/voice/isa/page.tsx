@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { redirect } from "next/navigation"
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
@@ -24,8 +25,8 @@ import { ISAConfigSummary } from "./isa-config-summary"
 export const dynamic = "force-dynamic"
 
 export const metadata = {
-  title: "Voice ISA Dashboard | VIP-OS",
-  description: "AI Inside Sales Agent call management and monitoring",
+  title: "AI-ISA Dashboard | VIP-OS",
+  description: "AI-ISA inside sales agent call management and monitoring",
 }
 
 export default async function VoiceISAPage() {
@@ -201,26 +202,65 @@ export default async function VoiceISAPage() {
     .is("assigned_to_agent_id", null)
     .order("qualified_at", { ascending: false })
 
-  // Fetch voice assistant config
+  // Fetch voice assistant config (wake word / commands)
   const { data: voiceConfig } = await supabase
     .from("voice_assistant_config")
     .select("*")
     .eq("agent_id", agentId)
-    .single()
+    .maybeSingle()
+
+  // Fetch AI-ISA settings to determine VAPI configuration state and broker approval
+  const { data: isaSettings } = await supabase
+    .from("ai_isa_settings")
+    .select("vapi_assistant_id, is_active, require_broker_approval")
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  const vapiConfigured = !!isaSettings?.vapi_assistant_id
+  const isaActive      = isaSettings?.is_active ?? false
+  const requiresBrokerApproval = isaSettings?.require_broker_approval ?? false
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between">
+    <div className="flex flex-col gap-4 sm:gap-6 p-4 sm:p-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Voice ISA Dashboard</h1>
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-balance">AI-ISA Dashboard</h1>
           <p className="text-sm text-muted-foreground">
-            AI Inside Sales Agent call management and monitoring
+            AI Inside Sales Agent — call management and monitoring
           </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant={isaActive ? "default" : "secondary"} className="text-xs">
+            {isaActive ? "AI-ISA Active" : "AI-ISA Paused"}
+          </Badge>
+          {requiresBrokerApproval && (
+            <Badge variant="outline" className="text-xs border-amber-300 text-amber-700 bg-amber-50">
+              Broker Approval Required
+            </Badge>
+          )}
         </div>
       </div>
 
-      {/* Summary KPI Row */}
-      <div className="grid gap-4 md:grid-cols-4">
+      {/* VAPI not configured CTA — shown instead of a blank failure */}
+      {!vapiConfigured && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-amber-800">Configure VAPI to enable AI calling</p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              AI-ISA outbound calling requires a VAPI assistant ID. Add it in AI-ISA Settings to activate automated dialing.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" className="border-amber-400 text-amber-800 hover:bg-amber-100 shrink-0" asChild>
+            <Link href="/settings?tab=ai-isa">
+              Configure VAPI
+              <ArrowRight className="h-3 w-3 ml-1" />
+            </Link>
+          </Button>
+        </div>
+      )}
+
+      {/* Summary KPI Row — 2 columns on mobile, 4 on md+ */}
+      <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Calls Today</CardTitle>
@@ -266,14 +306,16 @@ export default async function VoiceISAPage() {
         </Card>
       </div>
 
-      {/* Main Tabs */}
+      {/* Main Tabs — horizontally scrollable on mobile, 4-col on sm+ */}
       <Tabs defaultValue="active" className="w-full">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="active">Active / Queued</TabsTrigger>
-          <TabsTrigger value="today">Today&apos;s Calls</TabsTrigger>
-          <TabsTrigger value="completed">Completed</TabsTrigger>
-          <TabsTrigger value="failed">Failed / No Answer</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+          <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-4">
+            <TabsTrigger value="active" className="min-w-[140px] sm:min-w-0 min-h-[44px]">AI-ISA Active / Paused</TabsTrigger>
+            <TabsTrigger value="today" className="min-w-[120px] sm:min-w-0 min-h-[44px]">Today&apos;s Calls</TabsTrigger>
+            <TabsTrigger value="completed" className="min-w-[110px] sm:min-w-0 min-h-[44px]">Completed</TabsTrigger>
+            <TabsTrigger value="failed" className="min-w-[140px] sm:min-w-0 min-h-[44px]">Failed / No Answer</TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value="active" className="mt-4">
           <ISACampaignsPanel 
@@ -320,6 +362,7 @@ export default async function VoiceISAPage() {
           />
         </TabsContent>
       </Tabs>
+      {/* Spacer closes the overflow-x wrapper above */}
 
       {/* Bottom Panels */}
       <div className="grid gap-6 lg:grid-cols-2">

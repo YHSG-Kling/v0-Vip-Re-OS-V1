@@ -8,8 +8,13 @@ import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTran
 import { getUpcomingAnniversaries } from "@/app/actions/past-clients"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
+import { getMotivatedSellers } from "@/app/actions/lead-intelligence"
+import { getMarketAlerts } from "@/app/actions/ai-market-intelligence"
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import Link from "next/link"
 // Components
 import { AgentCommandStrip } from "./components/agent-command-strip"
 import { AgentOperatingRadar } from "./components/agent-operating-radar"
@@ -20,8 +25,11 @@ import { AgentLifetimeCustomersPanel } from "./components/agent-lifetime-custome
 import { AgentSuperpowersPanel } from "./components/agent-superpowers-panel"
 import { AgentFinancialIntelligence } from "./components/agent-financial-intelligence"
 import { AgentSystemReadiness } from "./components/agent-system-readiness"
-import { ApprovalsBanner } from "@/components/ApprovalsBanner"
+import { AgentStaleContactsPanel } from "./components/agent-stale-contacts-panel"
+import { ThisWeekPreview } from "@/app/dashboard/calendar/components/os"
 import { NewlyConvertedContactsPanel } from "./components/conversion"
+import { VoiceAssistantPanel } from "@/app/components/ai-copilot"
+import { ApprovalsBanner } from "@/components/ApprovalsBanner"
 
 export default function AgentDashboard() {
   const [loading, setLoading] = useState(true)
@@ -48,6 +56,9 @@ export default function AgentDashboard() {
   const [actionPlans, setActionPlans] = useState<any[]>([])
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
+  const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
+  const [marketAlerts, setMarketAlerts] = useState<any[]>([])
+  const [marketSnapshot, setMarketSnapshot] = useState<{ overallTrend: string; keyMetric: string; comparedToLastMonth: string } | null>(null)
 
   useEffect(() => {
     const loadData = async () => {
@@ -110,7 +121,11 @@ export default function AgentDashboard() {
           getCommissionRecords({ status: 'pending' }),
           getExpenses({ startDate: monthStart }),
           getHotLeads(10),
-          getRecentLifeChanges(agentRow?.id, 7).catch(() => [])
+          getRecentLifeChanges(agentRow?.id, 7).catch(() => []),
+          agentRow?.id
+            ? getMarketAlerts({ agentId: agentRow.id }).catch(() => null)
+            : Promise.resolve(null),
+          getMotivatedSellers({ min_score: 60 }).catch(() => null),
         ])
 
         // 7. Unpack results
@@ -164,6 +179,19 @@ export default function AgentDashboard() {
           setLifeChanges(results[8].value || [])
         }
 
+        if (results[9].status === 'fulfilled' && results[9].value) {
+          const alertsResult = results[9].value as any
+          if (alertsResult?.success) {
+            setMarketAlerts(alertsResult.alerts || [])
+            setMarketSnapshot(alertsResult.snapshot || null)
+          }
+        }
+
+        if (results[10].status === 'fulfilled' && results[10].value) {
+          const sellersResult = results[10].value as any
+          setMotivatedSellers(sellersResult?.sellers ?? [])
+        }
+
       } catch (error) {
         console.error("[v0] Error loading agent dashboard:", error)
       } finally {
@@ -208,7 +236,14 @@ export default function AgentDashboard() {
   }, [])
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background relative">
+      {/* Voice Assistant Panel */}
+      <VoiceAssistantPanel
+        userId={agentId}
+        userRole="agent"
+        brokerageId={brokerageId}
+      />
+
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
         <ApprovalsBanner />
@@ -261,6 +296,55 @@ export default function AgentDashboard() {
               brokerageId={brokerageId}
               hotLeadName={briefing?.hot_leads?.[0]?.name}
             />
+
+            {/* Market Pulse */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center justify-between">
+                  <span>Market Pulse</span>
+                  <Link
+                    href="/dashboard/market-insights"
+                    className="text-xs text-primary font-normal underline underline-offset-2 hover:no-underline"
+                  >
+                    View all
+                  </Link>
+                </CardTitle>
+                {marketSnapshot && (
+                  <p className="text-xs text-muted-foreground">{marketSnapshot.overallTrend}</p>
+                )}
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {marketAlerts.length === 0 && !loading ? (
+                  <p className="text-xs text-muted-foreground py-2">
+                    No market alerts for your area — market is stable
+                  </p>
+                ) : (
+                  marketAlerts.slice(0, 5).map((alert: any, i: number) => (
+                    <div key={i} className="flex items-start gap-2 text-sm">
+                      <Badge
+                        variant="outline"
+                        className={`shrink-0 text-[10px] capitalize ${
+                          alert.priority === "high"
+                            ? "border-red-200 text-red-700 bg-red-50"
+                            : alert.priority === "medium"
+                              ? "border-amber-200 text-amber-700 bg-amber-50"
+                              : "border-slate-200 text-slate-600 bg-slate-50"
+                        }`}
+                      >
+                        {alert.type?.replace(/_/g, " ")}
+                      </Badge>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium leading-tight truncate">{alert.title}</p>
+                        {alert.area && (
+                          <p className="text-[10px] text-muted-foreground truncate">{alert.area}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+
             <AgentFinancialIntelligence
               commissions={commissions}
               monthlyExpenses={monthlyExpenses}
@@ -268,7 +352,77 @@ export default function AgentDashboard() {
               activeTransactionCount={stats.activeTransactions}
               loading={loading}
             />
+            {motivatedSellers.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      Motivated Seller Alerts
+                    </span>
+                    <Link
+                      href="/leads?tab=intelligence"
+                      className="text-xs text-primary font-normal underline underline-offset-2 hover:no-underline"
+                    >
+                      View all
+                    </Link>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {motivatedSellers.slice(0, 4).map((seller: any, i: number) => {
+                    const prop = seller.property
+                    const address = prop?.address ?? "Unknown"
+                    const score = seller.readiness_to_sell_score ?? 0
+                    const timeframe = seller.predicted_timeframe ?? ""
+                    return (
+                      <div key={seller.id ?? i} className="flex items-center justify-between gap-2 text-sm">
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-xs">{address}</p>
+                          {timeframe && (
+                            <p className="text-xs text-muted-foreground capitalize">{timeframe}</p>
+                          )}
+                        </div>
+                        <Badge className="shrink-0 text-xs bg-amber-100 text-amber-700 border-amber-200">
+                          {score}
+                        </Badge>
+                      </div>
+                    )
+                  })}
+                </CardContent>
+              </Card>
+            )}
             <AgentSystemReadiness />
+
+            {/* Contacts Needing Touch */}
+            {agentId && brokerageId && (
+              <AgentStaleContactsPanel agentId={agentId} brokerageId={brokerageId} />
+            )}
+
+            {/* My Source Performance */}
+            <Card className="hover:shadow-md transition-shadow">
+              <CardContent className="py-4">
+                <Link
+                  href="/dashboard/analytics/source"
+                  className="flex items-center justify-between gap-3 group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-primary/10">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold">My Source Performance</p>
+                      <p className="text-xs text-muted-foreground">ROI by lead source and acquisition channel</p>
+                    </div>
+                  </div>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-muted-foreground shrink-0 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                  </svg>
+                </Link>
+              </CardContent>
+            </Card>
+
+            {agentId && <ThisWeekPreview agentId={agentId} />}
           </div>
         </div>
 

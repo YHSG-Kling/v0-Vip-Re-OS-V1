@@ -1,37 +1,34 @@
-import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { TransactionPipelineView } from "@/components/transactions/pipeline-view"
+import { getAgentContext } from "@/lib/identity"
+import { toCanonicalRoleOrDefault } from "@/lib/security"
+import { createClient } from "@/lib/supabase/server"
 
-export const dynamic = 'force-dynamic'
+export const dynamic = "force-dynamic"
 
 export default async function TransactionPipelinePage() {
+  // ── Kernel OS: identity resolution via canonical helper ──────────────────
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect("/login")
+  if (!ctx.brokerageId) redirect("/dashboard/onboarding")
+
+  // toCanonicalRoleOrDefault normalises legacy DB values (TC → tc, etc.)
+  const userRole = toCanonicalRoleOrDefault(ctx.userType, "agent")
+
   const supabase = await createClient()
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("brokerage_id, role")
-    .eq("id", user.id)
-    .single()
-
-  if (!profile?.brokerage_id) {
-    return <div>Brokerage not found</div>
-  }
-
-  // Fetch all transactions in pipeline stages
-  const { data: transactions } = await supabase
+  // ── Fetch pipeline transactions ──────────────────────────────────────────
+  const { data: transactionData } = await supabase
     .from("transactions")
     .select(`
       id,
       stage,
       status,
       property_address,
-      contract_price,
+      purchase_price,
       contract_date,
       created_at,
-      agent:agents(id, name),
+      agent_id,
       milestones:transaction_milestones(
         id,
         milestone_name,
@@ -40,9 +37,49 @@ export default async function TransactionPipelinePage() {
         completed_at
       )
     `)
-    .eq("brokerage_id", profile.brokerage_id)
+    .eq("brokerage_id", ctx.brokerageId)
     .in("status", ["under_contract", "closing"])
     .order("created_at", { ascending: false })
+
+  // ── Resolve agent display names via agents → users join ──────────────────
+  let transactions: any[] = []
+  if (transactionData && transactionData.length > 0) {
+    const agentIds = [
+      ...new Set(
+        transactionData.map((t: any) => t.agent_id).filter(Boolean)
+      ),
+    ]
+
+    const { data: agentRows } =
+      agentIds.length > 0
+        ? await supabase
+            .from("agents")
+            .select("id, users(first_name, last_name)")
+            .in("id", agentIds)
+        : { data: [] }
+
+    const agentMap = (agentRows ?? []).reduce((acc: any, a: any) => {
+      const u = a.users as {
+        first_name?: string | null
+        last_name?: string | null
+      } | null
+      acc[a.id] = {
+        id: a.id,
+        name: u
+          ? `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim()
+          : "Unknown Agent",
+      }
+      return acc
+    }, {})
+
+    transactions = transactionData.map((t: any) => ({
+      ...t,
+      // Rename purchase_price → contract_price for the view component
+      contract_price: t.purchase_price ?? 0,
+      agent:
+        t.agent_id && agentMap[t.agent_id] ? agentMap[t.agent_id] : null,
+    }))
+  }
 
   return (
     <div className="container mx-auto p-6">
@@ -54,8 +91,8 @@ export default async function TransactionPipelinePage() {
       </div>
 
       <TransactionPipelineView
-        transactions={transactions || []}
-        userRole={profile.role}
+        transactions={transactions}
+        userRole={userRole}
       />
     </div>
   )

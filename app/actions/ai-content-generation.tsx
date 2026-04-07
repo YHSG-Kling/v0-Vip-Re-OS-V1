@@ -8,7 +8,6 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { generateContent } from "@/lib/services/content-generation.service"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -58,7 +57,7 @@ export async function updateBrandVoiceProfile(data: {
   avoidWords?: string[]
   targetAudience?: string
   brandPersonality?: string
-  contentGuidelines?: any
+  contentGuidelines?: Record<string, unknown>
   examplePosts?: string[]
 }) {
   const supabase = await createClient()
@@ -116,9 +115,9 @@ export async function saveContentTemplate(data: {
   templateName: string
   contentType: string
   category: string
-  structure: any
+  structure: Record<string, unknown>
   placeholders?: string[]
-  seoGuidelines?: any
+  seoGuidelines?: Record<string, unknown>
   exampleOutput?: string
 }) {
   const supabase = await createClient()
@@ -184,7 +183,7 @@ export async function createGeneratedContent(data: {
   seoKeywords?: string[]
   hashtags?: string[]
   targetAudience?: string
-  metadata?: any
+  metadata?: Record<string, unknown>
   scheduledFor?: string
 }) {
   const supabase = await createClient()
@@ -216,7 +215,7 @@ export async function createGeneratedContent(data: {
 export async function updateContentStatus(contentId: string, status: string, publishedUrl?: string) {
   const supabase = await createClient()
 
-  const updateData: any = {
+  const updateData: Record<string, unknown> = {
     status,
     updated_at: new Date().toISOString(),
   }
@@ -487,7 +486,11 @@ export async function createContentABTest(data: {
   return test
 }
 
-export async function updateABTestResults(testId: string, results: any) {
+export async function updateABTestResults(testId: string, results: {
+  variantA: Record<string, unknown>
+  variantB: Record<string, unknown>
+  winner?: string
+}) {
   const supabase = await createClient()
 
   const { data: test, error } = await supabase
@@ -591,10 +594,17 @@ export async function generateListingDescription(params: {
     return { success: false, error: "Invalid agent ID" }
   }
 
-  const supabase = await createClient()
-  const startTime = Date.now()
-
   try {
+    // ── LAYER 0.1: Feature Access Gate ────────────────────────────────────────
+    const agentContext = await getAgentContext()
+    const featureCheck = await canAccessFeature(agentContext.userId, "ai_listing_generation")
+    if (!featureCheck.allowed) {
+      return { success: false, error: featureCheck.reason || "Feature access denied" }
+    }
+
+    const supabase = await createClient()
+    const startTime = Date.now()
+
     let propertyData = params.propertyDetails
     if (params.propertyId && isValidUUID(params.propertyId)) {
       const { data } = await supabase.from("listings").select("*").eq("id", params.propertyId).single()
@@ -608,9 +618,6 @@ export async function generateListingDescription(params: {
       .maybeSingle()
 
     const prompt = buildListingDescriptionPrompt(propertyData, params, brandVoice)
-
-    // Get agent context for AI routing
-    const agentContext = await getAgentContext()
 
     const response = await generateAIResponse({
       prompt,
@@ -652,6 +659,9 @@ export async function generateListingDescription(params: {
       success: true,
     })
 
+    // ── LAYER 0.1: Track usage after successful generation ──────────────────
+    await incrementFeatureUsage(agentContext.userId, "ai_listing_generation")
+
     revalidatePath("/dashboard/content")
     return { success: true, data: result, contentId: savedContent?.id }
   } catch (error) {
@@ -683,6 +693,13 @@ export async function generateSocialPost(params: {
   }
 
   try {
+    // ── LAYER 0.1: Feature Access Gate ────────────────────────────────────────
+    const agentContext = await getAgentContext()
+    const featureCheck = await canAccessFeature(agentContext.userId, "ai_social_content")
+    if (!featureCheck.allowed) {
+      return { success: false, error: featureCheck.reason || "Feature access denied" }
+    }
+
     // Use consolidated content generation service
     const result = await generateContent({
       agentId: params.agentId,
@@ -700,13 +717,16 @@ export async function generateSocialPost(params: {
       return { success: false, error: result.error || "Failed to generate social post" }
     }
 
+    // ── LAYER 0.1: Track usage after successful generation ──────────────────
+    await incrementFeatureUsage(agentContext.userId, "ai_social_content")
+
     revalidatePath("/dashboard/content/social")
-    return { 
-      success: true, 
-      data: result.content, 
-      contentId: result.contentId,
-      caption: result.metadata?.caption || result.content,
-      hashtags: result.metadata?.hashtags || [],
+    return {
+      success: true,
+      data: result.content,
+      contentId: result.content?.id,
+      caption: result.content?.generated_content,
+      hashtags: result.content?.hashtags ?? [],
     }
   } catch (error) {
     console.error("Generate social post error:", error)
@@ -752,12 +772,12 @@ export async function generateEmail(params: {
     }
 
     revalidatePath("/dashboard/content/email")
-    return { 
-      success: true, 
-      data: result.content, 
-      contentId: result.contentId,
-      subject: result.metadata?.subject,
-      body: result.metadata?.body || result.content,
+        return {
+      success: true,
+      data: result.content,
+      contentId: result.content?.id,
+      subject: result.content?.subject,
+      body: result.content?.generated_content,
     }
   } catch (error) {
     console.error("Generate email error:", error)
@@ -1788,7 +1808,15 @@ export async function createABTest(params: {
   }
 }
 
+/** Deterministic seed from content hash — avoids non-reproducible Math.random() in AI contexts */
+function getVariationSeed(content: string): number {
+  return Math.abs([...content.slice(0, 50)].reduce((h, c) =>
+    (Math.imul(31, h) + c.charCodeAt(0)) | 0, 0))
+}
+
 async function generateVariant(baseContent: any, testVariable: string) {
+  const seed = getVariationSeed(baseContent.generated_text ?? baseContent.metadata?.subject_line ?? testVariable)
+
   const prompts: Record<string, string> = {
     subject_line: `Generate alternative subject line for this email.
 Original: "${baseContent.metadata?.subject_line || ""}"
@@ -1797,11 +1825,11 @@ Keep same topic but fresh angle.`,
 
     opening_hook: `Rewrite opening paragraph with different hook strategy.
 Original: "${baseContent.generated_text?.substring(0, 200) || ""}"
-Try a ${["question", "statistic", "story", "bold statement"][Math.floor(Math.random() * 4)]} approach.`,
+Try a ${["question", "statistic", "story", "bold statement"][seed % 4]} approach.`,
 
     cta: `Generate alternative call-to-action.
 Original: "${baseContent.metadata?.cta_text || ""}"
-Make it more ${["urgent", "soft", "benefit-focused", "curiosity-driven"][Math.floor(Math.random() * 4)]}.`,
+Make it more ${["urgent", "soft", "benefit-focused", "curiosity-driven"][seed % 4]}.`,
 
     length: `${baseContent.generated_text?.length > 500 ? "Shorten" : "Expand"} this content while keeping key points.
 Original length: ${baseContent.generated_text?.length} characters
@@ -1809,7 +1837,7 @@ Target: ${baseContent.generated_text?.length > 500 ? "50%" : "150%"} of original
 
     tone: `Rewrite entire content with different tone.
 Original: ${baseContent.generated_text}
-New tone: ${["more professional", "more casual", "more energetic", "more empathetic"][Math.floor(Math.random() * 4)]}
+New tone: ${["more professional", "more casual", "more energetic", "more empathetic"][seed % 4]}
 Keep same information, change how it's presented.`,
   }
 
@@ -2310,7 +2338,10 @@ export async function enhancedGenerateListingDescription(params: {
 // COST TRACKING & ANALYTICS
 // ============================================
 
-export async function calculateAICost(usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number }, model: string = "openai/gpt-4o"): number {
+export async function calculateAICost(
+  usage: { promptTokens?: number; completionTokens?: number; totalTokens?: number },
+  model: string = "openai/gpt-4o"
+): Promise<number> {
   // Pricing per 1M tokens (as of 2026)
   const pricing: Record<string, { prompt: number; completion: number }> = {
     "openai/gpt-4o": { prompt: 2.50, completion: 10.0 },
@@ -2608,4 +2639,59 @@ export async function getContentInsights(agentId: string) {
     content_effectiveness: {},
     recommendations,
   }
+}
+
+// ============================================
+// DESCRIPTION SAVE-BACK — writes approved text to listings.public_remarks
+// ============================================
+
+/**
+ * Save an approved AI-generated description into listings.public_remarks.
+ * This is the single write-path that closes the loop between AI generation
+ * (ai_generated_content) and the listing record (listings.public_remarks).
+ *
+ * Call this from the "Approve & Publish" button in DescriptionApprovalCard.
+ */
+export async function saveDescriptionToListing(params: {
+  listingId: string
+  contentId: string
+  approvedText: string
+}): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(params.listingId)) return { success: false, error: "Invalid listing ID" }
+  if (!isValidUUID(params.contentId)) return { success: false, error: "Invalid content ID" }
+  if (!params.approvedText?.trim()) return { success: false, error: "Approved text cannot be empty" }
+
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: "Not authenticated" }
+
+  // 1. Write the approved text to the listing's public_remarks field
+  const { error: listingError } = await supabase
+    .from("listings")
+    .update({
+      public_remarks: params.approvedText.trim(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.listingId)
+
+  if (listingError) {
+    console.error("[saveDescriptionToListing] Failed to update listing:", listingError)
+    return { success: false, error: listingError.message }
+  }
+
+  // 2. Mark the ai_generated_content record as approved
+  await supabase
+    .from("ai_generated_content")
+    .update({
+      compliance_approved: true,
+      status: "approved",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", params.contentId)
+
+  revalidatePath(`/dashboard/listings/${params.listingId}`)
+  revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)
+
+  return { success: true }
 }

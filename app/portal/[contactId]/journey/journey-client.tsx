@@ -248,6 +248,19 @@ export default function JourneyClient({
           </div>
         </CardHeader>
         <CardContent>
+          {/* Trust message */}
+          <p className="text-xs text-muted-foreground mb-4 px-2">
+            Your agent controls which milestones appear here. Questions? Message them directly.
+          </p>
+
+          {milestones.length === 0 && (
+            <div className="text-center py-8">
+              <p className="text-muted-foreground text-sm">
+                Your journey milestones will appear here as your agent updates your file.
+              </p>
+            </div>
+          )}
+
           <div className="relative space-y-0">
             {/* Vertical line */}
             <div className="absolute left-5 top-5 bottom-5 w-0.5 bg-muted print:bg-gray-300" />
@@ -366,6 +379,19 @@ export default function JourneyClient({
           </div>
         </CardContent>
       </Card>
+
+      {/* All milestones complete celebration */}
+      {milestones.length > 0 && milestones.every((m) => m.status === "completed") && (
+        <div className="rounded-xl border-2 border-purple-200 bg-purple-50 p-4 text-center mt-4">
+          <Home className="h-8 w-8 text-purple-600 mx-auto mb-2" />
+          <p className="font-semibold text-purple-800 mt-1">
+            {portalView === 'seller' ? 'Your home is sold!' : 'Welcome home!'}
+          </p>
+          <p className="text-sm text-purple-700 mt-1">
+            Every milestone has been completed. Congratulations on this journey.
+          </p>
+        </div>
+      )}
 
       {/* Help CTA */}
       <Card className="border-dashed print:hidden">

@@ -1,1 +1,2 @@
-export { default as bookings-list } from './bookings-list.tsx'
+// VendorBookingsList has no default export — use named export
+export { VendorBookingsList } from './bookings-list.tsx'

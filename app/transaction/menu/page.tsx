@@ -4,7 +4,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { LayoutGrid, Handshake, CheckSquare, Folder, Users, Settings } from 'lucide-react'
 
 const TC_NAV = [
-  { label: 'Coordinator Dashboard', href: '/transaction/dashboard', icon: LayoutGrid },
+  { label: 'Coordinator Command', href: '/dashboard/coordinator', icon: LayoutGrid },
   { label: 'Active Deals', href: '/transaction/deals', icon: Handshake },
   { label: 'Checklists', href: '/transaction/checklists', icon: CheckSquare },
   { label: 'Documents', href: '/transaction/documents', icon: Folder },

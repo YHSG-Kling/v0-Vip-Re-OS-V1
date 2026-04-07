@@ -26,6 +26,28 @@ export interface VapiCallParams {
   assistantId?: string
   /** Inline assistant config — mutually exclusive with assistantId */
   assistantConfig?: Record<string, unknown>
+  /**
+   * Runtime overrides applied on top of the stored assistant config.
+   * Used by the AI-ISA layer to inject per-call persona, voice, and
+   * system prompt derived from buildCallContext().
+   */
+  assistantOverrides?: {
+    name?: string
+    firstMessage?: string
+    voice?: {
+      provider: "elevenlabs" | "playht" | "deepgram" | "openai" | "azure"
+      voiceId: string
+      stability?: number
+      similarityBoost?: number
+    }
+    model?: {
+      provider?: string
+      model?: string
+      systemPrompt?: string
+      temperature?: number
+    }
+    variableValues?: Record<string, string>
+  }
 }
 
 export interface VapiCallResponse {
@@ -58,6 +80,9 @@ export async function initiateCall(params: VapiCallParams): Promise<VapiCallResp
 
   if (params.assistantId) {
     body.assistantId = params.assistantId
+    if (params.assistantOverrides) {
+      body.assistantOverrides = params.assistantOverrides
+    }
   } else if (params.assistantConfig) {
     body.assistant = params.assistantConfig
   }

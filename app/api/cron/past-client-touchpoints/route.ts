@@ -1,5 +1,11 @@
 import { createClient } from "@/lib/supabase/server"
 import { sendAnniversaryMessage, sendBirthdayMessage, sendReferralRequest } from "@/app/actions/past-client-touchpoints"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -10,6 +16,19 @@ export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization")
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return new Response("Unauthorized", { status: 401 })
+  }
+
+  const contextResult = await createCronRunContextAction({
+    cron_name: "past-client-touchpoints",
+    cron_path: "/app/api/cron/past-client-touchpoints/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return Response.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[PastClientTouchpoints] Failed to record cron start:", startRecordResult.error)
   }
 
   const supabase = await createClient()
@@ -87,16 +106,22 @@ export async function GET(request: Request) {
       }
     }
 
+    const totalProcessed = results.anniversaries + results.birthdays + results.referralRequests
+
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: totalProcessed,
+      metadata: results,
+    })
+
     return Response.json({
       success: true,
       processed: results,
     })
   } catch (error: any) {
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
     return Response.json(
-      {
-        success: false,
-        error: error.message,
-      },
+      { success: false, error: error.message, context_id: contextId },
       { status: 500 },
     )
   }

@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 /**
  * CRON — Distribute Podcast Episodes
@@ -37,6 +43,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const contextResult = await createCronRunContextAction({
+    cron_name: "distribute-podcast-episodes",
+    cron_path: "/app/api/cron/distribute-podcast-episodes/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[DistributePodcastEpisodes] Failed to record cron start:", startRecordResult.error)
+  }
+
   const supabase = createServiceClient()
   const results: {
     processed: number
@@ -70,6 +89,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (!episodes || episodes.length === 0) {
+      await recordCronSuccessAction({ context_id: contextId, records_processed: 0, metadata: { message: "No episodes to distribute" } })
       return NextResponse.json({
         success: true,
         message: "No episodes to distribute",
@@ -258,6 +278,13 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: results.processed,
+      output_count: results.distributed,
+      metadata: results,
+    })
+
     return NextResponse.json({
       success: true,
       message: `Processed ${results.processed} episodes`,
@@ -266,12 +293,9 @@ export async function GET(request: NextRequest) {
 
   } catch (error: any) {
     console.error("[Cron] distribute-podcast-episodes error:", error)
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
     return NextResponse.json(
-      {
-        success: false,
-        error: error.message,
-        results,
-      },
+      { success: false, error: error.message, results, context_id: contextId },
       { status: 500 }
     )
   }

@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { ContentGenerationService } from "@/lib/services"
@@ -12,6 +12,7 @@ import {
   sendWeatherAlertToAgent,
   sendFeedbackRequest,
 } from "@/lib/communications"
+import { completeOpenHouseCheckInAction } from "@/app/actions/open-house-kernel"
 
 function parseAIJsonResponse(text: string) {
   let cleanText = text.trim()
@@ -40,18 +41,19 @@ export async function scheduleOpenHouse(params: {
     const { data, error } = await supabase
       .from("open_house_events")
       .insert({
-        property_id: params.listingId,
+        listing_id: params.listingId,
         agent_id: params.agentId,
-        event_date: params.startTime.split('T')[0],
+        event_date: params.startTime.split("T")[0],
         start_time: params.startTime,
         end_time: params.endTime,
         description: params.description,
         status: "scheduled",
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    if (!data) throw new Error("Failed to create open house event")
 
     revalidatePath("/dashboard")
     return { success: true, openHouse: data }
@@ -91,29 +93,90 @@ export async function recordVisitor(params: {
   try {
     const supabase = await createClient()
 
-    const { data, error } = await supabase
-      .from("open_house_attendees")
-      .insert({
-        event_id: params.openHouseId,
-        contact_id: params.contactId,
-        first_name: params.firstName,
-        last_name: params.lastName,
-        email: params.email,
-        phone: params.phone,
-        notes: params.notes,
-        interest_level: params.interestLevel || "somewhat_interested",
-        check_in_time: new Date().toISOString(),
-      })
-      .select()
-      .single()
+    // Auth gate: get current user and brokerage
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      return { success: false, error: "Unauthorized" }
+    }
 
-    if (error) throw error
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+
+    if (!userRow?.brokerage_id) {
+      return { success: false, error: "Brokerage not found" }
+    }
+
+    // If contact_id is provided, use direct insert
+    if (params.contactId) {
+      const { data, error } = await supabase
+        .from("open_house_attendees")
+        .insert({
+          open_house_id: params.openHouseId,
+          contact_id: params.contactId,
+          first_name: params.firstName,
+          last_name: params.lastName,
+          email: params.email,
+          phone: params.phone,
+          notes: params.notes,
+          property_interest_level: mapInterestLevel(params.interestLevel),
+          checked_in: true,
+          check_in_time: new Date().toISOString(),
+          rsvp_status: "confirmed",
+        })
+        .select()
+        .maybeSingle()
+
+      if (error) throw error
+      if (!data) throw new Error("Failed to record visitor")
+
+      revalidatePath("/dashboard")
+      return { success: true, visitor: data, contactId: params.contactId }
+    }
+
+    // Walk-in: use kernel flow to resolve or create contact first
+    const checkInResult = await completeOpenHouseCheckInAction({
+      brokerage_id: userRow.brokerage_id,
+      agent_id: user.id,
+      open_house_id: params.openHouseId,
+      first_name: params.firstName,
+      last_name: params.lastName,
+      email: params.email,
+      phone: params.phone,
+      check_in_method: "manual",
+      interest_level: mapInterestLevel(params.interestLevel),
+      notes: params.notes,
+    })
+
+    if (!checkInResult.success) {
+      throw new Error(checkInResult.error || "Failed to process walk-in check-in")
+    }
 
     revalidatePath("/dashboard")
-    return { success: true, visitor: data }
+    return {
+      success: true,
+      visitor: { id: checkInResult.attendee_id },
+      contactId: checkInResult.contact_id,
+      nextActionId: checkInResult.next_action_id,
+    }
   } catch (error) {
     return handleError(error, "recordVisitor")
   }
+}
+
+/**
+ * Map interest_level string to numeric 1-5 scale
+ */
+function mapInterestLevel(interest?: string): number {
+  const levelMap: Record<string, number> = {
+    not_interested: 1,
+    somewhat_interested: 3,
+    interested: 4,
+    very_interested: 5,
+  }
+  return levelMap[interest || "somewhat_interested"] || 3
 }
 
 // ============================================
@@ -133,7 +196,7 @@ export async function optimizeOpenHouseTiming(params: { propertyId: string; agen
   const supabase = await createClient()
 
   try {
-    const { data: property } = await supabase.from("listings").select("*").eq("id", params.propertyId).single()
+    const { data: property } = await supabase.from("listings").select("*").eq("id", params.propertyId).maybeSingle()
 
     // Get historical data
     const { data: historical } = await supabase
@@ -214,9 +277,9 @@ export async function calculateMatchScore(contactId: string, propertyId: string)
   const supabase = await createClient()
 
   try {
-    const { data: contact } = await supabase.from("contacts").select("*").eq("id", contactId).single()
+    const { data: contact } = await supabase.from("contacts").select("*").eq("id", contactId).maybeSingle()
 
-    const { data: property } = await supabase.from("listings").select("*").eq("id", propertyId).single()
+    const { data: property } = await supabase.from("listings").select("*").eq("id", propertyId).maybeSingle()
 
     if (!contact || !property) return 0
 
@@ -279,13 +342,13 @@ export async function generatePersonalizedInvite(params: { contactId: string; ev
   const supabase = await createClient()
 
   try {
-    const { data: contact } = await supabase.from("contacts").select("*").eq("id", params.contactId).single()
+    const { data: contact } = await supabase.from("contacts").select("*").eq("id", params.contactId).maybeSingle()
 
     const { data: event } = await supabase
       .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", params.eventId)
-      .single()
+      .maybeSingle()
 
     const { data: persona } = await supabase
       .from("client_detailed_personas")
@@ -293,7 +356,7 @@ export async function generatePersonalizedInvite(params: { contactId: string; ev
       .eq("id", contact?.persona_id)
       .maybeSingle()
 
-    const matchScore = await calculateMatchScore(params.contactId, event?.property_id)
+    const matchScore = await calculateMatchScore(params.contactId, event?.listing_id)
 
     const prompt = `Generate personalized open house invitation for ${contact?.first_name} ${contact?.last_name}.
 
@@ -350,7 +413,7 @@ OUTPUT FORMAT (JSON):
     const result = parseAIJsonResponse(text)
 
     revalidatePath("/dashboard/open-house")
-    return { success: true, data: result }
+    return { success: true, data: result, invite: result.email_body ?? null }
   } catch (error) {
     console.error("Generate invite error:", error)
     return { success: false, error: "Failed to generate invitation" }
@@ -389,9 +452,9 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
     if (!isValidUUID(contactId)) continue
 
     try {
-      const { data: contact } = await supabase.from("contacts").select("*").eq("id", contactId).single()
+      const { data: contact } = await supabase.from("contacts").select("*").eq("id", contactId).maybeSingle()
 
-      const { data: event } = await supabase.from("open_house_events").select("*").eq("id", params.eventId).single()
+      const { data: event } = await supabase.from("open_house_events").select("*").eq("id", params.eventId).maybeSingle()
 
       // Generate personalized content
       const inviteResult = await generatePersonalizedInvite({ contactId, eventId: params.eventId })
@@ -401,7 +464,7 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
         continue
       }
 
-      const matchScore = await calculateMatchScore(contactId, event?.property_id)
+      const matchScore = await calculateMatchScore(contactId, event?.listing_id)
 
       // Create invitation record
       const { data: invitation } = await supabase
@@ -416,7 +479,7 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
           sent_at: new Date().toISOString(),
         })
         .select()
-        .single()
+        .maybeSingle()
 
       // Send via email using the AI-generated content
       if (invitation?.id) {
@@ -461,7 +524,7 @@ export async function handleRSVP(params: { eventId: string; invitationId: string
       .from("open_house_invitations")
       .select("*")
       .eq("id", params.invitationId)
-      .single()
+      .maybeSingle()
 
     if (!invitation) {
       return { success: false, error: "Invitation not found" }
@@ -521,7 +584,7 @@ export async function predictAttendance(eventId: string) {
       .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
-      .single()
+      .maybeSingle()
 
     const { data: invitations } = await supabase.from("open_house_invitations").select("*").eq("event_id", eventId)
 
@@ -686,7 +749,7 @@ function calculateAttendeeLeadScore(attendee: any): number {
 async function generateEventAnalytics(eventId: string) {
   const supabase = await createClient()
 
-  const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).single()
+  const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).maybeSingle()
 
   const { data: attendees } = await supabase.from("open_house_attendees").select("*").eq("event_id", eventId)
 
@@ -741,8 +804,8 @@ export async function createOpenHouseEvent(params: {
     const { data: event, error } = await supabase
       .from("open_house_events")
       .insert({
-        hosting_agent_id: params.agentId,
-        property_id: params.propertyId,
+        agent_id: params.agentId,
+        listing_id: params.propertyId,
         event_date: params.eventDate,
         start_time: params.startTime,
         end_time: params.endTime,
@@ -750,11 +813,12 @@ export async function createOpenHouseEvent(params: {
         status: "scheduled",
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    if (!event) throw new Error("Failed to create open house event")
 
-    revalidatePath("/dashboard/open-house")
+    revalidatePath(`/dashboard/listings/${params.propertyId}/open-house`)
     return { success: true, data: event }
   } catch (error) {
     console.error("Create event error:", error)
@@ -772,7 +836,7 @@ export async function getOpenHouseEvents(agentId: string) {
   const { data, error } = await supabase
     .from("open_house_events")
     .select("*, property:listings(*), analytics:open_house_analytics(*)")
-    .eq("hosting_agent_id", agentId)
+    .eq("agent_id", agentId)
     .order("event_date", { ascending: false })
 
   if (error) {
@@ -805,7 +869,7 @@ export async function fetchWeatherForEvent(eventId: string) {
       .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
-      .single()
+      .maybeSingle()
 
     if (!event?.property?.latitude || !event?.property?.longitude) {
       return { error: "Property location not found" }
@@ -840,7 +904,7 @@ export async function fetchWeatherForEvent(eventId: string) {
       .from("open_house_events")
       .select("agent_id")
       .eq("id", eventId)
-      .single()
+      .maybeSingle()
     
     if (event?.agent_id) {
       await sendWeatherAlertToAgent({
@@ -894,9 +958,9 @@ export async function generatePerformanceInsights(eventId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: analytics } = await supabase.from("open_house_analytics").select("*").eq("event_id", eventId).single()
+    const { data: analytics } = await supabase.from("open_house_analytics").select("*").eq("event_id", eventId).maybeSingle()
 
-    const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).single()
+    const { data: event } = await supabase.from("open_house_events").select("*").eq("id", eventId).maybeSingle()
 
     if (!analytics || !event) {
       return { error: "Analytics data not found" }
@@ -970,7 +1034,7 @@ export async function sendFeedbackRequestToAttendee(attendeeId: string) {
   const supabase = await createClient()
 
   try {
-    const { data: attendee } = await supabase.from("open_house_attendees").select("*").eq("id", attendeeId).single()
+    const { data: attendee } = await supabase.from("open_house_attendees").select("*").eq("id", attendeeId).maybeSingle()
 
     if (!attendee) {
       return { success: false, error: "Attendee not found" }
@@ -980,7 +1044,7 @@ export async function sendFeedbackRequestToAttendee(attendeeId: string) {
       .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", attendee.event_id)
-      .single()
+      .maybeSingle()
 
     const feedbackUrl = `${process.env.NEXT_PUBLIC_APP_URL || ""}/open-house/feedback/${attendeeId}`
   
@@ -991,9 +1055,6 @@ export async function sendFeedbackRequestToAttendee(attendeeId: string) {
         eventId: attendee.event_id,
         feedbackUrl
       })
-      console.log(`[v0] Feedback request sent to ${attendee.contact_email} for event at ${event?.property?.address}`)
-    } else {
-      console.log(`[v0] No contact_id for attendee, skipping feedback request`)
     }
   
     return { success: true, feedbackUrl }
@@ -1020,7 +1081,7 @@ export async function submitFeedback(params: {
   const supabase = await createClient()
 
   try {
-    const { data: attendee } = await supabase.from("open_house_attendees").select("*").eq("id", params.attendeeId).single()
+    const { data: attendee } = await supabase.from("open_house_attendees").select("*").eq("id", params.attendeeId).maybeSingle()
 
     if (!attendee) {
       return { success: false, error: "Attendee not found" }
@@ -1036,18 +1097,18 @@ export async function submitFeedback(params: {
       })
       .eq("id", params.attendeeId)
 
-    // Store detailed feedback
-    await supabase.from("open_house_feedback_responses").insert({
+    // Store detailed feedback in the correct table with correct column names
+    await supabase.from("open_house_feedback").insert({
       attendee_id: params.attendeeId,
       event_id: attendee.event_id,
-      overall_rating: params.overallRating,
-      what_liked_most: params.whatLikedMost,
-      concerns: params.concerns,
-      pricing_feedback: params.pricingFeedback,
-      would_make_offer: params.wouldMakeOffer,
-      preferred_follow_up: params.preferredFollowUp,
-      additional_comments: params.additionalComments,
-      submitted_at: new Date().toISOString(),
+      contact_id: attendee.contact_id ?? null,
+      brokerage_id: attendee.brokerage_id ?? null,
+      rating: params.overallRating,
+      price_opinion: params.pricingFeedback ?? null,
+      liked_most: params.whatLikedMost ?? null,
+      concerns: params.concerns ?? null,
+      interested_in_offer: params.wouldMakeOffer === "yes",
+      has_own_agent: attendee.working_with_agent ?? false,
     })
 
     // Update lead score based on feedback
@@ -1088,7 +1149,7 @@ export async function monitorCompetingEvents(eventId: string) {
       .from("open_house_events")
       .select("*, property:listings(*)")
       .eq("id", eventId)
-      .single()
+      .maybeSingle()
 
     if (!event) {
       return { error: "Event not found" }
@@ -1132,11 +1193,6 @@ export async function monitorCompetingEvents(eventId: string) {
       })
       .eq("id", eventId)
 
-    // Alert if high competition
-    if (sameTimeConflicts.length >= 2) {
-      console.log(`[v0] High competition alert: ${sameTimeConflicts.length} competing events at same time`)
-    }
-
     return competingData
   } catch (error) {
     console.error("Monitor competing events error:", error)
@@ -1172,9 +1228,9 @@ export async function checkInAttendee(params: {
     // Check if attendee already checked in
     const { data: existing } = await supabase
       .from("open_house_attendees")
-      .select("*")
+      .select("id")
       .eq("event_id", params.eventId)
-      .eq("contact_email", params.contactEmail)
+      .eq("email", params.contactEmail)
       .maybeSingle()
 
     if (existing) {
@@ -1186,21 +1242,18 @@ export async function checkInAttendee(params: {
       .from("open_house_attendees")
       .insert({
         event_id: params.eventId,
-        contact_email: params.contactEmail,
-        contact_name: params.contactName,
-        contact_phone: params.contactPhone,
-        interest_level: params.interestLevel || "just_looking",
-        specific_questions: params.specificQuestions,
-        opt_in_follow_up: params.optInFollowUp !== false,
+        email: params.contactEmail,
+        name: params.contactName,
+        phone: params.contactPhone ?? null,
+        interest_level: params.interestLevel || "unknown",
         check_in_time: new Date().toISOString(),
+        arrival_time: new Date().toISOString(),
+        working_with_agent: false,
+        tcpa_consent: params.optInFollowUp !== false,
+        ai_lead_score: 0,
       })
       .select()
-      .single()
-
-    // Send automated feedback request after 30 minutes
-    setTimeout(() => {
-      sendFeedbackRequestToAttendee(attendee.id)
-    }, 30 * 60 * 1000)
+      .maybeSingle()
 
     revalidatePath("/dashboard/open-house")
     return { success: true, data: attendee }

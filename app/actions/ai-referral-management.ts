@@ -2,7 +2,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
@@ -43,7 +45,7 @@ export async function identifyReferralOpportunities(agentId: string) {
     }
 
     const { object: analysis } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         topReferralCandidates: z.array(z.object({
           contactId: z.string(),
@@ -142,7 +144,7 @@ export async function generateReferralRequest(params: {
       .single()
 
     const { text: referralRequest } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       prompt: `Generate a personalized referral request for:
 
 Agent: ${agent?.first_name} ${agent?.last_name}
@@ -207,7 +209,7 @@ export async function nurturePendingReferral(params: {
     }
 
     const { object: nurtureStrategy } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         currentStage: z.string(),
         nextBestAction: z.object({
@@ -290,7 +292,7 @@ export async function recommendReferralReward(params: {
     }
 
     const { object: rewardRecommendation } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         recommendedReward: z.object({
           type: z.enum(["gift_card", "cash", "donation", "gift", "experience", "service"]),
@@ -361,7 +363,7 @@ export async function analyzeReferralProgram(agentId: string) {
       .eq("source", "referral")
 
     const { object: analysis } = await generateObject({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       schema: z.object({
         overallHealth: z.object({
           score: z.number(),

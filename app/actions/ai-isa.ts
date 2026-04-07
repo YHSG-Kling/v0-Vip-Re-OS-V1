@@ -15,12 +15,50 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchEmail, dispatchVideo, dispatchDirectMail } from "@/lib/providers/dispatch"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { KernelEvent } from "@/lib/kernel/events"
+import { buildActorContext } from "@/lib/kernel/actor-context"
+import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * AI Inside Sales Agent (ISA) System
  * Autonomous outbound calling with Vapi.ai for lead qualification and appointment booking
  */
-
+async function runAiIsaComplianceCheck(params: {
+  userId: string
+  brokerageId: string
+  journeyType?: "buyer" | "seller" | "marketing"
+  persona?: string
+  messageType: "email" | "sms" | "phone"
+  content: string
+  contactId: string
+  contactType?: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
+  status?: string
+  dncStatus?: boolean
+  tcpaConsent?: boolean
+  isaReengageAllowed?: boolean
+}) {
+  return evaluateKernelOutbound({
+    actorContext: buildActorContext({
+      userId: params.userId,
+      brokerageId: params.brokerageId,
+      role: "agent",
+    }),
+    journeyType: params.journeyType ?? "buyer",
+    persona: params.persona ?? "other",
+    messageType: params.messageType,
+    content: params.content,
+    contact: {
+      id: params.contactId,
+      first_name: "",
+      last_name: "",
+      contact_type: params.contactType ?? "buyer",
+      status: params.status ?? "new",
+      dnc_status: params.dncStatus ?? false,
+      tcpa_consent: params.tcpaConsent ?? true,
+      isa_reengage_allowed: params.isaReengageAllowed ?? false,
+    },
+  })
+}
 // Launch AI ISA campaign
 export async function launchAIISACampaign(params: {
   campaignType: string
@@ -236,11 +274,22 @@ export async function sendCampaignTestTouch(params: {
   if (!user) return { success: false, error: "Unauthenticated" }
 
   // Compliance gate
-  const compliance = await evaluateOutbound({
-    actorContext: { brokerageId: params.brokerageId, userId: user.id },
-    messageType:  "email",
-    content:      `Test touch for campaign ${params.campaignId}`,
-  })
+  // Compliance gate
+// Compliance gate
+const compliance = await runAiIsaComplianceCheck({
+  userId: user.id,
+  brokerageId: params.brokerageId,
+  journeyType: "buyer",
+  persona: "other",
+  messageType: "email",
+  content: `Test touch for campaign ${params.campaignId}`,
+  contactId: params.campaignId,
+  contactType: "buyer",
+  status: "new",
+  dncStatus: false,
+  tcpaConsent: true,
+  isaReengageAllowed: false,
+})
   if (!compliance.allowed) {
     return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
   }
@@ -574,14 +623,21 @@ export async function triggerGhostRecovery(params: {
   if (!user) return { success: false, error: "Unauthenticated" }
 
   // Step 1: Compliance gate — hard stop
-  const compliance = await evaluateOutbound({
-    actorContext: { brokerageId: params.brokerageId, userId: user.id },
-    messageType: "email",
-    content: "Ghost recovery outreach",
-  })
-  if (!compliance.allowed) {
-    return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
-  }
+  // Step 1: Compliance gate — hard stop
+const compliance = await runAiIsaComplianceCheck({
+  userId: user.id,
+  brokerageId: params.brokerageId,
+  journeyType: "buyer",
+  persona: "other",
+  messageType: "email",
+  content: "Ghost recovery outreach",
+  contactId: params.contactId,
+  contactType: "buyer",
+  status: "new",
+  dncStatus: false,
+  tcpaConsent: true,
+  isaReengageAllowed: true,
+})
 
   // Step 2: Fetch contact for dispatch
   const service = createServiceClient()
@@ -598,16 +654,18 @@ export async function triggerGhostRecovery(params: {
     return { success: false, error: `Contact in blocked lifecycle state: ${contact.lifecycle_state}` }
   }
 
-  // Step 3: Dispatch email
+  // Step 3: Dispatch — assembleEmail() runs inside dispatchEmail(), do NOT pre-assemble.
+  const ghostBodyHtml = `<p>Hi ${contact.first_name ?? "there"},</p><p>We wanted to check in and see if we can still help you on your real estate journey. No pressure — just here when you're ready.</p>`
   const dispatchResult = await dispatchEmail({
-    brokerageId:  params.brokerageId,
-    userId:       user.id,
-    from:         "noreply@platform.com",
-    to:           contact.email ?? "",
-    subject:      "Following up — are you still interested?",
-    html:         `<p>Hi ${contact.first_name ?? "there"},</p><p>We wanted to check in and see if we can still help you on your real estate journey. No pressure — just here when you're ready.</p>`,
-    systemSource: "ghost_recovery",
-    leadId:       params.contactId,
+    brokerageId:    params.brokerageId,
+    userId:         user.id,
+    from:           "noreply@platform.com",
+    to:             contact.email ?? "",
+    subject:        "Following up — are you still interested?",
+    html:           ghostBodyHtml,
+    channelPurpose: "campaign",
+    systemSource:   "ghost_recovery",
+    leadId:         params.contactId,
   })
 
   if (!dispatchResult.success) return { success: false, error: dispatchResult.error }
@@ -666,26 +724,40 @@ export async function retryGhostContact(params: {
   if (contactErr || !contact) return { success: false, error: "Contact not found" }
 
   // Compliance gate
-  const compliance = await evaluateOutbound({
-    actorContext: { brokerageId: params.brokerageId, userId: user.id },
-    messageType: params.channel === "email" ? "email" : "sms",
-    content: "Ghost recovery re-engagement",
-  })
+  const agentContext = await getAgentContext()
+
+const compliance = await runAiIsaComplianceCheck({
+  userId: user.id,
+  brokerageId: params.brokerageId,
+  journeyType: "buyer",
+  persona: "other",
+  messageType: params.channel === "sms" ? "sms" : params.channel === "phone" ? "phone" : "email",
+  content: "Ghost recovery retry outreach",
+  contactId: params.contactId,
+  contactType: "buyer",
+  status: "new",
+  dncStatus: false,
+  tcpaConsent: true,
+  isaReengageAllowed: true,
+})
   if (!compliance.allowed) {
     return { success: false, error: `Compliance blocked: ${compliance.violations?.join(", ") ?? "unknown"}` }
   }
 
   // Dispatch based on channel
   if (params.channel === "email" && contact.email) {
+    // assembleEmail() runs inside dispatchEmail() — do NOT pre-assemble.
+    const retryBodyHtml = `<p>Hi ${contact.first_name ?? "there"},</p><p>Just checking in to see if you're still looking for help with your real estate needs. Let me know!</p>`
     const result = await dispatchEmail({
-      brokerageId: params.brokerageId,
-      userId: user.id,
-      from: "noreply@platform.com",
-      to: contact.email,
-      subject: "Quick follow-up",
-      html: `<p>Hi ${contact.first_name ?? "there"},</p><p>Just checking in to see if you're still looking for help with your real estate needs. Let me know!</p>`,
-      systemSource: "ghost_recovery",
-      leadId: params.contactId,
+      brokerageId:    params.brokerageId,
+      userId:         user.id,
+      from:           "noreply@platform.com",
+      to:             contact.email,
+      subject:        "Quick follow-up",
+      html:           retryBodyHtml,
+      channelPurpose: "campaign",
+      systemSource:   "ghost_recovery",
+      leadId:         params.contactId,
     })
     if (!result.success) return { success: false, error: result.error }
   }

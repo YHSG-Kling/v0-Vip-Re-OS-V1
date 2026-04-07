@@ -6,13 +6,12 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -56,14 +55,6 @@ export async function generateBlogPost(
     return { success: false, error: accessCheck.reason || "Feature access denied" }
   }
 
-  // ── 2. Resolve AI provider ──────────────────────────────────────────────────
-  const aiProvider = await resolveProvider({
-    brokerageId: params.brokerageId,
-    agentUserId: params.agentUserId,
-    teamId: undefined,
-    providerType: "ai",
-  })
-
   // ── 3. Apply brand voice ────────────────────────────────────────────────────
   const brandVoice = await applyBrandVoice({
     brokerageId: params.brokerageId,
@@ -97,10 +88,12 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
   let blogResult: BlogPostResult
   try {
     const { text } = await generateText({
-      model: aiProvider.modelId || "anthropic/claude-sonnet-4-20250514",
+      feature: "blog_generation",
       system: systemPrompt,
       prompt: userPrompt,
       temperature: 0.7,
+      brokerageId: params.brokerageId,
+      userId,
     })
 
     // Parse JSON response
@@ -113,18 +106,30 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
 
   // ── 5. Compliance check via evaluateOutbound ────────────────────────────────
   const complianceResult = await evaluateOutbound({
-    brokerageId: params.brokerageId,
-    actorUserId: userId,
-    messageType: "blog_post",
-    contentBody: blogResult.content,
-    channel: "web",
-    recipientType: "public",
+    actorContext: {
+      userId,
+      role: "agent",
+      brokerageId: params.brokerageId,
+    },
+    journeyType: "buyer",
+    persona: "first_time",
+    messageType: "email",
+    content: blogResult.content,
+    contact: {
+      id: "broadcast",
+      first_name: "Broadcast",
+      last_name: "Audience",
+      contact_type: "buyer",
+      tcpa_consent: true,
+      isa_reengage_allowed: false,
+      dnc_status: false,
+    },
   })
 
   if (!complianceResult.allowed) {
     return {
       success: false,
-      error: `Compliance check failed: ${complianceResult.violations?.map((v) => v.rule).join(", ")}`,
+      error: `Compliance check failed: ${complianceResult.violations.join(", ")}`,
     }
   }
 
@@ -145,7 +150,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
       compliance_approved: false,
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (postError || !post) {
     console.error("[generateBlogPost] Insert failed:", postError)
@@ -163,7 +168,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
       .select("id")
       .eq("brokerage_id", params.brokerageId)
       .eq("keyword", keyword)
-      .single()
+      .maybeSingle()
 
     let seoKeywordId: string
 
@@ -183,7 +188,7 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
           is_active: true,
         })
         .select("id")
-        .single()
+        .maybeSingle()
 
       if (kwError || !newKeyword) {
         console.error("[generateBlogPost] Keyword insert failed:", kwError)
@@ -206,16 +211,12 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
 
   // ── 9. Fire kernel event ────────────────────────────────────────────────────
   await processKernelEvent({
-    eventType: KernelEvent.BLOG_POST_GENERATED,
+    event: KernelEvent.BLOG_POST_GENERATED,
     brokerageId: params.brokerageId,
-    actorUserId: userId,
     entityType: "blog_post",
     entityId: post.id,
-    payload: {
-      title: blogResult.title,
-      keywordCount: params.keywords.length,
-      campaignId: params.campaignId,
-    },
+  }).catch((err) => {
+    console.error("[blog] generateBlogPost kernel event failed (non-blocking):", err)
   })
 
   return { success: true, postId: post.id }
@@ -235,7 +236,7 @@ export async function updateBlogPost(
     .from("blog_posts")
     .select("brokerage_id, publish_status")
     .eq("id", postId)
-    .single()
+    .maybeSingle()
 
   if (fetchError || !existingPost) {
     return { success: false, error: "Blog post not found" }
@@ -247,7 +248,7 @@ export async function updateBlogPost(
       .from("blog_posts")
       .select("content")
       .eq("id", postId)
-      .single()
+      .maybeSingle()
 
     if (fullPost?.content) {
       const complianceResult = await checkBrandCompliance({
@@ -289,15 +290,12 @@ export async function updateBlogPost(
     await supabase.from("blog_posts").update({ published_at: new Date().toISOString() }).eq("id", postId)
 
     await processKernelEvent({
-      eventType: KernelEvent.BLOG_POST_PUBLISHED,
+      event: KernelEvent.BLOG_POST_PUBLISHED,
       brokerageId: existingPost.brokerage_id,
-      actorUserId: userId,
       entityType: "blog_post",
       entityId: postId,
-      payload: {
-        title: updates.title,
-        publishStatus: "published",
-      },
+    }).catch((err) => {
+      console.error("[blog] updateBlogPost kernel event failed (non-blocking):", err)
     })
   }
 
@@ -317,7 +315,7 @@ export async function publishToWordPress(
     .from("blog_posts")
     .select("id, brokerage_id, title, content, excerpt, publish_status")
     .eq("id", postId)
-    .single()
+    .maybeSingle()
 
   if (fetchError || !post) {
     return { success: false, error: "Blog post not found" }
@@ -334,7 +332,7 @@ export async function publishToWordPress(
     .eq("brokerage_id", post.brokerage_id)
     .eq("platform", "wordpress")
     .eq("is_active", true)
-    .single()
+    .maybeSingle()
 
   if (!credentials || !credentials.api_url) {
     return { success: false, error: "WordPress credentials not configured" }
@@ -386,7 +384,7 @@ export async function publishToWordPress(
   }
 }
 
-// ─── getBlogPosts ──────────��──────────────────────────────────────────────────
+// ─── getBlogPosts ──────────��────────────────────────────�����─────────────────────
 
 export async function getBlogPosts(
   brokerageId: string,
@@ -481,7 +479,7 @@ export async function getBlogPostById(postId: string): Promise<{
       "id, brokerage_id, title, slug, excerpt, content, featured_image_url, publish_status, seo_score, wordpress_post_id, created_at, published_at"
     )
     .eq("id", postId)
-    .single()
+    .maybeSingle()
 
   if (postError || !post) {
     return { success: false, error: "Blog post not found" }
@@ -517,7 +515,7 @@ export async function getBlogPostById(postId: string): Promise<{
     .eq("blog_post_id", postId)
     .order("optimized_at", { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()
 
   return {
     success: true,
@@ -559,7 +557,7 @@ export async function addSeoKeyword(
     .select("id")
     .eq("brokerage_id", params.brokerageId)
     .eq("keyword", params.keyword)
-    .single()
+    .maybeSingle()
 
   if (existing) {
     return { success: false, error: "Keyword already exists" }
@@ -582,7 +580,7 @@ export async function addSeoKeyword(
       is_active: true,
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error || !keyword) {
     console.error("[addSeoKeyword] Insert failed:", error)

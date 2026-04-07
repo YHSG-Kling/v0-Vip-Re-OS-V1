@@ -3,6 +3,8 @@ import { redirect } from "next/navigation"
 import Link from "next/link"
 import { resolveSellerContext, getShowingStats, getRecentFeedback, getOfferSummary } from "@/lib/portal/resolve-seller-context"
 import { getOpenHouseDashboard } from "@/app/actions/seller-open-house"
+import { getSellerDocuments } from "@/app/actions/portal-seller"
+import { FileText, Download, ExternalLink } from "lucide-react"
 import {
   SellerJourneyMeaningCard,
   ListingActivityCard,
@@ -58,6 +60,7 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
     agentResult,
     nextMilestoneResult,
     updatesResult,
+    documentsResult,
   ] = await Promise.all([
     // Showing statistics
     getShowingStats(supabase, listing.id),
@@ -114,7 +117,15 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
+    // Seller documents
+    getSellerDocuments(contactId, context.transactionId ?? null),
   ])
+
+  // Seller documents — merge client_documents + transaction_documents
+  const sellerDocs = [
+    ...(documentsResult?.clientDocuments ?? documentsResult?.documents ?? []),
+    ...(documentsResult?.transactionDocuments ?? []),
+  ]
 
   // Compute metrics
   const metrics = metricsResult.data ?? { total_views: 0, showing_count: 0, inquiry_count: 0, favorite_count: 0 }
@@ -290,6 +301,56 @@ export default async function ListingPage({ params }: { params: Promise<{ contac
           } : null}
           agentName={agentName}
         />
+
+        {/* Documents */}
+        {sellerDocs.length > 0 && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <FileText className="h-4 w-4" />
+                Your Documents
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 pt-0">
+              {sellerDocs.map((doc: any, i: number) => {
+                const label = doc.document_type
+                  ? doc.document_type.replace(/_/g, " ")
+                  : doc.doc_type
+                  ? doc.doc_type.replace(/_/g, " ")
+                  : doc.file_name ?? "Document"
+                const url = doc.file_url ?? doc.storage_url ?? null
+                const status = doc.status ?? null
+                return (
+                  <div
+                    key={doc.id ?? i}
+                    className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 px-3 py-2"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <p className="text-sm capitalize truncate">{label}</p>
+                      {status && status !== "active" && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted border capitalize shrink-0">
+                          {status}
+                        </span>
+                      )}
+                    </div>
+                    {url && (
+                      <a
+                        href={url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="shrink-0 text-primary hover:text-primary/80"
+                        aria-label={`Open ${label}`}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    )}
+                  </div>
+                )
+              })}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Quick Actions */}
         <Card>

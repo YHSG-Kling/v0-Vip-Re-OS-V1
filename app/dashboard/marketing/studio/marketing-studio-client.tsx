@@ -43,6 +43,11 @@ import {
   Mail,
   Sparkles,
   Rocket,
+  Mic,
+  Send,
+  ExternalLink,
+  Newspaper,
+  Truck,
 } from "lucide-react"
 import {
   getCampaigns,
@@ -68,10 +73,11 @@ import {
   type AssetApprovalStatus,
   type VisibilityScope,
 } from "@/app/actions/marketing-studio"
+import { getMailCampaigns } from "@/app/actions/direct-mail"
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
-import { PredictionWidget, type PredictionData } from "@/components/prediction-widget"
+import { PredictionWidget, type PredictionData } from "@/app/components/prediction-widget"
 import {
   CampaignLauncherPanel,
   CompetitorWatchPanel,
@@ -155,7 +161,13 @@ interface DashboardData {
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-export default function MarketingStudioClient() {
+interface MarketingStudioClientProps {
+  userId?: string
+  brokerageId?: string
+  userRole?: string
+}
+
+export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole }: MarketingStudioClientProps) {
   const [activeTab, setActiveTab] = useState("overview")
   const [isLoading, setIsLoading] = useState(true)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
@@ -193,10 +205,36 @@ export default function MarketingStudioClient() {
   const [localContent, setLocalContent] = useState<any[]>([])
   const [isNewsletterLoading, setIsNewsletterLoading] = useState(false)
 
+  // Blog state
+  const [blogPosts, setBlogPosts] = useState<any[]>([])
+  const [isBlogLoading, setIsBlogLoading] = useState(false)
+
+  // Video state
+  const [videoProjects, setVideoProjects] = useState<any[]>([])
+  const [isVideoLoading, setIsVideoLoading] = useState(false)
+
+  // Podcast state
+  const [podcastEpisodes, setPodcastEpisodes] = useState<any[]>([])
+  const [isPodcastLoading, setIsPodcastLoading] = useState(false)
+
+  // Direct Mail state
+  const [mailCampaigns, setMailCampaigns] = useState<any[]>([])
+  const [isMailLoading, setIsMailLoading] = useState(false)
+
+  // Create newsletter dialog state (inline in studio)
+  const [isCreateNewsletterOpen, setIsCreateNewsletterOpen] = useState(false)
+  const [newNewsletter, setNewNewsletter] = useState({ campaignName: "", subjectLine: "", content: "" })
+  const [isCreatingNewsletter, setIsCreatingNewsletter] = useState(false)
+
+  // Create QR dialog state (inline in studio)
+  const [isCreateQrOpen, setIsCreateQrOpen] = useState(false)
+  const [newQr, setNewQr] = useState<{ label: string; targetUrl: string; purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture" }>({ label: "", targetUrl: "", purpose: "general" })
+  const [isCreatingQr, setIsCreatingQr] = useState(false)
+
   // Ad OS state
   const [listings, setListings] = useState<Array<{ id: string; address: string; city: string; zip?: string; list_price?: number }>>([])
-  const [agentId, setAgentId] = useState<string>("")
-  const [brokerageId, setBrokerageId] = useState<string>("")
+  const [agentId, setAgentId] = useState<string>(userIdProp ?? "")
+  const [brokerageId, setBrokerageId] = useState<string>(brokerageIdProp ?? "")
 
   // Form states
   const [newCampaign, setNewCampaign] = useState({
@@ -228,11 +266,15 @@ export default function MarketingStudioClient() {
   }, [])
 
   useEffect(() => {
-    if (activeTab === "campaigns") loadCampaigns()
-    if (activeTab === "assets") loadAssets()
-    if (activeTab === "calendar") loadCalendarEvents()
+    if (activeTab === "campaigns")   loadCampaigns()
+    if (activeTab === "assets")      loadAssets()
+    if (activeTab === "calendar")    loadCalendarEvents()
     if (activeTab === "newsletters") loadNewsletterData()
-    if (activeTab === "ad-os") loadAdOsData()
+    if (activeTab === "ad-os")       loadAdOsData()
+    if (activeTab === "blog")        loadBlogData()
+    if (activeTab === "video")       loadVideoData()
+    if (activeTab === "podcast")     loadPodcastData()
+    if (activeTab === "mail")        loadMailData()
   }, [activeTab, statusFilter])
 
   async function loadInitialData() {
@@ -285,18 +327,23 @@ export default function MarketingStudioClient() {
   async function loadNewsletterData() {
     setIsNewsletterLoading(true)
     try {
-      // Get user context first - if unavailable, just show empty data (not an error)
-      const userContext = await getUserContextForPrediction()
-      if (!userContext.success || !userContext.brokerageId || !userContext.userId) {
-        // No brokerage context - show empty newsletter data without error
-        setNewsletterCampaigns([])
-        setScheduledSends([])
-        setSubscriberCount(0)
-        setNewsletterTemplates([])
-        setLocalContent([])
-        return
+      // Use server-resolved props first; fall back to action
+      let resolvedBrokerageId = brokerageIdProp
+      let resolvedUserId = userIdProp
+      if (!resolvedBrokerageId || !resolvedUserId) {
+        const userContext = await getUserContextForPrediction()
+        if (!userContext.success || !userContext.brokerageId || !userContext.userId) {
+          setNewsletterCampaigns([])
+          setScheduledSends([])
+          setSubscriberCount(0)
+          setNewsletterTemplates([])
+          setLocalContent([])
+          return
+        }
+        resolvedBrokerageId = userContext.brokerageId
+        resolvedUserId = userContext.userId
       }
-      const { brokerageId, userId } = userContext
+      const { brokerageId, userId } = { brokerageId: resolvedBrokerageId, userId: resolvedUserId }
 
       const supabase = (await import("@/lib/supabase/client")).createClient()
       
@@ -349,19 +396,105 @@ export default function MarketingStudioClient() {
     }
   }
 
+  async function loadBlogData() {
+    setIsBlogLoading(true)
+    try {
+      const resolvedBrokerageId = brokerageIdProp || brokerageId
+      if (!resolvedBrokerageId) return
+      const { createClient } = await import("@/lib/supabase/client")
+      const supabase = createClient()
+      const { data } = await supabase
+        .from("blog_posts")
+        .select("id, title, publish_status, seo_score, created_at, published_at")
+        .eq("brokerage_id", resolvedBrokerageId)
+        .order("created_at", { ascending: false })
+        .limit(20)
+      setBlogPosts(data || [])
+    } catch (e) {
+      console.error("[v0] loadBlogData error:", e)
+    } finally {
+      setIsBlogLoading(false)
+    }
+  }
+
+  async function loadVideoData() {
+    setIsVideoLoading(true)
+    try {
+      const resolvedBrokerageId = brokerageIdProp || brokerageId
+      if (!resolvedBrokerageId) return
+      const { createClient } = await import("@/lib/supabase/client")
+      const supabase = createClient()
+      const { data } = await supabase
+        .from("ai_video_projects")
+        .select("id, title, status, video_type, video_url, thumbnail_url, created_at")
+        .eq("brokerage_id", resolvedBrokerageId)
+        .order("created_at", { ascending: false })
+        .limit(20)
+      setVideoProjects(data || [])
+    } catch (e) {
+      console.error("[v0] loadVideoData error:", e)
+    } finally {
+      setIsVideoLoading(false)
+    }
+  }
+
+  async function loadPodcastData() {
+    setIsPodcastLoading(true)
+    try {
+      const resolvedBrokerageId = brokerageIdProp || brokerageId
+      if (!resolvedBrokerageId) return
+      const { createClient } = await import("@/lib/supabase/client")
+      const supabase = createClient()
+      const { data } = await supabase
+        .from("podcast_episodes")
+        .select("id, title, status, category, duration_seconds, published_at, created_at")
+        .eq("brokerage_id", resolvedBrokerageId)
+        .order("created_at", { ascending: false })
+        .limit(20)
+      setPodcastEpisodes(data || [])
+    } catch (e) {
+      console.error("[v0] loadPodcastData error:", e)
+    } finally {
+      setIsPodcastLoading(false)
+    }
+  }
+
+  async function loadMailData() {
+    setIsMailLoading(true)
+    try {
+      const resolvedBrokerageId = brokerageIdProp || brokerageId
+      if (!resolvedBrokerageId) return
+      const result = await getMailCampaigns(resolvedBrokerageId)
+      if (result.success) setMailCampaigns(result.campaigns || [])
+    } catch (e) {
+      console.error("[v0] loadMailData error:", e)
+    } finally {
+      setIsMailLoading(false)
+    }
+  }
+
   async function loadAdOsData() {
     try {
-      const userContext = await getUserContextForPrediction()
-      if (userContext.success && userContext.userId && userContext.brokerageId) {
-        setAgentId(userContext.userId)
-        setBrokerageId(userContext.brokerageId)
+      // Use server-resolved props first; fall back to action
+      let resolvedBrokerageId = brokerageIdProp
+      let resolvedUserId = userIdProp
+      if (!resolvedBrokerageId || !resolvedUserId) {
+        const userContext = await getUserContextForPrediction()
+        if (userContext.success && userContext.userId && userContext.brokerageId) {
+          resolvedBrokerageId = userContext.brokerageId
+          resolvedUserId = userContext.userId
+        }
+      }
+      if (resolvedUserId && resolvedBrokerageId) {
+        setAgentId(resolvedUserId)
+        setBrokerageId(resolvedBrokerageId)
 
         // Load agent's active listings
         const supabase = (await import("@/lib/supabase/client")).createClient()
         const { data: listingsData } = await supabase
           .from("listings")
           .select("id, address, city, zip, list_price")
-          .eq("brokerage_id", userContext.brokerageId)
+          .eq("brokerage_id", resolvedBrokerageId)
           .in("status", ["active", "pending", "coming_soon"])
           .order("created_at", { ascending: false })
           .limit(50)
@@ -473,10 +606,16 @@ export default function MarketingStudioClient() {
     setIsPredicting(true)
     setCurrentPrediction(null)
 
-    const userContext = await getUserContextForPrediction()
-    if (!userContext.success || !userContext.userId || !userContext.brokerageId) {
-      setIsPredicting(false)
-      return
+    let resolvedBrokerageId = brokerageIdProp
+    let resolvedUserId = userIdProp
+    if (!resolvedBrokerageId || !resolvedUserId) {
+      const userContext = await getUserContextForPrediction()
+      if (!userContext.success || !userContext.userId || !userContext.brokerageId) {
+        setIsPredicting(false)
+        return
+      }
+      resolvedBrokerageId = userContext.brokerageId
+      resolvedUserId = userContext.userId
     }
 
     // Map asset_type to content_type
@@ -489,8 +628,8 @@ export default function MarketingStudioClient() {
     }
 
     const result = await predictPerformanceAction({
-      brokerageId: userContext.brokerageId,
-      userId: userContext.userId,
+      brokerageId: resolvedBrokerageId,
+      userId: resolvedUserId,
       contentType: (contentTypeMap[asset.asset_type] || "ad_creative") as any,
       sourceTable: "marketing_assets",
       sourceId: asset.id,
@@ -702,7 +841,7 @@ export default function MarketingStudioClient() {
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4 md:grid-cols-8 gap-2 h-auto bg-muted p-2 rounded-xl">
+          <TabsList className="grid w-full grid-cols-4 md:grid-cols-6 lg:grid-cols-12 gap-1 h-auto bg-muted p-2 rounded-xl">
             <TabsTrigger
               value="ad-os"
               className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
@@ -759,6 +898,34 @@ export default function MarketingStudioClient() {
               <QrCode className="h-4 w-4" />
               <span className="text-xs">QR Links</span>
             </TabsTrigger>
+            <TabsTrigger
+              value="mail"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Truck className="h-4 w-4" />
+              <span className="text-xs">Direct Mail</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="blog"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Newspaper className="h-4 w-4" />
+              <span className="text-xs">Blog</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="video"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Video className="h-4 w-4" />
+              <span className="text-xs">Video</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="podcast"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Mic className="h-4 w-4" />
+              <span className="text-xs">Podcast</span>
+            </TabsTrigger>
           </TabsList>
 
           {/* Ad OS Tab */}
@@ -768,6 +935,7 @@ export default function MarketingStudioClient() {
               <CampaignLauncherPanel
                 listings={listings}
                 agentId={agentId}
+                brokerageId={brokerageId}
                 onCampaignCreated={() => {
                   loadCampaigns()
                   loadInitialData()
@@ -1345,9 +1513,19 @@ export default function MarketingStudioClient() {
                         <Mail className="h-5 w-5 text-violet-600" />
                         Recent Campaigns
                       </CardTitle>
-                      <Button variant="outline" size="sm" asChild>
-                        <a href="/newsletters">Manage Newsletters</a>
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          className="bg-violet-600 hover:bg-violet-700"
+                          onClick={() => setIsCreateNewsletterOpen(true)}
+                        >
+                          <Plus className="h-3.5 w-3.5 mr-1.5" />
+                          New Campaign
+                        </Button>
+                        <Button variant="outline" size="sm" asChild>
+                          <a href="/newsletters">Manage</a>
+                        </Button>
+                      </div>
                     </div>
                   </CardHeader>
                   <CardContent>
@@ -1539,11 +1717,23 @@ export default function MarketingStudioClient() {
           <TabsContent value="qr" className="space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <QrCode className="h-5 w-5 text-violet-600" />
-                  QR Code Management
-                </CardTitle>
-                <CardDescription>Link QR codes to marketing assets for tracking</CardDescription>
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <QrCode className="h-5 w-5 text-violet-600" />
+                      QR Code Management
+                    </CardTitle>
+                    <CardDescription>Link QR codes to marketing assets for tracking</CardDescription>
+                  </div>
+                  <Button
+                    size="sm"
+                    className="bg-violet-600 hover:bg-violet-700"
+                    onClick={() => setIsCreateQrOpen(true)}
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    New QR Code
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center gap-4 mb-6">
@@ -1579,6 +1769,352 @@ export default function MarketingStudioClient() {
               </CardContent>
             </Card>
           </TabsContent>
+          {/* Direct Mail Tab */}
+          <TabsContent value="mail" className="space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">Direct Mail Campaigns</h3>
+                <p className="text-sm text-muted-foreground">Create, manage, and track postal mail campaigns</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" asChild>
+                  <a href="/dashboard/campaigns/mail" target="_blank" rel="noopener noreferrer">
+                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                    Full Manager
+                  </a>
+                </Button>
+                <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
+                  <a href="/dashboard/campaigns/mail">
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    New Campaign
+                  </a>
+                </Button>
+              </div>
+            </div>
+
+            {isMailLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : mailCampaigns.length === 0 ? (
+              <Card className="border-dashed">
+                <CardContent className="py-12 text-center">
+                  <Truck className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+                  <p className="font-medium text-muted-foreground">No direct mail campaigns yet</p>
+                  <Button size="sm" className="mt-4 bg-violet-600 hover:bg-violet-700" asChild>
+                    <a href="/dashboard/campaigns/mail">Create Your First Campaign</a>
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {mailCampaigns.map((campaign: any) => (
+                  <Card key={campaign.id} className="hover:shadow-md transition-shadow">
+                    <CardContent className="pt-5">
+                      <div className="flex items-start justify-between mb-2">
+                        <Badge variant="outline" className="capitalize">{campaign.status}</Badge>
+                        {campaign.quantity && (
+                          <span className="text-xs text-muted-foreground">{campaign.quantity} pieces</span>
+                        )}
+                      </div>
+                      <h4 className="font-semibold mb-1">{campaign.campaign_name}</h4>
+                      <p className="text-sm text-muted-foreground mb-3">{campaign.target_audience}</p>
+                      {campaign.mailing_date && (
+                        <p className="text-xs text-muted-foreground">
+                          Mail date: {format(new Date(campaign.mailing_date), "MMM d, yyyy")}
+                        </p>
+                      )}
+                      <div className="flex gap-2 mt-4">
+                        <Button size="sm" variant="outline" className="flex-1" asChild>
+                          <a href="/dashboard/campaigns/mail">
+                            <Eye className="h-3.5 w-3.5 mr-1.5" />
+                            Preview
+                          </a>
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          {/* Blog Tab */}
+          <TabsContent value="blog" className="space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">Blog Posts</h3>
+                <p className="text-sm text-muted-foreground">Create, edit, and publish SEO-optimized blog content</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" asChild>
+                  <a href="/dashboard/marketing/blog">
+                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                    Blog Manager
+                  </a>
+                </Button>
+                <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
+                  <a href="/dashboard/marketing/blog">
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    New Post
+                  </a>
+                </Button>
+              </div>
+            </div>
+
+            {isBlogLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : blogPosts.length === 0 ? (
+              <Card className="border-dashed">
+                <CardContent className="py-12 text-center">
+                  <Newspaper className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+                  <p className="font-medium text-muted-foreground">No blog posts yet</p>
+                  <Button size="sm" className="mt-4 bg-violet-600 hover:bg-violet-700" asChild>
+                    <a href="/dashboard/marketing/blog">Create Your First Post</a>
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {blogPosts.map((post: any) => (
+                  <Card key={post.id} className="hover:shadow-md transition-shadow">
+                    <CardContent className="pt-5">
+                      <div className="flex items-start justify-between mb-2">
+                        <Badge
+                          className={
+                            post.publish_status === "published"
+                              ? "bg-green-100 text-green-700"
+                              : post.publish_status === "pending_review"
+                              ? "bg-yellow-100 text-yellow-700"
+                              : "bg-gray-100 text-gray-700"
+                          }
+                        >
+                          {post.publish_status}
+                        </Badge>
+                        {post.seo_score != null && (
+                          <span className="text-xs font-medium text-violet-600">SEO {post.seo_score}</span>
+                        )}
+                      </div>
+                      <h4 className="font-semibold line-clamp-2 mb-2">{post.title}</h4>
+                      <p className="text-xs text-muted-foreground">
+                        {format(new Date(post.created_at), "MMM d, yyyy")}
+                      </p>
+                      <div className="flex gap-2 mt-4">
+                        <Button size="sm" variant="outline" className="flex-1" asChild>
+                          <a href={`/dashboard/marketing/blog/${post.id}`}>
+                            <Edit className="h-3.5 w-3.5 mr-1.5" />
+                            Edit
+                          </a>
+                        </Button>
+                        {post.publish_status !== "published" && (
+                          <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
+                            <a href={`/dashboard/marketing/blog/${post.id}`}>
+                              Preview &amp; Publish
+                            </a>
+                          </Button>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          {/* Video Tab */}
+          <TabsContent value="video" className="space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">Video Projects</h3>
+                <p className="text-sm text-muted-foreground">Create and distribute AI-generated video content</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" asChild>
+                  <a href="/dashboard/videos/library">
+                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                    Video Library
+                  </a>
+                </Button>
+                <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
+                  <a href="/dashboard/videos/create">
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    New Video
+                  </a>
+                </Button>
+              </div>
+            </div>
+
+            {isVideoLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : videoProjects.length === 0 ? (
+              <Card className="border-dashed">
+                <CardContent className="py-12 text-center">
+                  <Video className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+                  <p className="font-medium text-muted-foreground">No video projects yet</p>
+                  <Button size="sm" className="mt-4 bg-violet-600 hover:bg-violet-700" asChild>
+                    <a href="/dashboard/videos/create">Create Your First Video</a>
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {videoProjects.map((project: any) => (
+                  <Card key={project.id} className="hover:shadow-md transition-shadow">
+                    <CardContent className="pt-5">
+                      {project.thumbnail_url ? (
+                        <div className="relative mb-3 rounded-md overflow-hidden bg-black aspect-video">
+                          <img
+                            src={project.thumbnail_url}
+                            alt={project.title}
+                            className="w-full h-full object-cover opacity-80"
+                          />
+                          {project.status === "completed" && project.video_url && (
+                            <a
+                              href={project.video_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="absolute inset-0 flex items-center justify-center"
+                            >
+                              <div className="h-10 w-10 rounded-full bg-white/90 flex items-center justify-center">
+                                <Play className="h-5 w-5 text-violet-600 ml-0.5" />
+                              </div>
+                            </a>
+                          )}
+                        </div>
+                      ) : null}
+                      <div className="flex items-start justify-between mb-2">
+                        <Badge
+                          className={
+                            project.status === "completed"
+                              ? "bg-green-100 text-green-700"
+                              : project.status === "generating"
+                              ? "bg-blue-100 text-blue-700"
+                              : "bg-gray-100 text-gray-700"
+                          }
+                        >
+                          {project.status}
+                        </Badge>
+                        <Badge variant="outline" className="capitalize text-xs">{project.video_type}</Badge>
+                      </div>
+                      <h4 className="font-semibold line-clamp-1 mb-1">{project.title}</h4>
+                      <p className="text-xs text-muted-foreground">
+                        {format(new Date(project.created_at), "MMM d, yyyy")}
+                      </p>
+                      <div className="flex gap-2 mt-4">
+                        <Button size="sm" variant="outline" className="flex-1" asChild>
+                          <a href="/dashboard/videos/board">
+                            <Eye className="h-3.5 w-3.5 mr-1.5" />
+                            View
+                          </a>
+                        </Button>
+                        {project.status === "completed" && project.video_url && (
+                          <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
+                            <a href={project.video_url} target="_blank" rel="noopener noreferrer">
+                              Distribute
+                            </a>
+                          </Button>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          {/* Podcast Tab */}
+          <TabsContent value="podcast" className="space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">Podcast Episodes</h3>
+                <p className="text-sm text-muted-foreground">Create and distribute AI-powered podcast episodes</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" asChild>
+                  <a href="/dashboard/marketing/podcast">
+                    <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                    Podcast Studio
+                  </a>
+                </Button>
+                <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
+                  <a href="/dashboard/marketing/podcast">
+                    <Plus className="h-3.5 w-3.5 mr-1.5" />
+                    New Episode
+                  </a>
+                </Button>
+              </div>
+            </div>
+
+            {isPodcastLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : podcastEpisodes.length === 0 ? (
+              <Card className="border-dashed">
+                <CardContent className="py-12 text-center">
+                  <Mic className="h-10 w-10 text-muted-foreground mx-auto mb-3" />
+                  <p className="font-medium text-muted-foreground">No podcast episodes yet</p>
+                  <Button size="sm" className="mt-4 bg-violet-600 hover:bg-violet-700" asChild>
+                    <a href="/dashboard/marketing/podcast">Create Your First Episode</a>
+                  </Button>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {podcastEpisodes.map((ep: any) => (
+                  <Card key={ep.id} className="hover:shadow-md transition-shadow">
+                    <CardContent className="pt-5">
+                      <div className="flex items-start justify-between mb-2">
+                        <Badge
+                          className={
+                            ep.status === "completed"
+                              ? "bg-green-100 text-green-700"
+                              : ep.status === "generating"
+                              ? "bg-blue-100 text-blue-700"
+                              : "bg-gray-100 text-gray-700"
+                          }
+                        >
+                          {ep.status}
+                        </Badge>
+                        {ep.category && (
+                          <Badge variant="outline" className="capitalize text-xs">{ep.category}</Badge>
+                        )}
+                      </div>
+                      <h4 className="font-semibold line-clamp-2 mb-1">{ep.title}</h4>
+                      {ep.duration_seconds && (
+                        <p className="text-xs text-muted-foreground mb-1">
+                          {Math.round(ep.duration_seconds / 60)} min
+                        </p>
+                      )}
+                      <p className="text-xs text-muted-foreground">
+                        {format(new Date(ep.created_at), "MMM d, yyyy")}
+                      </p>
+                      <div className="flex gap-2 mt-4">
+                        <Button size="sm" variant="outline" className="flex-1" asChild>
+                          <a href="/dashboard/marketing/podcast">
+                            <Eye className="h-3.5 w-3.5 mr-1.5" />
+                            View
+                          </a>
+                        </Button>
+                        {ep.status === "draft" && (
+                          <Button size="sm" className="bg-violet-600 hover:bg-violet-700" asChild>
+                            <a href="/dashboard/marketing/podcast">
+                              Publish
+                            </a>
+                          </Button>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
         </Tabs>
 
         {/* Performance Prediction Dialog */}
@@ -1610,6 +2146,165 @@ export default function MarketingStudioClient() {
                 onPredict={() => selectedAssetForPrediction && handlePredictPerformance(selectedAssetForPrediction)}
                 showPredictButton={!!currentPrediction}
               />
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Create Newsletter Campaign Dialog */}
+        <Dialog open={isCreateNewsletterOpen} onOpenChange={setIsCreateNewsletterOpen}>
+          <DialogContent className="sm:max-w-[500px]">
+            <DialogHeader>
+              <DialogTitle>New Newsletter Campaign</DialogTitle>
+              <DialogDescription>
+                Create a newsletter campaign. You can compose content and schedule after saving.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-name">Campaign Name</Label>
+                <Input
+                  id="nl-name"
+                  placeholder="e.g. May Market Update"
+                  value={newNewsletter.campaignName}
+                  onChange={(e) => setNewNewsletter((prev) => ({ ...prev, campaignName: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-subject">Subject Line</Label>
+                <Input
+                  id="nl-subject"
+                  placeholder="e.g. What's happening in your neighborhood this month"
+                  value={newNewsletter.subjectLine}
+                  onChange={(e) => setNewNewsletter((prev) => ({ ...prev, subjectLine: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="nl-content">Content (optional — save draft and edit later)</Label>
+                <Textarea
+                  id="nl-content"
+                  rows={5}
+                  placeholder="Write your newsletter content here, or leave blank to compose later..."
+                  value={newNewsletter.content}
+                  onChange={(e) => setNewNewsletter((prev) => ({ ...prev, content: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsCreateNewsletterOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-violet-600 hover:bg-violet-700"
+                disabled={isCreatingNewsletter || !newNewsletter.campaignName.trim()}
+                onClick={async () => {
+                  setIsCreatingNewsletter(true)
+                  try {
+                    const { createEmailCampaign } = await import("@/app/actions/email-campaigns")
+                    const resolvedBrokerageId = brokerageIdProp || brokerageId
+                    const resolvedAgentId = agentId
+                    const result = await createEmailCampaign({
+                      brokerageId: resolvedBrokerageId,
+                      agentId: resolvedAgentId || undefined,
+                      campaignName: newNewsletter.campaignName.trim(),
+                      subjectLine: newNewsletter.subjectLine.trim() || newNewsletter.campaignName.trim(),
+                      content: newNewsletter.content.trim() || "",
+                      createdBy: resolvedAgentId,
+                    })
+                    if (result.success) {
+                      setIsCreateNewsletterOpen(false)
+                      setNewNewsletter({ campaignName: "", subjectLine: "", content: "" })
+                      await loadNewsletterData()
+                    }
+                  } finally {
+                    setIsCreatingNewsletter(false)
+                  }
+                }}
+              >
+                {isCreatingNewsletter ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Save Draft
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Create QR Code Dialog */}
+        <Dialog open={isCreateQrOpen} onOpenChange={setIsCreateQrOpen}>
+          <DialogContent className="sm:max-w-[440px]">
+            <DialogHeader>
+              <DialogTitle>New QR Code</DialogTitle>
+              <DialogDescription>
+                Create a trackable QR code linked to a URL of your choice.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-label">Label</Label>
+                <Input
+                  id="qr-label"
+                  placeholder="e.g. Open House Flyer — 123 Main St"
+                  value={newQr.label}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, label: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-url">Target URL</Label>
+                <Input
+                  id="qr-url"
+                  placeholder="https://..."
+                  type="url"
+                  value={newQr.targetUrl}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, targetUrl: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="qr-purpose">Purpose</Label>
+                <select
+                  id="qr-purpose"
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  value={newQr.purpose}
+                  onChange={(e) => setNewQr((prev) => ({ ...prev, purpose: e.target.value as "listing" | "open_house" | "general" | "campaign" | "lead_capture" }))}
+                >
+                  <option value="general">General</option>
+                  <option value="open_house">Open House</option>
+                  <option value="listing">Listing</option>
+                  <option value="lead_capture">Lead Capture</option>
+                  <option value="campaign">Campaign</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setIsCreateQrOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                className="bg-violet-600 hover:bg-violet-700"
+                disabled={isCreatingQr || !newQr.label.trim() || !newQr.targetUrl.trim()}
+                onClick={async () => {
+                  setIsCreatingQr(true)
+                  try {
+                    const { createQrCodeAction } = await import("@/app/actions/marketing-studio")
+                    const resolvedBrokerageId = brokerageIdProp || brokerageId
+                    const resolvedAgentId = agentId
+                    const result = await createQrCodeAction({
+                      brokerageId: resolvedBrokerageId,
+                      agentId: resolvedAgentId,
+                      label: newQr.label.trim(),
+                      targetUrl: newQr.targetUrl.trim(),
+                      purpose: newQr.purpose,
+                    })
+                    if (result.success) {
+                      setIsCreateQrOpen(false)
+                      setNewQr({ label: "", targetUrl: "", purpose: "general" })
+                      await loadQrCodes()
+                    }
+                  } finally {
+                    setIsCreatingQr(false)
+                  }
+                }}
+              >
+                {isCreatingQr ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                Create QR Code
+              </Button>
             </div>
           </DialogContent>
         </Dialog>

@@ -9,7 +9,137 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { logActivity } from "@/app/actions/activities"
+
+// ─── Property Data AI Fill ────────────────────────────────────────────────────
+
+export interface PropertyFillData {
+  property_address: string
+  property_city: string
+  property_state: string
+  property_zip: string
+  bedrooms: number | null
+  bathrooms: number | null
+  sqft: number | null
+  year_built: number | null
+  property_type: string
+  property_address_ai_filled: true
+  ai_confidence: "high" | "medium" | "low"
+}
+
+/**
+ * When an offer form lacks property data, attempt to fill it from:
+ *  1. The linked listing record (if listingId is provided)
+ *  2. The buyer's property_interests / saved searches
+ *  3. AI reasoning from any address fragment provided
+ * Sets property_address_ai_filled = true so the UI can show a disclosure badge.
+ */
+export async function fillPropertyDataWithAI(params: {
+  listingId?: string | null
+  buyerId?: string | null
+  addressFragment?: string | null
+}): Promise<PropertyFillData | null> {
+  const supabase = createServiceClient()
+
+  // ── 1. Try the listing record first ────────────────────────────────────────
+  if (params.listingId && isValidUUID(params.listingId)) {
+    const { data: listing } = await supabase
+      .from("listings")
+      .select("address, city, state, zip, bedrooms, bathrooms, sqft")
+      .eq("id", params.listingId)
+      .single()
+
+    if (listing?.address) {
+      return {
+        property_address:        listing.address,
+        property_city:           listing.city ?? "",
+        property_state:          listing.state ?? "",
+        property_zip:            listing.zip ?? "",
+        bedrooms:                listing.bedrooms ?? null,
+        bathrooms:               listing.bathrooms ?? null,
+        sqft:                    listing.sqft ?? null,
+        year_built:              null,
+        property_type:           "Single Family",
+        property_address_ai_filled: true,
+        ai_confidence:           "high",
+      }
+    }
+  }
+
+  // ── 2. Pull buyer's property interests for context ─────────────────────────
+  let buyerContext = ""
+  if (params.buyerId && isValidUUID(params.buyerId)) {
+    const { data: interests } = await supabase
+      .from("property_interests")
+      .select("preferred_locations, zip_codes, property_type, bedrooms, bathrooms, min_price, max_price")
+      .eq("contact_id", params.buyerId)
+      .limit(1)
+      .maybeSingle()
+
+    if (interests) {
+      buyerContext = `
+Buyer preferences:
+- Preferred locations: ${(interests.preferred_locations ?? []).join(", ") || "not specified"}
+- Zip codes: ${(interests.zip_codes ?? []).join(", ") || "not specified"}
+- Property type: ${interests.property_type ?? "not specified"}
+- Bedrooms: ${interests.bedrooms ?? "not specified"}
+- Bathrooms: ${interests.bathrooms ?? "not specified"}
+- Price range: $${interests.min_price?.toLocaleString() ?? "?"} – $${interests.max_price?.toLocaleString() ?? "?"}`
+    }
+  }
+
+  // ── 3. Ask AI to fill in property details ──────────────────────────────────
+  const addressHint = params.addressFragment?.trim()
+  if (!addressHint && !buyerContext) return null
+
+  try {
+    const { text } = await generateText({
+      model: "openai/gpt-4o-mini",
+      prompt: `You are a real estate data assistant helping fill in missing property information for an offer form.
+
+${addressHint ? `Address fragment provided: "${addressHint}"` : "No specific address provided."}
+${buyerContext || ""}
+
+Based on the above context, provide your best estimate of the property details. Return ONLY valid JSON — no markdown, no explanation.
+
+{
+  "property_address": string (full street address, or best guess),
+  "property_city": string,
+  "property_state": string (2-letter code),
+  "property_zip": string,
+  "bedrooms": number | null,
+  "bathrooms": number | null,
+  "sqft": number | null,
+  "year_built": number | null,
+  "property_type": "Single Family" | "Condo" | "Townhome" | "Multi-Family" | "Land" | "Commercial",
+  "ai_confidence": "high" | "medium" | "low"
+}`,
+    })
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) return null
+
+    const parsed = JSON.parse(jsonMatch[0])
+
+    return {
+      property_address:            parsed.property_address ?? addressHint ?? "",
+      property_city:               parsed.property_city ?? "",
+      property_state:              parsed.property_state ?? "",
+      property_zip:                parsed.property_zip ?? "",
+      bedrooms:                    parsed.bedrooms ?? null,
+      bathrooms:                   parsed.bathrooms ?? null,
+      sqft:                        parsed.sqft ?? null,
+      year_built:                  parsed.year_built ?? null,
+      property_type:               parsed.property_type ?? "Single Family",
+      property_address_ai_filled:  true,
+      ai_confidence:               parsed.ai_confidence ?? "low",
+    }
+  } catch (err) {
+    console.error("[buyer-offer] fillPropertyDataWithAI error:", err)
+    return null
+  }
+}
 
 export interface PrefillOfferParams {
   offerId: string
@@ -17,6 +147,11 @@ export interface PrefillOfferParams {
   propertyAddress: string
   propertyMlsId?: string
   userId: string
+  /** Required by logActivity — must come from contacts row, not user.id */
+  brokerageId: string
+  /** Agent who initiated the offer flow */
+  agentId: string
+  transactionId?: string
 }
 
 export interface PrefillOfferResult {
@@ -43,10 +178,25 @@ export interface OfferPrefillData {
 export async function prefillOfferWithAI(
   params: PrefillOfferParams
 ): Promise<PrefillOfferResult> {
-  const { offerId, buyerId, propertyAddress, propertyMlsId, userId } = params
+  const {
+    offerId,
+    buyerId,
+    propertyAddress,
+    propertyMlsId,
+    userId,
+    brokerageId,
+    agentId,
+    transactionId,
+  } = params
 
   if (!isValidUUID(buyerId)) {
     return { success: false, error: "Invalid buyer ID" }
+  }
+  if (!brokerageId) {
+    return { success: false, error: "brokerageId is required" }
+  }
+  if (!agentId) {
+    return { success: false, error: "agentId is required" }
   }
 
   const supabase = createServiceClient()
@@ -62,27 +212,27 @@ export async function prefillOfferWithAI(
     return { success: false, error: "Buyer not found" }
   }
 
-  // Get financial verification details
+  // Get financial verification details — use contact_id (canonical), not entity_id
   const { data: financialEvents } = await supabase
     .from("activities")
-    .select("type, metadata, created_at")
+    .select("activity_type, notes, created_at")
     .eq("entity_type", "contact")
-    .eq("entity_id", buyerId)
-    .in("type", [
-      "buyer.pre_approval.uploaded",
-      "buyer.proof_of_funds.uploaded",
-      "buyer.lender.introduced",
+    .eq("contact_id", buyerId)
+    .in("activity_type", [
+      "buyer_pre_approval_uploaded",
+      "buyer_proof_of_funds_uploaded",
+      "buyer_lender_introduced",
     ])
     .order("created_at", { ascending: false })
     .limit(1)
 
-  // Get buyer search preferences
+  // Get buyer search preferences — use contact_id (canonical), not entity_id
   const { data: searchConfig } = await supabase
     .from("activities")
-    .select("metadata")
+    .select("notes")
     .eq("entity_type", "contact")
-    .eq("entity_id", buyerId)
-    .eq("type", "buyer.search.configured")
+    .eq("contact_id", buyerId)
+    .eq("activity_type", "buyer_search_configured")
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle()
@@ -91,6 +241,17 @@ export async function prefillOfferWithAI(
   const propertyType = determinePropertyType(propertyAddress)
   const template = getOfferTemplate(propertyType)
 
+  // Parse notes JSON for financial and search context (notes replaces metadata)
+  const financialNotesRaw = financialEvents?.[0]?.notes
+  const financialContext = financialNotesRaw
+    ? (() => { try { return JSON.parse(financialNotesRaw) } catch { return {} } })()
+    : {}
+
+  const searchNotesRaw = searchConfig?.notes
+  const searchPreferencesContext = searchNotesRaw
+    ? (() => { try { return JSON.parse(searchNotesRaw) } catch { return {} } })()
+    : {}
+
   // Build AI context
   const context = {
     buyer: {
@@ -98,8 +259,8 @@ export async function prefillOfferWithAI(
       notes: buyer.notes,
       metadata: buyer.metadata,
     },
-    financial: financialEvents?.[0]?.metadata || {},
-    searchPreferences: searchConfig?.metadata || {},
+    financial: financialContext,
+    searchPreferences: searchPreferencesContext,
     property: {
       address: propertyAddress,
       mlsId: propertyMlsId,
@@ -119,19 +280,24 @@ export async function prefillOfferWithAI(
 
     const prefillData = parsePrefillResponse(text, template)
 
-    // Emit prefill event
-    await supabase.from("activities").insert({
-      type: "buyer.offer.forms.prefilled",
-      entity_type: "contact",
-      entity_id: buyerId,
-      user_id: userId,
-      metadata: {
+    // Emit prefill event via canonical logActivity — no metadata/entity_id/user_id columns
+    await logActivity({
+      brokerageId,
+      agentId,
+      contactId: buyerId,
+      transactionId: transactionId ?? undefined,
+      activityType: "offer_draft_prefilled",
+      title: "Offer Draft Prefilled",
+      description: "AI prepared an offer draft for agent review",
+      notes: JSON.stringify({
         offer_id: offerId,
         prefill_source: "ai",
         confidence_score: prefillData.confidence,
         template_used: template,
         prefill_data: prefillData,
-      },
+      }),
+      entityType: "offer",
+      status: "completed",
     })
 
     return {

@@ -1,299 +1,332 @@
 "use client"
 
+// ============================================================
+// PANEL C – Repurpose Engine
+// Generates brand-voice-tuned variants for multiple channels.
+// Each output card has Copy + Schedule actions.
+// ============================================================
+
 import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Repeat,
-  Copy,
-  MessageSquare,
-  Mail,
-  FileText,
-  Video,
-  Sparkles,
-  Loader2,
-  CheckCircle,
-  ChevronDown,
-  ChevronUp,
-} from "lucide-react"
-import { generateText } from "@/app/actions/content-generation-engine"
+import { Loader2, RefreshCw, Copy, CalendarDays, CheckCheck } from "lucide-react"
+import { repurposeContent, scheduleRepurposedPost } from "./ad-os-actions"
 
-type RepurposeFormat =
-  | "ad_copy"
-  | "social_post"
-  | "reel_hook"
-  | "email_copy"
-  | "seller_update"
-  | "direct_mail"
-  | "landing_page"
-
-interface RepurposeOutput {
-  format: RepurposeFormat
-  content: string
-  generated: boolean
-}
-
-interface RepurposeEnginePanelProps {
+interface Props {
   agentId: string
-  listingId?: string
 }
 
-const REPURPOSE_FORMATS: Array<{
-  id: RepurposeFormat
-  label: string
-  description: string
-  icon: React.ElementType
-  contentType: string
-  channelIntent: string
-}> = [
-  {
-    id: "ad_copy",
-    label: "Ad Copy",
-    description: "Facebook/Instagram ad text",
-    icon: MessageSquare,
-    contentType: "ad_creative",
-    channelIntent: "social",
-  },
-  {
-    id: "social_post",
-    label: "Social Posts",
-    description: "Engaging social media content",
-    icon: MessageSquare,
-    contentType: "social_post",
-    channelIntent: "social",
-  },
-  {
-    id: "reel_hook",
-    label: "Reel Hooks",
-    description: "Short-form video hooks",
-    icon: Video,
-    contentType: "video_script",
-    channelIntent: "social",
-  },
-  {
-    id: "email_copy",
-    label: "Email Copy",
-    description: "Newsletter/drip content",
-    icon: Mail,
-    contentType: "email",
-    channelIntent: "email",
-  },
-  {
-    id: "seller_update",
-    label: "Seller Update",
-    description: "Client communication snippet",
-    icon: Mail,
-    contentType: "email",
-    channelIntent: "email",
-  },
-  {
-    id: "direct_mail",
-    label: "Direct Mail",
-    description: "Postcard headline/body",
-    icon: FileText,
-    contentType: "ad_creative",
-    channelIntent: "print",
-  },
-  {
-    id: "landing_page",
-    label: "Landing Page",
-    description: "Lead capture page copy",
-    icon: FileText,
-    contentType: "ad_creative",
-    channelIntent: "web",
-  },
+const SOURCE_TYPES = [
+  { value: "social_post", label: "Social Post" },
+  { value: "email", label: "Email" },
+  { value: "blog_post", label: "Blog Post" },
+  { value: "video_script", label: "Video Script" },
+  { value: "listing_description", label: "Listing Description" },
 ]
 
-export function RepurposeEnginePanel({ agentId, listingId }: RepurposeEnginePanelProps) {
-  const [sourceContent, setSourceContent] = useState("")
-  const [selectedFormats, setSelectedFormats] = useState<Set<RepurposeFormat>>(new Set())
-  const [outputs, setOutputs] = useState<RepurposeOutput[]>([])
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [expandedOutput, setExpandedOutput] = useState<RepurposeFormat | null>(null)
+const TARGET_CHANNELS = [
+  "Facebook Post",
+  "Instagram Caption",
+  "LinkedIn Article",
+  "Email Newsletter",
+  "SMS Follow-up",
+  "Seller Update",
+  "Blog Introduction",
+  "Direct Mail Copy",
+]
 
-  function toggleFormat(format: RepurposeFormat) {
-    const newSelected = new Set(selectedFormats)
-    if (newSelected.has(format)) {
-      newSelected.delete(format)
-    } else {
-      newSelected.add(format)
-    }
-    setSelectedFormats(newSelected)
+interface VariantCard {
+  channel: string
+  content: string
+  copied: boolean
+  scheduling: boolean
+  scheduled: boolean
+  scheduleError: string | null
+}
+
+export function RepurposeEnginePanel({ agentId }: Props) {
+  const [sourceContent, setSourceContent] = useState("")
+  const [sourceType, setSourceType] = useState("social_post")
+  const [selectedChannels, setSelectedChannels] = useState<string[]>([
+    "Facebook Post",
+    "Instagram Caption",
+    "Email Newsletter",
+  ])
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [variants, setVariants] = useState<VariantCard[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  function toggleChannel(channel: string) {
+    setSelectedChannels((prev) =>
+      prev.includes(channel) ? prev.filter((c) => c !== channel) : [...prev, channel]
+    )
   }
 
   async function handleRepurpose() {
-    if (!sourceContent.trim() || selectedFormats.size === 0) return
-
+    if (!sourceContent.trim() || selectedChannels.length === 0 || !agentId) return
     setIsGenerating(true)
-    setOutputs([])
+    setVariants([])
+    setError(null)
 
     try {
-      const results: RepurposeOutput[] = []
+      const res = await repurposeContent({
+        agentId,
+        sourceContent: sourceContent.trim(),
+        sourceType,
+        targetChannels: selectedChannels,
+      })
 
-      for (const formatId of selectedFormats) {
-        const formatConfig = REPURPOSE_FORMATS.find((f) => f.id === formatId)
-        if (!formatConfig) continue
-
-        try {
-          const result = await generateText({
-            agent_id: agentId,
-            content_type: formatConfig.contentType as any,
-            channel_intent: formatConfig.channelIntent as any,
-            listing_id: listingId,
-            custom_prompt: `Repurpose the following content into ${formatConfig.label} format. Keep the core message but optimize for ${formatConfig.description}.\n\nOriginal content:\n${sourceContent}`,
-            tone: "professional",
-            length: formatId === "reel_hook" ? "short" : "medium",
-          })
-
-          results.push({
-            format: formatId,
-            content: result.success && result.content?.text ? result.content.text : "Generation failed",
-            generated: result.success || false,
-          })
-        } catch (error) {
-          results.push({
-            format: formatId,
-            content: "Failed to generate content",
-            generated: false,
-          })
-        }
-
-        // Update outputs as we go
-        setOutputs([...results])
+      if (!res.success || !res.variants) {
+        setError(res.error ?? "Repurpose failed")
+        return
       }
-    } catch (error) {
-      console.error("Repurpose failed:", error)
+
+      setVariants(
+        res.variants.map((v) => ({
+          channel: v.channel,
+          content: v.content,
+          copied: false,
+          scheduling: false,
+          scheduled: false,
+          scheduleError: null,
+        }))
+      )
+    } catch {
+      setError("Unexpected error — please try again")
     } finally {
       setIsGenerating(false)
     }
   }
 
-  function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text)
+  function handleCopy(idx: number) {
+    navigator.clipboard.writeText(variants[idx].content)
+    setVariants((prev) =>
+      prev.map((v, i) => (i === idx ? { ...v, copied: true } : v))
+    )
+    setTimeout(
+      () =>
+        setVariants((prev) =>
+          prev.map((v, i) => (i === idx ? { ...v, copied: false } : v))
+        ),
+      2000
+    )
+  }
+
+  async function handleSchedule(idx: number) {
+    const variant = variants[idx]
+    setVariants((prev) =>
+      prev.map((v, i) => (i === idx ? { ...v, scheduling: true, scheduleError: null } : v))
+    )
+
+    try {
+      const res = await scheduleRepurposedPost({
+        platform: variant.channel,
+        content: variant.content,
+      })
+
+      setVariants((prev) =>
+        prev.map((v, i) =>
+          i === idx
+            ? {
+                ...v,
+                scheduling: false,
+                scheduled: res.success,
+                scheduleError: res.success ? null : (res.error ?? "Schedule failed"),
+              }
+            : v
+        )
+      )
+    } catch {
+      setVariants((prev) =>
+        prev.map((v, i) =>
+          i === idx
+            ? { ...v, scheduling: false, scheduleError: "Unexpected error" }
+            : v
+        )
+      )
+    }
   }
 
   return (
-    <Card>
+    <Card className="border-2">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Repeat className="h-5 w-5 text-violet-600" />
+          <RefreshCw className="h-5 w-5 text-violet-600" />
           Repurpose Engine
         </CardTitle>
         <CardDescription>
-          Transform one piece of content into multiple formats
+          Transform your best content into platform-optimized variants in your brand voice.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Source Content */}
-        <div className="space-y-2">
-          <Label>Source Content</Label>
+        {/* Source content */}
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Paste Your Best-Performing Content</Label>
           <Textarea
+            placeholder="Paste your source content here..."
             value={sourceContent}
             onChange={(e) => setSourceContent(e.target.value)}
-            placeholder="Paste your listing description, blog post, or any content to repurpose..."
-            className="min-h-[120px]"
+            className="min-h-[80px] text-sm resize-none"
           />
         </div>
 
-        {/* Format Selection */}
+        {/* Source type */}
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Source Type</Label>
+          <Select value={sourceType} onValueChange={setSourceType}>
+            <SelectTrigger className="h-8 text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SOURCE_TYPES.map((t) => (
+                <SelectItem key={t.value} value={t.value}>
+                  {t.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {/* Target outputs */}
         <div className="space-y-2">
-          <Label>Output Formats</Label>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            {REPURPOSE_FORMATS.map((format) => {
-              const Icon = format.icon
-              const isSelected = selectedFormats.has(format.id)
-              return (
-                <button
-                  key={format.id}
-                  onClick={() => toggleFormat(format.id)}
-                  className={`p-3 rounded-lg border text-left transition-all ${
-                    isSelected
-                      ? "border-violet-600 bg-violet-50 dark:bg-violet-950/30"
-                      : "border-border hover:border-violet-300"
-                  }`}
+          <Label className="text-xs font-medium">Target Outputs</Label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {TARGET_CHANNELS.map((channel) => (
+              <div key={channel} className="flex items-center gap-2">
+                <Checkbox
+                  id={`ch-${channel}`}
+                  checked={selectedChannels.includes(channel)}
+                  onCheckedChange={() => toggleChannel(channel)}
+                />
+                <label
+                  htmlFor={`ch-${channel}`}
+                  className="text-xs cursor-pointer select-none leading-none"
                 >
-                  <div className="flex items-center gap-2">
-                    <Checkbox checked={isSelected} className="pointer-events-none" />
-                    <Icon className={`h-4 w-4 ${isSelected ? "text-violet-600" : "text-muted-foreground"}`} />
-                  </div>
-                  <p className="font-medium text-xs mt-2">{format.label}</p>
-                </button>
-              )
-            })}
+                  {channel}
+                </label>
+              </div>
+            ))}
           </div>
         </div>
 
-        {/* Generate Button */}
         <Button
           onClick={handleRepurpose}
-          disabled={isGenerating || !sourceContent.trim() || selectedFormats.size === 0}
+          disabled={
+            isGenerating ||
+            !sourceContent.trim() ||
+            selectedChannels.length === 0 ||
+            !agentId
+          }
           className="w-full bg-violet-600 hover:bg-violet-700"
         >
           {isGenerating ? (
             <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Generating {outputs.length}/{selectedFormats.size}...
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Repurposing...
             </>
           ) : (
             <>
-              <Sparkles className="h-4 w-4 mr-2" />
-              Repurpose Content ({selectedFormats.size} formats)
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Repurpose for Me
             </>
           )}
         </Button>
 
-        {/* Generated Outputs */}
-        {outputs.length > 0 && (
-          <ScrollArea className="h-[300px]">
-            <div className="space-y-3">
-              {outputs.map((output) => {
-                const formatConfig = REPURPOSE_FORMATS.find((f) => f.id === output.format)
-                const Icon = formatConfig?.icon || FileText
-                const isExpanded = expandedOutput === output.format
+        {error && (
+          <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{error}</p>
+        )}
 
-                return (
-                  <div key={output.format} className="border rounded-lg overflow-hidden">
-                    <button
-                      onClick={() => setExpandedOutput(isExpanded ? null : output.format)}
-                      className="w-full p-3 flex items-center justify-between bg-muted/30 hover:bg-muted/50"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Icon className="h-4 w-4 text-violet-600" />
-                        <span className="font-medium text-sm">{formatConfig?.label}</span>
-                        {output.generated && (
-                          <CheckCircle className="h-4 w-4 text-green-600" />
-                        )}
-                      </div>
-                      {isExpanded ? (
-                        <ChevronUp className="h-4 w-4" />
-                      ) : (
-                        <ChevronDown className="h-4 w-4" />
-                      )}
-                    </button>
-                    {isExpanded && (
-                      <div className="p-3 border-t">
-                        <p className="text-sm whitespace-pre-wrap">{output.content}</p>
+        {/* Generated variants */}
+        {variants.length > 0 && (
+          <div className="border-t pt-4 space-y-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              {variants.length} Platform Variants — Brand Voice Applied
+            </p>
+            <ScrollArea className="max-h-[420px] pr-1">
+              <div className="space-y-3">
+                {variants.map((variant, idx) => (
+                  <div
+                    key={variant.channel}
+                    className="rounded-lg border bg-muted/30 p-3 space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <Badge
+                        variant="outline"
+                        className="text-xs font-medium"
+                      >
+                        {variant.channel}
+                      </Badge>
+                      <div className="flex items-center gap-1.5">
                         <Button
-                          variant="outline"
+                          variant="ghost"
                           size="sm"
-                          className="mt-2"
-                          onClick={() => copyToClipboard(output.content)}
+                          className="h-7 px-2 text-xs"
+                          onClick={() => handleCopy(idx)}
                         >
-                          <Copy className="h-3 w-3 mr-1" />
-                          Copy
+                          {variant.copied ? (
+                            <>
+                              <CheckCheck className="mr-1 h-3 w-3 text-green-600" />
+                              Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="mr-1 h-3 w-3" />
+                              Copy
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => handleSchedule(idx)}
+                          disabled={variant.scheduling || variant.scheduled}
+                        >
+                          {variant.scheduling ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          ) : variant.scheduled ? (
+                            <>
+                              <CheckCheck className="mr-1 h-3 w-3 text-green-600" />
+                              Scheduled
+                            </>
+                          ) : (
+                            <>
+                              <CalendarDays className="mr-1 h-3 w-3" />
+                              Schedule
+                            </>
+                          )}
                         </Button>
                       </div>
+                    </div>
+                    <p className="text-xs leading-relaxed whitespace-pre-wrap text-foreground/80">
+                      {variant.content}
+                    </p>
+                    {variant.scheduleError && (
+                      <p className="text-xs text-red-600">{variant.scheduleError}</p>
                     )}
                   </div>
-                )
-              })}
-            </div>
-          </ScrollArea>
+                ))}
+              </div>
+            </ScrollArea>
+          </div>
         )}
       </CardContent>
     </Card>

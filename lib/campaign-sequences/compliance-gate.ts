@@ -8,7 +8,7 @@
 
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import type { SupabaseClient } from "@supabase/supabase-js"
-
+import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
 interface AuthorityCheckResult {
   allowed: boolean
   reason?: string
@@ -54,17 +54,29 @@ export async function checkSequenceAuthority(
   }
   const messageType = channelToMessageType[channel] ?? "email"
 
-  const result = await evaluateOutbound({
-    contact,
-    channel: messageType,
-    content: "", // gate-only — content check skipped
-    messageType,
-    actorContext: {
-      ...actorContext,
-      actorType: "ai_isa",
-      role: "isa",
-    },
-  })
+  const result = await evaluateKernelOutbound({
+  actorContext: {
+    userId: actorContext.userId,
+    brokerageId: actorContext.brokerageId,
+    role: "isa",
+  },
+  journeyType: "buyer",
+  persona: "other",
+  messageType,
+  content: "",
+  contact: {
+    id: contact.id,
+    first_name: contact.first_name,
+    last_name: contact.last_name,
+    email: contact.email,
+    phone: contact.phone,
+    contact_type: contact.contact_type ?? "buyer",
+    status: contact.status,
+    dnc_status: contact.dnc_status ?? false,
+    tcpa_consent: contact.tcpa_consent ?? false,
+    isa_reengage_allowed: contact.isa_reengage_allowed ?? false,
+  },
+})
 
   return result.allowed
     ? { allowed: true }

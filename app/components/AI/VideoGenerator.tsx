@@ -16,9 +16,12 @@ import {
   Film,
   Send,
   ShieldCheck,
+  AlertTriangle,
 } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { generateAIText } from "@/lib/ai"
 import { executeWorkflow } from "../../app/actions/workflows"
+import { queueVideoGeneration } from "../../app/actions/video-generation"
 import type { AgentVideo, Agent } from "../../types"
 import { supabaseService } from "../../services/supabaseService"
 import { analyzeContentQuality } from "../../lib/quality-checker"
@@ -51,9 +54,12 @@ const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   context,
   onComplete,
 }) => {
+  const router = useRouter()
   const [isGenerating, setIsGenerating] = useState(false)
   const [progress, setProgress] = useState(0)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [queueId, setQueueId] = useState<string | null>(null)
+  const [heyGenNotConfigured, setHeyGenNotConfigured] = useState(false)
   const [script, setScript] = useState<string>("")
   const [agentSettings, setAgentSettings] = useState<Agent | null>(null)
   const [statusMessage, setStatusMessage] = useState("")
@@ -120,56 +126,67 @@ Return ONLY the spoken script text.`
 
   const handleGenerate = async () => {
     if (!agentSettings?.heyGenAvatarId) {
-      alert(
-        "WF-ADMIN-AVATAR-01 Error: Agent has no HeyGen Avatar ID configured. Please visit Agent Roster to link identity.",
-      )
+      setHeyGenNotConfigured(true)
       return
     }
 
     setIsGenerating(true)
     setProgress(5)
+    setHeyGenNotConfigured(false)
 
     const generatedScript = await generateScript()
     setScript(generatedScript)
     setProgress(25)
+    setStatusMessage("Queuing video via HeyGen API...")
 
-    const bgType = context.backgroundOverride?.type || agentSettings.defaultVideoBackgroundType
-    const bgValue = context.backgroundOverride?.value || agentSettings.defaultVideoBackgroundValue
+    try {
+      const queueItem = await queueVideoGeneration({
+        agentId,
+        scriptContent: generatedScript,
+        videoType: purpose,
+        metadata: {
+          avatarId: agentSettings.heyGenAvatarId,
+          voiceId: agentSettings.heyGenVoiceId,
+          background: {
+            type: context.backgroundOverride?.type || agentSettings.defaultVideoBackgroundType,
+            value: context.backgroundOverride?.value || agentSettings.defaultVideoBackgroundValue,
+          },
+          leadId,
+          campaignId,
+          context,
+        },
+      })
 
-    setStatusMessage("Synthesizing video via HeyGen API...")
+      setQueueId(queueItem.id)
+      setProgress(40)
+      setStatusMessage("Submitted to production queue — polling for completion...")
 
-    const result = await executeWorkflow("generate-video", {
-      agentId,
-      avatarId: agentSettings.heyGenAvatarId,
-      voiceId: agentSettings.heyGenVoiceId,
-      script: generatedScript,
-      background: { type: bgType, value: bgValue },
-      leadId,
-      campaignId,
-    })
-
-    let currentProgress = 25
-    const interval = setInterval(() => {
-      currentProgress += Math.random() * 8
-      if (currentProgress >= 98) {
-        clearInterval(interval)
-        finishGeneration()
-      } else {
-        setProgress(Math.floor(currentProgress))
-        if (currentProgress > 40 && currentProgress < 60) setStatusMessage("Rendering digital persona...")
-        if (currentProgress > 60 && currentProgress < 85) setStatusMessage("Applying visual filters...")
-        if (currentProgress > 85) setStatusMessage("Finalizing MP4 stream...")
-      }
-    }, 1200)
-  }
-
-  const finishGeneration = () => {
-    const mockUrl = "https://assets.heygen.com/videos/demo_real_estate_v2.mp4"
-    setVideoUrl(mockUrl)
-    setIsGenerating(false)
-    setProgress(100)
-    setStatusMessage("Production Complete.")
-    if (onComplete) onComplete(mockUrl)
+      // Poll video_generation_queue until status = 'completed' or 'failed'
+      const pollInterval = setInterval(async () => {
+        const statusResult = await executeWorkflow("poll-heygen-video", { queueId: queueItem.id })
+        if (statusResult?.status === "completed" && statusResult?.video_url) {
+          clearInterval(pollInterval)
+          setVideoUrl(statusResult.video_url)
+          setIsGenerating(false)
+          setProgress(100)
+          setStatusMessage("Production Complete.")
+          if (onComplete) onComplete(statusResult.video_url)
+        } else if (statusResult?.status === "failed") {
+          clearInterval(pollInterval)
+          setIsGenerating(false)
+          setStatusMessage("Generation failed — please retry.")
+          setProgress(0)
+        } else {
+          setProgress((p) => Math.min(p + 5, 92))
+          if (statusResult?.status === "processing") setStatusMessage("Rendering digital persona...")
+        }
+      }, 5000)
+    } catch (err) {
+      console.error("[v0] queueVideoGeneration error:", err)
+      setIsGenerating(false)
+      setStatusMessage("Failed to queue video. Check HeyGen integration settings.")
+      setProgress(0)
+    }
   }
 
   return (
@@ -209,6 +226,21 @@ Return ONLY the spoken script text.`
       </div>
 
       <div className="p-8">
+        {heyGenNotConfigured && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center mb-6">
+            <AlertTriangle className="h-8 w-8 text-amber-500 mx-auto mb-3" />
+            <p className="font-medium">Video generation not configured</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Connect HeyGen in your integrations settings to generate real videos.
+            </p>
+            <button
+              className="mt-4 px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-bold hover:bg-black transition-all"
+              onClick={() => router.push("/settings/integrations")}
+            >
+              Connect HeyGen
+            </button>
+          </div>
+        )}
         {!videoUrl ? (
           <div className="space-y-8">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -309,11 +341,13 @@ Return ONLY the spoken script text.`
                   <CheckCircle2 size={14} /> Render Success
                 </div>
               </div>
-              <div className="absolute bottom-6 right-6">
-                <p className="text-[9px] font-black text-white/60 uppercase tracking-widest">
-                  HeyGen ID: v_99x42_nexus
-                </p>
-              </div>
+              {queueId && (
+                <div className="absolute bottom-6 right-6">
+                  <p className="text-[9px] font-black text-white/60 uppercase tracking-widest">
+                    Queue ID: {queueId.slice(0, 12)}...
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

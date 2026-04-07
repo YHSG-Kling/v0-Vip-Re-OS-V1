@@ -1,7 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -85,7 +87,7 @@ export async function aiOfferStrategyAdvisor(params: {
     }
 
     const { object: strategy } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         recommendedOfferPrice: z.number(),
         priceRangeLow: z.number(),
@@ -154,7 +156,7 @@ export async function aiCalculateEscalation(params: {
 }) {
   try {
     const { object: escalation } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         recommended: z.boolean(),
         startingOffer: z.number(),
@@ -201,7 +203,7 @@ export async function aiRecommendContingencies(params: {
 }) {
   try {
     const { object: contingencies } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         recommended: z.array(
           z.object({
@@ -265,7 +267,7 @@ export async function aiGenerateBuyerLetter(params: {
     }
 
     const { text: letter } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `Write a heartfelt, Fair Housing compliant buyer letter.
 
 Buyer: ${params.buyerFirstName}
@@ -323,7 +325,7 @@ export async function getOfferForms(params: {
 
     // AI enhancement for special circumstances
     const { text: additionalForms } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `As a real estate forms expert for ${params.state}, are there additional forms needed for:
 - Financing: ${params.financingType}
 - Short Sale: ${params.isShortSale}
@@ -456,7 +458,7 @@ export async function aiCounterOfferStrategy(params: {
 }) {
   try {
     const { object: strategy } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         recommendedResponse: z.enum(["accept", "counter", "walk_away"]),
         suggestedCounterPrice: z.number().optional(),
@@ -571,7 +573,7 @@ export async function submitCompleteOffer(params: OfferCreationParams) {
 
     revalidatePath("/offers")
     revalidatePath(`/listings/${params.listingId}`)
-    revalidatePath("/transactions")
+    revalidatePath("/dashboard/transactions")
 
     return {
       success: true,

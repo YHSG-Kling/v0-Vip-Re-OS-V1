@@ -30,12 +30,12 @@ export default async function CampaignROIPage() {
   // Get user profile with brokerage
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, team_id, role, first_name, last_name")
+    .select("id, brokerage_id, team_id, user_type, first_name, last_name")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!profile?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Get current month date range
@@ -56,12 +56,12 @@ export default async function CampaignROIPage() {
 
   // Get agents for filter dropdown (if broker/admin)
   let agents: any[] = []
-  if (profile.role === "broker" || profile.role === "admin") {
+  if (profile.user_type === "broker" || profile.user_type === "admin") {
     const { data: agentData } = await supabase
       .from("users")
       .select("id, first_name, last_name")
       .eq("brokerage_id", profile.brokerage_id)
-      .in("role", ["agent", "broker", "admin"])
+      .in("user_type", ["agent", "broker", "admin"])
       .order("first_name")
 
     agents = agentData || []
@@ -71,7 +71,7 @@ export default async function CampaignROIPage() {
     <ROIDashboardClient
       userId={user.id}
       brokerageId={profile.brokerage_id}
-      userRole={profile.role || "agent"}
+      userRole={profile.user_type || "agent"}
       campaigns={roiResult.success ? roiResult.campaigns || [] : []}
       summary={roiResult.success ? roiResult.summary : null}
       channelPerformance={channelResult.success ? channelResult.channels || [] : []}

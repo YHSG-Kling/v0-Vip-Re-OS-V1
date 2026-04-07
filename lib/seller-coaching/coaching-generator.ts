@@ -1,4 +1,5 @@
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
 
 export type SellerPersona =
@@ -82,7 +83,7 @@ async function generateSellerCoachingWithAI(
   const stageLabel   = listingStage.replace(/_/g, " ").toLowerCase()
 
   const { text } = await generateText({
-    model: "anthropic/claude-sonnet-4-20250514",
+    model: resolveModel("anthropic/claude-sonnet-4-20250514"),
     system:
       "You are a real estate coaching AI. Generate coaching for a listing agent at a specific " +
       "stage of the seller journey. Return JSON only with keys: " +

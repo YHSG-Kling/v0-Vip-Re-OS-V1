@@ -10,6 +10,7 @@
  */
 
 import { createServiceClient } from '@/lib/supabase/service'
+import { initiateCall } from '@/lib/voice/vapi-client'
 
 export interface CallMetadata {
   contactId: string
@@ -41,10 +42,10 @@ export async function initiateVoiceCall(
   try {
     const supabase = createServiceClient()
 
-    // Validate contact exists
+    // Validate contact exists and check call stop flag
     const { data: contact, error: contactError } = await supabase
       .from('contacts')
-      .select('id, brokerage_id, phone')
+      .select('id, brokerage_id, phone, call_stop_flag, dnc_status')
       .eq('id', metadata.contactId)
       .single()
 
@@ -55,51 +56,106 @@ export async function initiateVoiceCall(
       }
     }
 
-    // Voice infrastructure: In production, integrate with Twilio/Bland AI/Retell AI here
-    // For now, we stub the vendor call and log metadata
-    const vendorCallId = `stub_call_${Date.now()}`
+    // Hard stop: call_stop_flag blocks all outbound calls (inbound + outbound)
+    if (contact.call_stop_flag === true) {
+      return {
+        success: false,
+        error:
+          'Call blocked — contact has requested no calls (call_stop_flag). Remove the flag in the contact record to resume calling.',
+      }
+    }
 
-    console.log('[v0] [VOICE ENGINE] Initiating call:', {
-      contactId: metadata.contactId,
-      initiatorRole: metadata.initiatorRole,
-      callType: metadata.callType,
-      vendor: metadata.vendor,
-      phone: phoneNumber,
-    })
+    // Hard stop: DNC blocks all outbound
+    if (contact.dnc_status === true) {
+      return {
+        success: false,
+        error: 'Call blocked — contact is on the Do Not Contact list.',
+      }
+    }
 
-    // Log call initiation as activity
-    const { data: activity, error: activityError } = await supabase
-      .from('activities')
+    // Guard: require real vendor credentials before attempting the call.
+    // The vendor field in metadata drives which API key is checked.
+    const isVapi = metadata.vendor === 'vapi' || metadata.vendor === 'vapi_isa'
+    const isTwilio = metadata.vendor === 'twilio'
+
+    if (isVapi && (!process.env.VAPI_API_KEY || !process.env.VAPI_ISA_ASSISTANT_ID)) {
+      return {
+        success: false,
+        error: 'Voice provider not configured — call was not placed. Configure VAPI in Admin → Integrations.',
+        vendorCallId: undefined,
+      }
+    }
+
+    if (isTwilio && (!process.env.TWILIO_ACCOUNT_SID || !process.env.TWILIO_AUTH_TOKEN)) {
+      return {
+        success: false,
+        error: 'Voice provider not configured — call was not placed. Configure Twilio in Admin → Integrations.',
+        vendorCallId: undefined,
+      }
+    }
+
+    if (!isVapi && !isTwilio) {
+      // Unknown vendor — refuse to stub; surface the gap immediately
+      return {
+        success: false,
+        error: `Voice provider "${metadata.vendor}" is not supported or not configured. No call was placed.`,
+        vendorCallId: undefined,
+      }
+    }
+
+    // Initiate the real VAPI call via REST API
+    let vapiResponse: { id: string; status: string; createdAt: string }
+    try {
+      vapiResponse = await initiateCall({
+        phoneNumber,
+        assistantId: process.env.VAPI_ISA_ASSISTANT_ID,
+      })
+    } catch (err: any) {
+      console.error('[v0] [VOICE ENGINE] VAPI initiateCall failed:', err.message)
+      return {
+        success: false,
+        error: `VAPI call failed: ${err.message}`,
+      }
+    }
+
+    const vendorCallId = vapiResponse.id
+
+    // Write call record to voice_calls for full transcript/analysis tracking
+    const { data: voiceCall, error: voiceCallError } = await supabase
+      .from('voice_calls')
       .insert({
-        activity_type: 'voice_call_initiated',
-        title: `Voice Call: ${metadata.callType}`,
-        description: `${metadata.initiatorRole} initiated ${metadata.callType} call`,
-        status: 'in_progress',
-        priority: 'normal',
         contact_id: metadata.contactId,
-        agent_id: metadata.agentId,
-        transaction_id: metadata.transactionId,
-        notes: JSON.stringify({
-          vendor: metadata.vendor,
-          vendorCallId,
-          phoneNumber,
-        }),
-        created_at: new Date().toISOString(),
+        agent_id: metadata.agentId ?? null,
+        brokerage_id: contact.brokerage_id,
+        vapi_call_id: vendorCallId,
+        direction: metadata.callType,
+        call_type: 'isa_ai',
+        status: 'initiated',
+        initiated_by: metadata.initiatorRole,
+        started_at: new Date().toISOString(),
       })
       .select('id')
       .single()
 
-    if (activityError) {
-      console.error('[v0] [VOICE ENGINE] Failed to log call initiation:', activityError)
-      return {
-        success: false,
-        error: 'Failed to log call initiation',
-      }
+    if (voiceCallError) {
+      console.error('[v0] [VOICE ENGINE] Failed to write voice_calls row:', voiceCallError)
+      // Call is live — don't fail, just warn
     }
+
+    // Also write lightweight vapi_voice_calls row for superadmin billing roll-up
+    await supabase.from('vapi_voice_calls').insert({
+      voice_call_id: voiceCall?.id ?? null,
+      brokerage_id: contact.brokerage_id,
+      vapi_call_id: vendorCallId,
+      assistant_id: process.env.VAPI_ISA_ASSISTANT_ID ?? null,
+      agent_id: metadata.agentId ?? null,
+      contact_id: metadata.contactId,
+      ended_reason: null,
+    })
 
     return {
       success: true,
-      callId: activity?.id,
+      callId: voiceCall?.id,
       vendorCallId,
     }
   } catch (error: any) {

@@ -78,16 +78,10 @@ export default async function PortalJourneyPage({
       .from("transaction_milestones")
       .select("id, transaction_id, milestone_name, milestone_type, milestone_date, completed_date, status, assigned_to, notes, is_client_visible")
       .eq("transaction_id", transaction.id)
+      .eq("is_client_visible", true)
       .order("milestone_date", { ascending: true, nullsFirst: false })
 
-    // Filter to CLIENT_VISIBLE milestones only
-    milestones = (milestonesData ?? []).filter((m: TransactionMilestone) => {
-      // Use is_client_visible flag if available, otherwise check against constant
-      if (typeof m.is_client_visible === "boolean") {
-        return m.is_client_visible
-      }
-      return CLIENT_VISIBLE_MILESTONES.includes(m.milestone_name as any)
-    })
+    milestones = milestonesData ?? []
   }
 
   // Get label map based on portal view

@@ -13,7 +13,7 @@ interface QuickAction {
 const quickActions: QuickAction[] = [
   {
     label: "Call a Lead",
-    href: "/mobile/dialpad",
+    href: "/mobile/voice",
     icon: <Phone className="h-6 w-6" />,
     color: "bg-emerald-500 text-white",
   },

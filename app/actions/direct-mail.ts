@@ -34,6 +34,7 @@ export interface CreateMailCampaignParams {
   campaignName: string
   targetAudience: string
   designUrl?: string
+  copyText?: string
   quantity: number
   mailingDate?: string
   perPieceCost?: number
@@ -105,6 +106,7 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
         campaign_name: params.campaignName,
         target_audience: params.targetAudience,
         design_url: params.designUrl ?? null,
+        copy_text: params.copyText ?? null,
         quantity: params.quantity,
         mailing_date: params.mailingDate ?? null,
         per_piece_cost: params.perPieceCost ?? null,
@@ -112,9 +114,9 @@ export async function createMailCampaign(params: CreateMailCampaignParams) {
         created_by: params.createdBy,
       })
       .select()
-      .single()
+      .maybeSingle()
 
-    if (error) throw error
+    if (error || !campaign) throw error ?? new Error("Failed to create campaign")
 
     // ── Increment usage counter ──
     await incrementFeatureUsage(params.createdBy, "direct_mail")
@@ -177,9 +179,10 @@ export async function getMailCampaign(campaignId: string) {
       .from("direct_mail_campaigns")
       .select("*")
       .eq("id", campaignId)
-      .single()
+      .maybeSingle()
 
     if (error) throw error
+    if (!data) return { success: false, error: "Campaign not found" }
 
     return { success: true, campaign: data }
   } catch (error) {
@@ -214,7 +217,7 @@ export async function updateMailCampaign(
       .from("direct_mail_campaigns")
       .select("status")
       .eq("id", campaignId)
-      .single()
+      .maybeSingle()
 
     if (existing?.status === "mailed") {
       return { success: false, error: "Cannot update a mailed campaign" }
@@ -234,7 +237,7 @@ export async function updateMailCampaign(
       .update(updatePayload)
       .eq("id", campaignId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -261,7 +264,7 @@ export async function deleteMailCampaign(campaignId: string) {
       .from("direct_mail_campaigns")
       .select("status")
       .eq("id", campaignId)
-      .single()
+      .maybeSingle()
 
     if (existing?.status && existing.status !== "planning") {
       return { success: false, error: "Cannot delete a campaign that is not in planning status" }
@@ -306,7 +309,7 @@ export async function addRecipients(params: AddRecipientsParams) {
       .from("direct_mail_campaigns")
       .select("brokerage_id")
       .eq("id", params.campaignId)
-      .single()
+      .maybeSingle()
 
     if (!campaign) {
       return { success: false, error: "Campaign not found" }
@@ -416,7 +419,7 @@ export async function trackDelivery(params: TrackDeliveryParams) {
         returned_at: (params.deliveryPayload as Record<string, string>)?.returned_at ?? null,
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -477,7 +480,7 @@ export async function logResponse(params: LogResponseParams) {
         response_metadata: params.responseMetadata ?? null,
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (responseError) throw responseError
 
@@ -591,7 +594,7 @@ export async function sendCampaign(params: SendCampaignParams) {
       .from("direct_mail_campaigns")
       .select("*")
       .eq("id", params.campaignId)
-      .single()
+      .maybeSingle()
 
     if (campaignError || !campaign) {
       return { success: false, error: "Campaign not found" }

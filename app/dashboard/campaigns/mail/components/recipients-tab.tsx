@@ -1,16 +1,16 @@
 "use client"
 
 import { useState, useRef } from "react"
-import { Button } from "@/app/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/app/components/ui/card"
-import { Badge } from "@/app/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/app/components/ui/select"
+} from "@/components/ui/select"
 import {
   Table,
   TableBody,
@@ -18,7 +18,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@/app/components/ui/table"
+} from "@/components/ui/table"
 import {
   Dialog,
   DialogContent,
@@ -26,12 +26,13 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@/app/components/ui/dialog"
-import { Input } from "@/app/components/ui/input"
-import { Label } from "@/app/components/ui/label"
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Upload, Users, Trash2, Plus, FileSpreadsheet } from "lucide-react"
 import type { Campaign, Recipient } from "../mail-dashboard"
 import { addRecipients, removeRecipient } from "@/app/actions/direct-mail"
+
 
 interface RecipientsTabProps {
   recipients: Recipient[]

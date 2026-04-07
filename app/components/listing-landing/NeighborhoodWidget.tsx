@@ -1,8 +1,10 @@
 "use client"
 
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { GraduationCap, Footprints, Train, Shield, MapPin, Bike } from "lucide-react"
+import { GraduationCap, Footprints, Train, Shield, MapPin } from "lucide-react"
+import { createClient } from "@/lib/supabase/client"
 
 interface SchoolRating {
   name: string
@@ -21,7 +23,8 @@ interface NeighborhoodData {
 }
 
 interface NeighborhoodWidgetProps {
-  data: NeighborhoodData | null
+  data?: NeighborhoodData | null
+  listingId?: string
 }
 
 function ScoreBadge({
@@ -78,7 +81,40 @@ function CrimeIndexBadge({ index }: { index: number | null }) {
   )
 }
 
-export function NeighborhoodWidget({ data }: NeighborhoodWidgetProps) {
+export function NeighborhoodWidget({ data: initialData, listingId }: NeighborhoodWidgetProps) {
+  const [data, setData] = useState<NeighborhoodData | null>(initialData ?? null)
+  const [loading, setLoading] = useState(!initialData && !!listingId)
+
+  useEffect(() => {
+    if (initialData || !listingId) return
+    const supabase = createClient()
+    supabase
+      .from("neighborhood_reports")
+      .select("neighborhood_name, school_ratings, walk_score, transit_score, crime_index, ai_summary, generated_at")
+      .eq("listing_id", listingId)
+      .maybeSingle()
+      .then(({ data: report }) => {
+        setData(report ?? null)
+        setLoading(false)
+      })
+  }, [listingId, initialData])
+
+  if (loading) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <MapPin className="h-5 w-5" />
+            Neighborhood
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground py-4 text-center">Loading neighborhood data...</p>
+        </CardContent>
+      </Card>
+    )
+  }
+
   if (!data) {
     return (
       <Card>
@@ -89,8 +125,8 @@ export function NeighborhoodWidget({ data }: NeighborhoodWidgetProps) {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-muted-foreground italic">
-            Neighborhood details coming soon.
+          <p className="text-sm text-muted-foreground py-4 text-center">
+            Neighborhood data is being compiled for this listing.
           </p>
         </CardContent>
       </Card>

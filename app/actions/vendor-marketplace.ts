@@ -172,12 +172,12 @@ export async function createVendorBooking(data: {
       scheduled_date: data.scheduledDate,
       cost: data.cost,
       notes: data.notes,
-      status: "scheduled",
+      status: "booked",
       booked_by: user.id,
       booked_at: new Date().toISOString(),
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) throw error
 
@@ -191,6 +191,7 @@ export async function createVendorBooking(data: {
     metadata: { vendor_id: data.vendorId, service_type: data.serviceType }
   })
 
+  const { revalidatePath } = await import("next/cache")
   revalidatePath(`/dashboard/transactions/${data.transactionId}`)
   revalidatePath("/dashboard/vendors")
   return booking
@@ -254,9 +255,10 @@ export async function markBookingComplete(bookingId: string) {
     })
     .eq("id", bookingId)
     .select("*, transactions:transaction_id(id)")
-    .single()
+    .maybeSingle()
 
   if (error) throw error
+  if (!booking) throw new Error("Booking not found")
 
   // Revalidate inside function to avoid module-level server dependency
   const { revalidatePath } = await import("next/cache")
@@ -290,7 +292,7 @@ export async function rateVendorBooking(data: {
     .from("vendor_bookings")
     .select("vendor_id, transaction_id, brokerage_id")
     .eq("id", data.bookingId)
-    .single()
+    .maybeSingle()
 
   if (!booking) throw new Error("Booking not found")
 
@@ -398,7 +400,7 @@ export async function getVendorReviews(vendorId: string) {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("brokerage_id, role")
+    .select("brokerage_id, user_type, role")
     .eq("id", user.id)
     .maybeSingle()
 
@@ -544,25 +546,26 @@ export async function assignVendorToTransaction(data: {
     .from("agents")
     .select("id")
     .eq("user_id", user.id)
-    .single()
+    .maybeSingle()
 
-  if (!agent) throw new Error("Agent profile not found")
+  // Create vendor assignment (agent may not have agents row — use user.id as fallback)
+  const agentRowId = agent?.id ?? user.id
 
-  // Create vendor assignment
   const { data: assignment, error: assignError } = await supabase
     .from("vendor_assignments")
     .insert({
       transaction_id: data.transactionId,
       vendor_id: data.vendorId,
+      brokerage_id: profile?.brokerage_id,
       assignment_type: data.assignmentType,
-      scheduled_date: data.scheduledDate,
+      scheduled_date: data.scheduledDate ? new Date(data.scheduledDate).toISOString() : null,
       notes: data.notes,
-      assigned_by_agent_id: agent.id,
+      assigned_by_agent_id: agentRowId,
       status: "assigned",
       created_at: new Date().toISOString(),
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (assignError) throw assignError
 
@@ -632,12 +635,12 @@ export async function createVendorBookingWithKernelEvent(data: {
       scheduled_date: data.scheduledDate,
       cost: data.cost,
       notes: data.notes,
-      status: "scheduled",
+      status: "booked",
       booked_by: user.id,
       booked_at: new Date().toISOString(),
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) throw error
 
@@ -675,8 +678,8 @@ export async function getAssignedVendorsForTransaction(transactionId: string) {
       assignment_type,
       scheduled_date,
       status,
-      vendors:vendor_id(id, business_name, vendor_type, phone, email),
-      vendor_jobs:vendor_jobs(id, job_title, status, cost_estimate, cost_actual)
+      vendors:vendor_id(id, name, category, phone, email),
+      vendor_jobs!vendor_jobs_assignment_id_fkey(id, job_title, status, cost_estimate, cost_actual)
     `)
     .eq("transaction_id", transactionId)
     .order("scheduled_date", { ascending: false, nullsFirst: false })
@@ -695,11 +698,9 @@ export async function getAgentAssignedVendors(limit: number = 50) {
     .from("agents")
     .select("id")
     .eq("user_id", user.id)
-    .single()
+    .maybeSingle()
 
-  if (!agent) return []
-
-  const { data: assignments } = await supabase
+  let query = supabase
     .from("vendor_assignments")
     .select(`
       id,
@@ -709,10 +710,17 @@ export async function getAgentAssignedVendors(limit: number = 50) {
       scheduled_date,
       status,
       transactions:transaction_id(id, property_address),
-      vendors:vendor_id(id, business_name, vendor_type),
-      vendor_jobs:vendor_jobs(id, status, cost_estimate, cost_actual)
+      vendors:vendor_id(id, name, category)
     `)
-    .eq("assigned_by_agent_id", agent.id)
+
+  if (agent) {
+    query = query.eq("assigned_by_agent_id", agent.id)
+  } else {
+    // Fallback: return empty if no agent row found
+    return []
+  }
+
+  const { data: assignments } = await query
     .order("scheduled_date", { ascending: false, nullsFirst: false })
     .limit(limit)
 

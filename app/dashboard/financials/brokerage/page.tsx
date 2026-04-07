@@ -46,17 +46,17 @@ export default async function BrokeragePLPage() {
   // Get user profile and enforce role gate
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   // RBAC: Only broker, admin, superadmin can access
   const allowedRoles = ["broker", "admin", "superadmin"]
-  if (!profile || !allowedRoles.includes(profile.role || "")) {
+  if (!profile || !allowedRoles.includes(profile.user_type || "")) {
     redirect("/dashboard/financials/agent")
   }
 
-  if (!profile.brokerage_id) redirect("/onboarding")
+  if (!profile.brokerage_id) redirect("/dashboard/onboarding")
 
   // ─── PARALLEL DATA FETCHING ────────────────────────────────────────────────
   const [
@@ -136,12 +136,13 @@ export default async function BrokeragePLPage() {
       .limit(12)
       .then(r => r.data || []),
 
-    // Cashflow forecasts (6 months)
+    // Use monthly brokerage_earnings as forecast proxy (cashflow_forecasts doesn't exist)
     supabase
-      .from("cashflow_forecasts")
-      .select("forecast_month, projected_revenue, actual_revenue")
+      .from("brokerage_earnings")
+      .select("period_label, gross_commission_income, brokerage_net")
       .eq("brokerage_id", profile.brokerage_id)
-      .order("forecast_month", { ascending: true })
+      .eq("period_type", "monthly")
+      .order("period_label", { ascending: false })
       .limit(6)
       .then(r => r.data || []),
   ])
@@ -421,7 +422,7 @@ export default async function BrokeragePLPage() {
         </Card>
       </div>
 
-      {/* ─── SECTION 3: PER-TEAM REVENUE TABLE ────────────────────────────────── */}
+      {/* ─��─ SECTION 3: PER-TEAM REVENUE TABLE ────────────────────────────────── */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
@@ -596,7 +597,11 @@ export default async function BrokeragePLPage() {
         <CardContent>
           {forecasts.length > 0 ? (
             <Suspense fallback={<Skeleton className="h-64 w-full" />}>
-              <ForecastChart data={forecasts} />
+              <ForecastChart data={forecasts.map((f: any) => ({
+                forecast_month: f.period_label ?? f.forecast_month ?? "",
+                projected_revenue: f.gross_commission_income ?? f.projected_revenue ?? 0,
+                actual_revenue: f.brokerage_net ?? f.actual_revenue ?? null,
+              }))} />
             </Suspense>
           ) : (
             <div className="text-center py-8 text-muted-foreground">

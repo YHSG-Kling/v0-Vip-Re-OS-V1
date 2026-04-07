@@ -12,6 +12,13 @@ const SELLER_STAGE_MEANING: Record<string, {
   responsible: string
   urgency: "low" | "medium" | "high"
 }> = {
+  PRE_LISTING: {
+    headline: "Getting Your Home Ready",
+    whatMeans: "Your agent is preparing everything needed to bring your home to market — pricing, media, and marketing materials.",
+    whatNext: "Media capture, pricing review, and launch preparations are underway. Your agent will keep you posted.",
+    responsible: "Your Agent",
+    urgency: "low",
+  },
   COMING_SOON: {
     headline: "Getting Ready to Launch",
     whatMeans: "Your listing is being prepared for market. Photos, pricing, and marketing materials are being finalized.",
@@ -80,7 +87,8 @@ export function SellerJourneyMeaningCard({
 }: SellerJourneyMeaningCardProps) {
   // Derive stage from listing status and activity
   let stage = "ACTIVE"
-  if (listingStatus === "coming_soon") stage = "COMING_SOON"
+  if (listingStatus === "pre_listing" || listingStatus === "draft") stage = "PRE_LISTING"
+  else if (listingStatus === "coming_soon") stage = "COMING_SOON"
   else if (listingStatus === "pending" || listingStatus === "under_contract") stage = "UNDER_CONTRACT"
   else if (listingStatus === "sold" || listingStatus === "closed") stage = "CLOSED"
   else if (offerCount > 0) stage = "OFFER_RECEIVED"

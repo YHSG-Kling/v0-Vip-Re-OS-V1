@@ -7,6 +7,12 @@ import { Button } from '@/components/ui/button'
 import { Briefcase, DollarSign, Star, Clock, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 import { VendorCommandStrip, JobPerformancePanel } from '../components/os'
+import {
+  ExternalPartnerCommandStrip,
+  ExternalActiveFilesPanel,
+  ExternalNextActionsPanel,
+  ExternalBillingEarningsPanel,
+} from '../../(external-portal)/components/os'
 
 export const dynamic = 'force-dynamic'
 
@@ -48,6 +54,7 @@ export default async function VendorDashboardPage() {
 
       {/* OS Command Strip */}
       <VendorCommandStrip vendorId={vendorId} />
+      <ExternalPartnerCommandStrip partnerType="vendor" partnerId={vendorId} />
 
       {/* OS Panel + Stats Grid */}
       <div className="grid lg:grid-cols-3 gap-6">
@@ -113,6 +120,35 @@ export default async function VendorDashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* External Partner OS Panels */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <ExternalActiveFilesPanel partnerType="vendor" partnerId={vendorId} files={active.map((b: any) => ({
+          id: b.id,
+          transactionId: b.id,
+          propertyAddress: b.property_address || 'Service Location',
+          clientName: b.client_name,
+          status: b.status,
+          closeDate: b.scheduled_date,
+          urgency: b.status === 'urgent' ? 'high' : 'medium',
+          actionRequired: b.status === 'pending',
+        }))} />
+        <ExternalNextActionsPanel
+          partnerType="vendor"
+          partnerId={vendorId}
+          actions={[]}
+          onCompleteAction={async (actionId: string, context: { partnerId: string; partnerType: string }) => {
+            const res = await fetch("/api/external-portal/actions/complete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ actionId, context }),
+            })
+            return res.json()
+          }}
+        />
+      </div>
+
+      <ExternalBillingEarningsPanel partnerType="vendor" partnerId={vendorId} />
     </div>
   )
 }

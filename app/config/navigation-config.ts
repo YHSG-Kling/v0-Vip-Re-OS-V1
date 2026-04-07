@@ -8,7 +8,9 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing', icon: 'Sparkles' },
       { id: 'dashboard', label: 'Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
-      { id: 'leads', label: 'My Leads', href: '/dashboard/buyers', icon: 'Zap', badge: { count: 5, color: 'red' } },
+      { id: 'operations', label: 'Operations', href: '/dashboard/operations', icon: 'Activity' },
+      // NOTE: agents work contacts — "My Leads", "Lead Acquisition", and "Lead Intelligence"
+      // are intentionally excluded. Lead intake is admin/system; ISA qualification is system.
       { id: 'contacts', label: 'My Contacts', href: '/crm', icon: 'Users' },
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
@@ -28,14 +30,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       },
       {
         id: 'content',
-        label: 'Content Studio',
+        label: 'Marketing & Content',
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
-          { id: 'content-studio', label: 'Content Studio', href: '/content-studio' },
-          { id: 'social-planner', label: 'Social Planner', href: '/social-planner' },
+          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
-          { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
           { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
@@ -46,6 +46,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Campaigns',
         icon: 'Megaphone',
         children: [
+          { id: 'campaigns-hub', label: 'Campaigns Hub', href: '/dashboard/campaigns' },
           { id: 'sequences', label: 'Sequences', href: '/dashboard/campaigns/sequences' },
           { id: 'ads', label: 'Ad Campaigns', href: '/dashboard/campaigns/ads' },
           { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/mail' },
@@ -63,22 +64,22 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach' },
           { id: 'sequences-comm', label: 'Drip Sequences', href: '/dashboard/communications/sequences' },
           { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence' },
+          { id: 'handoff-cockpit', label: 'Handoff Cockpit', href: '/dashboard/communications/handoffs' },
         ],
       },
-      { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
       { id: 'market-insights', label: 'Market Insights', href: '/dashboard/market-insights', icon: 'TrendingUp' },
       { id: 'patterns', label: 'Behavioral Patterns', href: '/dashboard/patterns', icon: 'Activity' },
       { id: 'financials', label: 'My Financials', href: '/dashboard/financials/agent', icon: 'DollarSign' },
       { id: 'credit-pipeline', label: 'Credit Pipeline', href: '/credit-pipeline', icon: 'CreditCard' },
       {
         id: 'referrals-group',
-        label: 'Referrals',
+        label: 'Referrals & Reviews',
         icon: 'Share2',
         children: [
+          { id: 'referrals-os', label: 'Referrals & Reviews', href: '/dashboard/referrals' },
           { id: 'referrals', label: 'My Referrals', href: '/referrals' },
           { id: 'referral-pipeline', label: 'Referral Pipeline', href: '/referrals/pipeline' },
-          { id: 'referral-partners', label: 'Referral Partners', href: '/referral-partners' },
-          { id: 'agent-referrals', label: 'Agent Referrals', href: '/dashboard/agent/referrals' },
+          { id: 'referral-partners', label: 'Referral Partners', href: '/dashboard/agent/referrals' },
         ],
       },
       { id: 'past-clients', label: 'Past Clients', href: '/past-clients', icon: 'Heart' },
@@ -91,11 +92,17 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'AI Tools',
         icon: 'Sparkles',
         children: [
-          { id: 'voice-command', label: 'Voice Command', href: '/dashboard/voice' },
+          { id: 'ai-tools-hub', label: 'AI Toolkit', href: '/dashboard/ai-tools' },
+          { id: 'ai-chat', label: 'AI Chat', href: '/dashboard/chat' },
+          { id: 'voice-command', label: 'Voice Assistant', href: '/dashboard/voice' },
           { id: 'ai-briefing', label: 'Daily Briefing', href: '/dashboard/briefing' },
         ],
       },
+      { id: 'reporting-center', label: 'Reporting Center', href: '/dashboard/reporting', icon: 'BarChart3' },
       { id: 'coaching', label: 'Training & Coaching', href: '/dashboard/coaching', icon: 'Award' },
+      { id: 'motivation', label: 'Motivation', href: '/dashboard/motivation', icon: 'Trophy' },
+      { id: 'diagnosis', label: 'Business Diagnosis', href: '/dashboard/diagnosis', icon: 'Stethoscope' },
+      { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
       {
         id: 'agent-tools',
         label: 'Agent Tools',
@@ -103,7 +110,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         children: [
           { id: 'business-cards', label: 'Business Cards', href: '/dashboard/agent/business-cards' },
           { id: 'qr-codes', label: 'QR Codes', href: '/dashboard/agent/qr-codes' },
-          { id: 'home-value', label: 'Home Value Tool', href: '/home-value' },
+          { id: 'home-value', label: 'Home Value Tool', href: '/dashboard/tools/home-value' },
         ],
       },
       { id: 'notifications', label: 'Notifications', href: '/notifications', icon: 'Bell' },
@@ -113,6 +120,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Settings',
         icon: 'Settings',
         children: [
+          { id: 'my-profile', label: 'My Profile', href: '/dashboard/profile' },
           { id: 'settings-general', label: 'General', href: '/dashboard/settings/general' },
           { id: 'settings-calendar', label: 'Calendar Sync', href: '/dashboard/settings/calendar' },
           { id: 'settings-branding', label: 'Branding', href: '/dashboard/settings/branding' },
@@ -124,12 +132,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
     topNavItems: [
       { id: 'search', label: 'Search', icon: 'Search' },
-      { id: 'notifications', label: 'Notifications', icon: 'Bell', badge: { count: 3, color: 'red' } },
+      { id: 'notifications', label: 'Notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
       { id: 'dashboard', label: 'Dashboard', href: '/dashboard/agent', icon: 'LayoutGrid' },
-      { id: 'leads', label: 'Leads', href: '/dashboard/buyers', icon: 'Zap' },
       { id: 'contacts', label: 'Contacts', href: '/crm', icon: 'Users' },
       { id: 'listings', label: 'Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'more', label: 'More', href: '/dashboard', icon: 'Menu' },
@@ -150,17 +157,20 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     sidebarItems: [
       { id: 'briefing', label: 'AI Briefing', href: '/dashboard/briefing', icon: 'Sparkles' },
       { id: 'dashboard', label: 'Broker Dashboard', href: '/dashboard/brokerage', icon: 'LayoutGrid' },
+      { id: 'operations', label: 'Operations', href: '/dashboard/operations', icon: 'Activity' },
       { id: 'team', label: 'My Team', href: '/dashboard/team', icon: 'Users' },
       { id: 'lead-intel', label: 'Lead Intelligence', href: '/leads', icon: 'Brain' },
+      { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
       { id: 'transactions', label: 'All Transactions', href: '/dashboard/transactions', icon: 'FileText' },
-      { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badge: { count: 3, color: 'red' } },
+      { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badgeKey: 'pending_approvals' },
       { id: 'divider1', divider: true },
       {
         id: 'intel',
         label: 'Intelligence',
         icon: 'Brain',
         children: [
+          { id: 'intelligence-center', label: 'Intelligence Center', href: '/dashboard/brokerage/intelligence' },
           { id: 'deal-health', label: 'Deal Health', href: '/dashboard/brokerage/deal-health' },
           { id: 'fatigue', label: 'Agent Fatigue', href: '/dashboard/brokerage/fatigue' },
           { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap' },
@@ -183,12 +193,12 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       },
       {
         id: 'content',
-        label: 'Content & Marketing',
+        label: 'Marketing & Content',
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
-          { id: 'newsletters', label: 'Newsletters', href: '/newsletters/templates' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
           { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
           { id: 'repurpose', label: 'Repurpose Content', href: '/dashboard/campaigns/repurpose' },
@@ -203,6 +213,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence' },
           { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach' },
           { id: 'sequences', label: 'Drip Sequences', href: '/dashboard/communications/sequences' },
+          { id: 'handoff-cockpit', label: 'Handoff Cockpit', href: '/dashboard/communications/handoffs' },
         ],
       },
       {
@@ -226,6 +237,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
       { id: 'usage-metrics', label: 'Usage Metrics', href: '/admin/usage', icon: 'Activity' },
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
+      { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
       { id: 'divider2', divider: true },
       {
         id: 'settings',
@@ -242,7 +254,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
     ],
     topNavItems: [
       { id: 'search', label: 'Search', icon: 'Search' },
-      { id: 'alerts', label: 'Alerts', icon: 'AlertCircle', badge: { count: 2, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'AlertCircle', badgeKey: 'pending_approvals' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -264,8 +276,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
 
   isa: {
     sidebarItems: [
-      { id: 'dashboard', label: 'ISA Dashboard', href: '/dashboard/isa', icon: 'LayoutGrid' },
-      { id: 'calling', label: 'Calling Queue', href: '/dashboard/isa/calling', icon: 'Phone', badge: { count: 12, color: 'red' } },
+      { id: 'dashboard', label: 'AI-ISA Console', href: '/dashboard/isa', icon: 'LayoutGrid' },
+      { id: 'calling', label: 'Calling Queue', href: '/dashboard/isa/calling', icon: 'Phone', badgeKey: 'isa_queue_count' },
       { id: 'leads', label: 'Lead Intelligence', href: '/leads', icon: 'Zap' },
       { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach', icon: 'Send' },
       { id: 'sequences', label: 'Drip Sequences', href: '/dashboard/communications/sequences', icon: 'Repeat' },
@@ -287,7 +299,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'notifications', label: 'Notifications', icon: 'Bell', badge: { count: 5, color: 'red' } },
+      { id: 'notifications', label: 'Notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -314,13 +326,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
       { id: 'forms', label: 'Forms Manager', href: '/dashboard/admin/forms', icon: 'FileText' },
       { id: 'knowledge', label: 'Knowledge Base', href: '/dashboard/admin/knowledge', icon: 'BookOpen' },
-      { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badge: { count: 5, color: 'red' } },
+      { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badgeKey: 'pending_approvals' },
       { id: 'divider1', divider: true },
       {
         id: 'intelligence',
         label: 'Intelligence Suite',
         icon: 'Brain',
         children: [
+          { id: 'intelligence-center', label: 'Intelligence Center', href: '/dashboard/brokerage/intelligence' },
           { id: 'deal-health', label: 'Deal Health', href: '/dashboard/brokerage/deal-health' },
           { id: 'team-heatmap', label: 'Team Heatmap', href: '/dashboard/team-heatmap' },
           { id: 'patterns', label: 'Behavioral Patterns', href: '/dashboard/patterns' },
@@ -332,8 +345,11 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         ],
       },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
+      { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'FileText' },
       { id: 'team-financials', label: 'Team Financials', href: '/dashboard/financials/team', icon: 'DollarSign' },
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'Shield' },
+      { id: 'brand-compliance', label: 'Brand & Compliance', href: '/dashboard/admin/brand', icon: 'Shield' },
+      { id: 'feature-governance', label: 'Feature Governance', href: '/dashboard/admin/feature-governance', icon: 'Shield' },
       { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
       { id: 'video-analytics', label: 'Video Analytics', href: '/dashboard/videos/analytics', icon: 'Video' },
       { id: 'sla-monitor', label: 'SLA Monitor', href: '/dashboard/admin/sla-monitor', icon: 'Clock' },
@@ -349,7 +365,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'settings', label: 'Settings', href: '/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'AlertTriangle', badge: { count: 1, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'AlertTriangle', badgeKey: 'pending_approvals' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -372,13 +388,13 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   vendor: {
     sidebarItems: [
       { id: 'dashboard', label: 'Dashboard', href: '/vendor/dashboard', icon: 'LayoutGrid' },
-      { id: 'jobs', label: 'Jobs', href: '/vendor/jobs', icon: 'Briefcase', badge: { count: 2, color: 'blue' } },
+      { id: 'jobs', label: 'Jobs', href: '/vendor/jobs', icon: 'Briefcase', badgeKey: 'vendor_pending_jobs' },
       { id: 'portfolio', label: 'Portfolio', href: '/vendor/portfolio', icon: 'Image' },
       { id: 'earnings', label: 'Earnings', href: '/vendor/earnings', icon: 'DollarSign' },
       { id: 'settings', label: 'Settings', href: '/vendor/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'notifications', label: 'Notifications', icon: 'Bell', badge: { count: 1, color: 'blue' } },
+      { id: 'notifications', label: 'Notifications', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -419,8 +435,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
 
   compliance_officer: {
     sidebarItems: [
-      { id: 'dashboard', label: 'Compliance Dashboard', href: '/compliance/dashboard', icon: 'LayoutGrid' },
-      { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badge: { count: 2, color: 'red' } },
+      { id: 'dashboard', label: 'Compliance Command', href: '/dashboard/compliance', icon: 'LayoutGrid' },
+      { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle', badgeKey: 'compliance_violations' },
       { id: 'audits', label: 'Audit Logs', href: '/compliance/audits', icon: 'Eye' },
       { id: 'policies', label: 'Policies', href: '/compliance/policies', icon: 'FileText' },
       { id: 'reports', label: 'Reports', href: '/compliance/reports', icon: 'BarChart3' },
@@ -432,15 +448,15 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'settings', label: 'Settings', href: '/compliance/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'AlertTriangle', badge: { count: 2, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'AlertTriangle', badgeKey: 'compliance_violations' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
-      { id: 'dashboard', label: 'Dashboard', href: '/compliance/dashboard', icon: 'LayoutGrid' },
+      { id: 'dashboard', label: 'Dashboard', href: '/dashboard/compliance', icon: 'LayoutGrid' },
       { id: 'violations', label: 'Violations', href: '/compliance/violations', icon: 'AlertTriangle' },
       { id: 'audits', label: 'Audits', href: '/compliance/audits', icon: 'Eye' },
       { id: 'reports', label: 'Reports', href: '/compliance/reports', icon: 'BarChart3' },
-      { id: 'more', label: 'More', href: '/compliance/menu', icon: 'Menu' },
+      { id: 'more', label: 'More', href: '/dashboard/compliance', icon: 'Menu' },
     ],
     commandPaletteItems: [
       { id: 'flag-violation', label: 'Flag Violation', href: '/compliance/violations/new' },
@@ -451,23 +467,23 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
 
   tc: {
     sidebarItems: [
-      { id: 'dashboard', label: 'Coordinator Dashboard', href: '/transaction/dashboard', icon: 'LayoutGrid' },
-      { id: 'deals', label: 'Active Deals', href: '/transaction/deals', icon: 'Handshake', badge: { count: 8, color: 'red' } },
+      { id: 'dashboard', label: 'Coordinator Command', href: '/dashboard/coordinator', icon: 'LayoutGrid' },
+      { id: 'deals', label: 'Active Deals', href: '/transaction/deals', icon: 'Handshake', badgeKey: 'active_deals' },
       { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
       { id: 'documents', label: 'Documents', href: '/transaction/documents', icon: 'Folder' },
       { id: 'vendors', label: 'Vendor Coordination', href: '/transaction/vendors', icon: 'Users' },
       { id: 'settings', label: 'Settings', href: '/transaction/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'Bell', badge: { count: 4, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
-      { id: 'dashboard', label: 'Dashboard', href: '/transaction/dashboard', icon: 'LayoutGrid' },
+      { id: 'dashboard', label: 'Dashboard', href: '/dashboard/coordinator', icon: 'LayoutGrid' },
       { id: 'deals', label: 'Deals', href: '/transaction/deals', icon: 'Handshake' },
       { id: 'checklists', label: 'Checklists', href: '/transaction/checklists', icon: 'CheckSquare' },
       { id: 'vendors', label: 'Vendors', href: '/transaction/vendors', icon: 'Users' },
-      { id: 'more', label: 'More', href: '/transaction/menu', icon: 'Menu' },
+      { id: 'more', label: 'More', href: '/dashboard/coordinator', icon: 'Menu' },
     ],
     commandPaletteItems: [
       { id: 'new-deal', label: 'New Deal', href: '/transaction/deals/new' },
@@ -478,14 +494,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   lender: {
     sidebarItems: [
       { id: 'dashboard', label: 'Lender Dashboard', href: '/lender/dashboard', icon: 'LayoutGrid' },
-      { id: 'pipeline', label: 'Loan Pipeline', href: '/lender/pipeline', icon: 'TrendingUp', badge: { count: 12, color: 'blue' } },
+      { id: 'pipeline', label: 'Loan Pipeline', href: '/lender/pipeline', icon: 'TrendingUp', badgeKey: 'lender_pipeline_count' },
       { id: 'approvals', label: 'Approvals', href: '/lender/approvals', icon: 'CheckCircle' },
       { id: 'underwriting', label: 'Underwriting', href: '/lender/underwriting', icon: 'FileCheck' },
       { id: 'documents', label: 'Documents', href: '/lender/documents', icon: 'Folder' },
       { id: 'settings', label: 'Settings', href: '/lender/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'Bell', badge: { count: 3, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -504,14 +520,14 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
   title_agent: {
     sidebarItems: [
       { id: 'dashboard', label: 'Title Dashboard', href: '/title/dashboard', icon: 'LayoutGrid' },
-      { id: 'orders', label: 'Title Orders', href: '/title/orders', icon: 'Package', badge: { count: 5, color: 'blue' } },
+      { id: 'orders', label: 'Title Orders', href: '/title/orders', icon: 'Package', badgeKey: 'title_open_orders' },
       { id: 'status', label: 'Order Status', href: '/title/status', icon: 'Clock' },
       { id: 'documents', label: 'Title Documents', href: '/title/documents', icon: 'FileText' },
       { id: 'closing', label: 'Closing Schedule', href: '/title/closing', icon: 'Calendar' },
       { id: 'settings', label: 'Settings', href: '/title/settings', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'Bell', badge: { count: 2, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [
@@ -542,6 +558,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'billing', label: 'Billing Administration', href: '/admin/billing', icon: 'CreditCard' },
       { id: 'usage-metrics', label: 'Usage Metrics', href: '/admin/usage', icon: 'Activity' },
       { id: 'assignment-rules', label: 'Assignment Rules', href: '/dashboard/admin/assignment-rules', icon: 'GitBranch' },
+      { id: 'feature-governance', label: 'Feature Governance', href: '/dashboard/admin/feature-governance', icon: 'Shield' },
       { id: 'workflows', label: 'Workflows', href: '/workflows', icon: 'Workflow' },
       { id: 'divider3', divider: true },
       { id: 'system-health', label: 'System Health', href: '/admin/system-health', icon: 'Activity' },
@@ -624,21 +641,23 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         ],
       },
       { id: 'compliance', label: 'Compliance', href: '/dashboard/compliance', icon: 'Shield' },
+      { id: 'reports', label: 'Reports', href: '/dashboard/reports', icon: 'BarChart3' },
       {
         id: 'referrals-group',
-        label: 'Referrals',
+        label: 'Referrals & Reviews',
         icon: 'Share2',
         children: [
+          { id: 'referrals-os', label: 'Referrals & Reviews', href: '/dashboard/referrals' },
           { id: 'referrals', label: 'My Referrals', href: '/referrals' },
           { id: 'referral-pipeline', label: 'Referral Pipeline', href: '/referrals/pipeline' },
-          { id: 'referral-partners', label: 'Referral Partners', href: '/referral-partners' },
+          { id: 'referral-partners', label: 'Referral Partners', href: '/dashboard/agent/referrals' },
         ],
       },
       { id: 'past-clients', label: 'Past Clients', href: '/past-clients', icon: 'Heart' },
       { id: 'settings', label: 'Settings', href: '/dashboard/settings/general', icon: 'Settings' },
     ],
     topNavItems: [
-      { id: 'alerts', label: 'Alerts', icon: 'Bell', badge: { count: 3, color: 'red' } },
+      { id: 'alerts', label: 'Alerts', icon: 'Bell', badgeKey: 'unread_notifications' },
       { id: 'profile', label: 'Profile', icon: 'User' },
     ],
     mobileBottomNav: [

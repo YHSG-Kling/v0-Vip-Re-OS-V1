@@ -5,12 +5,25 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { ChevronDown, ChevronRight, Zap } from "lucide-react"
+import { ChevronDown, ChevronRight, Zap, Sparkles } from "lucide-react"
 import { triggerAICompScoring } from "@/app/actions/seller-cma"
+import { generateAICMA } from "@/app/actions/ai-cma"
 import type { CMAPageData } from "@/app/actions/seller-cma"
+import { useRouter } from "next/navigation"
 
 interface Props {
-  listing: { id: string; list_price: number | null }
+  listing: {
+    id: string
+    list_price: number | null
+    agent_id?: string | null
+    address?: string | null
+    city?: string | null
+    state?: string | null
+    property_type?: string | null
+    bedrooms?: number | null
+    bathrooms?: number | null
+    square_footage?: number | null
+  }
   data: CMAPageData
 }
 
@@ -45,6 +58,9 @@ export function CMAReportTab({ listing, data }: Props) {
   const { cma, comparables, compScores, riskFlags, propertyUpgrades, agreement } = data
   const [isPending, startTransition] = useTransition()
   const [scoringMsg, setScoringMsg] = useState<string | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [generateError, setGenerateError] = useState<string | null>(null)
+  const router = useRouter()
 
   function handleScoreComps() {
     if (!cma) return
@@ -59,15 +75,57 @@ export function CMAReportTab({ listing, data }: Props) {
     })
   }
 
+  async function handleGenerateCMA() {
+    if (!listing.agent_id) {
+      setGenerateError("Agent ID not found on listing.")
+      return
+    }
+    setGenerating(true)
+    setGenerateError(null)
+    try {
+      const result = await generateAICMA({
+        agentId: listing.agent_id,
+        listingId: listing.id,
+        propertyAddress: listing.address ?? "",
+        propertyCity: listing.city ?? "",
+        propertyState: listing.state ?? "FL",
+        propertyZip: "",
+        propertyType: (listing.property_type as any) ?? "single_family",
+        bedrooms: listing.bedrooms ?? 0,
+        bathrooms: listing.bathrooms ?? 0,
+        squareFeet: listing.square_footage ?? 0,
+        listingType: "seller",
+      })
+      if (!result.success) {
+        setGenerateError((result as any).error ?? "CMA generation failed.")
+      } else {
+        // Refresh the page so the new CMA is loaded from the server
+        router.refresh()
+      }
+    } catch (e: any) {
+      setGenerateError(e.message ?? "CMA generation failed.")
+    } finally {
+      setGenerating(false)
+    }
+  }
+
   if (!cma) {
     return (
       <div className="p-6">
         <Card className="border-dashed">
-          <CardContent className="py-16 text-center">
+          <CardContent className="py-16 flex flex-col items-center gap-4 text-center">
             <p className="text-muted-foreground text-sm">No CMA report found for this listing.</p>
-            <p className="text-muted-foreground text-xs mt-1">
-              Generate a CMA via the Presentation Drip flow or manually from the listing actions.
-            </p>
+            <Button
+              onClick={handleGenerateCMA}
+              disabled={generating}
+              className="gap-2"
+            >
+              <Sparkles className="h-4 w-4" />
+              {generating ? "Generating CMA..." : "Generate AI CMA"}
+            </Button>
+            {generateError && (
+              <p className="text-destructive text-xs">{generateError}</p>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -188,6 +246,11 @@ export function CMAReportTab({ listing, data }: Props) {
       )}
 
       {/* Comparables table */}
+      {comparables.length === 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Comp data insufficient for this search. Manual MLS review recommended.
+        </div>
+      )}
       <Card>
         <CardHeader className="py-3 px-4">
           <CardTitle className="text-sm font-medium text-foreground">

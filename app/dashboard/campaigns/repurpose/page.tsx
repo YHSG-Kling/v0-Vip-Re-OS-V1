@@ -26,7 +26,7 @@ export default async function RepurposePage() {
       .from("users")
       .select("role, first_name, last_name, user_type")
       .eq("id", userId)
-      .single()
+      .maybeSingle()
 
     // Fetch pipelines and history in parallel
     const [pipelinesResult, historyResult] = await Promise.all([

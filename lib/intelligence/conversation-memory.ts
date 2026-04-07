@@ -1,4 +1,5 @@
 import { generateObject } from 'ai'
+import { resolveModel } from '@/lib/ai/resolve-model'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -215,11 +216,11 @@ export async function updateConversationMemory(
     .from('conversation_insights')
     .select('id')
     .eq('conversation_id', conversationId)
-    .single()
+    .maybeSingle()
 
   // Step 3: Call Claude to extract structured insights
   const { object: insights } = await generateObject({
-    model: 'anthropic/claude-sonnet-4-20250514',
+    model: resolveModel('anthropic/claude-sonnet-4-20250514'),
     schema: insightSchema,
     system: `You are an expert conversation analyst. Extract structured insights from the following conversation between an agent and a contact. Focus on identifying key information that would help the agent in future interactions. Be concise but thorough. Return valid JSON only.`,
     prompt: `Analyze this conversation and extract insights:\n\n${formattedMessages}`,

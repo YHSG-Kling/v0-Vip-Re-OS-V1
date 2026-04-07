@@ -2,6 +2,7 @@ import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { processKernelEvent } from '@/lib/kernel'
 import { logISAOutreach } from '@/lib/ai-isa/isa-outreach-logger'
+import { initiateAIISAContactEngagement } from '@/app/actions/ai-isa/initiate-contact-engagement'
 
 // ─── detectGhostLeads ─────────────────────────────────────────────────────────
 
@@ -175,6 +176,19 @@ export async function runGhostReengagement(
       }
 
       // ── SEND ──────────────────────────────────────────────────────────────
+
+      // If this lead has been converted to a contact AND is assigned to an agent,
+      // route re-engagement to the contact-level engine instead of the lead engine.
+      // This ensures consent-aware, contact-scoped nurture on converted records.
+      if (lead.contact_id && lead.agent_id) {
+        const contactResult = await initiateAIISAContactEngagement(lead.contact_id)
+        if (contactResult.success) {
+          sent++
+        } else {
+          skipped++
+        }
+        continue
+      }
 
       // Mark reengagement active on first send
       if (lead.reengagement_status !== 'active') {

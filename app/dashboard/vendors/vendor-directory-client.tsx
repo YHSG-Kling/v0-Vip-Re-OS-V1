@@ -39,6 +39,9 @@ import {
   AlertCircle,
   Filter,
   TrendingUp,
+  Plus,
+  Paperclip,
+  Package,
 } from "lucide-react"
 import {
   searchVendors,
@@ -48,6 +51,10 @@ import {
   getVendorCostComparison,
   getVendorReviews,
 } from "@/app/actions/vendor-marketplace"
+import {
+  createVendorRecordAction,
+  attachVendorDeliverableAction,
+} from "@/app/actions/vendors-kernel"
 
 interface Vendor {
   id: string
@@ -88,6 +95,19 @@ interface Transaction {
   stage: string
 }
 
+interface Deliverable {
+  id: string
+  doc_name: string | null
+  file_url: string
+  notes: string | null
+  created_at: string
+  metadata: {
+    vendor_booking_id?: string
+    vendor_id?: string
+    service_type?: string
+  } | null
+}
+
 interface VendorDirectoryClientProps {
   initialVendors: Vendor[]
   recentBookings: Booking[]
@@ -96,6 +116,7 @@ interface VendorDirectoryClientProps {
   serviceTypes: string[]
   brokerageId: string
   userRole: string
+  deliverables?: Deliverable[]
 }
 
 export function VendorDirectoryClient({
@@ -106,6 +127,7 @@ export function VendorDirectoryClient({
   serviceTypes,
   brokerageId,
   userRole,
+  deliverables = [],
 }: VendorDirectoryClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
@@ -115,6 +137,25 @@ export function VendorDirectoryClient({
   const [searchName, setSearchName] = useState("")
   const [filterServiceType, setFilterServiceType] = useState<string>("")
   const [filterMinRating, setFilterMinRating] = useState<string>("")
+
+  // Create Vendor dialog state
+  const [createVendorOpen, setCreateVendorOpen] = useState(false)
+  const [newVendorName, setNewVendorName] = useState("")
+  const [newVendorCategory, setNewVendorCategory] = useState("")
+  const [newVendorPhone, setNewVendorPhone] = useState("")
+  const [newVendorEmail, setNewVendorEmail] = useState("")
+  const [newVendorWebsite, setNewVendorWebsite] = useState("")
+  const [newVendorNotes, setNewVendorNotes] = useState("")
+  const [createVendorError, setCreateVendorError] = useState("")
+
+  // Attach Deliverable dialog state
+  const [deliverableDialogOpen, setDeliverableDialogOpen] = useState(false)
+  const [deliverableBookingId, setDeliverableBookingId] = useState("")
+  const [deliverableVendorId, setDeliverableVendorId] = useState("")
+  const [deliverableUrl, setDeliverableUrl] = useState("")
+  const [deliverableDescription, setDeliverableDescription] = useState("")
+  const [deliverableFileName, setDeliverableFileName] = useState("")
+  const [deliverableError, setDeliverableError] = useState("")
 
   // Booking dialog state
   const [bookingDialogOpen, setBookingDialogOpen] = useState(false)
@@ -140,6 +181,64 @@ export function VendorDirectoryClient({
   const [reviewsDialogOpen, setReviewsDialogOpen] = useState(false)
   const [reviewsVendor, setReviewsVendor] = useState<Vendor | null>(null)
   const [vendorReviews, setVendorReviews] = useState<any[]>([])
+
+  const handleCreateVendor = () => {
+    if (!newVendorName.trim()) {
+      setCreateVendorError("Vendor name is required.")
+      return
+    }
+    setCreateVendorError("")
+    startTransition(async () => {
+      const result = await createVendorRecordAction({
+        name:     newVendorName.trim(),
+        category: newVendorCategory || undefined,
+        phone:    newVendorPhone || undefined,
+        email:    newVendorEmail || undefined,
+        website:  newVendorWebsite || undefined,
+        notes:    newVendorNotes || undefined,
+      })
+      if (!result.success) {
+        setCreateVendorError(result.error ?? "Failed to create vendor.")
+        return
+      }
+      setCreateVendorOpen(false)
+      setNewVendorName("")
+      setNewVendorCategory("")
+      setNewVendorPhone("")
+      setNewVendorEmail("")
+      setNewVendorWebsite("")
+      setNewVendorNotes("")
+      router.refresh()
+    })
+  }
+
+  const handleAttachDeliverable = () => {
+    if (!deliverableBookingId || !deliverableUrl || !deliverableDescription) {
+      setDeliverableError("Booking, URL and description are required.")
+      return
+    }
+    setDeliverableError("")
+    startTransition(async () => {
+      const result = await attachVendorDeliverableAction({
+        bookingId:   deliverableBookingId,
+        vendorId:    deliverableVendorId,
+        documentUrl: deliverableUrl,
+        description: deliverableDescription,
+        fileName:    deliverableFileName || undefined,
+      })
+      if (!result.success) {
+        setDeliverableError(result.error ?? "Failed to attach deliverable.")
+        return
+      }
+      setDeliverableDialogOpen(false)
+      setDeliverableBookingId("")
+      setDeliverableVendorId("")
+      setDeliverableUrl("")
+      setDeliverableDescription("")
+      setDeliverableFileName("")
+      router.refresh()
+    })
+  }
 
   const handleSearch = () => {
     startTransition(async () => {
@@ -280,11 +379,17 @@ export function VendorDirectoryClient({
           <h1 className="text-3xl font-bold tracking-tight">Vendor Directory</h1>
           <p className="text-muted-foreground">Find and book trusted vendors for your transactions</p>
         </div>
-        {pendingRatings.length > 0 && (
-          <Badge variant="secondary" className="text-sm px-3 py-1">
-            {pendingRatings.length} Pending Rating{pendingRatings.length !== 1 ? "s" : ""}
-          </Badge>
-        )}
+        <div className="flex items-center gap-3">
+          {pendingRatings.length > 0 && (
+            <Badge variant="secondary" className="text-sm px-3 py-1">
+              {pendingRatings.length} Pending Rating{pendingRatings.length !== 1 ? "s" : ""}
+            </Badge>
+          )}
+          <Button onClick={() => setCreateVendorOpen(true)} size="sm">
+            <Plus className="h-4 w-4 mr-2" />
+            New Vendor
+          </Button>
+        </div>
       </div>
 
       {/* Stats Cards */}
@@ -350,6 +455,13 @@ export function VendorDirectoryClient({
             )}
           </TabsTrigger>
           <TabsTrigger value="compare">Cost Comparison</TabsTrigger>
+          <TabsTrigger value="deliverables" className="flex items-center gap-1.5">
+            <Package className="h-4 w-4" />
+            Deliverables
+            {deliverables.length > 0 && (
+              <Badge variant="secondary" className="ml-1">{deliverables.length}</Badge>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         {/* Directory Tab */}
@@ -651,6 +763,77 @@ export function VendorDirectoryClient({
             </CardContent>
           </Card>
         </TabsContent>
+
+        {/* Deliverables Tab */}
+        <TabsContent value="deliverables" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2">
+                    <Package className="h-5 w-5" />
+                    Vendor Deliverables
+                  </CardTitle>
+                  <CardDescription>Documents and files delivered by vendors for bookings</CardDescription>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setDeliverableDialogOpen(true)}
+                  className="bg-transparent"
+                >
+                  <Paperclip className="h-4 w-4 mr-2" />
+                  Attach Deliverable
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {deliverables.length === 0 ? (
+                <div className="p-8 text-center text-muted-foreground">
+                  <Package className="h-12 w-12 mx-auto mb-4 opacity-40" />
+                  <p className="font-medium">No deliverables yet</p>
+                  <p className="text-sm mt-1">
+                    Attach vendor-supplied documents or files to a booking using the button above.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {deliverables.map((doc) => (
+                    <div
+                      key={doc.id}
+                      className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="font-medium truncate">{doc.doc_name ?? doc.notes ?? "Untitled"}</div>
+                        {doc.notes && doc.doc_name && (
+                          <div className="text-sm text-muted-foreground">{doc.notes}</div>
+                        )}
+                        {doc.metadata?.service_type && (
+                          <Badge variant="secondary" className="text-xs">
+                            {doc.metadata.service_type}
+                          </Badge>
+                        )}
+                        <div className="text-xs text-muted-foreground">
+                          {new Date(doc.created_at).toLocaleDateString()}
+                        </div>
+                      </div>
+                      <a
+                        href={doc.file_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-4 shrink-0"
+                      >
+                        <Button size="sm" variant="outline" className="bg-transparent">
+                          View
+                        </Button>
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
       </Tabs>
 
       {/* Booking Dialog */}
@@ -893,6 +1076,193 @@ export function VendorDirectoryClient({
               </div>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Vendor Dialog */}
+      <Dialog open={createVendorOpen} onOpenChange={setCreateVendorOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add New Vendor</DialogTitle>
+            <DialogDescription>
+              Create a new vendor record in your brokerage marketplace directory.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>
+                Name <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={newVendorName}
+                onChange={(e) => setNewVendorName(e.target.value)}
+                placeholder="e.g., ABC Home Inspections"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Category / Service Type</Label>
+              <Input
+                value={newVendorCategory}
+                onChange={(e) => setNewVendorCategory(e.target.value)}
+                placeholder="e.g., Home Inspection, Photography"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Phone</Label>
+                <Input
+                  value={newVendorPhone}
+                  onChange={(e) => setNewVendorPhone(e.target.value)}
+                  placeholder="(555) 000-0000"
+                  type="tel"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input
+                  value={newVendorEmail}
+                  onChange={(e) => setNewVendorEmail(e.target.value)}
+                  placeholder="vendor@example.com"
+                  type="email"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Website</Label>
+              <Input
+                value={newVendorWebsite}
+                onChange={(e) => setNewVendorWebsite(e.target.value)}
+                placeholder="https://vendor.com"
+                type="url"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>Notes</Label>
+              <Textarea
+                value={newVendorNotes}
+                onChange={(e) => setNewVendorNotes(e.target.value)}
+                placeholder="Optional notes about this vendor..."
+                rows={2}
+              />
+            </div>
+
+            {createVendorError && (
+              <p className="text-sm text-destructive">{createVendorError}</p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCreateVendorOpen(false)
+                setCreateVendorError("")
+              }}
+              className="bg-transparent"
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleCreateVendor} disabled={isPending || !newVendorName.trim()}>
+              {isPending ? "Creating..." : "Create Vendor"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Attach Deliverable Dialog */}
+      <Dialog open={deliverableDialogOpen} onOpenChange={setDeliverableDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Attach Vendor Deliverable</DialogTitle>
+            <DialogDescription>
+              Link a document or file delivered by a vendor to a specific booking.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>
+                Booking <span className="text-destructive">*</span>
+              </Label>
+              <Select value={deliverableBookingId} onValueChange={(val) => {
+                setDeliverableBookingId(val)
+                const booking = recentBookings.find(b => b.id === val)
+                if (booking) setDeliverableVendorId(booking.vendor_id)
+              }}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a booking" />
+                </SelectTrigger>
+                <SelectContent>
+                  {recentBookings.map((b) => (
+                    <SelectItem key={b.id} value={b.id}>
+                      {b.vendors?.name ?? "Vendor"} — {b.service_type}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                File URL <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                value={deliverableUrl}
+                onChange={(e) => setDeliverableUrl(e.target.value)}
+                placeholder="https://..."
+                type="url"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>File Name</Label>
+              <Input
+                value={deliverableFileName}
+                onChange={(e) => setDeliverableFileName(e.target.value)}
+                placeholder="e.g., inspection-report.pdf"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label>
+                Description <span className="text-destructive">*</span>
+              </Label>
+              <Textarea
+                value={deliverableDescription}
+                onChange={(e) => setDeliverableDescription(e.target.value)}
+                placeholder="Brief description of the deliverable..."
+                rows={2}
+              />
+            </div>
+
+            {deliverableError && (
+              <p className="text-sm text-destructive">{deliverableError}</p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeliverableDialogOpen(false)
+                setDeliverableError("")
+              }}
+              className="bg-transparent"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAttachDeliverable}
+              disabled={isPending || !deliverableBookingId || !deliverableUrl || !deliverableDescription}
+            >
+              {isPending ? "Attaching..." : "Attach Deliverable"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server"
 import { getSupabase } from "@/services/supabase"
+import { requireAdminMaintenanceAccess } from "@/lib/auth/require-admin-maintenance-access"
 
-export async function GET() {
+export async function GET(request: Request) {
+  const auth = await requireAdminMaintenanceAccess(request)
+  if (!auth.authorized) return auth.response
+
   try {
     const supabase = getSupabase()
 

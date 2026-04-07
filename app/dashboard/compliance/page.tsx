@@ -8,17 +8,17 @@ import { AlertTriangle, Shield } from "lucide-react"
 import { getPendingApprovals, getComplianceViolations, generateComplianceReport } from "@/app/actions/compliance-monitoring"
 import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
 import { createClient } from "@/lib/supabase/server"
-import SubmitContentForm from "@/components/compliance/submit-content-form"
-import PendingApprovalsList from "@/components/compliance/pending-approvals-list"
-import ViolationsDashboard from "@/components/compliance/violations-dashboard"
-import ApprovedContentLibrary from "@/components/compliance/approved-content-library"
+import SubmitContentForm from "@/app/components/shared/compliance/submit-content-form"
+import PendingApprovalsList from "@/app/components/shared/compliance/pending-approvals-list"
+import ViolationsDashboard from "@/app/components/shared/compliance/violations-dashboard"
+import ApprovedContentLibrary from "@/app/components/shared/compliance/approved-content-library"
 import { TransactionComplianceTab } from "@/app/components/compliance/transaction-compliance-tab"
 import {
   ComplianceCommandStrip,
   ComplianceRiskRadar,
   FlaggedFilesPanel,
   MissingDisclosuresPanel,
-  ExceptionReviewPanel,
+  ExceptionReviewPanelWrapper,
   AuditFeedPanel,
   AIComplianceReviewPanel,
   PolicyReportingPanel,
@@ -126,7 +126,7 @@ export default async function ComplianceDashboardPage() {
         {/* Center Column: Missing Disclosures + Exception Review */}
         <div className="space-y-6">
           <MissingDisclosuresPanel missingDisclosures={missingDisclosures} />
-          <ExceptionReviewPanel exceptions={exceptions} />
+          <ExceptionReviewPanelWrapper exceptions={exceptions} />
         </div>
 
         {/* Right Column: Audit Feed + AI Review + Reporting */}

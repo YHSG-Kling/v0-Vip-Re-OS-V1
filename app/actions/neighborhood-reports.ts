@@ -162,7 +162,7 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
   if (!isExpired) {
     const { data: user } = await supabase
       .from("users")
-      .select("role")
+      .select("user_type, role")
       .eq("id", (await supabase.auth.getUser()).data.user?.id)
       .single()
 
@@ -213,31 +213,85 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
     }
   }
 
-  // Generate AI summary using Claude
-  const anthropic = new Anthropic()
+  // If HouseCanary returned no structured data, ask AI to fill it in
+  const houseCanaryHadData = Object.keys(reportData).length > 0
+  if (!houseCanaryHadData) {
+    try {
+      const aiStructuredMsg = await anthropic.messages.create({
+        model: "claude-opus-4-20250514",
+        max_tokens: 600,
+        messages: [
+          {
+            role: "user",
+            content: `You are a real estate data assistant. Provide realistic neighborhood market data for this property. Return ONLY valid JSON — no markdown, no explanation.
+
+Property: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
+List Price: $${listing.list_price?.toLocaleString() || "N/A"}
+Beds/Baths: ${listing.bedrooms || "N/A"}/${listing.bathrooms || "N/A"}
+
+Return this exact JSON structure:
+{
+  "median_home_price": number,
+  "price_per_sqft": number,
+  "avg_days_on_market": number,
+  "list_to_sale_ratio": number (e.g. 0.98),
+  "walk_score": number (0-100),
+  "transit_score": number (0-100),
+  "crime_index": number (1-10, lower is safer),
+  "market_trend": "appreciating"|"stable"|"depreciating",
+  "school_ratings": [{ "school_name": string, "rating": number, "level": "elementary"|"middle"|"high", "distance": number }]
+}`,
+          },
+        ],
+      })
+
+      const rawStructured = aiStructuredMsg.content[0].type === "text"
+        ? aiStructuredMsg.content[0].text.trim()
+        : ""
+      const aiStructured = JSON.parse(rawStructured)
+
+      reportData = {
+        median_home_price: aiStructured.median_home_price,
+        price_per_sqft: aiStructured.price_per_sqft,
+        avg_days_on_market: aiStructured.avg_days_on_market,
+        list_to_sale_ratio: aiStructured.list_to_sale_ratio,
+        walk_score: aiStructured.walk_score,
+        transit_score: aiStructured.transit_score,
+        crime_index: aiStructured.crime_index,
+        market_trend: aiStructured.market_trend,
+        school_ratings: aiStructured.school_ratings,
+        data_source: "AI-estimated",
+      }
+    } catch (err) {
+      console.error("[v0] AI structured neighborhood data error:", err)
+    }
+  }
+
+  // Generate AI narrative summary
   const aiSummaryPrompt = `Generate a concise 2-3 paragraph neighborhood market analysis for a property listing at:
 Address: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
 List Price: $${listing.list_price?.toLocaleString() || "N/A"}
 Beds/Baths: ${listing.bedrooms || "N/A"}/${listing.bathrooms || "N/A"}
 Sqft: ${listing.sqft?.toLocaleString() || "N/A"}
 
-${reportData.median_home_price ? `Median Home Price: $${reportData.median_home_price.toLocaleString()}` : ""}
+${reportData.median_home_price ? `Median Home Price: $${(reportData.median_home_price as number).toLocaleString()}` : ""}
 ${reportData.avg_days_on_market ? `Avg Days on Market: ${reportData.avg_days_on_market}` : ""}
 ${reportData.walk_score ? `Walk Score: ${reportData.walk_score}` : ""}
 ${reportData.market_trend ? `Market Trend: ${reportData.market_trend}` : ""}
+${reportData.data_source === "AI-estimated" ? "Note: Data is AI-estimated. Include that caveat." : ""}
 
 Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it professional and informative.`
 
   let aiSummary = ""
   try {
     const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-opus-4-20250514",
       max_tokens: 500,
       messages: [{ role: "user", content: aiSummaryPrompt }],
     })
     aiSummary = message.content[0].type === "text" ? message.content[0].text : ""
   } catch (err) {
-    console.error("AI summary generation error:", err)
+    console.error("[v0] AI summary generation error:", err)
   }
 
   // Determine neighborhood name from address

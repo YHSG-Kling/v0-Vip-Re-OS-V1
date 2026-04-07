@@ -15,6 +15,13 @@ import {
   Check,
   ChevronRight,
   Brain,
+  CheckSquare,
+  XCircle,
+  RefreshCw,
+  Settings,
+  Loader2,
+  Zap,
+  ExternalLink,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -42,6 +49,7 @@ import {
   type PatternDetectionWithDetails,
   type PatternAccuracyStats,
 } from "@/app/actions/pattern-actions"
+import { generatePageInsight } from "@/app/actions/generate-page-insight"
 
 interface PatternsDashboardClientProps {
   initialPatterns: PatternDetectionWithDetails[]
@@ -95,6 +103,52 @@ export function PatternsDashboardClient({
     useState<PatternDetectionWithDetails | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
+  const [selectedPatternIds, setSelectedPatternIds] = useState<Set<string>>(new Set())
+  const [aiInsight, setAiInsight] = useState<string | null>(null)
+  const [aiInsightLoading, setAiInsightLoading] = useState(false)
+
+  // Batch actions
+  const handleBatchAcknowledge = async () => {
+    if (selectedPatternIds.size === 0) return
+    startTransition(async () => {
+      for (const id of selectedPatternIds) {
+        await updatePatternStatus(id, "acknowledged")
+      }
+      setPatterns((prev) => prev.filter((p) => !selectedPatternIds.has(p.id)))
+      setSelectedPatternIds(new Set())
+    })
+  }
+
+  const handleBatchDismiss = async () => {
+    if (selectedPatternIds.size === 0) return
+    startTransition(async () => {
+      for (const id of selectedPatternIds) {
+        await updatePatternStatus(id, "dismissed")
+      }
+      setPatterns((prev) => prev.filter((p) => !selectedPatternIds.has(p.id)))
+      setSelectedPatternIds(new Set())
+    })
+  }
+
+  const togglePatternSelection = (id: string) => {
+    setSelectedPatternIds((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(id)) {
+        newSet.delete(id)
+      } else {
+        newSet.add(id)
+      }
+      return newSet
+    })
+  }
+
+  const selectAllPatterns = () => {
+    setSelectedPatternIds(new Set(patterns.map((p) => p.id)))
+  }
+
+  const deselectAllPatterns = () => {
+    setSelectedPatternIds(new Set())
+  }
 
   const refreshPatterns = async (filter: string) => {
     startTransition(async () => {
@@ -174,24 +228,156 @@ export function PatternsDashboardClient({
     return PATTERN_COLORS[patternType] || "bg-slate-100 text-slate-800 border-slate-200"
   }
 
+  const handleAiInsight = async () => {
+    setAiInsightLoading(true)
+    const topPatterns = patterns.slice(0, 5).map((p) => `${p.pattern_name} (confidence: ${Math.round((p.confidence ?? 0) * 100)}%)`).join(", ")
+    const context = `Active pipeline patterns: ${topPatterns || "none"}. Total active: ${patterns.length}. Accuracy rate: ${accuracyStats?.overall_accuracy ? Math.round(accuracyStats.overall_accuracy * 100) : 0}%.`
+    const result = await generatePageInsight({
+      context,
+      question: "Which pattern should I act on first this week to protect my pipeline?",
+    })
+    setAiInsight(result.success ? (result.insight ?? null) : null)
+    setAiInsightLoading(false)
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
       <div className="border-b bg-card">
         <div className="container mx-auto px-4 py-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
-              <Brain className="h-5 w-5 text-primary" />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
+                <Brain className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-foreground">
+                  Behavioral Intelligence
+                </h1>
+                <p className="text-sm text-muted-foreground">
+                  AI-detected patterns across your pipeline
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">
-                Behavioral Intelligence
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                AI-detected patterns across your pipeline
-              </p>
+            {/* Command Strip */}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => refreshPatterns(activeTab)}
+                disabled={isPending}
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${isPending ? "animate-spin" : ""}`} />
+                Refresh
+              </Button>
+              {selectedPatternIds.size > 0 && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleBatchAcknowledge}
+                    disabled={isPending}
+                  >
+                    <CheckSquare className="h-4 w-4 mr-2" />
+                    Acknowledge ({selectedPatternIds.size})
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleBatchDismiss}
+                    disabled={isPending}
+                  >
+                    <XCircle className="h-4 w-4 mr-2" />
+                    Dismiss ({selectedPatternIds.size})
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={deselectAllPatterns}
+                  >
+                    Clear
+                  </Button>
+                </>
+              )}
+              {selectedPatternIds.size === 0 && patterns.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={selectAllPatterns}
+                >
+                  Select All
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleAiInsight}
+                disabled={aiInsightLoading}
+              >
+                {aiInsightLoading ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Zap className="h-4 w-4 mr-2 text-amber-500" />
+                )}
+                AI Insight
+              </Button>
+              <Link href="/dashboard/settings">
+                <Button variant="ghost" size="sm">
+                  <Settings className="h-4 w-4" />
+                </Button>
+              </Link>
             </div>
           </div>
+
+          {/* Stats strip */}
+          <div className="flex items-center gap-6 mt-4 pt-4 border-t">
+            <div className="flex items-center gap-1.5">
+              <span className="text-2xl font-bold text-foreground">{patterns.length}</span>
+              <span className="text-sm text-muted-foreground">active patterns</span>
+            </div>
+            <div className="h-4 w-px bg-border" />
+            <div className="flex items-center gap-1.5">
+              <span className="text-2xl font-bold text-amber-600">
+                {patterns.filter((p) => p.pattern_type?.includes("risk") || p.pattern_type?.includes("disengagement")).length}
+              </span>
+              <span className="text-sm text-muted-foreground">alerts needing action</span>
+            </div>
+            <div className="h-4 w-px bg-border" />
+            <div className="flex items-center gap-1.5">
+              <span className="text-2xl font-bold text-emerald-600">
+                {accuracyStats?.overall_accuracy ? `${Math.round(accuracyStats.overall_accuracy * 100)}%` : "—"}
+              </span>
+              <span className="text-sm text-muted-foreground">pattern accuracy</span>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <Link href="/dashboard/patterns?filter=agent">
+                <Button variant="ghost" size="sm" className="h-7 text-xs">
+                  Agent Patterns
+                  <ExternalLink className="h-3 w-3 ml-1" />
+                </Button>
+              </Link>
+              <Link href="/dashboard/patterns?filter=campaign">
+                <Button variant="ghost" size="sm" className="h-7 text-xs">
+                  Campaign Patterns
+                  <ExternalLink className="h-3 w-3 ml-1" />
+                </Button>
+              </Link>
+            </div>
+          </div>
+
+          {/* AI Insight strip — shown when loaded */}
+          {aiInsight && (
+            <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+              <Zap className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+              <p className="text-sm text-amber-900 leading-relaxed">{aiInsight}</p>
+              <button
+                onClick={() => setAiInsight(null)}
+                className="ml-auto shrink-0 text-amber-400 hover:text-amber-600"
+              >
+                <XCircle className="h-4 w-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

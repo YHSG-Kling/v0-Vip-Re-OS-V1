@@ -26,6 +26,7 @@ import {
 import { cn } from "@/lib/utils"
 import { generateVideoScript } from "@/app/actions/video-generation"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
+import { toast } from "sonner"
 
 export default function VideoAssistantPage() {
   const router = useRouter()
@@ -44,7 +45,6 @@ export default function VideoAssistantPage() {
   const [selectedLength, setSelectedLength] = useState("medium")
 
   useEffect(() => {
-    console.log("[v0] Video Assistant ready")
     // Don't load scripts on mount - table query causes delay
   }, [])
 
@@ -88,13 +88,6 @@ export default function VideoAssistantPage() {
     setGeneratedOptions([])
     
     try {
-      console.log("[v0] Generating 3 script variations with:", { 
-        purpose: selectedPurpose, 
-        persona: selectedPersona,
-        tone: selectedTone,
-        length: selectedLength
-      })
-      
       // Generate 3 different variations with slightly different tones
       const tones = ["friendly", "professional", "energetic"]
       const promises = tones.map(tone =>
@@ -109,9 +102,6 @@ export default function VideoAssistantPage() {
       
       const results = await Promise.all(promises)
       const scripts = results.filter(r => r.success).map(r => r.script || "")
-      
-      console.log("[v0] Generated scripts count:", scripts.length)
-      
       setGeneratedOptions(scripts)
       
       if (scripts.length > 0) {
@@ -130,9 +120,7 @@ export default function VideoAssistantPage() {
   }
 
   async function handleGenerateVideo(scriptId: string, script: string, useAvatar: boolean) {
-    alert(
-      "Video generation will be available once HeyGen is configured by your administrator. The video_content_queue table needs to be created first.",
-    )
+    toast.info("HeyGen must be configured by your administrator before video generation is available")
     return
   }
 

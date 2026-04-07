@@ -22,6 +22,7 @@ import {
 import { supabaseService } from "../services/supabaseService"
 import { executeWorkflow } from "../app/actions/workflows"
 import type { JourneyState, JourneyBlueprint, JourneyStage } from "../types"
+import { toast } from "sonner"
 
 interface JourneyCardsRendererProps {
   userId: string
@@ -101,11 +102,11 @@ export const JourneyCardsRenderer: React.FC<JourneyCardsRendererProps> = ({ user
         userId,
         context: card.card_id,
       })
-      alert(`${action.label} initiated successfully.`)
+      toast.success(`${action.label} initiated`)
     } else if (action.type === "navigate") {
       if (onNavigate) onNavigate(action.url)
     } else if (action.type === "schedule_meeting") {
-      alert("Opening meeting scheduler...")
+      toast.info("Opening meeting scheduler")
     }
   }
 

@@ -21,6 +21,7 @@ import {
   MessageCircle,
 } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 
 interface ExternalBehaviorLead {
   id: string
@@ -134,7 +135,7 @@ export default function BehavioralInsights() {
         .limit(100)
 
       if (error) {
-        console.log("[v0] external_behavior table may not exist yet:", error.message)
+        console.error("[BehavioralInsights] external_behavior table may not exist yet:", error.message)
         return []
       }
 
@@ -189,7 +190,7 @@ export default function BehavioralInsights() {
         .limit(100)
 
       if (error) {
-        console.log("[v0] lead_property_searches table may not exist yet:", error.message)
+        console.error("[BehavioralInsights] lead_property_searches table may not exist yet:", error.message)
         return []
       }
 
@@ -248,7 +249,7 @@ export default function BehavioralInsights() {
         .limit(100)
 
       if (error) {
-        console.log("[v0] social_intelligence table may not exist yet:", error.message)
+        console.error("[BehavioralInsights] social_intelligence table may not exist yet:", error.message)
         return []
       }
 
@@ -326,7 +327,7 @@ export default function BehavioralInsights() {
 
   const assignLeadToAgent = async (contactId: string | null | undefined, agentId: string) => {
     if (!contactId) {
-      alert("Cannot assign - no contact linked. Create a contact first.")
+      toast.error("No contact linked — create a contact first")
       return
     }
 
@@ -337,11 +338,11 @@ export default function BehavioralInsights() {
 
       if (error) throw error
 
-      alert("Lead assigned successfully!")
+      toast.success("Lead assigned")
       loadAllScrapedData()
     } catch (error) {
       console.error("[v0] Error assigning lead:", error)
-      alert("Failed to assign lead")
+      toast.error("Failed to assign lead")
     } finally {
       setAssigningLead(null)
     }

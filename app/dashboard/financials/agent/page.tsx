@@ -25,6 +25,9 @@ import {
   type FinancialPriority,
   type FinancialAction,
 } from "../components/os"
+import { getProviderConnectionStatus } from "@/app/actions/accounting-sync"
+import { AgentFinancialsClient } from "./agent-financials-client"
+import { loadAgentFinancialDashboardSummaryAction } from "@/app/actions/financial-kernel"
 
 export const dynamic = "force-dynamic"
 
@@ -42,140 +45,79 @@ export default async function AgentFinancialsPage() {
   const { agentId, brokerageId } = context
   const currentYear = new Date().getFullYear()
 
-  // Parallel fetch all financial data
-  const [
-    agentData,
-    mtdEarnings,
-    ytdEarnings,
-    earningsHistory,
-    businessExpenses,
-    pendingCommissions,
-    teamSplits,
-    bonusCredits,
-    monthlyTrend,
-    ytdTransactionCount,
-  ] = await Promise.all([
-    // Agent profile for cap info
-    supabase
-      .from("agents")
-      .select("id, first_name, last_name, cap_amount, cap_progress, gamification_points")
-      .eq("id", agentId)
-      .single()
-      .then((r) => r.data),
+  // Load agent financial summary via kernel command (replaces 16 individual DB queries)
+const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
+  agentId,
+  brokerageId,
+})
 
-    // MTD earnings from agent_earnings
-    supabase
-      .from("agent_earnings")
-      .select("*")
-      .eq("agent_id", agentId)
-      .eq("period_type", "mtd")
-      .order("computed_at", { ascending: false })
-      .limit(1)
-      .single()
-      .then((r) => r.data),
+  if (!financialSummaryResult.success) {
+    redirect("/login")
+  }
 
-    // YTD earnings from agent_earnings
-    supabase
-      .from("agent_earnings")
-      .select("*")
-      .eq("agent_id", agentId)
-      .eq("period_type", "ytd")
-      .order("computed_at", { ascending: false })
-      .limit(1)
-      .single()
-      .then((r) => r.data),
+  const summary = financialSummaryResult.data
 
-    // Earnings history for breakdown table
-    supabase
-      .from("earnings_history")
-      .select(`
-        id,
-        transaction_id,
-        paid_date,
-        gross_commission,
-        agent_net,
-        brokerage_net,
-        total_fees,
-        transactions:transaction_id(property_address)
-      `)
-      .eq("agent_id", agentId)
-      .order("paid_date", { ascending: false })
-      .limit(100)
-      .then((r) => r.data || []),
+  // Fetch accounting sync status in parallel (not in kernel scope yet)
+  const syncStatus = await getProviderConnectionStatus(brokerageId).catch(() => null)
 
-    // Business expenses grouped by category
-    supabase
-      .from("business_expenses")
-      .select("id, category, amount, description, expense_date")
-      .eq("agent_id", agentId)
-      .order("expense_date", { ascending: false })
-      .then((r) => r.data || []),
+  // Extract data from kernel result
+  const mtdEarnings = summary.mtdEarnings
+  const ytdEarnings = summary.ytdEarnings
+  const businessExpenses = summary.expenses
+  const pendingCommissions = summary.pendingCommissions
+  const teamSplits = summary.teamSplits
+  const bonusCredits = summary.bonusCredits
+  const monthlyTrend = summary.monthlyTrendData
+  const ytdTransactionCount = summary.ytdTransactionCount
+  const commissionProfile = summary.commissionProfile
+  const capTracking = summary.capTracking
+  const agentData = summary.agentData
+  const pipelineTransactions = summary.pipelineTransactions
+  const earningsHistory = summary.earningsHistory
 
-    // Pending/pipeline commissions
-    supabase
-      .from("commission_calculations")
-      .select(`
-        id,
-        transaction_id,
-        total_commission,
-        calculated_at,
-        transactions:transaction_id(property_address, status, stage)
-      `)
-      .eq("agent_id", agentId)
-      .order("calculated_at", { ascending: false })
-      .then((r) => r.data || []),
+  // Additional derived data
+  const currentBilling = null
+  const existingBudget = null
+  const processedEarningsHistory = earningsHistory ?? []
 
-    // Team splits (commission_distributions where this agent received team split)
-    supabase
-      .from("commission_distributions")
-      .select(`
-        id,
-        calculated_amount,
-        distribution_type,
-        transaction_id,
-        transactions:transaction_id(property_address)
-      `)
-      .eq("agent_id", agentId)
-      .eq("distribution_type", "team_split")
-      .then((r) => r.data || []),
+  // Helper function to process monthly trend data
+  function processMonthlyTrend(data: any[]) {
+    const monthlyMap = new Map<string, { gross: number; net: number }>()
 
-    // Bonus credits from commission_adjustments
-    supabase
-      .from("commission_adjustments")
-      .select("amount")
-      .eq("applies_to", agentId)
-      .eq("adjustment_type", "credit")
-      .eq("is_active", true)
-      .then((r) => {
-        const adjustments = r.data || []
-        return adjustments.reduce((sum, adj) => sum + (adj.amount || 0), 0)
-      }),
+    data.forEach((record) => {
+      const date = new Date(record.paid_date)
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
+      
+      if (!monthlyMap.has(monthKey)) {
+        monthlyMap.set(monthKey, { gross: 0, net: 0 })
+      }
+      
+      const current = monthlyMap.get(monthKey)!
+      current.gross += record.gross_commission || 0
+      current.net += record.agent_net || 0
+    })
 
-    // Monthly trend for last 12 months
-    supabase
-      .from("earnings_history")
-      .select("paid_date, gross_commission, agent_net")
-      .eq("agent_id", agentId)
-      .gte("paid_date", new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0])
-      .order("paid_date", { ascending: true })
-      .then((r) => r.data || []),
+    // Get last 12 months
+    const result = []
+    const now = new Date()
+    
+    for (let i = 11; i >= 0; i--) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
+      const monthLabel = date.toLocaleDateString("en-US", { month: "short" })
+      
+      const values = monthlyMap.get(monthKey) || { gross: 0, net: 0 }
+      result.push({
+        month: monthLabel,
+        gross: values.gross,
+        net: values.net,
+      })
+    }
+    
+    return result
+  }
 
-    // YTD transaction count
-    supabase
-      .from("commissions")
-      .select("id", { count: "exact", head: true })
-      .eq("agent_id", agentId)
-      .gte("paid_date", `${currentYear}-01-01`)
-      .then((r) => r.count || 0),
-  ])
-
-  // Process earnings history to include property address
-  const processedEarningsHistory = earningsHistory.map((record: any) => ({
-    ...record,
-    property_address: record.transactions?.property_address,
-  }))
-
-  // Calculate expense totals by category
+  // Calculate expense totals by category (same logic as before)
   const expensesByCategory = businessExpenses.reduce((acc: Record<string, number>, expense: any) => {
     const category = expense.category || "Other"
     acc[category] = (acc[category] || 0) + (expense.amount || 0)
@@ -275,6 +217,16 @@ export default async function AgentFinancialsPage() {
     type: "report",
   })
 
+  // Format expenses for planning components
+  const formattedExpenses = businessExpenses.map((e: any) => ({
+    id: e.id,
+    category: e.category || "Uncategorized",
+    amount: e.amount || 0,
+    description: e.description || "",
+    receipt_url: e.receipt_url,
+    date: e.expense_date,
+  }))
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -285,8 +237,22 @@ export default async function AgentFinancialsPage() {
         </p>
       </div>
 
-      {/* Financial Command Strip */}
-      <FinancialCommandStrip
+      <AgentFinancialsClient
+        agentId={agentId}
+        brokerageId={brokerageId}
+        ytdGCI={ytdEarnings?.gross_commission || 0}
+        ytdExpenses={totalExpensesYTD}
+        ytdTransactionCount={ytdTransactionCount}
+        expenses={formattedExpenses}
+        syncStatus={syncStatus}
+        currentBilling={currentBilling ?? null}
+        existingBudget={existingBudget ?? null}
+        pipelineTransactions={(pipelineTransactions as any[]) ?? []}
+        commissionProfile={commissionProfile ?? null}
+        capTracking={capTracking ?? null}
+      >
+        {/* Financial Command Strip */}
+        <FinancialCommandStrip
         priority={financialPriority}
         periodSummary={{
           mtdRevenue: mtdEarnings?.agent_net || 0,
@@ -305,12 +271,15 @@ export default async function AgentFinancialsPage() {
         ytdTransactionCount={ytdTransactionCount}
       />
 
-      {/* Section 2: Cap Progress */}
+      {/* Section 2: Cap Progress — prefers agent_cap_tracking, falls back to agents table */}
       <CapProgressBar
-        capAmount={agentData?.cap_amount || null}
-        capProgress={agentData?.cap_progress || 0}
+        capAmount={capTracking?.cap_amount ?? agentData?.cap_amount ?? null}
+        capProgress={capTracking?.cap_paid_to_date ?? agentData?.cap_progress ?? 0}
         capProgressPct={ytdEarnings?.cap_progress_pct || 0}
         bonusCredits={bonusCredits}
+        isCapped={capTracking?.is_capped ?? false}
+        anniversaryStart={capTracking?.anniversary_start ?? undefined}
+        anniversaryEnd={capTracking?.anniversary_end ?? undefined}
       />
 
       {/* Section 3: Commission Breakdown Table */}
@@ -381,15 +350,23 @@ export default async function AgentFinancialsPage() {
                     key={deal.id}
                     className="flex items-center justify-between p-3 bg-muted/50 rounded-lg"
                   >
-                    <div>
-                      <p className="font-medium text-sm">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">
                         {deal.transactions?.property_address || "Pending Deal"}
                       </p>
-                      <Badge variant="secondary" className="text-xs mt-1">
-                        {deal.transactions?.stage || "In Progress"}
-                      </Badge>
+                      <div className="flex items-center gap-2 mt-1">
+                        <Badge variant="secondary" className="text-xs">
+                          {deal.transactions?.stage || "In Progress"}
+                        </Badge>
+                        <a
+                          href={`/dashboard/transactions/${deal.transaction_id}#deposits`}
+                          className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                        >
+                          View Deposits
+                        </a>
+                      </div>
                     </div>
-                    <p className="font-semibold text-amber-600">
+                    <p className="font-semibold text-amber-600 ml-3 shrink-0">
                       ${deal.total_commission?.toLocaleString() || 0}
                     </p>
                   </div>
@@ -488,9 +465,12 @@ export default async function AgentFinancialsPage() {
             expenseRatio: (ytdEarnings?.agent_net || 0) > 0 
               ? (totalExpensesYTD / (ytdEarnings?.agent_net || 1)) * 100 
               : 0,
+            // cap_progress on agents table is a 0-100 percentage value
             targetProgress: agentData?.cap_amount 
-              ? ((agentData?.cap_progress || 0) / agentData.cap_amount) * 100 
-              : undefined,
+              ? Math.min((agentData?.cap_progress || 0), 100)
+              : capTracking?.cap_amount
+                ? Math.min(((capTracking.cap_paid_to_date ?? 0) / capTracking.cap_amount) * 100, 100)
+                : undefined,
           }}
           period="ytd"
         />
@@ -498,45 +478,9 @@ export default async function AgentFinancialsPage() {
         <FinancialActionStack actions={financialActions} />
       </div>
 
-      {/* Section 9: P&L Report Generator */}
-      <ProfitLossReportPanel agentId={agentId} />
+        {/* Section 9: P&L Report Generator */}
+        <ProfitLossReportPanel agentId={agentId} />
+      </AgentFinancialsClient>
     </div>
   )
-}
-
-// Helper function to process monthly trend data
-function processMonthlyTrend(data: any[]) {
-  const monthlyMap = new Map<string, { gross: number; net: number }>()
-
-  data.forEach((record) => {
-    const date = new Date(record.paid_date)
-    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
-    
-    if (!monthlyMap.has(monthKey)) {
-      monthlyMap.set(monthKey, { gross: 0, net: 0 })
-    }
-    
-    const current = monthlyMap.get(monthKey)!
-    current.gross += record.gross_commission || 0
-    current.net += record.agent_net || 0
-  })
-
-  // Get last 12 months
-  const result = []
-  const now = new Date()
-  
-  for (let i = 11; i >= 0; i--) {
-    const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`
-    const monthLabel = date.toLocaleDateString("en-US", { month: "short" })
-    
-    const values = monthlyMap.get(monthKey) || { gross: 0, net: 0 }
-    result.push({
-      month: monthLabel,
-      gross: values.gross,
-      net: values.net,
-    })
-  }
-
-  return result
 }

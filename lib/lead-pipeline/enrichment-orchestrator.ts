@@ -107,9 +107,13 @@ export async function processEnrichmentQueue(
 
       // Step 6: Data returned
       if (enriched) {
-        const primaryEmail = enriched.emails?.[0]?.address ?? null
-        const primaryPhone = enriched.phones?.[0]?.number ?? null
-        const secondaryPhone = enriched.phones?.[1]?.number ?? null
+        // PeopleDataEnrichment.emails and phones are string[] not object[]
+        const primaryEmail = enriched.emails?.[0] ?? null
+        const primaryPhone = enriched.phones?.[0] ?? null
+        const secondaryPhone = enriched.phones?.[1] ?? null
+
+        // Mailing address from enrichment provider
+        const hasMailingData = !!(enriched.address || enriched.city || enriched.state)
 
         // Step 6a: Update entity table
         if (entityType === 'lead') {
@@ -120,7 +124,20 @@ export async function processEnrichmentQueue(
               ...(primaryPhone && { phone: primaryPhone }),
               ...(secondaryPhone && { phone_secondary: secondaryPhone }),
               last_enriched_at: new Date().toISOString(),
+              enrichment_status: 'complete',
+              enrichment_provider: 'peopledata',
               enrichment_confidence: enriched.enrichmentConfidence,
+              // Write mailing fields when provider returns address data
+              ...(hasMailingData && {
+                mailing_address: enriched.address ?? null,
+                mailing_city: enriched.city ?? null,
+                mailing_state: enriched.state ?? null,
+                mailing_zip: enriched.zipCode ?? null,
+                mailing_address_verified: true,
+                mailing_address_source: 'enrichment',
+              }),
+              // Mark eligible for ISA if email is now available
+              ...(primaryEmail && { minimum_viable_for_isa: true }),
             })
             .eq('id', entityId)
         } else {
@@ -165,8 +182,8 @@ export async function processEnrichmentQueue(
             entity_id: entityId,
             brokerage_id: brokerageId,
             event_type: KernelEvent.ENRICHMENT_COMPLETED,
-            context_json: JSON.stringify({ queueEntryId: entry.id, cost }),
-            occurred_at: new Date().toISOString(),
+            metadata: { queueEntryId: entry.id, cost },
+            created_at: new Date().toISOString(),
           })
 
           await handleLeadScored({ leadId: entityId, brokerageId })
@@ -179,8 +196,8 @@ export async function processEnrichmentQueue(
             entity_id: entityId,
             brokerage_id: brokerageId,
             event_type: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
-            context_json: JSON.stringify({ queueEntryId: entry.id, cost }),
-            occurred_at: new Date().toISOString(),
+            metadata: { queueEntryId: entry.id, cost },
+            created_at: new Date().toISOString(),
           })
 
           await processKernelEvent({
@@ -219,8 +236,8 @@ export async function processEnrichmentQueue(
               entity_id: entityId,
               brokerage_id: brokerageId,
               event_type: KernelEvent.CONTACT_SCORED,
-              context_json: JSON.stringify({ score: scoreResult.finalScore }),
-              occurred_at: new Date().toISOString(),
+              metadata: { score: scoreResult.finalScore },
+              created_at: new Date().toISOString(),
             })
           }
         }
@@ -268,13 +285,12 @@ export async function processEnrichmentQueue(
       if (isFinal) {
         await supabase.from('automation_errors').insert({
           brokerage_id: brokerageId,
-          automation_type: 'enrichment_processor',
-          entity_type: entityType,
-          entity_id: entityId,
+          workflow_name: 'enrichment_processor',
+          lead_id: entityType === 'lead' ? entityId : null,
           error_message: message,
+          context_json: JSON.stringify({ entityType, entityId, queueEntryId: entry.id }),
           status: 'open',
           severity: 'medium',
-          occurred_at: new Date().toISOString(),
         })
       }
 

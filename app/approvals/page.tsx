@@ -50,7 +50,6 @@ export default function ApprovalsPage() {
 
       if (response.ok) {
         setItems(data.items || [])
-        console.log("[v0] Loaded approval items:", data.items?.length)
       } else {
         toast.error("Failed to load approvals")
       }

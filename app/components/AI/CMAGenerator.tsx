@@ -20,9 +20,10 @@ import {
   Globe,
   Send,
 } from "lucide-react"
-import { generateAIText } from "@/lib/ai"
-import { executeWorkflow } from "../../app/actions/workflows"
 import { VideoGenerationButtons } from "@/components/video/VideoGenerationButtons"
+import { generateAICMA } from "@/app/actions/ai-cma"
+import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 
 interface CMAPackageInputs {
   address: string
@@ -78,92 +79,67 @@ const SmartCMA: React.FC = () => {
     setLoadingStep("Fetching Comps & Market Data...")
 
     try {
-      // Node 3 & 4 & 5 (Consolidated for UI efficiency)
+      // Resolve agentId from session
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error("Not authenticated")
+
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", user.id)
+        .maybeSingle()
+
+      if (!agentRow?.id) throw new Error("Agent record not found")
+
       setLoadingStep("AI Analyzing Market Dynamics...")
-      const prompt = `Act as a Real Estate Pricing Analyst and Listing Strategist.
-        
-SUBJECT PROPERTY: ${inputs.address}, ${inputs.city} ${inputs.zip}
-SPECS: ${inputs.beds}b/${inputs.baths}b, ${inputs.sqft}sqft, Year: ${inputs.yearBuilt}, Cond: ${inputs.condition}
-UPGRADES: ${inputs.upgrades}
-SELLER PROFILE: ${inputs.sellerName}, Motivation: ${inputs.motivation}, Timing: ${inputs.timing}
 
-SIMULATED MARKET DATA (TRAVIS COUNTY):
-- 3 Active Comps within 0.5 miles: $825k, $860k, $895k.
-- Avg DOM: 24 days. Inventory: 1.8 months.
-
-CRITICAL CONTENT PHILOSOPHY - THEM-FIRST APPROACH:
-- Write 80-90% about ${inputs.sellerName} and their situation, NOT about you/the agent
-- Focus on THEIR emotions: fear, hope, dreams, concerns about selling
-- Address THEIR specific needs: ${inputs.motivation}
-- Use "you" and "your" extensively (aim for 15%+ of content)
-- Minimize "I", "me", "my", "our" language (keep under 10%)
-- Lead with their pain points and desires, NOT agent credentials
-- Make them feel UNDERSTOOD first, then offer solutions
-
-TASK: Generate a full Listing Package in JSON.
-- marketSnapshot: 2-3 sentences on current local trends that matter to THEM
-- pricing: { "aggressive": "string", "market": "string", "speed": "string" }, ranges explained from THEIR perspective
-- marketing: { "buyerProfile": "string", "preList": "string", "online": "string", "offline": "string", "timeline": "string" }
-- presentation: { "overview": "string", "process": "string", "valueProp": "string" }
-- email: A warm, empathetic email TO ${inputs.sellerName} that shows you understand their ${inputs.motivation} situation
-
-COMPLIANCE: End all text with the standard CMA Disclaimer: "This report is a Comparative Market Analysis (CMA) prepared by a real estate licensee for marketing and pricing guidance. It is not an appraisal..."
-
-Return strictly valid JSON:
-{
-  "marketSnapshot": "string",
-  "pricing": { "aggressive": "string", "market": "string", "speed": "string" },
-  "marketing": { "buyerProfile": "string", "preList": "string", "online": "string", "offline": "string", "timeline": "string" },
-  "presentation": { "overview": "string", "process": "string", "valueProp": "string" },
-  "email": "string"
-}`
-
-      const response = await generateAIText(prompt)
-
-      if (response.text) {
-        try {
-          setPackageResult(JSON.parse(response.text))
-          setLoadingStep("Assembling PDFs & Branding Assets...")
-          await new Promise((r) => setTimeout(r, 1500))
-          setStep(4)
-        } catch {
-          // Fallback if JSON parsing fails
-          // Mock
-          await new Promise((r) => setTimeout(r, 3000))
-          setPackageResult({
-            marketSnapshot:
-              "The 78704 market remains resilient with low inventory. Homes priced accurately are seeing multiple offers within 14 days.",
-            pricing: { aggressive: "$895,000", market: "$850,000", speed: "$825,000" },
-            marketing: {
-              buyerProfile: "Tech-savvy families...",
-              preList: "Staging and paint touch-ups...",
-              online: "Custom SEO listing page...",
-              offline: "High-end brochures...",
-              timeline: "Day 1-7: Prep...",
-            },
-            presentation: {
-              overview: "Current market highlights...",
-              process: "The path to sold...",
-              valueProp: "Why Nexus Realty...",
-            },
-            email: "Hi John, I've prepared your custom listing strategy...",
-          })
-          setStep(4)
-        }
-      }
-
-      // Trigger actual n8n logging
-      // Fixed: Passing expected 6 arguments instead of an object to match the service definition.
-      await executeWorkflow("generate-cma", {
-        address: inputs.address,
-        beds: inputs.beds,
-        baths: inputs.baths,
-        sqft: inputs.sqft,
-        upgrades: inputs.upgrades,
+      const res = await generateAICMA({
+        agentId: agentRow.id,
+        propertyAddress: inputs.address,
+        propertyCity: inputs.city,
+        propertyState: "TX",
+        propertyZip: inputs.zip,
+        propertyType: inputs.type as any,
+        bedrooms: Number(inputs.beds) || 0,
+        bathrooms: Number(inputs.baths) || 0,
+        squareFeet: Number(inputs.sqft) || 0,
+        lotSize: Number(inputs.lotSize) || undefined,
+        yearBuilt: Number(inputs.yearBuilt) || undefined,
+        condition: inputs.condition || undefined,
+        features: inputs.upgrades ? [inputs.upgrades] : undefined,
+        listingType: "seller",
       })
+
+      if (!res.success) throw new Error((res as any).error ?? "CMA generation failed")
+
+      setLoadingStep("Assembling Report...")
+
+      // Map the real CMA result to the display shape
+      setPackageResult({
+        cmaId: res.id,
+        marketSnapshot: res.marketTrends?.summary ?? "",
+        pricing: {
+          aggressive: res.pricingStrategy?.priceRangeHigh
+            ? `$${Number(res.pricingStrategy.priceRangeHigh).toLocaleString()}`
+            : "—",
+          market: res.pricingStrategy?.recommendedListPrice
+            ? `$${Number(res.pricingStrategy.recommendedListPrice).toLocaleString()}`
+            : "—",
+          speed: res.pricingStrategy?.priceRangeLow
+            ? `$${Number(res.pricingStrategy.priceRangeLow).toLocaleString()}`
+            : "—",
+        },
+        comparables: res.comparables ?? [],
+        rationale: res.pricingStrategy?.rationale ?? "",
+        presentation: res.presentation ?? null,
+        marketing: res.presentation?.marketingStrategy ?? null,
+      })
+
+      setStep(4)
     } catch (error) {
       console.error(error)
-      alert("AI Protocol Failure. Attempting fallback...")
+      toast.error("CMA generation failed — try again")
       setStep(2)
     }
   }
@@ -445,6 +421,43 @@ Return strictly valid JSON:
                       </div>
                     </section>
 
+                    {/* Insufficient comps warning — shown when no real MLS data was found */}
+                    {(!packageResult.comparables || packageResult.comparables.length === 0) && (
+                      <section className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-3 text-sm text-amber-800">
+                        Comp data insufficient for this search. Manual MLS review recommended.
+                      </section>
+                    )}
+
+                    {/* Real comparables from ai-cma.ts */}
+                    {packageResult.comparables?.length > 0 && (
+                      <section>
+                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em] mb-4">
+                          Comparable Sales ({packageResult.comparables.length})
+                        </h4>
+                        <div className="space-y-2">
+                          {packageResult.comparables.slice(0, 5).map((c: any, i: number) => (
+                            <div key={i} className="flex items-center justify-between bg-slate-50 rounded-2xl px-5 py-3 text-sm">
+                              <span className="font-medium text-slate-700 truncate mr-4">{c.address}</span>
+                              <span className="font-black text-slate-900 shrink-0">
+                                ${Number(c.soldPrice ?? c.adjustedValue ?? c.salePrice ?? 0).toLocaleString()}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+
+                    {packageResult.rationale && (
+                      <section>
+                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em] mb-3">
+                          Pricing Rationale
+                        </h4>
+                        <p className="text-sm text-slate-600 leading-relaxed italic border-l-4 border-indigo-400 pl-5">
+                          {packageResult.rationale}
+                        </p>
+                      </section>
+                    )}
+
                     <div className="pt-10 border-t border-slate-100">
                       <p className="text-[9px] text-slate-400 font-bold leading-relaxed uppercase tracking-widest opacity-60">
                         COMPLIANCE DISCLAIMER: This report is a Comparative Market Analysis (CMA) prepared by a real
@@ -459,14 +472,18 @@ Return strictly valid JSON:
 
               {activeDocTab === "marketing" && (
                 <div className="max-w-4xl mx-auto space-y-8 animate-fade-in">
+                  {!packageResult.marketing ? (
+                    <div className="bg-white rounded-[2rem] p-10 text-center text-slate-400 border border-slate-200">
+                      <p className="font-bold text-sm">Marketing plan generated with CMA.</p>
+                      <p className="text-xs mt-1">Full marketing strategy available in the listing workbench.</p>
+                    </div>
+                  ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     {[
-                      // Fixed: Added Users to icon imports
-                      { l: "Target Buyer Profile", v: packageResult.marketing.buyerProfile, i: Users },
-                      { l: "Pre-List Prep Strategy", v: packageResult.marketing.preList, i: Sparkles },
-                      // Fixed: Added Globe to icon imports
-                      { l: "Omnichannel Launch", v: packageResult.marketing.online, i: Globe },
-                      { l: "Local Geo-Targeting", v: packageResult.marketing.offline, i: MapPin },
+                      { l: "Target Buyer Profile", v: packageResult.marketing?.buyerProfile ?? "—", i: Users },
+                      { l: "Pre-List Prep Strategy", v: packageResult.marketing?.preList ?? "—", i: Sparkles },
+                      { l: "Omnichannel Launch", v: packageResult.marketing?.online ?? "—", i: Globe },
+                      { l: "Local Geo-Targeting", v: packageResult.marketing?.offline ?? "—", i: MapPin },
                     ].map((box) => (
                       <div
                         key={box.l}
@@ -480,6 +497,7 @@ Return strictly valid JSON:
                       </div>
                     ))}
                   </div>
+                  )}
                   {packageResult?.marketingLetter && (
                     <div className="mt-4 pt-4 border-t">
                       <h4 className="text-sm font-semibold mb-3 text-muted-foreground">Convert to Video</h4>

@@ -38,6 +38,7 @@ export async function serviceGetLeads(
     limit?: number
     sortBy?: string
     sortOrder?: "asc" | "desc"
+    adminView?: boolean
   }
 ) {
   const supabase = await createClient()
@@ -49,8 +50,12 @@ export async function serviceGetLeads(
   let query = supabase
     .from("scraped_leads")
     .select("*", { count: "exact" })
-    .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
+
+  // Admin/broker view: show all leads in brokerage; agent view: scope to own leads
+  if (!params?.adminView) {
+    query = query.eq("agent_id", agentId)
+  }
 
   if (params?.search) {
     query = query.or(

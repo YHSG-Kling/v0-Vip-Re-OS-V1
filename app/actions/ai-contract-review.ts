@@ -1,7 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -87,7 +89,7 @@ export async function reviewContract(params: {
 
     // Perform AI contract review
     const { object: review } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: ContractReviewSchema,
       prompt: `You are an expert real estate contract reviewer with deep knowledge of ${params.state} real estate law and regulations.
 
@@ -265,7 +267,7 @@ export async function compareContractVersions(params: {
     }
 
     const { text: comparison } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `Compare these two versions of a real estate document and identify all changes:
 
 VERSION 1 (${doc1.name}):
@@ -314,7 +316,7 @@ export async function generateDocumentChecklist(params: {
       .eq("transaction_type", params.transactionType)
 
     const { object: checklist } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         requiredDocuments: z.array(z.object({
           name: z.string(),

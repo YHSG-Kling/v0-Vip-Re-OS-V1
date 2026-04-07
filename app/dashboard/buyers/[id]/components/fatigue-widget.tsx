@@ -15,10 +15,10 @@ import { Button }                  from "@/components/ui/button"
 import { Progress }                from "@/components/ui/progress"
 import {
   getBuyerFatigueScore,
-  getBuyerFatigueAlert,
+  getBuyerFatigueAlerts,
   dismissFatigueAlert,
-  triggerFatigueRescore,
-} from "@/app/actions/fatigue"
+  triggerFatigueCalculation,
+} from "@/app/actions/buyer-fatigue"
 import { useEffect } from "react"
 
 interface Props {
@@ -77,13 +77,13 @@ export function FatigueWidget({ contactId, brokerageId, agentUserId }: Props) {
 
   async function load() {
     setLoading(true)
-    const [scoreRes, alertRes] = await Promise.all([
+    const [scoreRes, alertsRes] = await Promise.all([
       getBuyerFatigueScore(contactId),
-      getBuyerFatigueAlert(contactId),
+      getBuyerFatigueAlerts(contactId),
     ])
-    if (scoreRes.success) setScore(scoreRes.score as FatigueScoreRow | null)
-    if (alertRes.success && alertRes.alert) {
-      const a = alertRes.alert as FatigueAlertRow
+    if (scoreRes.success) setScore(scoreRes.data as FatigueScoreRow | null)
+    if (alertsRes.success && alertsRes.data.length > 0) {
+      const a = alertsRes.data[0] as FatigueAlertRow
       setAlert(a)
       if (a.message) {
         try {
@@ -99,7 +99,7 @@ export function FatigueWidget({ contactId, brokerageId, agentUserId }: Props) {
 
   async function handleRescore() {
     startTransition(async () => {
-      await triggerFatigueRescore(contactId, brokerageId)
+      await triggerFatigueCalculation(contactId, brokerageId)
       await load()
     })
   }

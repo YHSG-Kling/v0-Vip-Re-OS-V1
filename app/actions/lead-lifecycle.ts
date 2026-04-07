@@ -1,6 +1,8 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { createPortalInviteForContact } from './portal-invites'
+import { syncContactToCRM } from '@/lib/crm/sync'
 
 export async function listUnassignedLeads(params: {
   brokerageId: string
@@ -165,9 +167,44 @@ export async function convertLeadToContact(params: {
     throw new Error(`Failed to update lead: ${updateError.message}`)
   }
 
+  // Non-blocking CRM sync — do not fail the conversion if CRM is not configured
+  void syncContactToCRM({
+    firstName: lead.first_name,
+    lastName: lead.last_name,
+    email: lead.email ?? undefined,
+    phone: lead.phone ?? undefined,
+    tags: [lead.lead_type, lead.motivation_type, lead.source].filter(Boolean) as string[],
+    source: lead.source ?? "lead_conversion",
+    brokerageId,
+    agentId,
+  })
+
+  // Resolve users.id from agents.id for the invite (non-blocking)
+  let portalInviteCreated = false
+  try {
+    const { data: agentRow } = await supabase
+      .from('agents')
+      .select('user_id')
+      .eq('id', agentId)
+      .maybeSingle()
+
+    if (agentRow?.user_id) {
+      const inviteResult = await createPortalInviteForContact({
+        contactId: contact.id,
+        brokerageId,
+        invitedByUserId: agentRow.user_id,
+        sendMagicLink: false,
+      })
+      portalInviteCreated = inviteResult.success
+    }
+  } catch {
+    // Non-blocking — do not fail the conversion if the invite fails
+  }
+
   return {
     success: true,
     contactId: contact.id,
+    portalInviteCreated,
     message: 'Lead converted to contact successfully'
   }
 }

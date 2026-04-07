@@ -39,6 +39,7 @@ export const PUBLIC_ROUTES = [
   '/api/providers/inbound',
   '/api/billing/webhook',
   // ── Public page routes (no auth required) ────────────────────────
+  '/portal/login',
   '/portal/lender',
   '/portal/title',
   '/portal/vendor',

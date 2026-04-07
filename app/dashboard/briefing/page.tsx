@@ -20,6 +20,7 @@ import {
   MapPin,
   DollarSign,
   TrendingUp,
+  Sparkles,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -30,7 +31,11 @@ import {
   getUpcomingShowings,
   getActiveTransactions,
 } from "@/app/actions/briefing-actions"
+import { generateContactInsights } from "@/app/actions/ai-insights"
+import type { ContactInsight } from "@/app/actions/ai-insights"
 import type { DailyBriefing, PriorityAction, HotLead, DealAtRisk } from "@/lib/intelligence/daily-briefing-generator"
+import { createClient } from "@/lib/supabase/client"
+import Link from "next/link"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -221,6 +226,7 @@ export default function BriefingPage() {
   const [loading, setLoading] = useState(true)
   const [regenerating, setRegenerating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [priorityContacts, setPriorityContacts] = useState<ContactInsight[]>([])
 
   // Get greeting based on time of day
   const getGreeting = () => {
@@ -265,6 +271,16 @@ export default function BriefingPage() {
       setAgentName(nameResult.name)
       setShowings(showingsResult.showings as Showing[])
       setTransactions(transactionsResult.transactions as Transaction[])
+
+      // Load AI priority contacts non-blocking — resolve user from session
+      const supabase = createClient()
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session?.user?.id) {
+          generateContactInsights(session.user.id, "agent")
+            .then((insights) => setPriorityContacts(insights.slice(0, 3)))
+            .catch(() => {/* non-blocking */})
+        }
+      })
 
       if (briefingResult.briefing) {
         setBriefing(briefingResult.briefing)
@@ -599,6 +615,41 @@ export default function BriefingPage() {
                         {deal.address}
                       </p>
                       <p className="text-xs text-muted-foreground mt-1">{deal.reason}</p>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* TOP 3 CONTACTS TO WORK TODAY */}
+          {priorityContacts.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-sm">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  Top Contacts to Work Today
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {priorityContacts.map((insight, idx) => (
+                    <div
+                      key={insight.contactId}
+                      className="flex items-start justify-between py-2 border-b last:border-0 gap-3"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-foreground line-clamp-1">
+                          {insight.action.charAt(0).toUpperCase() + insight.action.slice(1)} — Priority {idx + 1}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
+                          {insight.reason}
+                        </p>
+                        <p className="text-xs font-medium text-primary mt-0.5">{insight.suggestion}</p>
+                      </div>
+                      <Button size="sm" variant="outline" className="shrink-0 text-xs h-7" asChild>
+                        <Link href={`/crm?contact=${insight.contactId}`}>Open</Link>
+                      </Button>
                     </div>
                   ))}
                 </div>

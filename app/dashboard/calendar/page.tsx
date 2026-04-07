@@ -19,19 +19,19 @@ export default async function CalendarPage() {
     redirect("/login")
   }
 
-  // Get user profile for brokerage context
-  const { data: profile } = await supabase
-    .from("user_profiles")
-    .select("id, brokerage_id, user_type")
-    .eq("id", user.id)
-    .single()
+  // Get agent record for brokerage context
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("user_id", user.id)
+    .maybeSingle()
 
-  if (!profile) {
-    redirect("/onboarding")
+  if (!agentRow) {
+    redirect("/dashboard/onboarding")
   }
 
-  const agentId = user.id
-  const brokerageId = profile.brokerage_id
+  const agentId = agentRow.id
+  const brokerageId = agentRow.brokerage_id
 
   return (
     <main className="min-h-screen bg-background p-6">

@@ -20,6 +20,9 @@ import {
 } from "lucide-react"
 import { LenderDocumentUpload } from "./document-upload"
 import { LenderActions } from "./lender-actions"
+import { LenderConditionsPanel } from "./lender-conditions-panel"
+import { Progress } from "@/components/ui/progress"
+import { InternalAIAssistant } from "@/app/components/shared/internal-ai-assistant"
 
 const LOAN_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   submitted: { label: "Submitted", color: "bg-blue-100 text-blue-800" },
@@ -71,7 +74,7 @@ export default async function LenderTransactionDetailPage({
   // Get lender profile
   const { data: lender } = await supabase
     .from("lender_portal_users")
-    .select("id, email, company_name")
+    .select("id, user_id, lender_company")
     .eq("user_id", user.id)
     .single()
 
@@ -112,6 +115,17 @@ export default async function LenderTransactionDetailPage({
   const statusConfig = LOAN_STATUS_CONFIG[loanStatus] || LOAN_STATUS_CONFIG.submitted
   const isClearToClose = loanStatus === "clear_to_close"
 
+  // Loan status progress — ordered pipeline stages
+  const LOAN_PIPELINE = ["submitted", "in_review", "pending_conditions", "approved", "clear_to_close", "funded"]
+  const loanStatusIndex = LOAN_PIPELINE.indexOf(loanStatus)
+  const loanProgressPct = loanStatusIndex >= 0
+    ? Math.round(((loanStatusIndex + 1) / LOAN_PIPELINE.length) * 100)
+    : 10
+
+  // Conditions from lenderAssignment (stored in conditions_list jsonb)
+  const existingConditions: Array<{ condition: string; status: string; documents: string[] }> =
+    (lenderAssignment as any)?.conditions_list ?? []
+
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
@@ -124,7 +138,7 @@ export default async function LenderTransactionDetailPage({
             </Link>
           </Button>
           <h1 className="text-2xl font-bold">{transaction.property_address || "Transaction Details"}</h1>
-          <p className="text-muted-foreground">{lender.company_name}</p>
+          <p className="text-muted-foreground">{lender.lender_company}</p>
         </div>
         <Badge variant="secondary" className={`${statusConfig.color} text-sm px-3 py-1`}>
           {statusConfig.label}
@@ -189,6 +203,27 @@ export default async function LenderTransactionDetailPage({
             </CardContent>
           </Card>
 
+          {/* Loan Status Progress Bar */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">Loan Progress</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex justify-between text-xs text-muted-foreground">
+                {LOAN_PIPELINE.map((stage, idx) => (
+                  <span
+                    key={stage}
+                    className={idx <= loanStatusIndex ? "text-foreground font-medium" : ""}
+                  >
+                    {stage.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}
+                  </span>
+                ))}
+              </div>
+              <Progress value={loanProgressPct} className="h-2" />
+              <p className="text-xs text-muted-foreground text-right">{loanProgressPct}% complete</p>
+            </CardContent>
+          </Card>
+
           {/* Milestones */}
           <Card>
             <CardHeader>
@@ -240,6 +275,12 @@ export default async function LenderTransactionDetailPage({
             transactionId={transactionId}
             lenderId={lender.id}
             existingDocuments={documents}
+          />
+
+          {/* Loan Conditions */}
+          <LenderConditionsPanel
+            loanId={lenderAssignment?.id ?? ""}
+            initialConditions={existingConditions as any}
           />
         </div>
 
@@ -320,6 +361,7 @@ export default async function LenderTransactionDetailPage({
           )}
         </div>
       </div>
+      <InternalAIAssistant role="lender" />
     </div>
   )
 }

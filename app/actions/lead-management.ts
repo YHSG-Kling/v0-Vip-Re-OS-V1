@@ -1,6 +1,7 @@
 "use server"
 
 import { getAgentContext } from "@/lib/identity"
+import { createServiceClient } from "@/lib/supabase/service"
 import {
   serviceGetLeads,
   serviceGetLead,
@@ -13,7 +14,9 @@ import type { LeadScore, LeadIntent, LeadStatus, LeadSource, Lead } from "@/app/
 
 // Types are now exported from @/app/types/lead-management
 
-export async function getLeads(params?: {
+const ADMIN_ROLES = ["admin", "broker", "superadmin"] as const
+
+export async function getLeadsAdmin(params?: {
   search?: string
   score?: LeadScore
   intent?: LeadIntent
@@ -23,8 +26,24 @@ export async function getLeads(params?: {
   limit?: number
   sortBy?: string
   sortOrder?: "asc" | "desc"
+  adminView?: boolean
 }) {
   try {
+    const supabase = createServiceClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthenticated", leads: [], total: 0, page: 1, limit: 10, totalPages: 0 }
+
+    const { data: profile } = await supabase
+      .from("users")
+      .select("user_type, role")
+      .eq("id", user.id)
+      .single()
+
+    const role = profile?.user_type ?? profile?.role ?? "agent"
+    if (!(ADMIN_ROLES as readonly string[]).includes(role)) {
+      return { success: false, error: "Forbidden", leads: [], total: 0, page: 1, limit: 10, totalPages: 0 }
+    }
+
     const { agentId, brokerageId } = await getAgentContext()
     const result = await serviceGetLeads(agentId, brokerageId, params)
     return { success: true, ...result }

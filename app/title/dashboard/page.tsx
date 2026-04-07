@@ -6,6 +6,12 @@ import { Button } from '@/components/ui/button'
 import { FileCheck, Clock, Calendar, Package, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 import { TitleCommandStrip, TitleOperationsPanel } from '../components/os'
+import {
+  ExternalPartnerCommandStrip,
+  ExternalActiveFilesPanel,
+  ExternalDocStatusPanel,
+  ExternalBatchActionsPanel,
+} from '../../(external-portal)/components/os'
 
 export const dynamic = 'force-dynamic'
 
@@ -50,6 +56,7 @@ export default async function TitleDashboardPage() {
 
       {/* OS Command Strip */}
       <TitleCommandStrip titleCompanyId={titleCompanyId} />
+      <ExternalPartnerCommandStrip partnerType="title" partnerId={titleCompanyId} />
 
       {/* OS Panel + Stats Grid */}
       <div className="grid lg:grid-cols-3 gap-6">
@@ -101,6 +108,23 @@ export default async function TitleDashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* External Partner OS Panels */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        <ExternalActiveFilesPanel partnerType="title" partnerId={titleCompanyId} files={upcoming.map((t: any) => ({
+          id: t.id,
+          transactionId: t.id,
+          propertyAddress: t.property_address,
+          clientName: t.client_name,
+          status: t.status,
+          closeDate: t.close_date,
+          urgency: 'high',
+          actionRequired: t.status === 'pending',
+        }))} />
+        <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} />
+      </div>
+
+      <ExternalBatchActionsPanel partnerType="title" items={[]} />
 
       <div className="grid grid-cols-3 gap-3">
         {[

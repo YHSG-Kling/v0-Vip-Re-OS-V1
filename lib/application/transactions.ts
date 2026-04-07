@@ -147,7 +147,7 @@ export async function createTransaction(transactionData: {
     }
   }
 
-  revalidatePath("/transactions")
+  revalidatePath("/dashboard/transactions")
   return { success: true, data }
 }
 
@@ -196,8 +196,8 @@ export async function updateTransaction(
   }
 
   await addTimelineEntry(transactionId, "transaction_updated", "Transaction details updated")
-  revalidatePath("/transactions")
-  revalidatePath(`/transactions/${transactionId}`)
+  revalidatePath("/dashboard/transactions")
+  revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true, data }
 }
 
@@ -273,10 +273,11 @@ export async function completeMilestone(milestoneId: string, completedBy?: strin
   }
 
   if (data?.transactions?.id) {
-    await addTimelineEntry(data.transactions.id, "milestone_completed", `Milestone "${data.name}" completed`)
+    await addTimelineEntry(data.transactions.id, "milestone_completed", `Milestone "${data.milestone_name}" completed`)
+    revalidatePath(`/dashboard/transactions/${data.transactions.id}`)
   }
 
-  revalidatePath("/transactions")
+  revalidatePath("/dashboard/transactions")
   return { success: true, data }
 }
 
@@ -311,7 +312,7 @@ export async function updateMilestone(
     console.error("Error updating milestone:", error)
     return { success: false, error: error.message }
   }
-  revalidatePath("/transactions")
+  revalidatePath("/dashboard/transactions")
   return { success: true, data }
 }
 
@@ -902,18 +903,157 @@ export async function calculateCommissions(transactionId: string) {
 
   if (!transaction) return { success: false, error: "Transaction not found" }
 
+  // Commission Engine 8.0 — fetch async data before the sync map
+  const grossCommission = transaction.estimated_commission ?? 0
+  const hasPercentComm = transaction.transaction_commissions?.some(
+    (c: { rate_percentage?: number }) => c.rate_percentage,
+  )
+
+  let profile: { split_percent?: number; transaction_fee_value?: number; structure_type?: string; royalty_percent?: number } | null = null
+  let capData: { cap_paid_to_date?: number; cap_amount?: number; is_capped?: boolean } | null = null
+
+  if (hasPercentComm && transaction.agent_id) {
+    const [profileResult, capResult] = await Promise.all([
+      supabase
+        .from("agent_commission_profiles")
+        .select("split_percent, transaction_fee_value, structure_type, royalty_percent")
+        .eq("agent_id", transaction.agent_id)
+        .eq("is_active", true)
+        .maybeSingle(),
+      supabase
+        .from("agent_cap_tracking")
+        .select("cap_paid_to_date, cap_amount, is_capped")
+        .eq("agent_id", transaction.agent_id)
+        .maybeSingle(),
+    ])
+    profile = profileResult.data
+    capData = capResult.data
+  }
+
   const updatedCommissions =
     transaction.transaction_commissions?.map(
       (comm: { id: string; rate_percentage?: number; flat_amount?: number; split_percentage?: number }) => {
         let amount = comm.flat_amount || 0
         if (comm.rate_percentage) {
-          // TODO: Commission Engine 8.0 — route through calculateCommission()
-          amount = 0
+          const effectiveSplit = capData?.is_capped ? 100 : (profile?.split_percent ?? comm.split_percentage ?? 70)
+          const brokerageFee = capData?.is_capped ? 0 : grossCommission * ((100 - effectiveSplit) / 100)
+          const transactionFee = profile?.transaction_fee_value ?? 0
+          const agentNet = grossCommission - brokerageFee - transactionFee
+          amount = agentNet
         }
         if (comm.split_percentage) amount = amount * (comm.split_percentage / 100)
         return { id: comm.id, calculated_amount: amount }
       },
     ) || []
+
+  // Run all async side-effects after the sync map
+  if (hasPercentComm && transaction.agent_id) {
+    const effectiveSplit = capData?.is_capped ? 100 : (profile?.split_percent ?? 70)
+    const brokerageFee = capData?.is_capped ? 0 : grossCommission * ((100 - effectiveSplit) / 100)
+    const transactionFee = profile?.transaction_fee_value ?? 0
+    const agentNet = grossCommission - brokerageFee - transactionFee
+
+    const distributions: Record<string, unknown>[] = [
+      {
+        transaction_id: transaction.id,
+        brokerage_id: transaction.brokerage_id,
+        agent_id: transaction.agent_id,
+        distribution_type: "agent",
+        calculation_type: "percent",
+        calculation_value: effectiveSplit,
+        calculated_amount: agentNet,
+        source_of_funds: "brokerage",
+        cap_applied: capData?.is_capped ?? false,
+        status: "pending",
+      },
+    ]
+    if (brokerageFee > 0) {
+      distributions.push({
+        transaction_id: transaction.id,
+        brokerage_id: transaction.brokerage_id,
+        distribution_type: "brokerage",
+        calculation_type: "percent",
+        calculation_value: 100 - effectiveSplit,
+        calculated_amount: brokerageFee,
+        source_of_funds: "brokerage",
+        cap_applied: false,
+        status: "pending",
+      })
+    }
+    if (transactionFee > 0) {
+      distributions.push({
+        transaction_id: transaction.id,
+        brokerage_id: transaction.brokerage_id,
+        agent_id: transaction.agent_id,
+        distribution_type: "fee",
+        calculation_type: "flat",
+        calculation_value: transactionFee,
+        calculated_amount: transactionFee,
+        source_of_funds: "agent",
+        status: "pending",
+      })
+    }
+
+    // Check for existing distributions, then write all side-effects in parallel
+    const { data: existing } = await supabase
+      .from("commission_distributions")
+      .select("id")
+      .eq("transaction_id", transaction.id)
+      .limit(1)
+
+    const writes: Promise<unknown>[] = []
+
+    if (!existing || existing.length === 0) {
+      writes.push(
+        (async () => {
+          try {
+            return await supabase.from("commission_distributions").insert(distributions)
+          } catch (err: unknown) {
+            // Silent fail - commission logging should not block transaction
+          }
+        })()
+      )
+    }
+
+    if (!capData?.is_capped && brokerageFee > 0) {
+      const newPaid = (capData?.cap_paid_to_date ?? 0) + brokerageFee
+      const nowCapped = newPaid >= (capData?.cap_amount ?? 999999)
+      writes.push(
+        (async () => {
+          try {
+            return await supabase
+              .from("agent_cap_tracking")
+              .update({ cap_paid_to_date: newPaid, is_capped: nowCapped })
+              .eq("agent_id", transaction.agent_id)
+          } catch (err: unknown) {
+            // Silent fail - cap tracking should not block transaction
+          }
+        })()
+      )
+    }
+
+    writes.push(
+      supabase
+        .from("agent_earnings")
+        .upsert(
+          {
+            agent_id: transaction.agent_id,
+            brokerage_id: transaction.brokerage_id,
+            period_type: "ytd",
+            period_label: `${new Date().getFullYear()}`,
+            gross_commission: grossCommission,
+            agent_net: agentNet,
+            brokerage_net: brokerageFee,
+            total_fees: transactionFee,
+            transaction_count: 1,
+          },
+          { onConflict: "agent_id,period_type,period_label" },
+        )
+        .catch(() => {}),
+    )
+
+    await Promise.all(writes)
+  }
 
   for (const comm of updatedCommissions) {
     await supabase
@@ -2017,24 +2157,17 @@ export async function getAgentTransactionKanban() {
 }
 
 export async function updateTransactionStage(transactionId: string, targetStage: string, reason?: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("brokerage_id, role")
-    .eq("id", user.id)
-    .single()
-
-  if (!profile?.brokerage_id) return { success: false, error: "User brokerage not found" }
+  // Kernel OS: requireWriteContext — resolves userId, brokerageId, userType via canonical chain
+  const { requireWriteContext } = await import("@/lib/kernel")
+  const ctx = await requireWriteContext().catch(() => null)
+  if (!ctx) return { success: false, error: "Not authenticated" }
 
   const { TransactionOrchestrator } = await import("@/lib/transactions/transaction-orchestrator")
   const orchestrator = new TransactionOrchestrator({
     transactionId,
-    brokerageId: profile.brokerage_id,
-    userId: user.id,
-    userRole: profile.role,
+    brokerageId: ctx.brokerageId,
+    userId: ctx.userId,
+    userRole: ctx.userType, // userType is already canonical — never use .role
   })
 
   const result = await orchestrator.advanceToStage(targetStage as any, reason)
@@ -2294,7 +2427,7 @@ function getPersonaSpecificTools(persona: string) {
       { name: "First-Time Buyer Guide", url: "/resources/first-time", icon: "book" },
     ],
     motivated_seller: [
-      { name: "Home Value Estimator", url: "/tools/home-value", icon: "dollar-sign" },
+      { name: "Home Value Estimator", url: "/home-value", icon: "dollar-sign" },
       { name: "Seller Net Calculator", url: "/tools/seller-net", icon: "calculator" },
       { name: "Staging Checklist", url: "/resources/staging", icon: "check-square" },
       { name: "Market Timeline", url: "/tools/market-timeline", icon: "clock" },

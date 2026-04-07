@@ -62,17 +62,20 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
 
     const supabase = await createClient()
 
+    // Resolve brokerage_id from agent
+    const { data: agentCMA } = await supabase.from("users").select("brokerage_id").eq("id", input.agentId).maybeSingle()
+
     // Emit start event
     await supabase.from("activities").insert({
-      type: "seller.cma.started",
-      listing_id: input.listingId,
+      brokerage_id: agentCMA?.brokerage_id ?? null,
+      agent_id: input.agentId,
       contact_id: input.contactId,
-      user_id: input.agentId,
-      metadata: {
-        radius_miles: input.radiusMiles || 2.0,
-        max_age_days: input.maxAgeDays || 90,
-        min_comparables: input.minComparables || 5
-      }
+      activity_type: "seller.cma.started",
+      title: "CMA generation started",
+      description: `CMA started for listing ${input.listingId}`,
+      notes: JSON.stringify({ radius_miles: input.radiusMiles || 2.0, max_age_days: input.maxAgeDays || 90, min_comparables: input.minComparables || 5 }),
+      status: "pending",
+      entity_type: "contact",
     })
 
     // Get listing data
@@ -156,19 +159,15 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
 
     // Emit completion event with quality metadata
     await supabase.from("activities").insert({
-      type: "seller.cma.completed",
-      listing_id: input.listingId,
+      brokerage_id: agentCMA?.brokerage_id ?? null,
+      agent_id: input.agentId,
       contact_id: input.contactId,
-      user_id: input.agentId,
-      metadata: {
-        cma_id: cmaId,
-        comparable_count: comparables.length,
-        oldest_comparable_months: oldestComparableMonths,
-        max_radius_miles: maxRadiusMiles,
-        quality_score: qualityScore,
-        content_preview: cmaContent.substring(0, 500),
-        disclaimer_included: true
-      }
+      activity_type: "seller.cma.completed",
+      title: "CMA generation completed",
+      description: `CMA completed: ${comparables.length} comparables, quality score ${qualityScore}`,
+      notes: JSON.stringify({ cma_id: cmaId, comparable_count: comparables.length, oldest_comparable_months: oldestComparableMonths, max_radius_miles: maxRadiusMiles, quality_score: qualityScore, disclaimer_included: true }),
+      status: "completed",
+      entity_type: "contact",
     })
 
     return {
@@ -188,8 +187,10 @@ export async function generateCMA(input: CMAGenerationInput): Promise<CMAResult>
 }
 
 /**
- * Fetch comparable properties (simulated)
- * In production, this would integrate with MLS/IDX API
+ * Fetch comparable properties — priority chain:
+ *   1. BatchData /comparable-sales (real MLS comps via API key)
+ *   2. HouseCanary /property/sales_history (if BatchData unconfigured)
+ *   3. Empty array — amber banner in UI instructs agent to review manually
  */
 async function fetchComparables(params: {
   address: string
@@ -204,30 +205,75 @@ async function fetchComparables(params: {
   maxAgeDays: number
   minComparables: number
 }) {
-  // Simulated comparables - in production, call MLS/IDX
-  const mockComparables = []
-  const baseDate = new Date()
-  
-  for (let i = 0; i < params.minComparables; i++) {
-    const soldDaysAgo = Math.floor(Math.random() * params.maxAgeDays)
-    const soldDate = new Date(baseDate.getTime() - soldDaysAgo * 24 * 60 * 60 * 1000)
-    
-    mockComparables.push({
-      address: `${1000 + i} Comparable St`,
-      city: params.city,
-      state: params.state,
-      zip: params.zip,
-      bedrooms: params.bedrooms,
-      bathrooms: params.bathrooms,
-      squareFeet: params.squareFeet + (Math.random() * 500 - 250),
-      soldPrice: Math.floor(params.squareFeet * (150 + Math.random() * 50)),
-      soldDate: soldDate.toISOString(),
-      distanceMiles: Math.random() * params.radiusMiles,
-      propertyType: params.propertyType
-    })
+  const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
+  const { fetchHouseCanaryComps } = await import("@/lib/external/housecanary-client")
+
+  // ── 1. BatchData ─────────────────────────────────────────────────────────
+  const bdComps = await fetchComparableSales({
+    address: params.address,
+    city: params.city,
+    state: params.state,
+    zip: params.zip,
+    bedrooms: params.bedrooms,
+    bathrooms: params.bathrooms,
+    squareFeet: params.squareFeet,
+    radiusMiles: params.radiusMiles,
+    maxAgeDays: params.maxAgeDays,
+    limit: params.minComparables,
+  })
+
+  if (bdComps.length > 0) {
+    return bdComps.map((c) => ({
+      address: c.address,
+      city: c.city,
+      state: c.state,
+      zip: c.zip,
+      bedrooms: c.bedrooms,
+      bathrooms: c.bathrooms,
+      squareFeet: c.square_feet,
+      soldPrice: c.sale_price,
+      listPrice: c.list_price,
+      soldDate: c.sale_date,
+      daysOnMarket: c.days_on_market,
+      pricePerSqFt: c.price_per_sqft,
+      distanceMiles: c.distance_miles,
+      yearBuilt: c.year_built,
+      source: "BatchData",
+    }))
   }
-  
-  return mockComparables
+
+  // ── 2. HouseCanary ───────────────────────────────────────────────────────
+  const hcComps = await fetchHouseCanaryComps({
+    address: params.address,
+    zipCode: params.zip,
+    bedrooms: params.bedrooms,
+    squareFeet: params.squareFeet,
+    maxAgeDays: params.maxAgeDays,
+    limit: params.minComparables,
+  })
+
+  if (hcComps.length > 0) {
+    return hcComps.map((c) => ({
+      address: c.address,
+      city: c.city || params.city,
+      state: c.state || params.state,
+      zip: c.zip,
+      bedrooms: c.bedrooms,
+      bathrooms: c.bathrooms,
+      squareFeet: c.square_feet,
+      soldPrice: c.sale_price,
+      listPrice: c.list_price,
+      soldDate: c.sale_date,
+      daysOnMarket: c.days_on_market,
+      pricePerSqFt: c.price_per_sqft,
+      distanceMiles: c.distance_miles,
+      yearBuilt: c.year_built,
+      source: "HouseCanary",
+    }))
+  }
+
+  // ── 3. No API configured — return empty, amber banner shows in UI ────────
+  return []
 }
 
 /**
@@ -324,12 +370,17 @@ async function emitCMAFailed(
   reason: string
 ) {
   const supabase = await createClient()
-  
+  const { data: agentFail } = await supabase.from("users").select("brokerage_id").eq("id", agentId).maybeSingle()
+
   await supabase.from("activities").insert({
-    type: "seller.cma.failed",
-    listing_id: listingId,
+    brokerage_id: agentFail?.brokerage_id ?? null,
+    agent_id: agentId,
     contact_id: contactId,
-    user_id: agentId,
-    metadata: { reason }
+    activity_type: "seller.cma.failed",
+    title: "CMA generation failed",
+    description: reason,
+    notes: JSON.stringify({ listing_id: listingId, reason }),
+    status: "completed",
+    entity_type: "contact",
   })
 }

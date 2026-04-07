@@ -1,91 +1,86 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { CheckCircle2, Circle, ArrowRight } from "lucide-react"
-import { bulkUpdateMilestones } from "@/app/actions/multi-persona"
-import { useState, useTransition } from "react"
 
 interface Milestone {
   id: string
-  milestone_name: string
-  status: string
-  due_date: string
-  transactions?: {
-    property_address: string
-  }
+  name: string
+  transaction_address: string
+  status: "pending" | "in_progress" | "completed"
+  order: number
 }
 
-export function MilestoneQueue({ milestones }: { milestones: Milestone[] }) {
-  const [isPending, startTransition] = useTransition()
-  const [completedIds, setCompletedIds] = useState<Set<string>>(new Set())
+interface MilestoneQueueProps {
+  milestones?: Milestone[]
+  onComplete?: (id: string) => void
+}
 
-  const handleComplete = (milestoneId: string) => {
-    startTransition(async () => {
-      await bulkUpdateMilestones([{ milestoneId, status: "completed" }])
-      setCompletedIds((prev) => new Set([...prev, milestoneId]))
-    })
+export function MilestoneQueue({ milestones = [], onComplete }: MilestoneQueueProps) {
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case "completed":
+        return <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+      case "in_progress":
+        return <Circle className="w-5 h-5 text-blue-500 fill-blue-500/20" />
+      default:
+        return <Circle className="w-5 h-5 text-muted-foreground" />
+    }
   }
 
-  const getStatusIcon = (status: string, id: string) => {
-    if (completedIds.has(id) || status === "completed") {
-      return <CheckCircle2 className="h-4 w-4 text-green-600" />
-    }
-    if (status === "in_progress") {
-      return <ArrowRight className="h-4 w-4 text-blue-600" />
-    }
-    return <Circle className="h-4 w-4 text-muted-foreground" />
+  if (milestones.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Milestone Queue</CardTitle>
+          <CardDescription>Next milestones to complete</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="text-center py-8 text-muted-foreground">
+            <CheckCircle2 className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p>No pending milestones</p>
+          </div>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <CheckCircle2 className="h-5 w-5 text-blue-600" />
-          Milestone Queue
-        </CardTitle>
+      <CardHeader>
+        <CardTitle>Milestone Queue</CardTitle>
+        <CardDescription>{milestones.filter(m => m.status !== "completed").length} milestones pending</CardDescription>
       </CardHeader>
-      <CardContent className="p-0">
-        <div className="divide-y max-h-80 overflow-y-auto">
-          {milestones.length === 0 ? (
-            <div className="p-4 text-center text-muted-foreground text-sm">All milestones complete</div>
-          ) : (
-            milestones.slice(0, 10).map((milestone) => (
-              <div key={milestone.id} className="p-3 hover:bg-muted/50">
-                <div className="flex items-start gap-3">
-                  {getStatusIcon(milestone.status, milestone.id)}
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate">{milestone.milestone_name}</p>
-                    <p className="text-xs text-muted-foreground truncate">
-                      {milestone.transactions?.property_address}
-                    </p>
-                    {milestone.due_date && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Due: {new Date(milestone.due_date).toLocaleDateString()}
-                      </p>
-                    )}
-                  </div>
-                  {!completedIds.has(milestone.id) && milestone.status !== "completed" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => handleComplete(milestone.id)}
-                      disabled={isPending}
-                      className="bg-transparent text-xs"
-                    >
-                      Done
-                    </Button>
-                  )}
-                  {completedIds.has(milestone.id) && (
-                    <Badge variant="outline" className="text-green-600 border-green-600">
-                      Completed
-                    </Badge>
-                  )}
-                </div>
+      <CardContent>
+        <div className="space-y-3">
+          {milestones.map((milestone, index) => (
+            <div
+              key={milestone.id}
+              className={`flex items-center gap-3 p-3 border rounded-lg ${
+                milestone.status === "completed" ? "bg-muted/50" : ""
+              }`}
+            >
+              {getStatusIcon(milestone.status)}
+              <div className="flex-1 min-w-0">
+                <p className={`font-medium ${milestone.status === "completed" ? "line-through text-muted-foreground" : ""}`}>
+                  {milestone.name}
+                </p>
+                <p className="text-sm text-muted-foreground truncate">
+                  {milestone.transaction_address}
+                </p>
               </div>
-            ))
-          )}
+              {milestone.status === "in_progress" && onComplete && (
+                <Button size="sm" onClick={() => onComplete(milestone.id)}>
+                  Complete <ArrowRight className="w-3 h-3 ml-1" />
+                </Button>
+              )}
+              {milestone.status === "pending" && (
+                <Badge variant="outline">Pending</Badge>
+              )}
+            </div>
+          ))}
         </div>
       </CardContent>
     </Card>

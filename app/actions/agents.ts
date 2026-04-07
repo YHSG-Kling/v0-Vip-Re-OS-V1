@@ -173,22 +173,41 @@ export async function getLeaderboard(
 ) {
   const supabase = await createClient()
 
+  // Map period to period_label format used in leaderboard_rankings
+  let periodLabel: string | null = null
+  if (period !== "all_time") {
+    const now = new Date()
+    if (period === "monthly") {
+      periodLabel = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`
+    } else if (period === "weekly") {
+      // ISO week number
+      const weekNum = Math.ceil((now.getDate() - now.getDay() + 1) / 7)
+      periodLabel = `${now.getFullYear()}-W${String(weekNum).padStart(2, "0")}`
+    } else if (period === "yearly") {
+      periodLabel = `${now.getFullYear()}`
+    }
+  }
+
   let query = supabase
-    .from("agents")
+    .from("leaderboard_rankings")
     .select(`
       id,
-      gamification_points,
-      ytd_gci,
-      ytd_transactions,
-      badges,
-      user:users(id, name, email, avatar_url)
+      rank_position,
+      metric_value,
+      agent_id,
+      agents:agent_id(id, first_name, last_name, gamification_points, profile_image_url, ytd_gci, ytd_transactions)
     `)
-    .eq("is_active", true)
-    .order("gamification_points", { ascending: false })
+    .eq("scope", "agent")
+    .eq("metric_type", "points")
+    .order("rank_position", { ascending: true })
     .limit(20)
 
   if (brokerageId) {
     query = query.eq("brokerage_id", brokerageId)
+  }
+
+  if (periodLabel) {
+    query = query.eq("period_label", periodLabel)
   }
 
   const { data, error } = await query

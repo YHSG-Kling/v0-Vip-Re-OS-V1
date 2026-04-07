@@ -23,12 +23,12 @@ export default async function OutreachPage() {
     .eq("id", user.id)
     .single()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = profile.brokerage_id
 
   const agentId = await resolveAgentId(service, user.id)
-  if (!agentId) redirect("/onboarding")
+  if (!agentId) redirect("/dashboard/onboarding")
 
   // Parallel fetch all outreach data
   const [campaignsResult, engagementResult, qualificationsResult, ghostResult] = await Promise.all([

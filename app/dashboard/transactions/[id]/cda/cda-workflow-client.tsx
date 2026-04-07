@@ -1,8 +1,9 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -122,7 +123,31 @@ export function CDAWorkflowClient({
 }: CDAWorkflowClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
-  
+
+  const [distributions, setDistributions] = useState<Array<{
+    id: string
+    distribution_type: string
+    calculation_type: string
+    calculation_value: number | null
+    calculated_amount: number | null
+    source_of_funds: string | null
+    cap_applied: boolean | null
+    status: string
+    paid_at: string | null
+  }>>([])
+  const [markingPaid, setMarkingPaid] = useState(false)
+
+  useEffect(() => {
+    const supabase = createClient()
+    supabase
+      .from("commission_distributions")
+      .select("id, distribution_type, calculation_type, calculation_value, calculated_amount, source_of_funds, cap_applied, status, paid_at")
+      .eq("transaction_id", transaction.id)
+      .then(({ data }) => {
+        if (data) setDistributions(data)
+      })
+  }, [transaction.id])
+
   const [showGenerateDialog, setShowGenerateDialog] = useState(false)
   const [showSubmitDialog, setShowSubmitDialog] = useState(false)
   const [showApproveDialog, setShowApproveDialog] = useState(false)
@@ -344,6 +369,121 @@ export function CDAWorkflowClient({
                 )}
               </CardContent>
             </Card>
+
+            {/* Commission Breakdown */}
+            {distributions.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="flex items-center gap-2">
+                      <DollarSign className="h-5 w-5" />
+                      Commission Breakdown
+                    </CardTitle>
+                    {isCompliance && distributions.some(d => d.distribution_type === "agent" && d.status === "pending") && (
+                      <Button
+                        size="sm"
+                        disabled={markingPaid || isPending}
+                        onClick={async () => {
+                          setMarkingPaid(true)
+                          const supabase = createClient()
+                          const { error } = await supabase
+                            .from("commission_distributions")
+                            .update({ status: "paid", paid_at: new Date().toISOString() })
+                            .eq("transaction_id", transaction.id)
+                            .eq("distribution_type", "agent")
+                          if (!error) {
+                            setDistributions(prev =>
+                              prev.map(d =>
+                                d.distribution_type === "agent"
+                                  ? { ...d, status: "paid", paid_at: new Date().toISOString() }
+                                  : d
+                              )
+                            )
+                            // Create agent notification
+                            await supabase.from("notifications").insert({
+                              user_id: transaction.agent_id,
+                              brokerage_id: transaction.brokerage_id,
+                              type: "commission_paid",
+                              title: "Your commission has been disbursed",
+                              body: `Your commission for ${transaction.property_address} has been marked as paid.`,
+                              entity_type: "transaction",
+                              entity_id: transaction.id,
+                              is_read: false,
+                            }).catch(() => {})
+                            router.refresh()
+                          }
+                          setMarkingPaid(false)
+                        }}
+                      >
+                        {markingPaid ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Mark Agent Paid
+                      </Button>
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Recipient</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Amount</TableHead>
+                        <TableHead>Source</TableHead>
+                        <TableHead>Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {distributions.map(dist => (
+                        <TableRow key={dist.id}>
+                          <TableCell className="font-medium capitalize">
+                            {dist.distribution_type === "agent" ? "Agent" :
+                             dist.distribution_type === "brokerage" ? "Brokerage" :
+                             dist.distribution_type === "fee" ? "Transaction Fee" :
+                             dist.distribution_type}
+                            {dist.cap_applied && (
+                              <Badge className="ml-2 text-xs bg-amber-100 text-amber-800 border-amber-200">Capped</Badge>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground text-sm">
+                            {dist.calculation_type === "percent"
+                              ? `${dist.calculation_value ?? 0}%`
+                              : "Flat"}
+                          </TableCell>
+                          <TableCell className="font-semibold">
+                            {formatCurrency(dist.calculated_amount)}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground text-sm capitalize">
+                            {dist.source_of_funds ?? "—"}
+                          </TableCell>
+                          <TableCell>
+                            {dist.status === "paid" ? (
+                              <Badge className="bg-green-100 text-green-800 border-green-200">
+                                <CheckCircle2 className="h-3 w-3 mr-1" />Paid
+                              </Badge>
+                            ) : dist.status === "pending" ? (
+                              <Badge variant="secondary">
+                                <Clock className="h-3 w-3 mr-1" />Pending
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline" className="capitalize">{dist.status}</Badge>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  <Separator className="my-3" />
+                  <div className="flex justify-between text-sm font-semibold px-1">
+                    <span>Total</span>
+                    <span>
+                      {formatCurrency(
+                        distributions.reduce((sum, d) => sum + (d.calculated_amount ?? 0), 0)
+                      )}
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Compliance Checks Card */}
             <Card>

@@ -30,7 +30,7 @@ export async function incrementUsage(brokerageId: string, metric: string, amount
     .eq("metric", metric)
     .eq("period_start", periodStart.toISOString())
     .eq("period_end", periodEnd.toISOString())
-    .single()
+    .maybeSingle()
 
   if (existing) {
     // Update existing counter
@@ -70,7 +70,7 @@ export async function checkLimit(brokerageId: string, metric: string): Promise<U
     .from("brokerages")
     .select("plan_tier")
     .eq("id", brokerageId)
-    .single()
+    .maybeSingle()
 
   if (brokerageError || !brokerage) {
     console.error(" Error fetching brokerage:", brokerageError)
@@ -89,7 +89,7 @@ export async function checkLimit(brokerageId: string, metric: string): Promise<U
     .select("limit_value, soft_limit_threshold")
     .eq("plan_tier", brokerage.plan_tier)
     .eq("metric", metric)
-    .single()
+    .maybeSingle()
 
   if (limitError || !planLimit) {
     console.error(" Error fetching plan limit:", limitError)
@@ -114,7 +114,7 @@ export async function checkLimit(brokerageId: string, metric: string): Promise<U
     .eq("metric", metric)
     .eq("period_start", periodStart.toISOString())
     .eq("period_end", periodEnd.toISOString())
-    .single()
+    .maybeSingle()
 
   const used = usage?.value || 0
   const limit = planLimit.limit_value
@@ -172,7 +172,7 @@ export async function getBrokeragePlan(brokerageId: string) {
     .from("brokerages")
     .select("plan_tier, billing_metadata")
     .eq("id", brokerageId)
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error(" Error fetching brokerage plan:", error)

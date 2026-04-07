@@ -29,3 +29,8 @@ export {
   getCurrentMonthUsage,
   checkPlatformAIEnabled,
 } from "./cost-tracking"
+
+// ─── MODEL RESOLUTION ─────────────────────────────────────────────────────────
+// Maps "openai/gpt-4o-mini" → openai('gpt-4o-mini'), etc.
+export type { ModelString } from "./resolve-model"
+export { resolveModel } from "./resolve-model"

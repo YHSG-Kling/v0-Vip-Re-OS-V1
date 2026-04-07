@@ -40,6 +40,10 @@ import {
   getPublishingStats,
   getSavedIdeas,
 } from "@/app/actions/content-studio"
+import { checkContentCompliance } from "@/app/dashboard/marketing/studio/components/ad-os/ad-os-actions"
+import { aiWriteNewsletterContent, aiGenerateSubjectLines } from "@/app/actions/ai-newsletter"
+import { createMailCampaign } from "@/app/actions/direct-mail"
+import { createClient } from "@/lib/supabase/client"
 import LinkToVideoGenerator from "@/components/content-studio/LinkToVideoGenerator"
 import { executeWorkflow } from "@/app/actions/workflows"
 import { generateVideoFromScript } from "@/app/actions/video-generation"
@@ -47,13 +51,16 @@ import { getAgentSettings } from "@/app/actions/agent-settings"
 import { cn } from "@/lib/utils" // Added for styling
 import { Checkbox } from "@/components/ui/checkbox"
 import { useRouter } from "next/navigation" // Added for client-side navigation
+import { toast } from "sonner"
 
 interface ContentStudioClientProps {
   userId?: string
   userRole?: string
+  /** Pre-resolved by the server page — avoids a client-side roundtrip */
+  brokerageId?: string
 }
 
-export default function ContentStudioClient({ userId, userRole }: ContentStudioClientProps) {
+export default function ContentStudioClient({ userId, userRole, brokerageId: brokerageIdProp }: ContentStudioClientProps) {
   const router = useRouter()
 
   const [activeTab, setActiveTab] = useState("link-to-video")
@@ -91,6 +98,19 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
     status: "draft",
   })
 
+  // AI newsletter draft result state
+  const [generatedNewsletterContent, setGeneratedNewsletterContent] = useState<{
+    subjects: string[]
+    body: string
+    topic: string
+  } | null>(null)
+
+  // Compliance state — shared across newsletter and direct mail publish paths
+  const [newsletterComplianceBlockers, setNewsletterComplianceBlockers] = useState<string[]>([])
+  const [newsletterComplianceWarnings, setNewsletterComplianceWarnings] = useState<string[]>([])
+  const [mailComplianceBlockers, setMailComplianceBlockers] = useState<string[]>([])
+  const [mailComplianceWarnings, setMailComplianceWarnings] = useState<string[]>([])
+
   // Long-form video state
   const [longVideos, setLongVideos] = useState<any[]>([])
   const [isUploading, setIsUploading] = useState(false)
@@ -101,6 +121,29 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
   // State for video generation and agent settings
   const [generatingVideo, setGeneratingVideo] = useState<string | null>(null)
   const [agentSettings, setAgentSettings] = useState<any>(null)
+
+  // Brokerage id — seed from server-resolved prop, fall back to client fetch if missing
+  const [brokerageId, setBrokerageId] = useState(brokerageIdProp ?? "")
+
+  useEffect(() => {
+    if (brokerageIdProp) {
+      setBrokerageId(brokerageIdProp)
+      return
+    }
+    // Fallback: fetch from client if page was not rendered as a server component
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return
+      supabase
+        .from("users")
+        .select("brokerage_id")
+        .eq("id", user.id)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (data?.brokerage_id) setBrokerageId(data.brokerage_id)
+        })
+    })
+  }, [brokerageIdProp])
 
   const [bulkContentPeriod, setBulkContentPeriod] = useState<"week" | "month" | "year">("month")
   const [isBulkGenerating, setIsBulkGenerating] = useState(false)
@@ -120,20 +163,12 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
   }, [userId, userRole])
 
   async function loadAgentSettings() {
-    if (!userId) {
-      console.log("[v0] No userId, skipping agent settings load")
-      return
-    }
+    if (!userId) return
     try {
-      console.log("[v0] Loading agent settings for user:", userId)
       const settings = await getAgentSettings(userId)
-      console.log("[v0] Agent settings loaded:", settings)
       setAgentSettings(settings)
-      if (settings.message) {
-        console.log("[v0] Settings message:", settings.message)
-      }
     } catch (error) {
-      console.error("[v0] Failed to load agent settings:", error)
+      console.error("Failed to load agent settings:", error)
       setAgentSettings({
         avatarId: null,
         voiceId: null,
@@ -162,7 +197,7 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       setDirectMail([])
       setLongVideos([])
     } catch (error) {
-      console.error("[v0] Failed to load Content Studio data:", error)
+      console.error("Failed to load Content Studio data:", error)
       setContentIdeas([])
       setSavedIdeas([])
       setCompetitors([])
@@ -193,11 +228,11 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       const count = bulkContentPeriod === "week" ? 7 : bulkContentPeriod === "month" ? 30 : 365
       const result = await generateContentIdeas(`bulk-${bulkContentPeriod}`, userId, userRole)
       if (result.success) {
-        alert(`✅ Generated ${count} pieces of content! Check your Social Planner to schedule.`)
+        toast.success(`Generated ${count} pieces of content`)
         loadData()
       }
     } catch (error) {
-      alert("Failed to generate bulk content")
+      toast.error("Content generation failed")
     } finally {
       setIsBulkGenerating(false)
     }
@@ -214,11 +249,11 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
           content: content.text || content.title,
         })
       }
-      alert(`✅ Content pushed to ${channels.join(", ")}!`)
+      toast.success(`Pushed to ${channels.join(", ")}`)
       setSelectedOmniChannel([])
       loadData()
     } catch (error) {
-      alert("Failed to push content")
+      toast.error("Push failed")
     } finally {
       setIsProcessing(null)
     }
@@ -243,33 +278,193 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
   }
 
   async function handleCreateNewsletter() {
+    if (!userId) {
+      toast.error("Sign in required")
+      return
+    }
+    if (!brokerageId) {
+      toast.info("Loading brokerage profile...")
+      return
+    }
+
+    // If a drafted body already exists, run compliance before allowing send
+    if (generatedNewsletterContent?.body) {
+      setNewsletterComplianceBlockers([])
+      setNewsletterComplianceWarnings([])
+      const compliance = await checkContentCompliance({
+        content: generatedNewsletterContent.body,
+        brokerageId,
+        contentType: "newsletter",
+      })
+      if (!compliance.passed) {
+        setNewsletterComplianceBlockers(compliance.blockers)
+        setNewsletterComplianceWarnings(compliance.warnings)
+        toast.error("Newsletter blocked by compliance — review issues below")
+        return
+      }
+      if (compliance.warnings.length > 0) setNewsletterComplianceWarnings(compliance.warnings)
+    }
+
     setIsProcessing("create-newsletter")
-    // TODO: Create newsletter server action
-    console.log("[v0] Newsletter creation not yet implemented")
-    setIsCreatingNewsletter(false)
-    setIsProcessing(null)
+    try {
+      const topic = newNewsletter.title || "Monthly real estate market update"
+      const [contentResult, subjectResult] = await Promise.all([
+        aiWriteNewsletterContent({
+          brokerageId: brokerageId,
+          agentId: userId,
+          topic,
+          targetAudience: "past_clients",
+          tone: "friendly",
+        }),
+        aiGenerateSubjectLines({
+          brokerageId: brokerageId,
+          agentId: userId,
+          newsletterTopic: topic,
+        }),
+      ])
+      if (contentResult?.success) {
+        setNewsletterComplianceBlockers([])
+        setNewsletterComplianceWarnings([])
+        // Normalize subject lines: the action returns { primary, variants } — flatten to string[]
+        const rawSubjects = (subjectResult as any)?.subjectLines
+        const subjectStrings: string[] = Array.isArray(rawSubjects)
+          ? rawSubjects
+          : rawSubjects
+            ? [
+                rawSubjects?.primary?.subject,
+                ...(rawSubjects?.variants?.map((v: any) => v.subject) ?? []),
+              ].filter(Boolean)
+            : []
+        setGeneratedNewsletterContent({
+          subjects: subjectStrings,
+          body: typeof (contentResult as any).content === "string"
+            ? (contentResult as any).content
+            : "",
+          topic,
+        })
+        toast.success("Newsletter drafted — check Social Planner")
+      } else {
+        toast.error(contentResult?.error ?? "Generation failed")
+      }
+    } catch {
+      toast.error("Newsletter generation failed")
+    } finally {
+      setIsCreatingNewsletter(false)
+      setIsProcessing(null)
+    }
   }
 
   async function handleCreateMail() {
+    if (!userId) {
+      toast.error("Sign in required")
+      return
+    }
+    if (!brokerageId) {
+      toast.info("Loading brokerage profile...")
+      return
+    }
+
+    // Run compliance gate on the direct mail copy before creating the campaign
+    const mailCopyContent = [newMail.contentHeadline, newMail.contentBody, newMail.contentCta]
+      .filter(Boolean)
+      .join("\n")
+
+    if (mailCopyContent.trim()) {
+      setMailComplianceBlockers([])
+      setMailComplianceWarnings([])
+      const compliance = await checkContentCompliance({
+        content: mailCopyContent,
+        brokerageId,
+        contentType: "ad",
+      })
+      if (!compliance.passed) {
+        setMailComplianceBlockers(compliance.blockers)
+        setMailComplianceWarnings(compliance.warnings)
+        toast.error("Direct mail copy blocked by compliance — review issues below")
+        return
+      }
+      if (compliance.warnings.length > 0) setMailComplianceWarnings(compliance.warnings)
+    }
+
     setIsProcessing("create-mail")
-    // TODO: Create direct mail server action
-    console.log("[v0] Direct mail creation not yet implemented")
-    setIsCreatingMail(false)
-    setIsProcessing(null)
+    try {
+      const result = await createMailCampaign({
+        brokerageId: brokerageId,
+        agentId: userId,
+        campaignName: newMail.title || "Direct Mail Campaign",
+        targetAudience: "farm_area",
+        quantity: 100,
+        createdBy: userId,
+      })
+      if (result?.success) {
+        toast.success("Campaign created")
+        setIsCreatingMail(false)
+        setNewMail({ title: "", mailType: "postcard", templateId: "listing_announce", contentHeadline: "", contentBody: "", contentCta: "", status: "draft" })
+        loadData()
+      } else {
+        toast.error(result?.error ?? "Campaign failed")
+      }
+    } catch {
+      toast.error("Campaign creation failed")
+    } finally {
+      setIsProcessing(null)
+    }
   }
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
-    if (!file || !newVideoTitle) return
+    if (!file || !newVideoTitle || !userId) return
     setIsUploading(true)
     setUploadProgress(10)
-    // TODO: Implement video upload server action
-    console.log("[v0] Video upload not yet implemented")
-    setTimeout(() => {
+    try {
+      const supabase = createClient()
+      const { data: { user }, error: authError } = await supabase.auth.getUser()
+      if (authError || !user) throw new Error("Not authenticated")
+
+      const ext = file.name.split(".").pop() ?? "mp4"
+      const path = `videos/${user.id}/${Date.now()}.${ext}`
+
+      setUploadProgress(30)
+      const { error: uploadError } = await supabase.storage
+        .from("agent-media")
+        .upload(path, file, { upsert: false })
+
+      setUploadProgress(70)
+      if (uploadError) throw uploadError
+
+      const { data: urlData } = supabase.storage.from("agent-media").getPublicUrl(path)
+      const publicUrl = urlData?.publicUrl
+
+      if (publicUrl) {
+        if (!brokerageId) {
+          toast.error("Brokerage not loaded yet — please wait and try again")
+          setIsUploading(false)
+          setUploadProgress(0)
+          return
+        }
+        const { error: dbError } = await supabase.from("ai_video_projects").insert({
+          agent_id: user.id,
+          brokerage_id: brokerageId,
+          title: newVideoTitle,
+          video_url: publicUrl,
+          status: "uploaded",
+          video_type: "upload",
+          video_provider: "upload",
+        })
+        if (dbError) throw dbError
+        setUploadProgress(100)
+        toast.success(`${file.name} uploaded`)
+        setNewVideoTitle("")
+        loadData()
+      } else {
+        throw new Error("Failed to get public URL")
+      }
+    } catch (err: any) {
+      toast.error(`Upload failed: ${err?.message ?? "Unknown error"}`)
+    } finally {
       setIsUploading(false)
       setUploadProgress(0)
-      setNewVideoTitle("")
-    }, 1500)
+    }
   }
 
   async function handleGenerateVideo(script: string, title: string, type: "avatar" | "voice") {
@@ -287,14 +482,14 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
       })
 
       if (result.success) {
-        alert(`✅ Video generation started! Check your dashboard for progress.`)
+        toast.success("Video generation queued")
         loadData()
       } else {
-        alert(`❌ Failed: ${result.error}`)
+        toast.error(result.error)
       }
     } catch (error) {
-      console.error("[v0] Video generation error:", error)
-      alert("Failed to generate video")
+      console.error("Video generation error:", error)
+      toast.error("Video generation failed")
     } finally {
       setGeneratingVideo(null)
     }
@@ -322,9 +517,9 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
                   <Sparkles className="h-8 w-8 text-white" />
                 </div>
                 <div>
-                  <h1 className="text-4xl lg:text-5xl font-bold text-slate-900 mb-2">Content & Marketing Studio</h1>
+                  <h1 className="text-4xl lg:text-5xl font-bold text-slate-900 mb-2">Content Creator</h1>
                   <p className="text-slate-600 text-lg">
-                    AI-powered content creation • 80% automated, 20% your approval
+                    AI-powered video scripts, newsletters, social posts &amp; more
                   </p>
                 </div>
               </div>
@@ -1096,15 +1291,86 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
                       placeholder="What recipients see in inbox"
                     />
                   </div>
+                  {newsletterComplianceBlockers.length > 0 && (
+                    <div className="rounded border border-red-200 bg-red-50 p-3">
+                      <p className="text-sm font-semibold text-red-800 mb-1">Compliance issues — fix before sending</p>
+                      {newsletterComplianceBlockers.map((b) => (
+                        <p key={b} className="text-xs text-red-700 mt-1">{b}</p>
+                      ))}
+                    </div>
+                  )}
+
+                  {newsletterComplianceWarnings.length > 0 && newsletterComplianceBlockers.length === 0 && (
+                    <div className="rounded border border-yellow-200 bg-yellow-50 p-3">
+                      <p className="text-sm font-semibold text-yellow-800 mb-1">Compliance warnings — review before sending</p>
+                      {newsletterComplianceWarnings.map((w) => (
+                        <p key={w} className="text-xs text-yellow-700 mt-1">{w}</p>
+                      ))}
+                    </div>
+                  )}
+
                   <Button
                     onClick={handleCreateNewsletter}
-                    disabled={isProcessing === "create-newsletter"}
+                    disabled={!newNewsletter.title || isProcessing === "create-newsletter"}
                     size="lg"
                     className="bg-orange-600 hover:bg-orange-700 text-white"
                   >
-                    <CheckCircle className="mr-2 h-4 w-4" />
-                    Create Newsletter
+                    {isProcessing === "create-newsletter" ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle className="mr-2 h-4 w-4" />
+                        Create Newsletter
+                      </>
+                    )}
                   </Button>
+
+                  {generatedNewsletterContent && (
+                    <div className="mt-4 rounded-lg border border-orange-200 bg-orange-50 p-4 space-y-3">
+                      <p className="text-sm font-semibold text-orange-900">Newsletter Drafted</p>
+                      {generatedNewsletterContent.subjects.length > 0 && (
+                        <div>
+                          <p className="text-xs font-medium text-orange-800 mb-1">Suggested subject lines:</p>
+                          <ul className="space-y-1">
+                            {generatedNewsletterContent.subjects.map((s, i) => (
+                              <li key={i} className="text-sm text-orange-700 pl-2 border-l-2 border-orange-300">
+                                {s}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <Textarea
+                        rows={8}
+                        className="text-sm"
+                        value={generatedNewsletterContent.body}
+                        onChange={(e) =>
+                          setGeneratedNewsletterContent((prev) =>
+                            prev ? { ...prev, body: e.target.value } : null,
+                          )
+                        }
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => navigator.clipboard.writeText(generatedNewsletterContent.body)}
+                        >
+                          Copy
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setGeneratedNewsletterContent(null)}
+                        >
+                          Discard
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -1206,6 +1472,24 @@ export default function ContentStudioClient({ userId, userRole }: ContentStudioC
                         </div>
                       </div>
                     </div>
+
+                    {mailComplianceBlockers.length > 0 && (
+                      <div className="rounded border border-red-200 bg-red-50 p-3 mt-3">
+                        <p className="text-sm font-semibold text-red-800 mb-1">Compliance issues — fix before sending</p>
+                        {mailComplianceBlockers.map((b) => (
+                          <p key={b} className="text-xs text-red-700 mt-1">{b}</p>
+                        ))}
+                      </div>
+                    )}
+
+                    {mailComplianceWarnings.length > 0 && mailComplianceBlockers.length === 0 && (
+                      <div className="rounded border border-yellow-200 bg-yellow-50 p-3 mt-3">
+                        <p className="text-sm font-semibold text-yellow-800 mb-1">Compliance warnings — review before sending</p>
+                        {mailComplianceWarnings.map((w) => (
+                          <p key={w} className="text-xs text-yellow-700 mt-1">{w}</p>
+                        ))}
+                      </div>
+                    )}
 
                     {/* Send Provider Selection */}
                     <div className="flex gap-3 pt-4">

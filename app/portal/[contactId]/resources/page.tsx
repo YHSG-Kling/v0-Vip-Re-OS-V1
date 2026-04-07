@@ -3,6 +3,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { determinePortalView } from "@/lib/kernel/portal"
 import { getVendorResources } from "@/app/actions/portal-lifetime"
+import { getCalculatorHistory } from "@/app/actions/calculators"
+import { PortalFinancialTools } from "./portal-financial-tools"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -98,7 +100,12 @@ export default async function ResourcesPage({
     redirect(`/portal/${contactId}`)
   }
 
-  const vendors = await getVendorResources(contactId)
+  // contactId is the authoritative identity — getCalculatorHistory takes it as leadId
+  // because the action parameter predates the portal contact model
+  const [vendors, calcHistory] = await Promise.all([
+    getVendorResources(contactId),
+    getCalculatorHistory(contactId),
+  ])
 
   // Group vendors by category
   const vendorsByCategory = vendors.reduce((acc: Record<string, any[]>, v: any) => {
@@ -253,6 +260,9 @@ export default async function ResourcesPage({
           </div>
         </CardContent>
       </Card>
+
+      {/* Financial Tools — Moving Cost Estimator + Calculator History */}
+      <PortalFinancialTools contactId={contactId} calcHistory={calcHistory} />
 
       {/* Useful Links */}
       <Card>

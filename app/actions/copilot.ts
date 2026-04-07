@@ -2,7 +2,7 @@
 
 import { createServerClient, createClient } from "@/lib/supabase/server"
 import { logMilestoneOverdue } from "@/lib/events"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { incrementUsage } from "@/lib/usage"
 
 // =====================================================
@@ -502,13 +502,22 @@ async function initiateCall(contactId: string, agentId: string) {
     return { success: false, error: "Failed to initiate call" }
   }
   
-  // Log activity
+  // Log activity — resolve brokerage_id from the agent's user record
+  const { data: agentUser } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", agentId)
+    .maybeSingle()
+
   await supabase.from("activities").insert({
-    user_id: agentId,
+    brokerage_id: agentUser?.brokerage_id ?? null,
+    agent_id: agentId,
+    contact_id: contactId,
     activity_type: "call_initiated",
+    title: "Outbound call initiated",
+    description: "Outbound call initiated via copilot",
+    status: "completed",
     entity_type: "contact",
-    entity_id: contactId,
-    description: "Outbound call initiated",
   })
   
   return { success: true, message: "Call initiated", callLogId: callLog?.id }

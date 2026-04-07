@@ -4,19 +4,23 @@ import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { 
-  Settings, 
+import {
+  Settings,
   ChevronRight,
   AlertCircle,
   CheckCircle2,
   Loader2,
-  Plug
+  Plug,
+  Monitor,
+  Wrench,
 } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 
 interface ProviderIntelligencePanelProps {
   brokerageId: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  stats?: any
 }
 
 interface ProviderStatus {
@@ -136,9 +140,34 @@ export function ProviderIntelligencePanel({ brokerageId }: ProviderIntelligenceP
           </div>
         )}
 
+        {/* System Health Quick Fixes */}
+        <div className="border-t pt-3 space-y-2">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">System Health</p>
+          <Link href="/dashboard/system">
+            <Button variant="outline" size="sm" className="w-full justify-start">
+              <Monitor className="h-4 w-4 mr-2" />
+              View System Dashboard
+              <ChevronRight className="h-4 w-4 ml-auto" />
+            </Button>
+          </Link>
+          <Link href="/dashboard/settings/integrations">
+            <Button
+              variant={disabledCount > 0 ? "default" : "outline"}
+              size="sm"
+              className="w-full justify-start"
+            >
+              <Wrench className="h-4 w-4 mr-2" />
+              Fix Provider Issues
+              {disabledCount > 0 && (
+                <span className="ml-auto text-xs bg-white/20 rounded px-1">{disabledCount}</span>
+              )}
+            </Button>
+          </Link>
+        </div>
+
         <Link href="/dashboard/admin/provider-intelligence">
-          <Button variant="outline" size="sm" className="w-full">
-            Manage Providers
+          <Button variant="ghost" size="sm" className="w-full">
+            Manage All Providers
             <ChevronRight className="h-4 w-4 ml-1" />
           </Button>
         </Link>

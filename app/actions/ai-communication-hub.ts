@@ -2,13 +2,15 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { revalidatePath } from "next/cache"
-import { dispatchEmail } from "@/lib/providers/dispatch"
-import { dispatchSms } from "@/lib/providers/dispatch"
+import { dispatchEmail, dispatchSms } from "@/lib/providers/dispatch"
+import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 
 /**
  * AI Communication Hub
@@ -101,38 +103,64 @@ export async function sendMessage(params: {
           .eq("id", params.agentId)
           .single()
 
+        // assembleEmail() runs inside dispatchEmail() — do NOT call it here.
         dispatchResult = await dispatchEmail({
-          brokerageId: agent?.brokerage_id ?? "",
-          agentId:     params.agentId,
-          from:        "noreply@platform.com",
-          to:          contact.email,
-          subject:     params.subject ?? "(No Subject)",
-          html:        `<p>${params.body}</p>`,
-          systemSource: "inbox",
+          brokerageId:    agent?.brokerage_id ?? "",
+          agentId:        params.agentId,
+          from:           "noreply@platform.com",
+          to:             contact.email,
+          subject:        params.subject ?? "(No Subject)",
+          html:           `<p>${params.body}</p>`,
+          channelPurpose: "conversation",
+          systemSource:   "inbox",
+          leadId:         params.contactId,
         })
       }
     } else if (params.channel === "sms") {
       const { data: contact } = await supabase
         .from("contacts")
-        .select("phone")
+        .select("phone, tcpa_consent, brokerage_id")
         .eq("id", params.contactId)
-        .single()
+        .maybeSingle()
 
-      if (contact?.phone) {
-        const { data: agent } = await supabase
-          .from("agents")
-          .select("brokerage_id")
-          .eq("id", params.agentId)
-          .single()
-
-        dispatchResult = await dispatchSms({
-          brokerageId: agent?.brokerage_id ?? "",
-          agentId:     params.agentId,
-          to:          contact.phone,
-          message:     params.body,
-          systemSource: "inbox",
-        })
+      if (!contact?.phone) {
+        return { success: false, error: "Contact has no phone number on file." }
       }
+
+      // ── TCPA hard gate: contacts must have explicit opt-in before SMS dispatch ──
+      if (!contact.tcpa_consent) {
+        return {
+          success: false,
+          error: "TCPA: This contact has not opted in to SMS. Obtain written consent before sending.",
+          tcpaBlocked: true,
+        }
+      }
+
+      // Suppression check (DNC registry, opt-out list)
+      const suppression = await checkSuppression({
+        brokerageId: contact.brokerage_id,
+        contactId: params.contactId,
+        channel: "sms",
+        phone: contact.phone,
+      })
+      if (suppression.suppressed) {
+        return { success: false, error: `SMS suppressed: ${suppression.reason}`, suppressed: true }
+      }
+
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("brokerage_id")
+        .eq("id", params.agentId)
+        .maybeSingle()
+
+      dispatchResult = await dispatchSms({
+        brokerageId: agent?.brokerage_id ?? contact.brokerage_id ?? "",
+        agentId:     params.agentId,
+        to:          contact.phone,
+        message:     params.body,
+        systemSource: "inbox",
+        contactId:   params.contactId,
+      })
     }
 
     // Step 4: Fire-and-forget message_provider_logs
@@ -143,21 +171,24 @@ export async function sendMessage(params: {
       .eq("id", params.agentId)
       .single()
 
-    serviceClient
-      .from("message_provider_logs")
-      .insert({
-        brokerage_id:        agentForLog?.brokerage_id ?? null,
-        message_id:          message.id,
-        provider_key:        dispatchResult.providerKey,
-        channel:             params.channel,
-        direction:           "outbound",
-        provider_message_id: dispatchResult.messageId ?? null,
-        provider_status:     dispatchResult.success ? "sent" : "failed",
-        error_message:       dispatchResult.error ?? null,
-        created_at:          now,
-      })
-      .then(() => {})
-      .catch(() => {})
+    // Fire-and-forget: log message provider activity without blocking response
+    ;(async () => {
+      try {
+        await serviceClient.from("message_provider_logs").insert({
+          brokerage_id:        agentForLog?.brokerage_id ?? null,
+          message_id:          message.id,
+          provider_key:        dispatchResult.providerKey,
+          channel:             params.channel,
+          direction:           "outbound",
+          provider_message_id: dispatchResult.messageId ?? null,
+          provider_status:     dispatchResult.success ? "sent" : "failed",
+          error_message:       dispatchResult.error ?? null,
+          created_at:          now,
+        })
+      } catch (err) {
+        // Silent fail for logging - don't block message send on log failure
+      }
+    })()
 
     revalidatePath("/dashboard/communications/inbox")
     return { success: true, message }
@@ -181,8 +212,9 @@ export async function getConversations(params: {
       .from("conversations")
       .select(`
         *,
-        contacts(id, first_name, last_name, email, phone, lifecycle_state, lead_score),
-        agents(id, user_id, users(first_name, last_name))
+        contacts(id, first_name, last_name, email, phone, lifecycle_state, lead_score, tcpa_consent, preferred_channel, call_stop_flag),
+        agents(id, user_id, users(first_name, last_name)),
+        messages!messages_conversation_id_fkey(body, content, created_at, direction)
       `)
       .eq("brokerage_id", params.brokerageId)
       .order("last_message_at", { ascending: false })
@@ -204,10 +236,20 @@ export async function getConversations(params: {
 
     if (error) throw error
 
+    // Derive last_message_preview from the joined messages array (newest first)
+    const mapped = (conversations ?? []).map((c: any) => {
+      const msgs: any[] = c.messages ?? []
+      const sorted = [...msgs].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      )
+      const preview = sorted[0]?.body ?? sorted[0]?.content ?? null
+      return { ...c, last_message_preview: preview, messages: undefined }
+    })
+
     return {
       success: true,
-      conversations: conversations ?? [],
-      total: conversations?.length ?? 0,
+      conversations: mapped,
+      total: mapped.length,
     }
   } catch (error) {
     return handleError(error, "getConversations")
@@ -261,7 +303,7 @@ export async function analyzeMessageSentiment(params: {
 }) {
   try {
     const { object: analysis } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: SentimentSchema,
       prompt: `Analyze the sentiment and intent of this real estate communication:
 
@@ -291,29 +333,32 @@ export async function generateSmartResponse(params: {
   incomingMessage: string
   contactId: string
   agentId: string
+  brokerageId: string
   channel: "email" | "sms" | "chat"
   tone?: "formal" | "friendly" | "professional" | "empathetic"
   includeNextSteps?: boolean
 }) {
-  if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId)) {
-    return { success: false, error: "Invalid contact or agent ID" }
+  if (!isValidUUID(params.contactId) || !isValidUUID(params.agentId) || !isValidUUID(params.brokerageId)) {
+    return { success: false, error: "Invalid contact, agent, or brokerage ID" }
   }
 
   const supabase = await createClient()
 
   try {
-    // Get contact context
+    // Get contact context — maybeSingle() prevents PGRST116 if contact is missing
     const { data: contact } = await supabase
       .from("contacts")
-      .select("*, transactions(*), interactions(*)")
+      .select("first_name, last_name, contact_type, contact_persona")
       .eq("id", params.contactId)
-      .single()
+      .eq("brokerage_id", params.brokerageId)
+      .maybeSingle()
 
     // Get agent's communication style
     const { data: agentProfile } = await supabase
       .from("brand_voice_profile")
       .select("*")
       .eq("agent_id", params.agentId)
+      .eq("brokerage_id", params.brokerageId)
       .maybeSingle()
 
     // Get conversation history
@@ -321,13 +366,14 @@ export async function generateSmartResponse(params: {
       .from("messages")
       .select("*")
       .eq("contact_id", params.contactId)
+      .eq("brokerage_id", params.brokerageId)
       .order("created_at", { ascending: false })
       .limit(10)
 
     const charLimit = params.channel === "sms" ? 160 : params.channel === "chat" ? 500 : 2000
 
     const { text: response } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `Generate a ${params.tone || "professional"} response for this ${params.channel} message.
 
 INCOMING MESSAGE: "${params.incomingMessage}"
@@ -336,18 +382,16 @@ CONTACT CONTEXT:
 - Name: ${contact?.first_name} ${contact?.last_name}
 - Type: ${contact?.contact_type || "Unknown"}
 - Persona: ${contact?.contact_persona || "General"}
-- Stage: ${contact?.pipeline_stage || "Unknown"}
-- Active Transactions: ${contact?.transactions?.filter((t: any) => t.status === "active").length || 0}
 
 AGENT VOICE:
 ${agentProfile ? `
 - Tone: ${agentProfile.tone}
-- Style: ${agentProfile.writing_style}
-- Signature phrases: ${agentProfile.signature_phrases?.join(", ")}
+- Preferred words: ${agentProfile.preferred_words?.join(", ") || "none specified"}
+- Key messages: ${agentProfile.key_brand_messages?.join("; ") || "none specified"}
 ` : "Use professional, friendly tone"}
 
 RECENT CONVERSATION:
-${recentMessages?.map(m => `${m.direction === "inbound" ? "Client" : "Agent"}: ${m.content?.substring(0, 100)}`).join("\n") || "No history"}
+${recentMessages?.map(m => `${m.direction === "inbound" ? "Client" : "Agent"}: ${(m.body ?? m.content ?? "").substring(0, 100)}`).join("\n") || "No history"}
 
 REQUIREMENTS:
 - Channel: ${params.channel} (max ${charLimit} characters)
@@ -365,12 +409,39 @@ Generate ONLY the response message, no explanations.`,
       agentId: params.agentId,
     })
 
+    // Union narrowing: check success before accessing analysis
+    const sentimentAnalysis = sentimentResult.success ? sentimentResult.analysis : null
+
+    // Log AI response generation for brokerage audit trail per Kernel OS contract
+    // Fire-and-forget to avoid blocking response
+    ;(async () => {
+      try {
+        await supabase
+          .from("audit_log")
+          .insert({
+            action: "ai_response_generated",
+            entity_type: "message",
+            entity_id: params.contactId,
+            brokerage_id: params.brokerageId,
+            user_id: params.agentId,
+            after: {
+              channel: params.channel,
+              tone: params.tone || "professional",
+              characterCount: response.length,
+              sentiment: sentimentAnalysis,
+            },
+          })
+      } catch (err) {
+        // Silent fail - audit logging should not block response generation
+      }
+    })()
+
     return {
       success: true,
       draft: response,
       characterCount: response.length,
       channel: params.channel,
-      sentiment: sentimentResult.analysis,
+      sentiment: sentimentAnalysis,
     }
   } catch (error) {
     return handleError(error, "generateSmartResponse")
@@ -402,7 +473,7 @@ export async function analyzeConversationHealth(params: {
     const avgResponseTime = calculateAvgResponseTime(messages)
 
     const { object: health } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         overallHealth: z.enum(["excellent", "good", "fair", "poor", "critical"]),
         healthScore: z.number().min(0).max(100),
@@ -478,10 +549,19 @@ export async function prioritizeInbox(params: {
           agentId: params.agentId,
         })
 
+        // Union narrowing: check success before accessing analysis
+        if (!sentiment.success) {
+          return {
+            ...msg,
+            analysis: null,
+            priority: 3, // default priority if analysis fails
+          }
+        }
+
         return {
           ...msg,
           analysis: sentiment.analysis,
-          priority: sentiment.analysis?.suggestedPriority || 3,
+          priority: sentiment.analysis.suggestedPriority || 3,
         }
       })
     )
@@ -534,7 +614,7 @@ export async function generateCommunicationSummary(params: {
     }
 
     const { text: summary } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Summarize this client communication history for an agent's quick reference:
 
 MESSAGES (${messages.length} total):

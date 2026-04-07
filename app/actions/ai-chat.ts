@@ -3,9 +3,8 @@
 import { createClient } from "@/lib/supabase/server"
 import { requirePermission } from "@/lib/security"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
-import { handleError } from "@/lib/errors"
 
 // =====================================================
 // CHAT SESSION MANAGEMENT
@@ -270,14 +269,26 @@ async function checkMessageCompliance(message: string, sessionId: string): Promi
   // Check for cold lead channel restrictions
   if (session?.contacts?.lead_temperature === "cold") {
     const coldLeadChannels = ["email", "print_mail"]
+    const currentChannel = session?.contact_channel || "email" // default to email
     const mentionsSMSOrCall = /\b(call|phone|text|sms|message)\b/gi.test(message)
 
-    if (mentionsSMSOrCall) {
+    // Block if message mentions SMS/call AND current channel is not in allowed list
+    if (mentionsSMSOrCall && !coldLeadChannels.includes(currentChannel)) {
       issues.push({
         type: "cold_lead_channel_violation",
         phrase: "Contact method mentioned",
         severity: "blocking",
         alternative: "Cold leads can only be contacted via email or print mail per compliance",
+      })
+    }
+    
+    // Also block if proposing to use disallowed channels
+    if (!coldLeadChannels.includes(currentChannel) && mentionsSMSOrCall) {
+      issues.push({
+        type: "cold_lead_channel_violation",
+        phrase: "Attempted contact outside allowed channels",
+        severity: "blocking",
+        alternative: "Switch to email or print mail for this cold lead",
       })
     }
   }
@@ -408,6 +419,29 @@ async function analyzeLeadTemperatureFromMessage(
   indicators: string[]
 }> {
   const messageLower = message.toLowerCase().trim()
+  
+  // Get previous session lead temperature to consider history
+  const supabase = await createClient()
+  let session: any = null
+  try {
+    const result = await supabase
+      .from("conversations")
+      .select("lead_temperature")
+      .eq("id", sessionId)
+      .single()
+    session = result.data
+  } catch (err) {
+    console.error("[v0] Error fetching session lead temperature:", err)
+    session = null
+  }
+  
+  // Start with score weighted by previous temperature
+  let score = 50 // Start neutral
+  if (session?.lead_temperature === "hot") {
+    score += 15 // Boost if previously hot
+  } else if (session?.lead_temperature === "cold") {
+    score -= 15 // Lower expectations if previously cold
+  }
 
   // Hot indicators - positive, engaged, ready to act
   const hotIndicators = [
@@ -435,7 +469,6 @@ async function analyzeLeadTemperatureFromMessage(
     { pattern: /^(ok|k|fine|whatever|idk)$/gi, weight: -20 }, // Short dismissive
   ]
 
-  let score = 50 // Start neutral
   const foundIndicators: string[] = []
 
   // Check hot indicators

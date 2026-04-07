@@ -78,6 +78,7 @@ import {
   type SequenceStep,
   type SequenceEnrollment,
 } from "@/app/actions/campaign-sequences"
+import { ContextualAiAssistBar } from "@/app/components/ai-copilot/contextual-ai-assist-bar"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -545,6 +546,7 @@ export default function SequenceBuilderClient({
                 bodyRef={bodyRef}
                 busy={busy}
                 canEdit={canEdit}
+                agentId={userId}
               />
             ) : (
               <div className="flex flex-col items-center justify-center h-full text-center text-sm text-muted-foreground px-4">
@@ -901,6 +903,7 @@ function StepEditor({
   bodyRef,
   busy,
   canEdit,
+  agentId,
 }: {
   step: SequenceStep
   draft: Partial<SequenceStep>
@@ -914,6 +917,7 @@ function StepEditor({
   bodyRef: React.RefObject<HTMLTextAreaElement | null>
   busy: boolean
   canEdit: boolean
+  agentId: string
 }) {
   const [showCondition, setShowCondition] = useState(!!step.condition_field)
 
@@ -1093,6 +1097,25 @@ function StepEditor({
               </button>
             ))}
           </div>
+        )}
+
+        {/* AI Assist for message drafting */}
+        {canEdit && agentId && (
+          <ContextualAiAssistBar
+            agentId={agentId}
+            context={{
+              type: "message",
+              contactName: sequence?.name || "recipient",
+              currentContent: draft.body || "",
+            }}
+            onAcceptDraft={(accepted) => {
+              setDraft(prev => ({ ...prev, body: accepted }))
+              if (bodyRef.current) {
+                bodyRef.current.value = accepted
+                bodyRef.current.dispatchEvent(new Event('input', { bubbles: true }))
+              }
+            }}
+          />
         )}
       </div>
 

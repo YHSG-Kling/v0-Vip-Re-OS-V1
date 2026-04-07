@@ -1,30 +1,46 @@
 'use server'
 
-import { createServerClient } from '@supabase/ssr'
-import { cookies } from 'next/headers'
-import { redirect } from 'next/navigation'
+import { createClient } from '@/lib/supabase/server'
 
-export async function loginUser(email: string, password: string) {
-  try {
-    const cookieStore = await cookies()
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-      {
-        cookies: {
-          get: (name) => cookieStore.get(name)?.value,
-          set: (name, value, options) => {
-            cookieStore.set(name, value, options)
-          },
-          remove: (name, options) => {
-            cookieStore.delete(name)
-          },
-        },
+type AuthUserSummary = {
+  id: string
+  email: string | null
+}
+
+type AuthActionResult =
+  | { success: true; user: AuthUserSummary }
+  | { success: false; error: string }
+
+type RegisterActionResult =
+  | {
+      success: true
+      user: {
+        id: string
+        email: string | null
+      } | null
+      needsEmailConfirmation: boolean
+    }
+  | { success: false; error: string }
+
+type CallbackActionResult =
+  | { success: true; userId: string; user: AuthUserSummary }
+  | {
+      success: false
+      error: {
+        code: string
+        message: string
       }
-    )
+    }
+
+export async function loginUser(
+  email: string,
+  password: string
+): Promise<AuthActionResult> {
+  try {
+    const supabase = await createClient()
 
     const { data, error } = await supabase.auth.signInWithPassword({
-      email,
+      email: email.trim(),
       password,
     })
 
@@ -35,10 +51,10 @@ export async function loginUser(email: string, password: string) {
       }
     }
 
-    if (!data.user || !data.session) {
+    if (!data.user) {
       return {
         success: false,
-        error: 'Login failed. No user data returned.',
+        error: 'Login failed. No user returned.',
       }
     }
 
@@ -46,37 +62,70 @@ export async function loginUser(email: string, password: string) {
       success: true,
       user: {
         id: data.user.id,
-        email: data.user.email,
+        email: data.user.email ?? null,
       },
     }
   } catch (error) {
+    console.error('[auth.loginUser] unexpected error:', error)
     return {
       success: false,
-      error: 'An unexpected error occurred during login',
+      error: 'An unexpected error occurred during login.',
     }
   }
 }
 
-export async function handleAuthCallback(code: string) {
+export async function handleAuthCallback(
+  code: string
+): Promise<CallbackActionResult> {
   try {
-    const cookieStore = await cookies()
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-      {
-        cookies: {
-          get: (name) => cookieStore.get(name)?.value,
-          set: (name, value, options) => {
-            cookieStore.set(name, value, options)
-          },
-          remove: (name, options) => {
-            cookieStore.delete(name)
-          },
-        },
-      }
-    )
+    const supabase = await createClient()
 
     const { data, error } = await supabase.auth.exchangeCodeForSession(code)
+
+    if (error) {
+      return {
+        success: false,
+        error: {
+          code: error.code ?? 'auth_callback_failed',
+          message: error.message,
+        },
+      }
+    }
+
+    if (!data.user) {
+      return {
+        success: false,
+        error: {
+          code: 'auth_callback_no_user',
+          message: 'No user was returned after exchanging the auth code.',
+        },
+      }
+    }
+
+    return {
+      success: true,
+      userId: data.user.id,
+      user: {
+        id: data.user.id,
+        email: data.user.email ?? null,
+      },
+    }
+  } catch (error) {
+    console.error('[auth.handleAuthCallback] unexpected error:', error)
+    return {
+      success: false,
+      error: {
+        code: 'auth_callback_unexpected',
+        message: 'Failed to handle auth callback.',
+      },
+    }
+  }
+}
+
+export async function signOut(): Promise<{ success: true } | { success: false; error: string }> {
+  try {
+    const supabase = await createClient()
+    const { error } = await supabase.auth.signOut()
 
     if (error) {
       return {
@@ -85,75 +134,34 @@ export async function handleAuthCallback(code: string) {
       }
     }
 
-    return {
-      success: true,
-      user: data.user,
-    }
+    return { success: true }
   } catch (error) {
+    console.error('[auth.signOut] unexpected error:', error)
     return {
       success: false,
-      error: 'Failed to handle auth callback',
+      error: 'Failed to sign out.',
     }
   }
 }
 
-export async function signOut() {
+export async function getCurrentUser(): Promise<AuthUserSummary | null> {
   try {
-    const cookieStore = await cookies()
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-      {
-        cookies: {
-          get: (name) => cookieStore.get(name)?.value,
-          set: (name, value, options) => {
-            cookieStore.set(name, value, options)
-          },
-          remove: (name, options) => {
-            cookieStore.delete(name)
-          },
-        },
-      }
-    )
-
-    await supabase.auth.signOut()
-
-    return {
-      success: true,
-    }
-  } catch (error) {
-    return {
-      success: false,
-      error: 'Failed to sign out',
-    }
-  }
-}
-
-export async function getCurrentUser() {
-  try {
-    const cookieStore = await cookies()
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-      {
-        cookies: {
-          get: (name) => cookieStore.get(name)?.value,
-          set: (name, value, options) => {
-            cookieStore.set(name, value, options)
-          },
-          remove: (name, options) => {
-            cookieStore.delete(name)
-          },
-        },
-      }
-    )
-
+    const supabase = await createClient()
     const {
       data: { user },
+      error,
     } = await supabase.auth.getUser()
 
-    return user
+    if (error || !user) {
+      return null
+    }
+
+    return {
+      id: user.id,
+      email: user.email ?? null,
+    }
   } catch (error) {
+    console.error('[auth.getCurrentUser] unexpected error:', error)
     return null
   }
 }
@@ -163,32 +171,17 @@ export async function registerUser(
   password: string,
   firstName: string,
   lastName: string
-) {
+): Promise<RegisterActionResult> {
   try {
-    const cookieStore = await cookies()
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-      {
-        cookies: {
-          get: (name) => cookieStore.get(name)?.value,
-          set: (name, value, options) => {
-            cookieStore.set(name, value, options)
-          },
-          remove: (name, options) => {
-            cookieStore.delete(name)
-          },
-        },
-      }
-    )
+    const supabase = await createClient()
 
     const { data, error } = await supabase.auth.signUp({
-      email,
+      email: email.trim(),
       password,
       options: {
         data: {
-          first_name: firstName,
-          last_name: lastName,
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
         },
       },
     })
@@ -202,12 +195,19 @@ export async function registerUser(
 
     return {
       success: true,
-      user: data.user,
+      user: data.user
+        ? {
+            id: data.user.id,
+            email: data.user.email ?? null,
+          }
+        : null,
+      needsEmailConfirmation: !data.session,
     }
   } catch (error) {
+    console.error('[auth.registerUser] unexpected error:', error)
     return {
       success: false,
-      error: 'An unexpected error occurred during registration',
+      error: 'An unexpected error occurred during registration.',
     }
   }
 }

@@ -1,19 +1,31 @@
-import { Suspense } from "next"
+import { Suspense } from "react"
 import { AddressSearchForm } from "@/app/components/home-value/AddressSearchForm"
-import { getAgentBySlug } from "@/app/actions/home-value"
+import { getAgentBySlug, getPageConfigByAgentId, type HomeValuePageConfig } from "@/app/actions/home-value"
 import { Card } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Home, Shield, TrendingUp, Clock } from "lucide-react"
 
 export const dynamic = "force-dynamic"
 
-export const metadata = {
-  title: "What's Your Home Worth? | Free Home Value Estimate",
-  description: "Get an AI-powered estimate of your home's value in minutes. Free, no obligation.",
-}
-
 interface PageProps {
   searchParams: Promise<{ agent?: string; brokerage?: string; utm_source?: string }>
+}
+
+export async function generateMetadata({ searchParams }: PageProps) {
+  const params = await searchParams
+  if (params.agent) {
+    const agent = await getAgentBySlug(params.agent)
+    if (agent) {
+      return {
+        title: `What's Your Home Worth? | ${agent.first_name} ${agent.last_name}`,
+        description: `Get a free AI-powered home value estimate from ${agent.first_name} ${agent.last_name} in minutes.`,
+      }
+    }
+  }
+  return {
+    title: "What's Your Home Worth? | Free Home Value Estimate",
+    description: "Get an AI-powered estimate of your home's value in minutes. Free, no obligation.",
+  }
 }
 
 export default async function HomeValuePage({ searchParams }: PageProps) {
@@ -22,16 +34,52 @@ export default async function HomeValuePage({ searchParams }: PageProps) {
   const brokerageId = params.brokerage
   const utmSource = params.utm_source
 
-  // Personalization if agent slug provided
-  let agent = null
+  // Personalization + config if agent slug provided
+  let agent: Awaited<ReturnType<typeof getAgentBySlug>> = null
+  let pageConfig: HomeValuePageConfig | null = null
+
   if (agentSlug) {
     agent = await getAgentBySlug(agentSlug)
+    if (agent?.id) {
+      pageConfig = await getPageConfigByAgentId(agent.id)
+    }
+  }
+
+  const headline = pageConfig?.headline ?? "What's Your Home Worth?"
+  const subheadline = pageConfig?.subheadline ?? "Get an AI-powered estimate in minutes — free, no obligation"
+  const accentColor = pageConfig?.primaryColor ?? undefined
+
+  // Build activeQuestions map from config (all true by default when no config)
+  const activeQuestions = {
+    sellTimeline: pageConfig?.showQSellTimeline ?? true,
+    motivation: pageConfig?.showQMotivation ?? true,
+    mortgageStatus: pageConfig?.showQMortgageStatus ?? true,
+    priceExpectation: pageConfig?.showQPriceExpectation ?? true,
+    hasAgent: pageConfig?.showQHasAgent ?? true,
+    buyAfterSell: pageConfig?.showQBuyAfterSell ?? true,
+    additionalNotes: pageConfig?.showQAdditionalNotes ?? true,
+  }
+
+  const questionLabels = {
+    sellTimeline: pageConfig?.labelSellTimeline ?? null,
+    motivation: pageConfig?.labelMotivation ?? null,
+    mortgageStatus: pageConfig?.labelMortgageStatus ?? null,
+    priceExpectation: pageConfig?.labelPriceExpectation ?? null,
+    hasAgent: pageConfig?.labelHasAgent ?? null,
+    buyAfterSell: pageConfig?.labelBuyAfterSell ?? null,
   }
 
   return (
     <main className="min-h-screen bg-background">
       {/* Hero Section */}
-      <section className="relative bg-gradient-to-b from-primary/5 to-background py-16 px-4">
+      <section
+        className="relative py-16 px-4"
+        style={
+          accentColor
+            ? { background: `linear-gradient(135deg, ${accentColor}14 0%, transparent 100%)` }
+            : undefined
+        }
+      >
         <div className="mx-auto max-w-4xl text-center">
           {agent && (
             <div className="mb-6 flex items-center justify-center gap-3">
@@ -43,19 +91,25 @@ export default async function HomeValuePage({ searchParams }: PageProps) {
                 />
               )}
               <p className="text-muted-foreground">
-                Your estimate powered by{" "}
-                <span className="font-medium text-foreground">
-                  {agent.first_name} {agent.last_name}
-                </span>
+                {pageConfig?.agentBioOverride ? (
+                  pageConfig.agentBioOverride
+                ) : (
+                  <>
+                    Your estimate powered by{" "}
+                    <span className="font-medium text-foreground">
+                      {agent.first_name} {agent.last_name}
+                    </span>
+                  </>
+                )}
               </p>
             </div>
           )}
 
-          <h1 className="text-4xl font-bold tracking-tight text-foreground sm:text-5xl md:text-6xl">
-            What's Your Home Worth?
+          <h1 className="text-4xl font-bold tracking-tight text-foreground sm:text-5xl md:text-6xl text-balance">
+            {headline}
           </h1>
-          <p className="mt-4 text-lg text-muted-foreground max-w-2xl mx-auto">
-            Get an AI-powered estimate in minutes — free, no obligation
+          <p className="mt-4 text-lg text-muted-foreground max-w-2xl mx-auto text-pretty">
+            {subheadline}
           </p>
         </div>
       </section>
@@ -66,8 +120,12 @@ export default async function HomeValuePage({ searchParams }: PageProps) {
           <Suspense fallback={<FormSkeleton />}>
             <AddressSearchForm
               agentSlug={agentSlug}
-              brokerageId={brokerageId}
+              brokerageId={brokerageId ?? agent?.brokerage_id ?? undefined}
               utmSource={utmSource}
+              activeQuestions={activeQuestions}
+              questionLabels={questionLabels}
+              ctaButtonText={pageConfig?.ctaButtonText}
+              accentColor={accentColor}
             />
           </Suspense>
         </div>
@@ -133,9 +191,18 @@ function TrustCard({
 function FormSkeleton() {
   return (
     <Card className="p-6">
-      <Skeleton className="h-8 w-48 mb-4" />
+      <div className="flex justify-center mb-5">
+        <Skeleton className="h-9 w-64" />
+      </div>
+      <Skeleton className="h-6 w-48 mx-auto mb-1" />
+      <Skeleton className="h-4 w-56 mx-auto mb-6" />
       <div className="space-y-4">
         <Skeleton className="h-10 w-full" />
+        <div className="grid grid-cols-3 gap-3">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+        </div>
         <div className="grid grid-cols-2 gap-4">
           <Skeleton className="h-10 w-full" />
           <Skeleton className="h-10 w-full" />

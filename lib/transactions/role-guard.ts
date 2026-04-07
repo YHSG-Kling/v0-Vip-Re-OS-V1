@@ -48,7 +48,7 @@ export async function canTransitionStage(
       .select('agent_id')
       .eq('id', context.transactionId)
       .eq('brokerage_id', context.brokerageId)
-      .single()
+      .maybeSingle()
 
     if (transaction?.agent_id === context.userId) {
       return { allowed: true }

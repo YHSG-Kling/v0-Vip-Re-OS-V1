@@ -22,6 +22,8 @@
  *          repurposed_content_log, qr_codes
  */
 
+import { generateAIResponse } from "@/lib/ai/models"
+import { runComplianceGate } from "@/lib/kernel/marketing/real-estate-compliance-gate"
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
@@ -136,7 +138,7 @@ export async function createCampaign(params: CreateCampaignParams) {
       status: "draft",
     })
     .select("id, status")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error creating campaign:", error)
@@ -225,7 +227,7 @@ export async function getCampaignById(campaignId: string) {
     `)
     .eq("id", campaignId)
     .eq("brokerage_id", brokerageId)
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error fetching campaign:", error)
@@ -277,7 +279,7 @@ export async function transitionCampaignStatus(
     .select("id, status")
     .eq("id", campaignId)
     .eq("brokerage_id", brokerageId)
-    .single()
+    .maybeSingle()
 
   if (fetchError || !campaign) {
     return { success: false, error: "Campaign not found" }
@@ -341,7 +343,7 @@ export async function createAsset(params: CreateAssetParams) {
       approval_status: "pending",
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error creating asset:", error)
@@ -418,6 +420,34 @@ export async function approveAsset(assetId: string) {
     }
   }
 
+  // Also run real-estate compliance gate for ad/social assets
+  const { data: asset } = await supabase
+    .from("marketing_assets")
+    .select("asset_type, content_text")
+    .eq("id", assetId)
+    .maybeSingle()
+
+  if (asset?.content_text) {
+    const contentType =
+      asset.asset_type === "ad" ? "ad" : "social_post"
+    const reGate = await runComplianceGate({
+      content: asset.content_text,
+      brokerageId,
+      authorUserId: userId,
+      contentType,
+    })
+    if (!reGate.passed) {
+      const blockers = reGate.violations
+        .filter((v) => v.severity === "blocker")
+        .map((v) => v.detail)
+      return {
+        success: false,
+        error: `Real-estate compliance failed: ${blockers.join("; ")}`,
+        violations: blockers,
+      }
+    }
+  }
+
   const { error } = await supabase
     .from("marketing_assets")
     .update({
@@ -487,7 +517,7 @@ export async function createCalendarEvent(params: CreateCalendarEventParams) {
       status: "scheduled",
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error creating calendar event:", error)
@@ -581,7 +611,7 @@ export async function addCampaignComment(params: CreateCommentParams) {
       comment_body: params.commentBody,
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error adding comment:", error)
@@ -630,7 +660,7 @@ export async function createCampaignTask(params: CreateTaskParams) {
       status: "pending",
     })
     .select("id")
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Error creating task:", error)
@@ -704,10 +734,85 @@ export async function generateCampaignContent(params: {
     .from("marketing_campaigns")
     .select("campaign_name, campaign_type, listing:listings(address, city)")
     .eq("id", params.campaignId)
-    .single()
+    .maybeSingle()
 
-  // Generate content using AI (placeholder - integrate with AI SDK)
-  const generatedContent = `[AI Generated Content for ${campaign?.campaign_name ?? "campaign"}]: ${params.prompt}`
+  // Load brand voice profile for this brokerage
+  const { data: aiIdentity } = await supabase
+    .from("brand_voice_profile")
+    .select("tone, formality_level, key_brand_messages, prohibited_words, preferred_words, mission_statement, custom_instructions")
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  const systemPrompt = [
+    `You are ${aiIdentity?.tone ? `a ${aiIdentity.tone}` : "a professional"} real estate marketing AI.`,
+    aiIdentity?.formality_level === "formal"
+      ? "Use formal, professional language."
+      : aiIdentity?.formality_level === "casual"
+      ? "Use approachable, conversational language."
+      : "Use semi-formal, warm language.",
+    aiIdentity?.key_brand_messages?.length
+      ? `Brand pillars: ${aiIdentity.key_brand_messages.join(", ")}.`
+      : "",
+    aiIdentity?.prohibited_words?.length
+      ? `Never use these words or phrases: ${aiIdentity.prohibited_words.join(", ")}.`
+      : "",
+    aiIdentity?.preferred_words?.length
+      ? `Prefer these words and phrases: ${aiIdentity.preferred_words.join(", ")}.`
+      : "",
+    aiIdentity?.mission_statement
+      ? `Brand mission: ${aiIdentity.mission_statement}`
+      : "",
+    aiIdentity?.custom_instructions ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+
+  const listing = (campaign as any)?.listing
+  const contentPrompt = [
+    `Campaign: ${campaign?.campaign_name ?? "real estate campaign"}`,
+    `Type: ${params.contentType.replace(/_/g, " ")} (${campaign?.campaign_type ?? "general"})`,
+    listing ? `Property: ${listing.address}, ${listing.city}` : "",
+    `Task: ${params.prompt}`,
+    `Requirements: Write compelling ${params.contentType.replace(/_/g, " ")} content. Be specific, local, and emotionally resonant. Include a clear call to action.`,
+  ]
+    .filter(Boolean)
+    .join("\n")
+
+  // Map contentType to AI_TASK_ROUTING feature key so governance cascade
+  // (resolveAIModel → tier caps → brokerage overrides) picks the right model.
+  // Per routing table: all content generation tasks resolve to claude-sonnet
+  // (Anthropic) with gpt-4o as fallback — no hardcoding required.
+  const featureMap: Record<typeof params.contentType, string> = {
+    social_caption: "social_post_generation",
+    email_subject:  "email_generation",
+    email_body:     "email_generation",
+    ad_copy:        "direct_mail_copy",
+  }
+  const feature = featureMap[params.contentType] ?? "social_post_generation"
+
+  const aiResponse = await generateAIResponse({
+    system: systemPrompt,
+    prompt: contentPrompt,
+    maxTokens: 800,
+    metadata: {
+      userId,
+      brokerageId,
+      agentId: agentId ?? null,
+      feature,
+    },
+    compliance: {
+      requiresFairHousingCheck: true,
+      requiresThemFirstCheck: true,
+      requiresTCPACheck: false,
+      userId,
+      brokerageId,
+      contentType:
+        params.contentType === "email_body" || params.contentType === "email_subject"
+          ? "email"
+          : "social",
+    },
+  })
+  const generatedContent = aiResponse.text
 
   // Apply brand voice check
   const brandVoiceResult = await applyBrandVoice({
@@ -729,6 +834,76 @@ export async function generateCampaignContent(params: {
 }
 
 // ─── DASHBOARD AGGREGATIONS ───────────────────────────────────────────────────
+
+// ─── QR CODE CREATION ────────────────────────────────────────────────────────
+
+/**
+ * Creates a new QR code record in qr_codes.
+ * Called from the marketing studio QR tab create dialog.
+ *
+ * Input contract:
+ *   brokerageId: string (required, UUID)
+ *   agentId: string (required, UUID)
+ *   label: string (display label)
+ *   targetUrl: string (full URL the QR code points to)
+ *   purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
+ *   listingId?: string (optional link to a listing)
+ *
+ * Output contract:
+ *   { success: true, qrCode: { id, slug, label, target_url, purpose } }
+ *   { success: false, error: string }
+ *
+ * Tables written: qr_codes
+ */
+export async function createQrCodeAction(params: {
+  brokerageId: string
+  agentId: string
+  label: string
+  targetUrl: string
+  purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture"
+  listingId?: string
+}) {
+  try {
+    if (!params.brokerageId || !params.agentId) {
+      return { success: false, error: "brokerageId and agentId are required" }
+    }
+    if (!params.label?.trim()) {
+      return { success: false, error: "Label is required" }
+    }
+    if (!params.targetUrl?.trim()) {
+      return { success: false, error: "Target URL is required" }
+    }
+
+    const supabase = await createClient()
+
+    // Generate a unique slug from label + timestamp
+    const slug = `${params.label.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").slice(0, 40)}-${Date.now().toString(36)}`
+
+    const { data: qrCode, error } = await supabase
+      .from("qr_codes")
+      .insert({
+        brokerage_id: params.brokerageId,
+        agent_id: params.agentId,
+        label: params.label.trim(),
+        target_url: params.targetUrl.trim(),
+        purpose: params.purpose,
+        slug,
+        listing_id: params.listingId ?? null,
+        is_active: true,
+        scan_count: 0,
+        lead_count: 0,
+      })
+      .select("id, slug, label, target_url, purpose")
+      .maybeSingle()
+
+    if (error) throw error
+
+    return { success: true, qrCode }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to create QR code"
+    return { success: false, error: message }
+  }
+}
 
 export async function getMarketingStudioDashboard() {
   const { agentId, brokerageId } = await getAgentContext()

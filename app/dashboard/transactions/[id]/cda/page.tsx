@@ -24,7 +24,7 @@ export default async function CDAPage({ params }: PageProps) {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = profile.brokerage_id
   const userRole = profile.role ?? "agent"

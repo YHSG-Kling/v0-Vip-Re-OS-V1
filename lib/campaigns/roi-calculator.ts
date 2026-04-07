@@ -49,7 +49,7 @@ export async function recalculateCampaignROI(
       .select("id, campaign_name, campaign_type, budget_spent, budget_total, status")
       .eq("id", marketingCampaignId)
       .eq("brokerage_id", brokerageId)
-      .single()
+      .maybeSingle()
 
     if (campaignError || !campaign) {
       return { success: false, error: "Campaign not found" }
@@ -541,7 +541,7 @@ export async function getCampaignROIData(
       .eq("brokerage_id", brokerageId)
       .order("roi_percentage", { ascending: false, nullsFirst: false })
       .limit(1)
-      .single()
+      .maybeSingle()
 
     const bestChannel = channelPerf?.channel_type ?? null
 

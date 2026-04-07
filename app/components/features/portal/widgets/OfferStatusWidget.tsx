@@ -33,7 +33,7 @@ export function OfferStatusWidget({ contactId, isBuyer }: OfferStatusWidgetProps
 
           if (error) {
             // Table may not exist or column mismatch - show empty state
-            console.log("[v0] Offers query error:", error.message)
+            console.error("[OfferStatusWidget] Offers query error:", error.message)
             setOffers([])
           } else {
             setOffers(data || [])
@@ -57,7 +57,7 @@ export function OfferStatusWidget({ contactId, isBuyer }: OfferStatusWidgetProps
               .limit(5)
 
             if (error) {
-              console.log("[v0] Seller offers query error:", error.message)
+              console.error("[OfferStatusWidget] Seller offers query error:", error.message)
               setOffers([])
             } else {
               setOffers(data || [])
@@ -67,7 +67,7 @@ export function OfferStatusWidget({ contactId, isBuyer }: OfferStatusWidgetProps
           }
         }
       } catch (err) {
-        console.log("[v0] Offers load error:", err)
+        console.error("[OfferStatusWidget] Offers load error:", err)
         setOffers([])
       }
       setLoading(false)

@@ -33,9 +33,9 @@ export default async function SequenceBuilderPage({ params, searchParams }: Prop
     .from("users")
     .select("id, brokerage_id, user_type")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = profile.brokerage_id
   const role        = profile.user_type ?? "agent"

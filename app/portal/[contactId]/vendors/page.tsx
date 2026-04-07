@@ -15,9 +15,9 @@ export default async function ClientVendorsPage({
   const { contactId } = await params
   const supabase = await createClient()
 
-  // Verify buyer portal view
-  const portalView = await determinePortalView(supabase, contactId)
-  if (portalView !== "buyer") {
+  // Verify buyer portal view — use contract input { contactId }
+  const portalViewOutput = await determinePortalView(supabase, { contactId })
+  if (portalViewOutput.view !== "buyer") {
     redirect(`/portal/${contactId}`)
   }
 
@@ -44,6 +44,7 @@ export default async function ClientVendorsPage({
   // Parallel data fetches
   const [assignedVendorsResult, preferredVendorsResult, agentResult] = await Promise.all([
     // Assigned vendors from vendor_assignments for this transaction
+    // vendors table schema: id, name, email, phone, website, category, rating
     transaction
       ? supabase
           .from("vendor_assignments")
@@ -52,13 +53,14 @@ export default async function ClientVendorsPage({
             assignment_type,
             scheduled_date,
             status,
-            vendors:vendor_id(id, business_name, vendor_type, phone, email),
+            vendors:vendor_id(id, name, category, phone, email),
             vendor_jobs:vendor_jobs(id, status, cost_estimate, cost_actual)
           `)
           .eq("transaction_id", transaction.id)
           .order("scheduled_date", { ascending: false, nullsFirst: false })
       : Promise.resolve({ data: [] }),
     // Preferred vendors from vendor_directory for agent's brokerage
+    // vendor_directory schema: id, brokerage_id, name, category, phone, email, website, rating, notes
     contact.agent_id
       ? supabase
           .from("agents")
@@ -69,12 +71,7 @@ export default async function ClientVendorsPage({
             if (!agentRes.data?.brokerage_id) return { data: [] }
             return supabase
               .from("vendor_directory")
-              .select(`
-                id,
-                category,
-                is_featured,
-                vendors:vendor_id(id, business_name, vendor_type, phone, website_url, rating_avg, is_verified)
-              `)
+              .select("id, name, category, phone, email, website, rating, notes, brokerage_id")
               .eq("brokerage_id", agentRes.data.brokerage_id)
               .order("category", { ascending: true })
           })
@@ -143,7 +140,7 @@ export default async function ClientVendorsPage({
                   <div className="flex items-start justify-between gap-4 mb-3">
                     <div>
                       <h3 className="font-semibold">
-                        {assignment.vendors?.business_name || "Vendor"}
+                        {assignment.vendors?.name || "Vendor"}
                       </h3>
                       <div className="flex flex-wrap gap-2 mt-1">
                         <Badge variant="secondary" className="text-xs">
@@ -247,39 +244,34 @@ export default async function ClientVendorsPage({
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div className="min-w-0">
                       <h3 className="font-semibold truncate">
-                        {dirEntry.vendors?.business_name || "Vendor"}
+                        {dirEntry.name || "Vendor"}
                       </h3>
                       <p className="text-sm text-muted-foreground">
                         {dirEntry.category}
                       </p>
                     </div>
-                    {dirEntry.is_featured && (
-                      <Badge variant="secondary" className="text-xs">
-                        Featured
-                      </Badge>
-                    )}
                   </div>
 
-                  {dirEntry.vendors?.rating_avg && (
+                  {dirEntry.rating && (
                     <div className="flex items-center gap-1 text-sm mb-3">
                       <span className="text-yellow-500">★</span>
-                      <span className="font-medium">{dirEntry.vendors.rating_avg.toFixed(1)}</span>
+                      <span className="font-medium">{Number(dirEntry.rating).toFixed(1)}</span>
                     </div>
                   )}
 
                   <div className="space-y-1 text-sm mb-3">
-                    {dirEntry.vendors?.phone && (
+                    {dirEntry.phone && (
                       <a
-                        href={`tel:${dirEntry.vendors.phone}`}
+                        href={`tel:${dirEntry.phone}`}
                         className="flex items-center gap-2 text-blue-600 hover:underline"
                       >
                         <Phone className="h-4 w-4" />
-                        {dirEntry.vendors.phone}
+                        {dirEntry.phone}
                       </a>
                     )}
-                    {dirEntry.vendors?.website_url && (
+                    {dirEntry.website && (
                       <a
-                        href={dirEntry.vendors.website_url}
+                        href={dirEntry.website}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center gap-2 text-blue-600 hover:underline"

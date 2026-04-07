@@ -1,22 +1,133 @@
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { getReferralROI, getReferralLeaderboard } from "@/app/actions/referral-management"
+import { getReferralROI, getReferralLeaderboard, getReferrals } from "@/app/actions/referral-management"
+import { aiScoreSphereEngagement } from "@/app/actions/ai-sphere-management"
+import { getLeaderboardWidget } from "@/app/actions/gamification"
 import { PlusCircle, Users, DollarSign, TrendingUp, Award } from "lucide-react"
 import Link from "next/link"
+import { CreateReferralSheet } from "@/app/components/referrals/CreateReferralSheet"
+import { getAgentContext } from "@/lib/identity"
+import { ReferralsOsClient } from "./referrals-os-client"
+import { createClient } from "@/lib/supabase/server"
+
 export const dynamic = "force-dynamic"
-export default async function ReferralsPage() {
-  const stats = await getReferralROI()
-  const leaderboard = await getReferralLeaderboard()
+
+export default async function ReferralsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ action?: string }>
+}) {
+  const params = await searchParams
+  const { agentId, brokerageId } = await getAgentContext()
+  const supabase = await createClient()
+
+  // Calculate date windows
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]
+  const oneYearAgo = new Date()
+  oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1)
+  const anniversaryWindowEnd = new Date(oneYearAgo)
+  anniversaryWindowEnd.setDate(anniversaryWindowEnd.getDate() + 30)
+
+  const [stats, leaderboard, referrals, sphereScore, leaderboardWidget, recentClosingsRes, existingReviewsRes, anniversaryTransactionsRes] = await Promise.all([
+    getReferralROI(),
+    getReferralLeaderboard(),
+    getReferrals({ agentId, brokerageId }),
+    aiScoreSphereEngagement({ agentId }).catch(() => null),
+    getLeaderboardWidget({ agentId, brokerageId }).catch(() => null),
+    // Recent closings for review requests (last 90 days)
+    supabase
+      .from("transactions")
+      .select("id, property_address, close_date, contact_id, contacts(id, first_name, last_name)")
+      .eq("agent_id", agentId)
+      .eq("status", "closed")
+      .gte("close_date", ninetyDaysAgo)
+      .order("close_date", { ascending: false })
+      .limit(5),
+    // Existing reviews
+    supabase
+      .from("agent_reviews")
+      .select("id, platform, rating, review_text")
+      .eq("agent_id", agentId)
+      .order("created_at", { ascending: false })
+      .limit(10),
+    // Upcoming anniversaries (contacts with transactions that closed ~1 year ago)
+    supabase
+      .from("transactions")
+      .select("id, property_address, close_date, contacts(id, first_name, last_name)")
+      .eq("agent_id", agentId)
+      .eq("status", "closed")
+      .gte("close_date", oneYearAgo.toISOString().split("T")[0])
+      .lte("close_date", anniversaryWindowEnd.toISOString().split("T")[0])
+      .limit(5),
+  ])
+
+  // Format data for components
+  const recentClosings = (recentClosingsRes.data || []).map((t: any) => ({
+    id: t.id,
+    contact_id: t.contacts?.id || t.contact_id || "",
+    contactName: t.contacts ? `${t.contacts.first_name || ""} ${t.contacts.last_name || ""}`.trim() : "Unknown",
+    address: t.property_address || "",
+    closeDate: t.close_date || "",
+    transactionId: t.id,
+  }))
+
+  const existingReviews = (existingReviewsRes.data || []).map((r: any) => ({
+    id: r.id,
+    platform: r.platform || "google",
+    rating: r.rating || 0,
+    review_text: r.review_text || "",
+  }))
+
+  const upcomingAnniversaries = (anniversaryTransactionsRes.data || []).map((t: any) => ({
+    contactId: t.contacts?.id || "",
+    contactName: t.contacts ? `${t.contacts.first_name || ""} ${t.contacts.last_name || ""}`.trim() : "Unknown",
+    address: t.property_address || "",
+    yearsCount: 1,
+    closeDate: t.close_date || "",
+  }))
+
+  const isCreateOpen = params.action === "create"
+  const pendingReferrals = referrals?.filter((r: any) => r.status === "new" || r.status === "contacted").length || 0
 
   return (
     <div className="container mx-auto p-6 space-y-6">
+      {/* OS Command Strip + Pipeline + Action Stack */}
+      <ReferralsOsClient
+        agentId={agentId}
+        brokerageId={brokerageId}
+        referralCount={stats.totalReferrals}
+        pendingReferrals={pendingReferrals}
+        roiSummary={{
+          totalReferrals: stats.totalReferrals,
+          converted: stats.closed,
+          conversionRate: stats.conversionRate,
+          totalValue: stats.totalValue,
+        }}
+        referrals={(referrals || []).map((r: any) => ({
+          id: r.id,
+          referral_name: r.referred_name,
+          status: r.status,
+          source_contact_id: r.referring_contact_id,
+          source_contact_name: r.referring_contact
+            ? `${r.referring_contact.first_name} ${r.referring_contact.last_name}`
+            : undefined,
+          created_at: r.referral_date,
+          value_estimate: r.potential_value,
+        }))}
+        sphereScore={sphereScore}
+        leaderboardWidget={leaderboardWidget}
+        recentClosings={recentClosings}
+        existingReviews={existingReviews}
+        upcomingAnniversaries={upcomingAnniversaries}
+      />
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Referral Management</h1>
           <p className="text-muted-foreground">Track and manage your referral pipeline</p>
         </div>
-        <Link href="/referrals/new">
+        <Link href="?action=create">
           <Button>
             <PlusCircle className="w-4 h-4 mr-2" />
             New Referral
@@ -146,7 +257,7 @@ export default async function ReferralsPage() {
             <p className="text-sm text-muted-foreground">View and manage all referrals</p>
           </Card>
         </Link>
-        <Link href="/referral-partners">
+        <Link href="/dashboard/agent/referrals">
           <Card className="p-6 hover:shadow-lg transition-shadow cursor-pointer">
             <h3 className="font-semibold mb-2">Referral Partners</h3>
             <p className="text-sm text-muted-foreground">Manage your partner network</p>
@@ -159,6 +270,8 @@ export default async function ReferralsPage() {
           </Card>
         </Link>
       </div>
+
+      {isCreateOpen && <CreateReferralSheet />}
     </div>
   )
 }

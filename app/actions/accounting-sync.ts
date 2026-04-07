@@ -56,11 +56,11 @@ export async function disconnectProvider(data: {
   // Verify user has broker/admin role
   const { data: profile } = await supabase
     .from("users")
-    .select("role, brokerage_id")
+    .select("user_type, role, brokerage_id")
     .eq("id", user.id)
     .single()
 
-  if (!profile || !["broker", "admin"].includes(profile.role ?? "")) {
+  if (!profile || !["broker", "admin"].includes(profile.user_type ?? profile.role ?? "")) {
     throw new Error("Unauthorized: broker or admin role required")
   }
 
@@ -226,7 +226,7 @@ export async function getTaxCategories(brokerageId: string) {
   return categories || []
 }
 
-// ─── UPDATE TAX CATEGORY ─────────────────────────────────────────────────────
+// ─── UPDATE TAX CATEGORY ──────────────────────────────��──────────────────────
 export async function updateTaxCategory(data: {
   categoryId: string
   brokerageId: string

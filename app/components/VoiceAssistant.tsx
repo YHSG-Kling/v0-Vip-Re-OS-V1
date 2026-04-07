@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { toast } from "sonner"
 
 export function VoiceAssistant() {
   const { user } = useAuth()
@@ -95,7 +96,7 @@ export function VoiceAssistant() {
 
       recognitionRef.current.start()
     } else {
-      alert("Voice recognition is not supported in your browser. Please use Chrome or Edge.")
+      toast.error("Voice recognition requires Chrome or Edge")
       setListening(false)
     }
   }

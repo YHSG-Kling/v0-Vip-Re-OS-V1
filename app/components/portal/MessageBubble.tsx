@@ -8,6 +8,10 @@ interface MessageBubbleProps {
   direction: "agent_to_client" | "client_to_agent"
   createdAt: string
   readAt?: string | null
+  /** DB read column — true if the recipient has marked/seen the message */
+  read?: boolean
+  /** Channel this message was sent on (portal, sms, email, etc.) */
+  channel?: string
   senderName: string
   isUnread?: boolean
 }
@@ -16,19 +20,24 @@ interface MessageBubbleProps {
  * MessageBubble - iMessage-style chat bubble.
  * - direction='agent_to_client' → right-aligned, agent name label
  * - direction='client_to_agent' → left-aligned, "You" label
- * - Shows read receipt for agent_to_client messages
+ * - Shows read receipt for agent_to_client messages using read_at timestamp or read boolean
  * - Highlights unread client_to_agent messages
+ * - Shows channel badge when channel is not 'portal'
  */
 export function MessageBubble({
   body,
   direction,
   createdAt,
   readAt,
+  read = false,
+  channel,
   senderName,
   isUnread = false,
 }: MessageBubbleProps) {
   const isAgentMessage = direction === "agent_to_client"
   const formattedTime = formatMessageTime(createdAt)
+  const isSeen = read || !!readAt
+  const showChannelBadge = channel && channel !== "portal"
 
   return (
     <div
@@ -37,8 +46,15 @@ export function MessageBubble({
         isAgentMessage ? "ml-auto items-end" : "mr-auto items-start"
       )}
     >
-      {/* Sender label */}
-      <span className="text-xs text-muted-foreground px-1">{senderName}</span>
+      {/* Sender label + optional channel badge */}
+      <div className={cn("flex items-center gap-1.5 px-1", isAgentMessage ? "flex-row-reverse" : "flex-row")}>
+        <span className="text-xs text-muted-foreground">{senderName}</span>
+        {showChannelBadge && (
+          <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground capitalize">
+            {channel}
+          </span>
+        )}
+      </div>
 
       {/* Message bubble */}
       <div
@@ -60,10 +76,10 @@ export function MessageBubble({
         <span className="text-[10px] text-muted-foreground">{formattedTime}</span>
         {isAgentMessage && (
           <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
-            {readAt ? (
+            {isSeen ? (
               <>
                 <CheckCheck className="h-3 w-3 text-blue-500" />
-                <span>Read {formatReadTime(readAt)}</span>
+                {readAt && <span>Read {formatReadTime(readAt)}</span>}
               </>
             ) : (
               <Check className="h-3 w-3" />

@@ -2,7 +2,9 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -62,7 +64,7 @@ export async function aiCalculateLeadScore(params: {
 
     // AI analysis
     const { object: analysis } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         overallScore: z.number().min(0).max(100),
         engagementScore: z.number().min(0).max(100),
@@ -179,7 +181,7 @@ export async function aiGenerateDripCampaign(params: {
 
     // AI generates campaign
     const { object: campaign } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         campaignName: z.string(),
         description: z.string(),
@@ -282,7 +284,7 @@ export async function aiSuggestFollowUp(params: {
 
     // AI generates suggestions
     const { object: suggestions } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         suggestions: z.array(z.object({
           priority: z.enum(["urgent", "high", "medium", "low"]),
@@ -383,7 +385,7 @@ export async function aiDistributeLead(params: {
 
     // AI determines best match
     const { object: assignment } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         assignedAgentId: z.string(),
         matchScore: z.number().min(0).max(100),
@@ -467,7 +469,7 @@ export async function aiBatchReengagement(params: {
 
     // AI creates re-engagement plan
     const { object: plan } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         totalLeads: z.number(),
         segments: z.array(z.object({
@@ -531,7 +533,7 @@ export async function aiPredictConversion(params: {
       .eq("contact_id", params.contactId)
 
     const { object: prediction } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         conversionProbability: z.number().min(0).max(100),
         predictedCloseDate: z.string().optional(),

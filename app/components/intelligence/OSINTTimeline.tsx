@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Clock, Globe, Users, FileText, AlertCircle, Mail, Phone, RefreshCw, User } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
+import { toast } from "sonner"
 
 interface OSINTLead {
   id: string
@@ -113,7 +114,7 @@ export default function OSINTTimeline() {
 
   const assignLeadToAgent = async (contactId: string, agentId: string) => {
     if (!contactId) {
-      alert("No contact associated with this signal")
+      toast.error("No contact associated with this signal")
       return
     }
 
@@ -124,11 +125,11 @@ export default function OSINTTimeline() {
 
       if (error) throw error
 
-      alert("Lead assigned successfully!")
+      toast.success("Lead assigned")
       loadOSINTData()
     } catch (error) {
       console.error("[v0] Error assigning lead:", error)
-      alert("Failed to assign lead")
+      toast.error("Failed to assign lead")
     } finally {
       setAssigningLead(null)
     }

@@ -34,11 +34,11 @@ export default async function VendorsPage() {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Fetch parallel data for all tabs
   const [
@@ -48,6 +48,7 @@ export default async function VendorsPage() {
     transactions,
     assignedVendors,
     preferredVendors,
+    deliverables,
   ] = await Promise.all([
     searchVendors({ limit: 100 }),
     getAllVendorBookings(20),
@@ -61,17 +62,21 @@ export default async function VendorsPage() {
       .limit(50)
       .then(r => r.data || []),
     getAgentAssignedVendors(50),
+    // vendor_directory has: id, brokerage_id, name, phone, email, website, category, notes, rating
     supabase
       .from("vendor_directory")
-      .select(`
-        id,
-        vendor_id,
-        category,
-        is_featured,
-        vendors:vendor_id(id, business_name, vendor_type, phone, email, website_url, rating_avg, is_verified)
-      `)
+      .select("id, name, phone, email, website, category, notes, rating, brokerage_id")
       .eq("brokerage_id", profile.brokerage_id)
-      .order("is_featured", { ascending: false })
+      .order("rating", { ascending: false, nullsFirst: false })
+      .then(r => r.data || []),
+    // Vendor deliverables — client_documents with doc_type = 'vendor_deliverable'
+    supabase
+      .from("client_documents")
+      .select("id, doc_name, file_url, notes, created_at, metadata")
+      .eq("brokerage_id", profile.brokerage_id)
+      .eq("doc_type", "vendor_deliverable")
+      .order("created_at", { ascending: false })
+      .limit(100)
       .then(r => r.data || []),
   ])
 
@@ -145,7 +150,8 @@ export default async function VendorsPage() {
               transactions={transactions}
               serviceTypes={serviceTypes}
               brokerageId={profile.brokerage_id}
-              userRole={profile.role ?? "agent"}
+              userRole={profile.user_type ?? "agent"}
+              deliverables={deliverables}
             />
           </Suspense>
         </TabsContent>
@@ -170,7 +176,7 @@ export default async function VendorsPage() {
                       <div className="space-y-1">
                         <div className="flex items-center gap-2">
                           <p className="font-medium">
-                            {assignment.vendors?.business_name || "Unknown Vendor"}
+                            {assignment.vendors?.name || "Unknown Vendor"}
                           </p>
                           <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">
                             {assignment.assignment_type}
@@ -226,32 +232,23 @@ export default async function VendorsPage() {
             <CardContent>
               {preferredVendors && preferredVendors.length > 0 ? (
                 <div className="space-y-3">
-                  {preferredVendors.map((dirEntry: any) => (
+                  {preferredVendors.map((v: any) => (
                     <div
-                      key={dirEntry.id}
+                      key={v.id}
                       className="flex items-center justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
                     >
                       <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium">
-                            {dirEntry.vendors?.business_name || "Vendor"}
-                          </p>
-                          {dirEntry.is_featured && (
-                            <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
-                          )}
-                        </div>
-                        <p className="text-sm text-muted-foreground">
-                          {dirEntry.category}
-                        </p>
+                        <p className="font-medium">{v.name || "Vendor"}</p>
+                        <p className="text-sm text-muted-foreground">{v.category}</p>
                         <div className="flex gap-4 text-sm">
-                          {dirEntry.vendors?.phone && (
-                            <a href={`tel:${dirEntry.vendors.phone}`} className="text-blue-600 hover:underline">
-                              {dirEntry.vendors.phone}
+                          {v.phone && (
+                            <a href={`tel:${v.phone}`} className="text-blue-600 hover:underline">
+                              {v.phone}
                             </a>
                           )}
-                          {dirEntry.vendors?.website_url && (
-                            <a 
-                              href={dirEntry.vendors.website_url}
+                          {v.website && (
+                            <a
+                              href={v.website}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="text-blue-600 hover:underline"
@@ -261,12 +258,10 @@ export default async function VendorsPage() {
                           )}
                         </div>
                       </div>
-                      {dirEntry.vendors?.rating_avg && (
-                        <div className="text-right">
-                          <div className="flex items-center gap-1">
-                            <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
-                            <span className="font-medium">{dirEntry.vendors.rating_avg.toFixed(1)}</span>
-                          </div>
+                      {v.rating && (
+                        <div className="flex items-center gap-1">
+                          <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                          <span className="font-medium">{Number(v.rating).toFixed(1)}</span>
                         </div>
                       )}
                     </div>

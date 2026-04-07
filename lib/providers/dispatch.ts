@@ -18,6 +18,9 @@ import {
   placeCall as messagingPlaceCall,
 } from "@/lib/providers/messaging"
 import { logVendorUsage } from "@/lib/vendor-governance/usage-logger"
+import { assembleEmail } from "@/lib/kernel/communications/assemble-email"
+import { evaluateOutboundCompliance } from "@/lib/kernel/communication-compliance"
+import { createServiceClient } from "@/lib/supabase/service"
 
 // ─── SHARED TYPES ─────────────────────────────────────────────────────────────
 
@@ -30,8 +33,17 @@ interface DispatchActorContext {
   teamId?: string
   /** Source system for vendor usage attribution, e.g. 'ai_isa', 'campaign' */
   systemSource?: string
-  /** Optional lead / contact for cost attribution */
+  /**
+   * Lead ID for cost attribution. Use this when the recipient is a lead record.
+   * Prefer contactId when the recipient is a promoted contact record.
+   * Internally, contactId takes precedence over leadId for assembleEmail().
+   */
   leadId?: string
+  /**
+   * Contact ID for cost attribution. Use this when the recipient is a contacts
+   * record (post-promotion). Takes precedence over leadId inside dispatch.
+   */
+  contactId?: string
   agentId?: string
 }
 
@@ -50,10 +62,53 @@ export interface DispatchEmailParams extends DispatchActorContext {
   subject: string
   html: string
   text?: string
+  /**
+   * Override the channelPurpose passed to assembleEmail().
+   * When omitted, purpose is inferred from systemSource.
+   * Always set this explicitly when the caller knows the intent.
+   */
+  channelPurpose?: 'conversation' | 'campaign' | 'update' | 'transactional'
   metadata?: Record<string, unknown>
 }
 
 export async function dispatchEmail(params: DispatchEmailParams): Promise<DispatchResult> {
+  // ── COMPLIANCE GATE: Check if contact is eligible for outbound ───────────────
+  if (params.contactId || params.leadId) {
+    const supabase = await createServiceClient()
+    const recipientId = params.contactId || params.leadId
+    const table = params.contactId ? "contacts" : "leads"
+
+    const { data: recipient, error: recipientError } = await supabase
+      .from(table)
+      .select("*")
+      .eq("id", recipientId)
+      .maybeSingle()
+
+    if (!recipientError && recipient) {
+      const complianceResult = await evaluateOutboundCompliance({
+        contact: recipient,
+        channel: "email",
+        content: params.subject,
+        actorContext: {
+          brokerageId: params.brokerageId,
+          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
+          userId: params.userId,
+        },
+      })
+
+      if (!complianceResult.allowed) {
+        console.warn(
+          `[Dispatch] Email blocked for ${recipientId}: ${complianceResult.primaryReason}`
+        )
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: `Outbound blocked: ${complianceResult.primaryReason}`,
+        }
+      }
+    }
+  }
+
   const { providerKey } = await resolveProvider({
     providerType: "email",
     actorContext: {
@@ -63,15 +118,43 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     },
   })
 
+  // ── Kernel OS: assemble body → signature → unsubscribe → legal ─────────────
+  // Prefer an explicit channelPurpose from the caller; fall back to systemSource inference.
+  const channelPurpose: 'conversation' | 'campaign' | 'update' | 'transactional' =
+    params.channelPurpose ??
+    (params.systemSource?.includes("campaign")        ? "campaign"
+    : params.systemSource?.includes("nurture")        ? "update"
+    : params.systemSource?.includes("transactional")  ? "transactional"
+    : "conversation")
+
+  // contactId takes precedence over leadId — contacts are promoted leads and
+  // the signature/unsubscribe lookup keys off the contacts table.
+  const recipientId = params.contactId ?? params.leadId ?? null
+
+  const assembled = await assembleEmail({
+    bodyHtml:       params.html ?? "",
+    bodyText:       params.text,
+    userId:         params.agentId ?? params.userId ?? params.brokerageId ?? "",
+    brokerageId:    params.brokerageId,
+    contactId:      recipientId,
+    channelPurpose,
+  }).catch(() => ({
+    html:                 params.html ?? "",
+    text:                 params.text ?? "",
+    signatureIncluded:    false,
+    unsubscribeIncluded:  false,
+    disclosuresIncluded:  false,
+  }))
+
   let result: DispatchResult
 
   if (providerKey === "sendgrid") {
     const raw = await messagingSendEmail({
-      from: params.from,
-      to: params.to,
+      from:    params.from,
+      to:      params.to,
       subject: params.subject,
-      html: params.html,
-      text: params.text,
+      html:    assembled.html,
+      text:    assembled.text,
     })
     result = {
       success: raw.success,
@@ -82,11 +165,11 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     // Future: SMTP relay via global_settings (smtp_host / smtp_port / smtp_username / smtp_password)
     // For now fall through to sendgrid default until SMTP relay is wired
     const raw = await messagingSendEmail({
-      from: params.from,
-      to: params.to,
+      from:    params.from,
+      to:      params.to,
       subject: params.subject,
-      html: params.html,
-      text: params.text,
+      html:    assembled.html,
+      text:    assembled.text,
     })
     result = {
       success: raw.success,
@@ -100,15 +183,16 @@ export async function dispatchEmail(params: DispatchEmailParams): Promise<Dispat
     vendorName: providerKey,
     usageType: "emails",
     unitCount: 1,
-    estimatedCost: 0.001, // ~$0.001 per email, normalised per cost-normalizer rates
+    estimatedCost: 0.001,
     systemSource: params.systemSource ?? "dispatch",
     brokerageId: params.brokerageId,
     agentId: params.agentId,
-    leadId: params.leadId,
+    leadId: params.leadId ?? params.contactId,
     metadata: {
       to: params.to,
       subject: params.subject,
       provider_key: providerKey,
+      contact_id: params.contactId,
       ...(params.metadata ?? {}),
     },
   })
@@ -125,6 +209,43 @@ export interface DispatchSmsParams extends DispatchActorContext {
 }
 
 export async function dispatchSms(params: DispatchSmsParams): Promise<DispatchResult> {
+  // ── COMPLIANCE GATE: Check if contact is eligible for SMS ──────────────────
+  if (params.contactId || params.leadId) {
+    const supabase = await createServiceClient()
+    const recipientId = params.contactId || params.leadId
+    const table = params.contactId ? "contacts" : "leads"
+
+    const { data: recipient, error: recipientError } = await supabase
+      .from(table)
+      .select("*")
+      .eq("id", recipientId)
+      .maybeSingle()
+
+    if (!recipientError && recipient) {
+      const complianceResult = await evaluateOutboundCompliance({
+        contact: recipient,
+        channel: "sms",
+        content: params.message,
+        actorContext: {
+          brokerageId: params.brokerageId,
+          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
+          userId: params.userId,
+        },
+      })
+
+      if (!complianceResult.allowed) {
+        console.warn(
+          `[Dispatch] SMS blocked for ${recipientId}: ${complianceResult.primaryReason}`
+        )
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: `Outbound blocked: ${complianceResult.primaryReason}`,
+        }
+      }
+    }
+  }
+
   const { providerKey } = await resolveProvider({
     providerType: "sms",
     actorContext: {
@@ -176,6 +297,43 @@ export interface DispatchPhoneParams extends DispatchActorContext {
 }
 
 export async function dispatchPhone(params: DispatchPhoneParams): Promise<DispatchResult> {
+  // ── COMPLIANCE GATE: Check if contact is eligible for phone calls ───────────
+  if (params.contactId || params.leadId) {
+    const supabase = await createServiceClient()
+    const recipientId = params.contactId || params.leadId
+    const table = params.contactId ? "contacts" : "leads"
+
+    const { data: recipient, error: recipientError } = await supabase
+      .from(table)
+      .select("*")
+      .eq("id", recipientId)
+      .maybeSingle()
+
+    if (!recipientError && recipient) {
+      const complianceResult = await evaluateOutboundCompliance({
+        contact: recipient,
+        channel: "phone",
+        content: "Outbound call",
+        actorContext: {
+          brokerageId: params.brokerageId,
+          actorType: params.systemSource?.includes("ai_isa") ? "ai_isa" : "system",
+          userId: params.userId,
+        },
+      })
+
+      if (!complianceResult.allowed) {
+        console.warn(
+          `[Dispatch] Phone call blocked for ${recipientId}: ${complianceResult.primaryReason}`
+        )
+        return {
+          success: false,
+          providerKey: "compliance_gate",
+          error: `Outbound blocked: ${complianceResult.primaryReason}`,
+        }
+      }
+    }
+  }
+
   const { providerKey } = await resolveProvider({
     providerType: "phone",
     actorContext: {

@@ -58,7 +58,7 @@ export async function validateListingTransition(params: {
   // Get user profile with role
   const { data: profile } = await supabase
     .from("users")
-    .select("role, brokerage_id")
+    .select("user_type, role, brokerage_id")
     .eq("id", user.id)
     .single()
   
@@ -91,12 +91,14 @@ export async function validateListingTransition(params: {
     params.listingId,
     targetDef.readinessChecks
   )
+
+  const resolvedRole = (profile.user_type ?? profile.role) || "agent"
   
   // Validate transition
   const validationContext: TransitionValidationContext = {
     currentStage,
     targetStage: params.targetStage,
-    userRole: profile.role || "agent",
+    userRole: resolvedRole,
     userId: user.id,
     listingId: params.listingId,
     completedReadinessChecks: readinessEval.passedChecks,
@@ -105,7 +107,35 @@ export async function validateListingTransition(params: {
   }
   
   const validation = validateStageTransition(validationContext)
-  
+
+  // ── Launch gate: block if required listing data is missing ────────────────
+  // Evaluated after the stage-machine check so the stage-machine always wins.
+  const LAUNCH_STAGES = new Set(["active", "launch_ready", "mls_active", "published", "ACTIVE", "LAUNCH_READY", "MLS_ACTIVE", "PUBLISHED"])
+  if (validation.allowed && LAUNCH_STAGES.has(params.targetStage)) {
+    const launchBlockers = await evaluateLaunchBlockers(params.listingId, supabase)
+    if (launchBlockers.length > 0) {
+      return {
+        success: true,
+        validation: {
+          allowed: false,
+          blocked: true,
+          blockers: launchBlockers,
+          reason: `Cannot launch: ${launchBlockers.join(". ")}`,
+          warnings: validation.warnings,
+          currentStage,
+          targetStage: params.targetStage,
+          readinessChecks: {
+            allPassed: readinessEval.allPassed,
+            passed: readinessEval.passedChecks,
+            failed: readinessEval.failedChecks,
+            results: readinessEval.results,
+          },
+          nextAllowedStages: [],
+        },
+      }
+    }
+  }
+
   return {
     success: true,
     validation: {
@@ -122,9 +152,63 @@ export async function validateListingTransition(params: {
       },
       nextAllowedStages: validation.allowed
         ? []
-        : getNextAllowedStages(currentStage || "LEAD", profile.role || "agent"),
+        : getNextAllowedStages(currentStage || "LEAD", resolvedRole),
     },
   }
+}
+
+// ── Launch blocker evaluator ───────────────────────────────────────────────
+// Checks the listing record and photo count to ensure the listing meets the
+// minimum requirements before it can be moved to any live/published stage.
+// Returns an array of human-readable blocker strings (empty = no blockers).
+async function evaluateLaunchBlockers(
+  listingId: string,
+  supabase: Awaited<ReturnType<typeof createClient>>
+): Promise<string[]> {
+  const blockers: string[] = []
+
+  const [listingResult, photoCountResult, mediaCountResult] = await Promise.all([
+    supabase
+      .from("listings")
+      .select("address, list_price, seller_contact_id")
+      .eq("id", listingId)
+      .maybeSingle(),
+    supabase
+      .from("listing_photos")
+      .select("id", { count: "exact", head: true })
+      .eq("listing_id", listingId),
+    // Also check listing_media table (photos stored there in some flows)
+    supabase
+      .from("listing_media")
+      .select("id", { count: "exact", head: true })
+      .eq("listing_id", listingId)
+      .eq("media_type", "photo"),
+  ])
+
+  const listing = listingResult.data
+  if (!listing) return ["Listing record not found"]
+
+  if (!listing.seller_contact_id) {
+    blockers.push("No seller contact linked")
+  }
+  if (!listing.list_price) {
+    blockers.push("No list price set")
+  }
+
+  // Count photos from both tables and take the max
+  const photoCountA = photoCountResult.count ?? 0
+  const photoCountB = mediaCountResult.count ?? 0
+  const photoCount = Math.max(photoCountA, photoCountB)
+  // Minimum 5 photos per spec
+  if (photoCount < 5) {
+    blockers.push(`Photos: need at least 5 (${photoCount} uploaded)`)
+  }
+
+  // public_remarks does not exist in the listings schema.
+  // Description readiness is handled via showing_instructions or AI generation.
+  // The 3 real blockers above (seller contact, list price, photos) are enforced.
+
+  return blockers
 }
 
 /**
@@ -153,7 +237,7 @@ export async function executeListingTransition(params: {
   // Get user profile with role
   const { data: profile } = await supabase
     .from("users")
-    .select("role, brokerage_id")
+    .select("user_type, role, brokerage_id")
     .eq("id", user.id)
     .single()
   
@@ -191,7 +275,7 @@ export async function executeListingTransition(params: {
       fromStage: currentStage,
       toStage: params.targetStage,
       userId: user.id,
-      userRole: profile.role || "agent",
+      userRole: profile.user_type || "agent",
       failureReason: validation.validation?.reason || validation.error || "Validation failed",
       readinessChecksPassed: validation.validation?.readinessChecks?.passed || [],
       readinessChecksFailed: validation.validation?.readinessChecks?.failed || [],
@@ -212,7 +296,7 @@ export async function executeListingTransition(params: {
     fromStage: currentStage,
     toStage: params.targetStage,
     userId: user.id,
-    userRole: profile.role || "agent",
+    userRole: profile.user_type || "agent",
     isOverride: !!params.overrideReason,
     overrideReason: params.overrideReason,
     readinessChecksPassed: validation.validation?.readinessChecks?.passed || [],
@@ -232,7 +316,12 @@ export async function executeListingTransition(params: {
       })
     }
   }
-  
+
+  // ── CLOSED: Convert seller to lifetime customer ───────────────────────────
+  if (params.targetStage === "CLOSED") {
+    await handleSellerToLifetimeTransition(supabase, params.listingId, listing.agent_id, listing.brokerage_id)
+  }
+
   return {
     success: true,
     transition: {
@@ -241,6 +330,95 @@ export async function executeListingTransition(params: {
       timestamp: new Date().toISOString(),
       enabledSystemGates: targetDef?.enablesSystemGates || [],
     },
+  }
+}
+
+// ============================================
+// INTERNAL: SELLER → LIFETIME CUSTOMER
+// ============================================
+
+async function handleSellerToLifetimeTransition(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  listingId: string,
+  agentId: string,
+  brokerageId: string,
+) {
+  // Fetch listing with seller contact and address
+  const { data: listingWithContact } = await supabase
+    .from("listings")
+    .select("seller_contact_id, address, city, state")
+    .eq("id", listingId)
+    .maybeSingle()
+
+  if (!listingWithContact?.seller_contact_id) return
+
+  const { seller_contact_id: contactId, address, city, state } = listingWithContact
+  const propertyAddress = [address, city, state].filter(Boolean).join(", ")
+  const now = new Date().toISOString()
+  const closedDate = new Date().toLocaleDateString()
+
+  // 1. Convert contact to lifetime customer
+  await supabase
+    .from("contacts")
+    .update({
+      contact_type: "lifetime",
+      contact_persona: "past_seller",
+      status: "past_client",
+      notes: `Converted to lifetime customer on ${closedDate} after closing at ${propertyAddress}`,
+      updated_at: now,
+    })
+    .eq("id", contactId)
+
+  // 2. Trigger post-close touchpoint sequence (3-day, 30-day, 6-month)
+  const closingDate = new Date()
+  const touchpoints = [
+    { type: "post_close_3_day",   daysAfter: 3,   channel: "video" },
+    { type: "post_close_30_day",  daysAfter: 30,  channel: "sms"   },
+    { type: "post_close_6_month", daysAfter: 180, channel: "email" },
+  ].map(({ type, daysAfter, channel }) => {
+    const d = new Date(closingDate)
+    d.setDate(d.getDate() + daysAfter)
+    return {
+      contact_id: contactId,
+      agent_id: agentId,
+      brokerage_id: brokerageId,
+      touchpoint_type: type,
+      channel,
+      scheduled_date: d.toISOString().split("T")[0],
+      related_transaction_id: null,
+      status: "scheduled",
+    }
+  })
+
+  await supabase.from("past_client_touchpoints").insert(touchpoints).then(() => {})
+
+  // 3. Send portal message (body column per schema)
+  await supabase
+    .from("client_portal_messages")
+    .insert({
+      contact_id: contactId,
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      body: `Congratulations on your successful closing! Your portal is now updated to reflect your homeowner status. We look forward to being your lifetime real estate resource.`,
+      direction: "outbound",
+    })
+    .then(() => {})
+
+  // 4. Increment agent gamification points (agents table has gamification_points column)
+  if (agentId) {
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("id, gamification_points")
+      .eq("id", agentId)
+      .maybeSingle()
+
+    if (agentRow) {
+      await supabase
+        .from("agents")
+        .update({ gamification_points: (agentRow.gamification_points ?? 0) + 50 })
+        .eq("id", agentId)
+        .then(() => {})
+    }
   }
 }
 
@@ -311,7 +489,7 @@ export async function getListingNextStages(listingId: string) {
   // Get user role
   const { data: profile } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type")
     .eq("id", user.id)
     .single()
   
@@ -327,14 +505,14 @@ export async function getListingNextStages(listingId: string) {
   
   const nextStages = getNextAllowedStages(
     currentStage,
-    profile?.role || "agent"
+    profile?.user_type || "agent"
   )
   
   return {
     success: true,
     currentStage,
     nextStages,
-    canSkipStages: canSkipStages(profile?.role || "agent"),
+    canSkipStages: canSkipStages(profile?.user_type || "agent"),
   }
 }
 

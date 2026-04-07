@@ -1,0 +1,319 @@
+"use server"
+/**
+ * app/actions/listings-kernel.ts
+ * Thin "use server" wrappers over lib/kernel/listings.ts.
+ *
+ * Pattern:
+ *   1. Auth — get session user
+ *   2. Resolve context — brokerage_id, agent_id (agents.id FK, not users.id)
+ *   3. Validate caller scope (same brokerage)
+ *   4. Delegate to kernel command
+ *   5. revalidatePath on mutation
+ *
+ * NEVER implement business logic here. All logic lives in lib/kernel/listings.ts.
+ */
+
+import { revalidatePath } from "next/cache"
+import { createClient } from "@/lib/supabase/server"
+import {
+  createListingRecord,
+  createOrAttachSellerContact,
+  loadListingWorkspace,
+  saveListingDraft,
+  validateListingLaunchReadiness,
+  launchListing,
+  updateListingStage,
+  attachMediaToListing,
+  generateListingDescription,
+  createTransactionShellFromAcceptedOffer,
+  closeListingLifecycle,
+  prefillListingFormFromRecord,
+  type CreateListingInput,
+  type SellerContactInput,
+  type ListingUpdate,
+  type MediaAttachmentInput,
+  type ListingStage,
+} from "@/lib/kernel/listings"
+
+// ─── Auth context helper ──────────────────────────────────────────────────────
+
+async function resolveCallerContext() {
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: "Not authenticated" as const }
+
+  // Resolve brokerage_id and the real agents.id (FK, not users.id)
+  const [userRow, agentRow] = await Promise.all([
+    supabase
+      .from("users")
+      .select("brokerage_id, user_type")
+      .eq("id", user.id)
+      .maybeSingle(),
+    supabase
+      .from("agents")
+      .select("id, brokerage_id")
+      .eq("user_id", user.id)
+      .maybeSingle(),
+  ])
+
+  const brokerageId = agentRow.data?.brokerage_id ?? userRow.data?.brokerage_id
+  if (!brokerageId) return { error: "No brokerage found for this user" as const }
+
+  return {
+    userId:      user.id,
+    agentId:     agentRow.data?.id ?? user.id,   // agents.id — falls back to user.id for broker/admin
+    brokerageId,
+    userType:    userRow.data?.user_type ?? "agent",
+  }
+}
+
+// ─── Action: createListingWithSellerContact ───────────────────────────────────
+
+/**
+ * Called from ListingCreateSheet.
+ * Creates a seller contact (or attaches existing) then creates the listing record.
+ */
+export async function createListingWithSellerContact(params: {
+  sellerFirstName: string
+  sellerLastName: string
+  sellerEmail?: string
+  sellerPhone?: string
+  address: string
+  city: string
+  state: string
+  zip: string
+  listPrice?: number
+  bedrooms?: number
+  bathrooms?: number
+  sqft?: number
+  propertyType?: string
+}) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+
+  // Step 1: Find or create seller contact
+  const sellerResult = await createOrAttachSellerContact({
+    brokerageId: ctx.brokerageId,
+    agentId:     ctx.agentId,
+    firstName:   params.sellerFirstName,
+    lastName:    params.sellerLastName,
+    email:       params.sellerEmail,
+    phone:       params.sellerPhone,
+  })
+  if (!sellerResult.success) return { success: false, error: sellerResult.error }
+
+  // Step 2: Create listing record
+  const listingResult = await createListingRecord({
+    agentId:          ctx.agentId,
+    sellerContactId:  sellerResult.contactId,
+    brokerageId:      ctx.brokerageId,
+    address:          params.address,
+    city:             params.city,
+    state:            params.state,
+    zip:              params.zip,
+    listPrice:        params.listPrice,
+    bedrooms:         params.bedrooms,
+    bathrooms:        params.bathrooms,
+    sqft:             params.sqft,
+    propertyType:     params.propertyType,
+  })
+  if (!listingResult.success) return { success: false, error: listingResult.error }
+
+  revalidatePath("/dashboard/listings")
+
+  return {
+    success:  true,
+    listing:  listingResult.listing,
+    listingId: (listingResult.listing as any).id as string,
+    sellerCreated: sellerResult.created,
+  }
+}
+
+// ─── Action: saveListingDraftAction ──────────────────────────────────────────
+
+export async function saveListingDraftAction(params: {
+  listingId: string
+  updates: Partial<ListingUpdate>
+}) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+
+  const result = await saveListingDraft({
+    listingId:    params.listingId,
+    updates:      params.updates,
+    actorUserId:  ctx.userId,
+  })
+
+  if (result.success) {
+    revalidatePath(`/dashboard/listings/${params.listingId}`)
+    revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)
+  }
+
+  return result
+}
+
+// ─── Action: validateLaunchReadinessAction ────────────────────────────────────
+
+export async function validateLaunchReadinessAction(listingId: string) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+  return validateListingLaunchReadiness({ listingId })
+}
+
+// ─── Action: launchListingAction ─────────────────────────────────────────────
+
+export async function launchListingAction(params: {
+  listingId: string
+  mlsNumber: string
+  mlsLink?: string
+}) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+
+  const result = await launchListing({
+    listingId:   params.listingId,
+    mlsNumber:   params.mlsNumber,
+    mlsLink:     params.mlsLink,
+    actorUserId: ctx.userId,
+  })
+
+  if (result.success) {
+    revalidatePath(`/dashboard/listings/${params.listingId}`)
+    revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)
+    revalidatePath("/dashboard/listings")
+  }
+
+  return result
+}
+
+// ─── Action: updateListingStageAction ────────────────────────────────────────
+
+export async function updateListingStageAction(params: {
+  listingId: string
+  targetStage: ListingStage
+  notes?: string
+  overrideReason?: string
+}) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+
+  const result = await updateListingStage({
+    listingId:      params.listingId,
+    targetStage:    params.targetStage,
+    actorUserId:    ctx.userId,
+    notes:          params.notes,
+    overrideReason: params.overrideReason,
+  })
+
+  if (result.success) {
+    revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)
+    revalidatePath("/dashboard/listings")
+  }
+
+  return result
+}
+
+// ─── Action: attachMediaAction ────────────────────────────────────────────────
+
+export async function attachMediaAction(params: {
+  listingId: string
+  fileUrl: string
+  mediaType: "photo" | "video" | "document" | "virtual_tour"
+  isPrimary?: boolean
+  caption?: string
+}) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+
+  const result = await attachMediaToListing({
+    listingId:   params.listingId,
+    brokerageId: ctx.brokerageId,
+    fileUrl:     params.fileUrl,
+    mediaType:   params.mediaType,
+    uploadedBy:  ctx.userId,
+    isPrimary:   params.isPrimary,
+    caption:     params.caption,
+  })
+
+  if (result.success) {
+    revalidatePath(`/dashboard/listings/${params.listingId}`)
+  }
+
+  return result
+}
+
+// ─── Action: generateListingDescriptionAction ────────────────────────────────
+
+export async function generateListingDescriptionAction(params: {
+  listingId: string
+  style?: "luxury" | "family" | "investment" | "standard"
+}) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+
+  return generateListingDescription({
+    listingId: params.listingId,
+    agentId:   ctx.agentId,
+    style:     params.style,
+  })
+}
+
+// ─── Action: createTransactionFromOfferAction ────────────────────────────────
+
+export async function createTransactionFromOfferAction(params: {
+  listingId: string
+  offerId: string
+}) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+
+  const result = await createTransactionShellFromAcceptedOffer({
+    listingId:   params.listingId,
+    offerId:     params.offerId,
+    agentId:     ctx.agentId,
+    brokerageId: ctx.brokerageId,
+  })
+
+  if (result.success) {
+    revalidatePath(`/dashboard/listings/${params.listingId}`)
+    revalidatePath("/dashboard/transactions")
+  }
+
+  return result
+}
+
+// ─── Action: closeListingAction ───────────────────────────────────────────────
+
+export async function closeListingAction(listingId: string) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+
+  const result = await closeListingLifecycle({
+    listingId,
+    actorUserId: ctx.userId,
+  })
+
+  if (result.success) {
+    revalidatePath(`/dashboard/listings/${listingId}/lifecycle`)
+    revalidatePath("/dashboard/listings")
+  }
+
+  return result
+}
+
+// ─── Action: prefillListingFormAction ────────────────────────────────────────
+
+export async function prefillListingFormAction(listingId: string) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+  return prefillListingFormFromRecord({ listingId })
+}
+
+// ─── Action: loadListingWorkspaceAction ──────────────────────────────────────
+
+export async function loadListingWorkspaceAction(listingId: string) {
+  const ctx = await resolveCallerContext()
+  if ("error" in ctx) return { success: false, error: ctx.error }
+  return loadListingWorkspace({ listingId, userId: ctx.userId })
+}

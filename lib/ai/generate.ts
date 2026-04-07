@@ -5,6 +5,7 @@
  */
 
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { runPipelineSimple } from "@/lib/ai/pipeline"
 import { z } from "zod"
 
@@ -102,7 +103,7 @@ export async function generateAIObject<T extends z.ZodType>(
 ): Promise<{ success: boolean; object?: z.infer<T>; error?: string }> {
   try {
     const { object } = await generateObject({
-      model: (options?.model ?? "openai/gpt-4o") as any,
+      model: resolveModel((options?.model ?? "openai/gpt-4o") as Parameters<typeof resolveModel>[0]),
       prompt,
       schema,
       temperature: options?.temperature ?? 0.7,

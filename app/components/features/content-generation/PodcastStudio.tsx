@@ -24,6 +24,7 @@ import {
   publishPodcastEpisode,
   trackPodcastEvent,
   getPodcastTemplates,
+  getPodcastAnalytics,
 } from "@/app/actions/podcast-generation"
 
 export function PodcastStudio() {
@@ -46,10 +47,22 @@ export function PodcastStudio() {
   const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null)
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null)
 
+  // Analytics State
+  const [analyticsData, setAnalyticsData] = useState<{
+    totalPlays: number
+    totalListenMinutes: number
+    episodeStats: { id: string; title: string; plays: number }[]
+  } | null>(null)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+
   useEffect(() => {
     loadEpisodes()
     loadTemplates()
   }, [])
+
+  useEffect(() => {
+    if (activeTab === "analytics") loadAnalytics()
+  }, [activeTab])
 
   const loadEpisodes = async () => {
     setIsLoading(true)
@@ -58,6 +71,19 @@ export function PodcastStudio() {
       setEpisodes(result.episodes)
     }
     setIsLoading(false)
+  }
+
+  const loadAnalytics = async () => {
+    setAnalyticsLoading(true)
+    const result = await getPodcastAnalytics()
+    if (result.success) {
+      setAnalyticsData({
+        totalPlays: result.totalPlays,
+        totalListenMinutes: result.totalListenMinutes,
+        episodeStats: result.episodeStats,
+      })
+    }
+    setAnalyticsLoading(false)
   }
 
   const loadTemplates = async () => {
@@ -441,11 +467,49 @@ export function PodcastStudio() {
 
       {/* Analytics Tab */}
       {activeTab === "analytics" && (
-        <Card className="p-8 text-center">
-          <BarChart3 size={48} className="mx-auto text-slate-400 mb-4" />
-          <h3 className="text-lg font-bold text-slate-900 mb-2">Analytics Coming Soon</h3>
-          <p className="text-slate-600">Track plays, downloads, completion rates, and listener engagement</p>
-        </Card>
+        <div className="space-y-4">
+          {analyticsLoading ? (
+            <Card className="p-8 text-center">
+              <Loader2 size={32} className="mx-auto animate-spin text-slate-400 mb-3" />
+              <p className="text-sm text-slate-500">Loading analytics...</p>
+            </Card>
+          ) : analyticsData ? (
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <Card className="p-5">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">Total Plays</p>
+                  <p className="text-3xl font-bold">{analyticsData.totalPlays}</p>
+                </Card>
+                <Card className="p-5">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-1">Listen Time (min)</p>
+                  <p className="text-3xl font-bold">{analyticsData.totalListenMinutes}</p>
+                </Card>
+              </div>
+              {analyticsData.episodeStats.length > 0 ? (
+                <Card className="p-5">
+                  <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">Top Episodes</p>
+                  <div className="space-y-2">
+                    {analyticsData.episodeStats.slice(0, 5).map((ep) => (
+                      <div key={ep.id} className="flex items-center justify-between text-sm">
+                        <span className="truncate text-slate-700 max-w-[75%]">{ep.title}</span>
+                        <span className="font-semibold text-slate-900 shrink-0">{ep.plays} plays</span>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              ) : (
+                <Card className="p-6 text-center text-sm text-muted-foreground">
+                  No play events yet. Publish an episode and share it to start tracking.
+                </Card>
+              )}
+            </>
+          ) : (
+            <Card className="p-8 text-center">
+              <BarChart3 size={40} className="mx-auto text-slate-400 mb-3" />
+              <p className="text-sm text-slate-500">Could not load analytics. Try again.</p>
+            </Card>
+          )}
+        </div>
       )}
     </div>
   )

@@ -27,6 +27,7 @@ import {
   Building,
   Bell,
   MapPin,
+  Clock,
 } from "lucide-react"
 import SellerHome from "./seller-home"
 import LifetimeHome from "./lifetime-home"
@@ -40,7 +41,9 @@ export default async function PortalHomePage({
   const supabase = await createClient()
 
   // Determine portal view from kernel
-  const portalView = await determinePortalView(supabase, contactId)
+  const portalViewOutput = await determinePortalView(supabase, { contactId })
+  const portalView = portalViewOutput.view
+  const isPropertyOwner = portalViewOutput.isPropertyOwner
 
   // Render seller home if seller view
   if (portalView === "seller") {
@@ -57,7 +60,7 @@ export default async function PortalHomePage({
     .from("contacts")
     .select("id, first_name, last_name, name, contact_type, buyer_stage, agent_id, contact_persona")
     .eq("id", contactId)
-    .single()
+    .maybeSingle()
 
   if (!contact || contactError) {
     redirect("/portal?error=contact_not_found")
@@ -307,6 +310,66 @@ export default async function PortalHomePage({
 
       <div className="max-w-2xl mx-auto px-4 -mt-4 pb-12 space-y-5">
 
+        {/* What's Next For You — prominent action panel */}
+        <div className="rounded-xl border bg-slate-50 p-5">
+          <h2 className="font-semibold text-base mb-1 text-foreground">{"What's Next For You"}</h2>
+          <p className="text-sm text-muted-foreground mb-4 leading-relaxed">{stageCtx.whatNext}</p>
+          <div className="flex flex-wrap gap-2">
+            {contact.buyer_stage === 'BUYER_RESEARCHING' && (
+              <Button size="sm" asChild>
+                <Link href={`/portal/${contactId}/properties`}>Browse AI Picks</Link>
+              </Button>
+            )}
+            {contact.buyer_stage === 'BUYER_ACTIVELY_SEARCHING' && activeTransaction && (
+              <>
+                <Button size="sm" asChild>
+                  <Link href={`/portal/${contactId}/showings`}>View My Showings</Link>
+                </Button>
+                <Button size="sm" variant="outline" asChild>
+                  <Link href={`/portal/${contactId}/my-offer`}>My Offers</Link>
+                </Button>
+              </>
+            )}
+            {contact.buyer_stage === 'BUYER_UNDER_CONTRACT' && (
+              <Button size="sm" asChild>
+                <Link href={`/portal/${contactId}/journey`}>Track My Journey</Link>
+              </Button>
+            )}
+            {contact.buyer_stage === 'BUYER_PREPARING_TO_CLOSE' && (
+              <>
+                <Button size="sm" asChild>
+                  <Link href={`/portal/${contactId}/documents`}>My Documents</Link>
+                </Button>
+                <Button size="sm" variant="outline" asChild>
+                  <Link href={`/portal/${contactId}/learn`}>Closing Checklist</Link>
+                </Button>
+              </>
+            )}
+            <Button size="sm" variant="ghost" asChild>
+              <Link href={`/portal/${contactId}/messages`}>Message My Agent</Link>
+            </Button>
+          </div>
+        </div>
+
+        {/* Your Agent Is Working On — transparency section */}
+        {activeTransaction && (
+          <div className="rounded-lg border bg-muted/30 p-4">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+              Your Agent Is Working On
+            </p>
+            {milestones.filter((m: any) => m.status === 'pending').length > 0 ? (
+              milestones.filter((m: any) => m.status === 'pending').slice(0, 2).map((m: any) => (
+                <div key={m.id} className="flex items-center gap-2 text-sm py-1">
+                  <Clock className="h-3 w-3 text-muted-foreground shrink-0" />
+                  <span className="text-foreground">{m.milestone_name?.replace(/_/g, ' ')}</span>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-muted-foreground">All milestones are on track</p>
+            )}
+          </div>
+        )}
+
         {/* What This Means — persona-aware */}
         <Card className="shadow-lg border-0">
           <CardContent className="p-5 space-y-4">
@@ -441,6 +504,55 @@ export default async function PortalHomePage({
               ))}
             </div>
           </div>
+        )}
+
+        {/* Agent Contact Card */}
+        {agentInfo && (
+          <Card>
+            <CardContent className="p-4">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Your Agent</p>
+              <div className="flex items-center gap-4">
+                <Avatar className="h-14 w-14 shrink-0">
+                  <AvatarImage src={agentInfo.profile_image_url ?? undefined} alt={agentInfo.full_name ?? "Agent"} />
+                  <AvatarFallback className="bg-primary/10 text-primary text-lg font-semibold">
+                    {agentInfo.full_name ? agentInfo.full_name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase() : "AG"}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-foreground truncate">{agentInfo.full_name || "Your Agent"}</p>
+                  {agentInfo.email && (
+                    <p className="text-xs text-muted-foreground truncate">{agentInfo.email}</p>
+                  )}
+                  {agentInfo.phone_mobile && (
+                    <p className="text-xs text-muted-foreground">{agentInfo.phone_mobile}</p>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2 mt-4">
+                <Link href={`/portal/${contactId}/messages`} className="flex-1">
+                  <Button size="sm" className="w-full gap-1.5 text-xs">
+                    <MessageSquare className="h-4 w-4" />
+                    Send Message
+                  </Button>
+                </Link>
+                {agentInfo.phone_mobile ? (
+                  <a href={`tel:${agentInfo.phone_mobile}`} className="flex-1">
+                    <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                      <Calendar className="h-4 w-4" />
+                      Schedule Call
+                    </Button>
+                  </a>
+                ) : (
+                  <Link href={`/portal/${contactId}/messages`} className="flex-1">
+                    <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                      <Calendar className="h-4 w-4" />
+                      Schedule Call
+                    </Button>
+                  </Link>
+                )}
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {/* My Team */}

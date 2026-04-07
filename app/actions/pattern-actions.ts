@@ -334,3 +334,17 @@ export async function getPatternDetails(
     entity_name: entityName,
   }
 }
+
+// ─── Acknowledge Pattern (Wrapper) ──────────────────────────────────────────
+export async function acknowledgePattern(
+  detectionId: string
+): Promise<{ success: boolean; error?: string }> {
+  return updatePatternStatus(detectionId, "acknowledged")
+}
+
+// ─── Dismiss Pattern (Wrapper) ──────────────────────────────────────────────
+export async function dismissPattern(
+  detectionId: string
+): Promise<{ success: boolean; error?: string }> {
+  return updatePatternStatus(detectionId, "dismissed")
+}

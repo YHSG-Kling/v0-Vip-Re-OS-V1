@@ -382,13 +382,15 @@ export default function UnifiedPortalDashboard({
 
       {/* Main Content Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-        <TabsList className="grid w-full grid-cols-5 lg:grid-cols-5">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="journey">My Journey</TabsTrigger>
-          <TabsTrigger value="documents">Documents</TabsTrigger>
-          <TabsTrigger value="messages">Messages</TabsTrigger>
-          <TabsTrigger value="team">My Team</TabsTrigger>
-        </TabsList>
+        <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+          <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-5">
+            <TabsTrigger value="overview" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Overview</TabsTrigger>
+            <TabsTrigger value="journey" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">My Journey</TabsTrigger>
+            <TabsTrigger value="documents" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Documents</TabsTrigger>
+            <TabsTrigger value="messages" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">Messages</TabsTrigger>
+            <TabsTrigger value="team" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">My Team</TabsTrigger>
+          </TabsList>
+        </div>
 
         {/* Overview Tab */}
         <TabsContent value="overview" className="space-y-6">

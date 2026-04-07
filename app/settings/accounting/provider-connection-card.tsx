@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { disconnectProvider } from "@/app/actions/accounting-sync"
 import { CheckCircle2, XCircle, Loader2, ExternalLink } from "lucide-react"
+import { toast } from "sonner"
 
 interface ProviderConnectionCardProps {
   provider: "quickbooks" | "xero"
@@ -49,7 +50,7 @@ export function ProviderConnectionCard({
       await disconnectProvider({ provider, brokerageId })
     } catch (error) {
       console.error("Failed to disconnect:", error)
-      alert("Failed to disconnect provider")
+      toast.error("Failed to disconnect provider")
     } finally {
       setIsDisconnecting(false)
     }

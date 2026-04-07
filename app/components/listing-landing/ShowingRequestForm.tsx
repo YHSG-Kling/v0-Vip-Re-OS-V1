@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { submitShowingRequest } from "@/app/actions/listing-landing"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Calendar, CheckCircle2, Loader2 } from "lucide-react"
 
 interface ShowingRequestFormProps {
@@ -24,6 +25,7 @@ export function ShowingRequestForm({
   const [isSuccess, setIsSuccess] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirmedAgentName, setConfirmedAgentName] = useState<string>("")
+  const [tcpaConsent, setTcpaConsent] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -41,6 +43,7 @@ export function ShowingRequestForm({
       preferredDateTime: formData.get("preferredDateTime") as string,
       notes: formData.get("notes") as string,
       sessionToken,
+      tcpaConsent,
     })
 
     setIsSubmitting(false)
@@ -150,6 +153,26 @@ export function ShowingRequestForm({
             />
           </div>
 
+          {/* TCPA consent — governs channel permission, not lead creation */}
+          <label className="flex items-start gap-2 cursor-pointer">
+            <Checkbox
+              id="tcpa-showing"
+              checked={tcpaConsent}
+              onCheckedChange={(v) => setTcpaConsent(!!v)}
+              className="mt-0.5 shrink-0"
+            />
+            <span className="text-xs text-muted-foreground leading-relaxed">
+              I agree to receive calls, texts, and emails from {agentName} and this brokerage regarding
+              real estate services. Consent is not required for purchase. Message and data rates may apply.
+            </span>
+          </label>
+
+          {!tcpaConsent && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+              Without consent, we can only follow up by email.
+            </p>
+          )}
+
           {error && (
             <p className="text-sm text-destructive">{error}</p>
           )}
@@ -168,10 +191,6 @@ export function ShowingRequestForm({
               "Request Showing"
             )}
           </Button>
-
-          <p className="text-xs text-muted-foreground text-center">
-            By submitting, you agree to be contacted about this property.
-          </p>
         </form>
       </CardContent>
     </Card>

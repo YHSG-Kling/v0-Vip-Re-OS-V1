@@ -46,7 +46,7 @@ async function requireBrokerAdmin(userId: string): Promise<{ brokerageId: string
   // Fallback: check user_role_assignments
   const { data: roleAssignment } = await supabase
     .from("user_role_assignments")
-    .select("brokerage_id, role")
+    .select("brokerage_id, user_type, role")
     .eq("user_id", userId)
     .maybeSingle()
 

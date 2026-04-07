@@ -6,13 +6,31 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
-import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
-import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/notification-engine"
+import type { KernelContact } from "@/lib/kernel/types"
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+
+// ─── INTERNAL: BROADCAST AD CONTACT ──────────────────────────────────────────
+// Ads are public-facing creative — not outbound to a specific contact.
+// We construct a synthetic broadcast contact so evaluateOutbound can run
+// brand voice + fair housing + them-first checks without a TCPA gate.
+// TCPA only applies to sms/phone channels, not social ad creative.
+function broadcastAdContact(brokerageId: string): KernelContact {
+  return {
+    id: `broadcast:${brokerageId}`,
+    first_name: "Ad",
+    last_name: "Audience",
+    contact_type: "buyer",
+    persona: "other",
+    tcpa_consent: true,          // social channel — TCPA gate does not fire
+    dnc_status: false,
+    isa_reengage_allowed: false,
+    stop_outreach: false,
+    brokerage_id: brokerageId,
+  } as unknown as KernelContact
+}
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -112,19 +130,6 @@ export async function createAdCampaign(
     },
   })
 
-  processKernelEvent({
-    event: KernelEvent.AD_CAMPAIGN_CREATED,
-    brokerageId: params.brokerageId,
-    entityType: "ad_campaign",
-    entityId: campaign.id,
-    actorUserId: userId,
-    metadata: {
-      platform: params.platform,
-      objective: params.objective,
-      campaign_name: params.campaignName,
-    },
-  }).catch(console.error)
-
   // ── 4. Increment usage ──────────────────────────────────────────────────────
   await incrementFeatureUsage(userId, "ad_creator")
 
@@ -140,20 +145,7 @@ export async function generateAdCreative(
   const supabase = await createClient()
   const { adCampaignId, context } = params
 
-  // ── 1. Resolve AI provider ──────────────────────────────────────────────────
-  const provider = await resolveProvider({
-    providerType: "ai",
-    actorContext: {
-      userId,
-      brokerageId: context.brokerageId,
-    },
-  })
-
-  if (!provider.resolved) {
-    return { success: false, error: "No AI provider configured" }
-  }
-
-  // ── 2. Get campaign details ─────────────────────────────────────────────────
+  // ── 1. Get campaign details ─────────────────────────────────────────────────
   const { data: campaign } = await supabase
     .from("ad_campaigns")
     .select("platform, objective, campaign_name")
@@ -164,10 +156,17 @@ export async function generateAdCreative(
     return { success: false, error: "Campaign not found" }
   }
 
-  // ── 3. Apply brand voice ────────────────────────────────────────────────────
+  // ── 3. Apply brand voice to get tone guidelines for the AI prompt ──────────
+  // applyBrandVoice is also called inside evaluateOutbound (Gate 1) — calling
+  // it here separately gives us the tone notes to bake into the AI prompt so
+  // the generated copy respects brokerage brand voice before compliance runs.
   const brandVoice = await applyBrandVoice({
     brokerageId: context.brokerageId,
-    contentType: "ad_creative",
+    actorRole: "agent",
+    journeyType: "seller",
+    persona: "other",
+    messageType: "social",
+    content: "",   // Empty — we just want the voice notes, not a content evaluation
   })
 
   // ── 4. Build AI prompt ──────────────────────────────────────────────────────
@@ -182,13 +181,20 @@ ${context.listingAddress ? `- Listing Address: ${context.listingAddress}` : ""}
 ${context.listingPrice ? `- Listing Price: $${context.listingPrice.toLocaleString()}` : ""}
 ${context.agentName ? `- Agent Name: ${context.agentName}` : ""}
 
-Brand Voice Guidelines:
-${brandVoice.instructions || "Professional, trustworthy, and approachable tone."}
+Brand Voice Guidelines (MUST follow exactly):
+${brandVoice.notes.length > 0 ? brandVoice.notes.join("\n") : "Professional, trustworthy, and approachable tone."}
+${brandVoice.violations.length > 0 ? `\nAvoid these violations: ${brandVoice.violations.join(", ")}` : ""}
+
+Real estate compliance rules (MUST follow — Fair Housing Act applies):
+- Do NOT use language that implies preference for or against any protected class
+- Do NOT use phrases like "perfect for families", "great neighborhood", "ideal for couples"
+- Do NOT make investment return claims or guarantee appreciation
+- Use buyer-first language — focus on them, not the agent
 
 Generate exactly 3 variations with different approaches:
-- Variation A: Emotional appeal (focus on lifestyle, dreams, family)
-- Variation B: Value proposition (focus on features, price, ROI)
-- Variation C: Urgency/scarcity (focus on market conditions, limited time)
+- Variation A: Emotional appeal (focus on lifestyle, dreams, discovery)
+- Variation B: Value proposition (focus on features, condition, location)
+- Variation C: Market context (focus on current market opportunities)
 
 For each variation, provide:
 1. variationName (e.g., "Emotional Appeal")
@@ -203,7 +209,7 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
   // ── 5. Generate variations via AI ───────────────────────────────────────────
   try {
     const { text } = await generateText({
-      model: provider.modelString || "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514" as Parameters<typeof resolveModel>[0]),
       prompt,
       maxTokens: 1500,
     })
@@ -221,12 +227,20 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
     
     for (const variation of variations) {
       const combinedText = `${variation.headline} ${variation.primaryText} ${variation.description}`
-      
+
+      // Run all 5 compliance gates: Brand Voice → TCPA → Authority → Fair Housing → Them-First
+      // Ad creative uses the "social" channel and a synthetic broadcast contact (no real recipient).
       const complianceResult = await evaluateOutbound({
-        brokerageId: context.brokerageId,
+        actorContext: {
+          userId,
+          brokerageId: context.brokerageId,
+          role: "agent",
+        },
+        journeyType: "seller",
+        persona: "other",
+        messageType: "social",
         content: combinedText,
-        channel: "social",
-        recipientId: null,
+        contact: broadcastAdContact(context.brokerageId),
       })
 
       // ── 7. Insert into ad_creative_variations ─────────────────────────────────
@@ -243,7 +257,6 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
           description: variation.description,
           call_to_action: variation.callToAction,
           approval_status: approvalStatus,
-          compliance_approved: false,
         })
         .select("id")
         .single()
@@ -257,9 +270,9 @@ Respond with ONLY valid JSON array of 3 objects, no other text.
             entity_type: "ad_creative_variation",
             entity_id: creativeRecord.id,
             gate_name: "evaluateOutbound",
-            message_type: "ad_creative",
+            message_type: "social",
             violations: complianceResult.violations || [],
-            blocked_reason: complianceResult.reason,
+            blocked_reason: complianceResult.blockedReason ?? null,
             allowed: false,
           })
         }
@@ -283,21 +296,73 @@ export async function approveCreativeVariation(
 ): Promise<{ success: boolean; error?: string }> {
   const supabase = await createClient()
 
-  // ── 1. Check brand compliance ───────────────────────────────────────────────
-  const complianceResult = await checkBrandCompliance({
-    contentType: "ad_creative",
-    contentId: variationId,
-    brokerageId,
+  // ── 1. Verify variation exists and is not already approved ──────────────────
+  const { data: existing, error: fetchError } = await supabase
+    .from("ad_creative_variations")
+    .select("id, approval_status, headline, primary_text, description")
+    .eq("id", variationId)
+    .eq("brokerage_id", brokerageId)
+    .maybeSingle()
+
+  if (fetchError || !existing) {
+    return { success: false, error: "Creative variation not found" }
+  }
+
+  if (existing.approval_status === "approved") {
+    return { success: true }
+  }
+
+  // ── 2. Compliance gate — must pass before approval is granted ───────────────
+  // Reconstruct the ad copy text from the stored variation for compliance eval.
+  const combinedText = [
+    existing.headline ?? "",
+    existing.primary_text ?? "",
+    existing.description ?? "",
+  ]
+    .filter(Boolean)
+    .join(" ")
+
+  const complianceResult = await evaluateOutbound({
+    actorContext: {
+      userId,
+      brokerageId,
+      role: "agent",
+    },
+    journeyType: "seller",
+    persona: "other",
+    messageType: "social",
+    content: combinedText,
+    contact: broadcastAdContact(brokerageId),
   })
 
-  if (!complianceResult.passed) {
+  if (!complianceResult.allowed) {
+    // Log the rejection event
+    await supabase.from("compliance_events").insert({
+      brokerage_id: brokerageId,
+      actor_user_id: userId,
+      entity_type: "ad_creative_variation",
+      entity_id: variationId,
+      gate_name: "approveCreativeVariation",
+      message_type: "social",
+      violations: complianceResult.violations || [],
+      blocked_reason: complianceResult.blockedReason ?? "Compliance check failed",
+      allowed: false,
+    })
+
+    // Also mark the variation as rejected so the UI surfaces the failure
+    await supabase
+      .from("ad_creative_variations")
+      .update({ approval_status: "rejected" })
+      .eq("id", variationId)
+      .eq("brokerage_id", brokerageId)
+
     return {
       success: false,
-      error: `Brand compliance check failed: ${complianceResult.violations.join(", ")}`,
+      error: `Compliance check failed: ${complianceResult.violations.join("; ")}`,
     }
   }
 
-  // ── 2. Update approval status ───────────────────────────────────────────────
+  // ── 3. Update approval status ───────────────────────────────────────────────
   const { error } = await supabase
     .from("ad_creative_variations")
     .update({ approval_status: "approved" })
@@ -388,19 +453,6 @@ export async function launchAdCampaign(
       campaign_name: campaign.campaign_name,
     },
   })
-
-  // ── 4. Fire kernel event ────────────────────────────────────────────────────
-  processKernelEvent({
-    event: KernelEvent.AD_CAMPAIGN_LAUNCHED,
-    brokerageId,
-    entityType: "ad_campaign",
-    entityId: campaignId,
-    actorUserId: userId,
-    metadata: {
-      platform: campaign.platform,
-      campaign_name: campaign.campaign_name,
-    },
-  }).catch(console.error)
 
   return { success: true }
 }

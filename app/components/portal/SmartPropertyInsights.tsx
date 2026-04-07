@@ -151,7 +151,9 @@ export function SmartPropertyInsights({ propertyId, propertyData, contactId }: S
                   <p className="text-muted-foreground">{insights.commute_insights.message}</p>
                   <div className="mt-4 grid grid-cols-3 gap-4">
                     <div className="p-4 rounded-lg bg-muted">
-                      <p className="text-2xl font-bold">{insights.commute_insights.generalInfo?.walkScore || "N/A"}</p>
+                      {insights.commute_insights.generalInfo?.walkScore
+                        ? <p className="text-2xl font-bold">{insights.commute_insights.generalInfo.walkScore}</p>
+                        : <p className="text-xs text-muted-foreground">Not available</p>}
                       <p className="text-xs text-muted-foreground">Walk Score</p>
                     </div>
                     <div className="p-4 rounded-lg bg-muted">
@@ -327,7 +329,9 @@ export function SmartPropertyInsights({ propertyId, propertyData, contactId }: S
                 <h4 className="font-medium mb-3">Walkability</h4>
                 <div className="grid grid-cols-3 gap-4">
                   <div className="text-center p-4 rounded-lg bg-muted">
-                    <p className="text-2xl font-bold">{insights.neighborhood_insights?.walkability?.walkScore}</p>
+                    {insights.neighborhood_insights?.walkability?.walkScore
+                      ? <p className="text-2xl font-bold">{insights.neighborhood_insights.walkability.walkScore}</p>
+                      : <p className="text-xs text-muted-foreground">Not available</p>}
                     <p className="text-xs text-muted-foreground">Walk Score</p>
                   </div>
                   <div className="text-center p-4 rounded-lg bg-muted">

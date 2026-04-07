@@ -4,7 +4,7 @@
  * 
  * THIS IS INFRASTRUCTURE-ONLY. NO UI. NO AI LOGIC.
  * 
- * Purpose: Persist messages to database with idempotency
+ * Purpose: Persist messages to client_portal_messages (canonical portal table) with idempotency
  * and vendor usage tracking for outbound messages.
  */
 
@@ -16,8 +16,8 @@ export interface MessagePersistContext {
   conversationId: string
   contactId: string
   agentId?: string
+  brokerageId: string
   transactionId?: string
-  listingId?: string
 }
 
 export interface MessagePersistResult {
@@ -30,13 +30,16 @@ export interface MessagePersistResult {
 /**
  * PERSIST MESSAGE WITH CONTEXT
  * 
- * Stores a normalized message in the database.
+ * Stores a normalized message to client_portal_messages (canonical schema).
+ * Per Kernel OS contract:
+ * - client_portal_messages table stores all portal communication
+ * - direction: 'agent_to_client' or 'client_to_agent' (never inbound/outbound)
+ * - brokerage_id is required ownership key
  * 
  * Features:
  * - Idempotent: Detects duplicate messages
- * - Links to conversation, contact, optional transaction/listing
+ * - Links to contact, agent, transaction, brokerage
  * - Tracks vendor costs for outbound messages
- * - Updates conversation metadata (message_count, last_message_at)
  */
 export async function persistMessageWithContext(
   message: NormalizedMessage,
@@ -47,9 +50,9 @@ export async function persistMessageWithContext(
 
     // STEP 1: Check for duplicate (basic idempotency)
     const duplicateCheck = await supabase
-      .from('messages')
+      .from('client_portal_messages')
       .select('id')
-      .eq('conversation_id', context.conversationId)
+      .eq('contact_id', context.contactId)
       .eq('body', message.body)
       .eq('created_at', message.timestamp.toISOString())
       .limit(1)
@@ -63,22 +66,29 @@ export async function persistMessageWithContext(
       }
     }
 
-    // STEP 2: Insert message
+    // STEP 2: Map direction semantics (normalize channel to direction)
+    // message.direction may be 'outbound'/'inbound' from normalizer, must map to 'agent_to_client'/'client_to_agent'
+    let direction: 'agent_to_client' | 'client_to_agent'
+    if (message.direction === 'outbound' || message.direction === 'agent_to_client') {
+      direction = 'agent_to_client'
+    } else {
+      direction = 'client_to_agent'
+    }
+
+    // STEP 3: Insert message to canonical client_portal_messages table
     const { data: newMessage, error: insertError } = await supabase
-      .from('messages')
+      .from('client_portal_messages')
       .insert({
-        conversation_id: context.conversationId,
         contact_id: context.contactId,
-        agent_id: context.agentId,
-        type: message.channel,
-        direction: message.direction,
-        subject: message.subject,
+        agent_id: context.agentId || null,
+        brokerage_id: context.brokerageId,
         body: message.body,
-        attachment_urls: message.attachmentUrls,
-        status: 'sent',
-        compliance_checked: false, // Phase 4 will handle compliance
+        direction,
+        channel: message.channel,
+        read: false,
+        read_at: null,
+        transaction_id: context.transactionId || null,
         created_at: message.timestamp.toISOString(),
-        updated_at: new Date().toISOString(),
       })
       .select('id')
       .single()
@@ -91,26 +101,10 @@ export async function persistMessageWithContext(
       }
     }
 
-    console.log('[v0] [COMMUNICATION SPINE] Message persisted:', newMessage.id)
-
-    // STEP 3: Update conversation metadata
-    await supabase.rpc('increment_conversation_message_count', {
-      conv_id: context.conversationId,
-    }).catch((err) => {
-      // Non-critical, just log
-      console.warn('[v0] [COMMUNICATION SPINE] Failed to update conversation count:', err)
-    })
-
-    await supabase
-      .from('conversations')
-      .update({
-        last_message_at: message.timestamp.toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', context.conversationId)
+    console.log('[v0] [COMMUNICATION SPINE] Message persisted to client_portal_messages:', newMessage.id)
 
     // STEP 4: Track vendor usage if outbound
-    if (message.direction === 'outbound') {
+    if (direction === 'agent_to_client') {
       await trackOutboundVendorCost(message, context)
     }
 
@@ -130,9 +124,10 @@ export async function persistMessageWithContext(
       severity: 'high',
       status: 'unresolved',
       context_json: JSON.stringify({
-        conversationId: context.conversationId,
         contactId: context.contactId,
+        brokerageId: context.brokerageId,
         channel: message.channel,
+        direction: message.direction,
         timestamp: message.timestamp.toISOString(),
       }),
       created_at: new Date().toISOString(),
@@ -173,6 +168,7 @@ async function trackOutboundVendorCost(
         estimatedCost,
         systemSource: 'communication_spine',
         agentId: context.agentId,
+        brokerageId: context.brokerageId,
         metadata: {
           messageChannel: message.channel,
           messageLength: message.body.length,

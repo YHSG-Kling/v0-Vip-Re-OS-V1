@@ -254,6 +254,12 @@ export function DocumentsClient({
 
   return (
     <div className="space-y-6">
+      {/* Trust language */}
+      <p className="text-xs text-muted-foreground">
+        Documents shared here are between you and your agent. Nothing is shared externally
+        without your approval.
+      </p>
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -305,6 +311,50 @@ export function DocumentsClient({
           </CardContent>
         </Card>
       </div>
+
+      {/* Action Required — docs pending buyer/seller signature */}
+      {txDocs.filter(d => d.status === "pending_signature").length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="h-5 w-5 text-amber-600 shrink-0" />
+            <div>
+              <p className="font-semibold text-sm text-amber-900">Action Required — Signature Needed</p>
+              <p className="text-xs text-amber-700">
+                {txDocs.filter(d => d.status === "pending_signature").length} document(s) are waiting for your signature.
+              </p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {txDocs
+              .filter(d => d.status === "pending_signature")
+              .map(d => (
+                <div key={d.id} className="flex items-center justify-between bg-white rounded-md border border-amber-200 px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium">{d.doc_label ?? d.doc_type ?? "Document"}</p>
+                    <p className="text-xs text-muted-foreground capitalize">
+                      {(d.doc_type ?? "").replace(/_/g, " ")}
+                      {d.uploaded_at && (
+                        <> &middot; {formatDistanceToNow(new Date(d.uploaded_at), { addSuffix: true })}</>
+                      )}
+                    </p>
+                  </div>
+                  {d.storage_url ? (
+                    <a href={d.storage_url} target="_blank" rel="noreferrer">
+                      <Button size="sm" className="text-xs bg-amber-600 hover:bg-amber-700 text-white">
+                        <Send className="h-3.5 w-3.5 mr-1.5" />
+                        Open to Sign
+                      </Button>
+                    </a>
+                  ) : (
+                    <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200">
+                      Link pending
+                    </Badge>
+                  )}
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <Tabs defaultValue="my-documents" className="space-y-4">
@@ -574,29 +624,86 @@ export function DocumentsClient({
                           </Collapsible>
                         )}
 
-                        {/* Fallback: Show inline extracted_data if no log but data exists */}
-                        {!log && hasExtractedData && (
+                        {/* Plain-language "What this document means" explainer */}
+                        {hasExtractedData && doc.extracted_data && (
                           <Collapsible>
-                            <CollapsibleTrigger className="flex items-center gap-2 text-sm font-medium text-gray-600 hover:text-gray-700">
-                              <FileText className="h-4 w-4" />
-                              Extracted Data
+                            <CollapsibleTrigger className="flex items-center gap-2 text-sm font-medium text-blue-700 hover:text-blue-800">
+                              <HelpCircle className="h-4 w-4" />
+                              What this document means for you
                               <ChevronDown className="h-4 w-4" />
                             </CollapsibleTrigger>
                             <CollapsibleContent className="mt-3">
-                              <div className="bg-slate-50 rounded-lg p-4">
-                                {doc.classification_confidence && (
-                                  <Badge className={getConfidenceBadge(doc.classification_confidence).className}>
-                                    {getConfidenceBadge(doc.classification_confidence).label}
-                                  </Badge>
+                              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-3">
+                                {/* Summary in plain language */}
+                                {typeof doc.extracted_data.summary === "string" && (
+                                  <div>
+                                    <h5 className="text-sm font-semibold text-blue-900 mb-1">In plain terms</h5>
+                                    <p className="text-sm text-blue-800 leading-relaxed">
+                                      {doc.extracted_data.summary}
+                                    </p>
+                                  </div>
                                 )}
-                                <div className="grid grid-cols-2 gap-2 mt-2">
-                                  {Object.entries(doc.extracted_data).map(([key, val]) => (
-                                    <div key={key} className="flex justify-between text-sm">
-                                      <span className="text-muted-foreground">{formatFieldName(key)}:</span>
-                                      <span className="font-medium">{formatFieldValue(val)}</span>
+
+                                {/* What you need to do */}
+                                {Array.isArray(doc.extracted_data.clientImplications) &&
+                                  (doc.extracted_data.clientImplications as string[]).length > 0 && (
+                                  <div>
+                                    <h5 className="text-sm font-semibold text-blue-900 mb-1">What this means for you</h5>
+                                    <ul className="list-disc list-inside space-y-1">
+                                      {(doc.extracted_data.clientImplications as string[]).map((item, i) => (
+                                        <li key={i} className="text-sm text-blue-800">{item}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* Action required */}
+                                {doc.extracted_data.actionRequired === true && doc.extracted_data.actionDescription && (
+                                  <div className="bg-amber-50 border border-amber-200 rounded-md p-3">
+                                    <h5 className="text-sm font-semibold text-amber-800 mb-1">Action needed from you</h5>
+                                    <p className="text-sm text-amber-700">
+                                      {String(doc.extracted_data.actionDescription)}
+                                    </p>
+                                  </div>
+                                )}
+
+                                {/* Recommended actions / next steps */}
+                                {Array.isArray(doc.extracted_data.recommendedActions) &&
+                                  (doc.extracted_data.recommendedActions as string[]).length > 0 && (
+                                  <div>
+                                    <h5 className="text-sm font-semibold text-blue-900 mb-1">Next steps</h5>
+                                    <ul className="list-disc list-inside space-y-1">
+                                      {(doc.extracted_data.recommendedActions as string[]).map((a, i) => (
+                                        <li key={i} className="text-sm text-blue-800">{a}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* Deadlines */}
+                                {Array.isArray(doc.extracted_data.deadlines) &&
+                                  (doc.extracted_data.deadlines as Array<{ description: string; date: string }>).length > 0 && (
+                                  <div>
+                                    <h5 className="text-sm font-semibold text-blue-900 mb-1">Key dates</h5>
+                                    <div className="space-y-1">
+                                      {(doc.extracted_data.deadlines as Array<{ description: string; date: string }>).map((dl, i) => (
+                                        <div key={i} className="flex justify-between text-sm">
+                                          <span className="text-blue-800">{dl.description}</span>
+                                          <span className="font-semibold text-amber-700">{dl.date}</span>
+                                        </div>
+                                      ))}
                                     </div>
-                                  ))}
-                                </div>
+                                  </div>
+                                )}
+
+                                {/* Confidence badge */}
+                                {doc.classification_confidence && (
+                                  <div className="pt-1">
+                                    <Badge className={getConfidenceBadge(doc.classification_confidence).className}>
+                                      {getConfidenceBadge(doc.classification_confidence).label}
+                                    </Badge>
+                                  </div>
+                                )}
                               </div>
                             </CollapsibleContent>
                           </Collapsible>

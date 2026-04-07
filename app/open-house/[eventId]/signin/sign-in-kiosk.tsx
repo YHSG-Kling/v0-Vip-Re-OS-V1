@@ -1,10 +1,14 @@
 "use client"
 
-import { useState, useRef, useEffect } from "react"
+import { useState } from "react"
 import { CheckCircle, User } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+
+const TCPA_CONSENT_TEXT = (brokerageName: string) =>
+  `By checking this box, you agree to receive calls, texts, emails, and direct mail from ${brokerageName} and its agents regarding your real estate needs. Consent is not a condition of purchase. You may unsubscribe or opt out at any time.`
 
 interface Props {
   event: {
@@ -43,10 +47,9 @@ export function SignInKiosk({ event, agent, branding }: Props) {
   const [phone, setPhone] = useState("")
   const [workingWithAgent, setWorkingWithAgent] = useState<boolean | null>(null)
   const [hearAboutUs, setHearAboutUs] = useState<string | null>(null)
+  const [tcpaConsent, setTcpaConsent] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const resetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
   const primaryColor = branding?.primary_color ?? "#2563eb"
   const agentName = agent?.full_name ?? branding?.from_name ?? "Your Agent"
 
@@ -61,26 +64,26 @@ export function SignInKiosk({ event, agent, branding }: Props) {
     setPhone("")
     setWorkingWithAgent(null)
     setHearAboutUs(null)
+    setTcpaConsent(false)
     setError(null)
   }
 
-  // Auto-reset 3 seconds after success
-  useEffect(() => {
-    if (step === "success") {
-      resetTimerRef.current = setTimeout(resetForm, 3000)
-    }
-    return () => {
-      if (resetTimerRef.current) clearTimeout(resetTimerRef.current)
-    }
-  }, [step])
+  // Success screen shows a "Check In Next Person" button instead of auto-reset
 
   async function handleSubmit() {
     if (!firstName.trim() || !lastName.trim() || !email.trim() || workingWithAgent === null) {
       setError("Please fill in all required fields.")
       return
     }
+    if (!tcpaConsent) {
+      setError("Consent is required before we can contact you across all communication channels.")
+      return
+    }
     setError(null)
     setSubmitting(true)
+
+    const brokerageName = branding?.app_name ?? "our brokerage"
+    const consentText = TCPA_CONSENT_TEXT(brokerageName)
 
     try {
       const res = await fetch("/api/open-house/attend", {
@@ -94,6 +97,9 @@ export function SignInKiosk({ event, agent, branding }: Props) {
           phone: phone.trim() || undefined,
           workingWithAgent,
           hearAboutUs: hearAboutUs ?? undefined,
+          tcpaConsent: true,
+          tcpaConsentText: consentText,
+          tcpaConsentSource: "/open-house/sign-in",
         }),
       })
       const data = await res.json()
@@ -154,7 +160,16 @@ export function SignInKiosk({ event, agent, branding }: Props) {
       {/* Main content */}
       <main className="flex-1 flex flex-col items-center justify-start px-4 py-8 max-w-xl mx-auto w-full">
         {step === "success" ? (
-          <SuccessScreen agentName={agentName} />
+          <div className="flex flex-col items-center gap-6">
+            <SuccessScreen agentName={agentName} />
+            <Button
+              size="lg"
+              className="w-full max-w-xs h-14 text-base"
+              onClick={resetForm}
+            >
+              Check In Next Person
+            </Button>
+          </div>
         ) : (
           <div className="w-full flex flex-col gap-6">
             <h2 className="text-center text-lg font-semibold text-foreground">
@@ -251,6 +266,21 @@ export function SignInKiosk({ event, agent, branding }: Props) {
                   />
                 ))}
               </div>
+            </div>
+
+            {/* TCPA consent — unchecked by default per spec */}
+            <div className="rounded-lg border border-border bg-muted/40 p-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <Checkbox
+                  checked={tcpaConsent}
+                  onCheckedChange={(v) => setTcpaConsent(v === true)}
+                  className="mt-0.5 h-5 w-5 shrink-0"
+                  aria-label="I agree to be contacted"
+                />
+                <span className="text-xs text-foreground leading-relaxed">
+                  {TCPA_CONSENT_TEXT(branding?.app_name ?? agentName)}
+                </span>
+              </label>
             </div>
 
             {error && (

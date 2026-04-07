@@ -12,7 +12,7 @@ import { createClient }      from "@/lib/supabase/server"
 import {
   getHighFatigueBuyers,
   getBrokerageFatigueAlerts,
-} from "@/app/actions/fatigue"
+} from "@/app/actions/buyer-fatigue"
 import { BrokerageFatigueDashboard } from "./brokerage-fatigue-dashboard"
 
 export const metadata = {

@@ -18,7 +18,7 @@ export async function getLifetimeContext(contactId: string) {
       agent_id
     `)
     .eq("id", contactId)
-    .single()
+    .maybeSingle()
 
   if (!contact) return null
 
@@ -74,14 +74,10 @@ export async function getLifetimeContext(contactId: string) {
   if (agentInfo?.brokerage_id) {
     const { data: vendors } = await supabase
       .from("vendor_directory")
-      .select(`
-        id,
-        category,
-        is_featured,
-        vendors:vendor_id(id, business_name, vendor_type, phone, email, website_url, rating_avg)
-      `)
+      .select("id, name, category, phone, email, website, rating, preferred")
       .eq("brokerage_id", agentInfo.brokerage_id)
-      .eq("is_featured", true)
+      .eq("preferred", true)
+      .order("rating", { ascending: false })
       .limit(3)
     
     preferredVendors = vendors || []
@@ -110,51 +106,55 @@ export async function submitReferral(data: {
   // Get contact's agent
   const { data: contact } = await supabase
     .from("contacts")
-    .select("agent_id")
+    .select("agent_id, brokerage_id")
     .eq("id", data.contactId)
-    .single()
+    .maybeSingle()
 
   if (!contact?.agent_id) throw new Error("Contact not found")
 
-  // Create referral record
+  // Create referral record using actual referrals schema columns
   const { data: referral, error: referralError } = await supabase
     .from("referrals")
     .insert({
-      contact_id: data.contactId,
-      referred_name: data.referredName,
-      referred_contact: data.referredContact,
-      relationship: data.relationship,
-      referral_status: "pending",
-      created_at: new Date().toISOString(),
+      referred_by: data.contactId,
+      referral_name: data.referredName,
+      source_contact_name: data.referredName,
+      notes: data.referredContact + (data.relationship ? ` (${data.relationship})` : ""),
+      status: "new",
+      agent_id: contact.agent_id,
+      brokerage_id: contact.brokerage_id,
     })
-    .select()
-    .single()
+    .select("id")
+    .maybeSingle()
 
   if (referralError) throw referralError
 
-  // Send notification to agent via client_portal_messages
+  // Send notification message to agent via portal messages
   await supabase.from("client_portal_messages").insert({
     contact_id: data.contactId,
+    agent_id: contact.agent_id,
+    brokerage_id: contact.brokerage_id,
     direction: "client_to_agent",
-    message_type: "referral",
-    content: `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}`,
+    channel: "portal",
     read: false,
-    created_at: new Date().toISOString(),
+    body: `New referral: ${data.referredName} (${data.referredContact})${data.relationship ? ` - ${data.relationship}` : ""}`,
   })
 
   // Emit kernel event - resolve agent via kernel identity function
   const agentData = await resolveContactOwnerAgent(supabase, contact.agent_id)
   await supabase.from("lifecycle_events").insert({
     brokerage_id: agentData?.brokerage_id,
-    event_type: KernelEvent.REFERRAL_ASK_SENT,
-    entity_type: "referral",
-    entity_id: referral.id,
+    event_type: KernelEvent.MESSAGE_FROM_CONTACT,
+    entity_type: "contact",
+    entity_id: data.contactId,
+    actor_user_id: contact.agent_id,
     metadata: {
       contact_id: data.contactId,
       referred_name: data.referredName,
       agent_id: contact.agent_id,
+      referral_id: referral?.id,
+      type: "referral_submitted",
     },
-    created_at: new Date().toISOString(),
   })
 
   return referral

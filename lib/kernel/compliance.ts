@@ -122,27 +122,48 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
   // Applies to sms and phone channels only.
   // ══════════════════════════════════════════════════════════════════════════
 
-  if (messageType === "sms" || messageType === "phone") {
-    // Re-fetch from DB to avoid stale caller-supplied contact data.
+  // Re-fetch contact for all message types — per-channel opt-outs must be checked
+  // regardless of channel, not just for SMS/phone.
+  {
     const { data: freshContact } = await supabase
       .from("contacts")
-      .select("tcpa_consent, tcpa_consent_date, dnc_status")
+      .select("tcpa_consent, tcpa_consent_date, dnc_status, email_opt_out, sms_opt_out, phone_opt_out, direct_mail_opt_out")
       .eq("id", contact.id)
       .maybeSingle()
 
-    const tcpaConsent = freshContact?.tcpa_consent ?? contact.tcpa_consent ?? false
     const dncStatus = freshContact?.dnc_status ?? contact.dnc_status ?? false
 
+    // Global DNC blocks all channels
     if (dncStatus) {
-      violations.push("TCPA: Contact is on the Do Not Contact list")
-    } else if (!tcpaConsent) {
-      violations.push("TCPA: Contact has not consented to SMS/phone outreach")
+      violations.push("DNC: Contact is on the global Do Not Contact list")
+    }
+
+    // TCPA consent required for SMS/phone (only when not already blocked by DNC)
+    if (!dncStatus && (messageType === "sms" || messageType === "phone")) {
+      const tcpaConsent = freshContact?.tcpa_consent ?? contact.tcpa_consent ?? false
+      if (!tcpaConsent) {
+        violations.push("TCPA: Contact has not consented to SMS/phone outreach")
+      }
+    }
+
+    // Per-channel opt-out checks (applied on top of DNC — belt-and-suspenders)
+    if (messageType === "email" && freshContact?.email_opt_out) {
+      violations.push("OptOut: Contact has opted out of email communications")
+    }
+    if (messageType === "sms" && freshContact?.sms_opt_out) {
+      violations.push("OptOut: Contact has opted out of SMS communications")
+    }
+    if (messageType === "phone" && freshContact?.phone_opt_out) {
+      violations.push("OptOut: Contact has opted out of phone calls")
+    }
+    if (messageType === "direct_mail" && freshContact?.direct_mail_opt_out) {
+      violations.push("OptOut: Contact has opted out of direct mail")
     }
   }
 
   // ══════════════════════════════════════════════════════════════════════════
   // GATE 3 — Authority Rule (ISA override allowed)
-  // ══════════════════════════════════════���═══════════════════════════════════
+  // ═══��══════════════════════════════════���═══════════════════════════════════
 
   const contactStatus: string = contact.status ?? ""
 

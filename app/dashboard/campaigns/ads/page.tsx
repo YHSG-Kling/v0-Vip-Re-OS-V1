@@ -25,12 +25,12 @@ export default async function AdsCampaignsPage() {
   // Get user profile with brokerage
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, role, first_name, last_name")
+    .select("id, brokerage_id, user_type, first_name, last_name")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!profile?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Get ad campaigns with creatives
@@ -83,7 +83,7 @@ export default async function AdsCampaignsPage() {
     <AdsDashboardClient
       userId={user.id}
       brokerageId={profile.brokerage_id}
-      userRole={profile.role || "agent"}
+      userRole={profile.user_type || "agent"}
       agentName={agentName}
       campaigns={campaigns || []}
       performanceData={performanceData}

@@ -1,15 +1,5 @@
-import { Suspense } from "react"
-import ContentStudioClient from "./content-studio-client"
+import { redirect } from 'next/navigation'
 
-interface ContentStudioPageProps {
-  userId?: string
-  userRole?: string
-}
-
-export default function ContentStudioPage({ userId, userRole }: ContentStudioPageProps) {
-  return (
-    <Suspense fallback={<div>Loading...</div>}>
-      <ContentStudioClient userId={userId} userRole={userRole} />
-    </Suspense>
-  )
+export default function ContentStudioLegacyRedirect() {
+  redirect('/dashboard/marketing/studio')
 }

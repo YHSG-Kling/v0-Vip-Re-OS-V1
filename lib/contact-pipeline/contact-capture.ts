@@ -16,21 +16,43 @@ const DEDUP_THRESHOLD = 0.85
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+// Sources that originate from public-facing forms with TCPA consent.
+// Lead-conversion paths (lead_promotion, lead_import) bypass this function
+// entirely — they go through lib/contact-promotion/contact-creator.ts which
+// already has the enriched lead data and must NOT re-dedup or re-enrich.
 export type ContactCaptureSource =
   | 'web_form'
   | 'qr_scan'
   | 'business_card'
-  | 'import'
+  | 'open_house'
+  | 'widget'
+  | 'home_value_form'
+  | 'showing_request'
   | string
+
+// Sources that represent a lead being promoted to a contact.
+// When source matches one of these values, dedup and enrichment are skipped
+// because the lead record was already enriched before promotion.
+const LEAD_CONVERSION_SOURCES = new Set([
+  'lead_promotion',
+  'lead_import',
+  'lead_conversion',
+  'crm_import',
+])
 
 export interface CaptureContactParams {
   brokerageId: string
   agentUserId?: string | null    // references users.id (NOT agents.id)
   source: ContactCaptureSource
+  /** Set to the originating lead ID when this contact is being created from
+   *  a lead record. Dedup and enrichment are skipped — the lead was already
+   *  enriched and deduplicated before promotion. */
+  fromLeadId?: string | null
   first_name?: string | null
   last_name?: string | null
   email?: string | null
   phone?: string | null
+  preferred_channel?: 'phone' | 'email' | 'sms' | null
   tcpa_consent: boolean
   tcpa_consent_date?: string | null
   rawPayload?: Record<string, unknown>
@@ -61,7 +83,65 @@ export async function captureContact(
     )
   }
 
-  // ── Search dedup candidates ──────────────────────────────────────────────
+  // ── Lead-conversion fast path ────────────────────────────────────────────
+  // When a contact is being promoted from a lead record the lead was already
+  // deduplicated and enriched. Skip directly to CREATE and skip enrichment
+  // queue — the caller (contact-creator.ts) owns that data transfer.
+  const isLeadConversion =
+    !!params.fromLeadId || LEAD_CONVERSION_SOURCES.has(params.source)
+
+  if (isLeadConversion) {
+    let resolvedAgentUserId = params.agentUserId ?? null
+    if (!resolvedAgentUserId) {
+      const { data: primaryAgent } = await supabase
+        .from('agents')
+        .select('user_id')
+        .eq('brokerage_id', params.brokerageId)
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+      if (primaryAgent?.user_id) resolvedAgentUserId = primaryAgent.user_id
+    }
+
+    const { data: created, error: createError } = await supabase
+      .from('contacts')
+      .insert({
+        brokerage_id: params.brokerageId,
+        agent_id: resolvedAgentUserId,
+        first_name: params.first_name ?? null,
+        last_name: params.last_name ?? null,
+        email: params.email ?? null,
+        phone: params.phone ?? null,
+        preferred_channel: params.preferred_channel ?? 'email',
+        source: params.source,
+        tcpa_consent: params.tcpa_consent,
+        tcpa_consent_date: params.tcpa_consent
+          ? (params.tcpa_consent_date ?? new Date().toISOString())
+          : null,
+        isa_reengage_allowed: true,
+        dnc_status: false,
+        notes: params.fromLeadId ? `Promoted from lead ${params.fromLeadId}` : undefined,
+      })
+      .select('id')
+      .single()
+
+    if (createError || !created) {
+      throw new Error(`Failed to create contact from lead: ${createError?.message ?? 'no data'}`)
+    }
+
+    await supabase.from('lifecycle_events').insert({
+      brokerage_id: params.brokerageId,
+      entity_type: 'contact',
+      entity_id: created.id,
+      event_type: KernelEvent.CONTACT_CAPTURED,
+      metadata: { source: params.source, from_lead_id: params.fromLeadId ?? null },
+    })
+
+    return { contactId: created.id, action: 'created' }
+  }
+
+  // ── Dedup — only for direct public-form captures ─────────────────────────
   const orFilter = [
     params.email ? `email.eq.${params.email}` : null,
     params.phone ? `phone.eq.${params.phone}` : null,
@@ -106,6 +186,20 @@ export async function captureContact(
   if (bestId !== null && bestScore >= DEDUP_THRESHOLD) {
     const existing = (candidates ?? []).find((x) => x.id === bestId)
 
+    // Resolve agent to assign on merge if existing contact has none
+    let mergeAgentId = params.agentUserId ?? null
+    if (!mergeAgentId && !existing?.agent_id) {
+      const { data: primaryAgent } = await supabase
+        .from('agents')
+        .select('user_id')
+        .eq('brokerage_id', params.brokerageId)
+        .eq('is_active', true)
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle()
+      if (primaryAgent?.user_id) mergeAgentId = primaryAgent.user_id
+    }
+
     await supabase
       .from('contacts')
       .update({
@@ -114,6 +208,12 @@ export async function captureContact(
         email: existing?.email || params.email,
         phone: existing?.phone || params.phone,
         source: existing?.source || params.source,
+        // Assign agent if not already set
+        ...(mergeAgentId && !existing?.agent_id ? { agent_id: mergeAgentId } : {}),
+        // Only upgrade preferred_channel if consent was just given
+        preferred_channel: params.tcpa_consent
+          ? (params.preferred_channel ?? existing?.preferred_channel)
+          : existing?.preferred_channel,
         tcpa_consent: params.tcpa_consent ? true : existing?.tcpa_consent,
         tcpa_consent_date: params.tcpa_consent
           ? (params.tcpa_consent_date ?? new Date().toISOString())
@@ -146,15 +246,31 @@ export async function captureContact(
   }
 
   // ── CREATE path ──────────────────────────────────────────────────────────
+  // If no agent was passed from metadata, resolve the brokerage's primary active
+  // agent (earliest created_at) so every contact always has an owner.
+  let resolvedAgentUserId = params.agentUserId ?? null
+  if (!resolvedAgentUserId) {
+    const { data: primaryAgent } = await supabase
+      .from('agents')
+      .select('user_id')
+      .eq('brokerage_id', params.brokerageId)
+      .eq('is_active', true)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle()
+    if (primaryAgent?.user_id) resolvedAgentUserId = primaryAgent.user_id
+  }
+
   const { data: created, error: createError } = await supabase
     .from('contacts')
     .insert({
       brokerage_id: params.brokerageId,
-      agent_id: params.agentUserId ?? null,   // references users.id NOT agents.id
+      agent_id: resolvedAgentUserId,   // references users.id NOT agents.id
       first_name: params.first_name ?? null,
       last_name: params.last_name ?? null,
       email: params.email ?? null,
       phone: params.phone ?? null,
+      preferred_channel: params.preferred_channel ?? (params.tcpa_consent ? 'phone' : 'email'),
       source: params.source,
       tcpa_consent: params.tcpa_consent,
       tcpa_consent_date: params.tcpa_consent

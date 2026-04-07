@@ -7,6 +7,12 @@
 import { NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { refreshMarketData } from "@/lib/intelligence/market-insight-generator"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 300 // 5 minutes
@@ -16,6 +22,19 @@ export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization")
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const contextResult = await createCronRunContextAction({
+    cron_name: "market-data-refresh",
+    cron_path: "/app/api/cron/market-data-refresh/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[MarketDataRefresh] Failed to record cron start:", startRecordResult.error)
   }
 
   const supabase = createServiceClient()
@@ -38,6 +57,7 @@ export async function GET(request: Request) {
     }
 
     if (!sources || sources.length === 0) {
+      await recordCronSuccessAction({ context_id: contextId, records_processed: 0, metadata: { message: "No active market sources" } })
       return NextResponse.json({
         message: "No active market sources to refresh",
         refreshed: 0,
@@ -77,6 +97,13 @@ export async function GET(request: Request) {
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
 
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: sources.length,
+      output_count: refreshed,
+      metadata: { refreshed, errors, total: sources.length },
+    })
+
     return NextResponse.json({
       message: "Market data refresh complete",
       refreshed,
@@ -85,9 +112,7 @@ export async function GET(request: Request) {
     })
   } catch (error) {
     console.error("[MarketRefresh] Cron error:", error)
-    return NextResponse.json(
-      { error: "Market data refresh failed" },
-      { status: 500 }
-    )
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    return NextResponse.json({ error: "Market data refresh failed", context_id: contextId }, { status: 500 })
   }
 }

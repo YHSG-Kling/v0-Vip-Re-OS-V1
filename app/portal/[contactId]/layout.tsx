@@ -10,9 +10,9 @@ import {
   type PortalView,
 } from "@/lib/kernel/portal"
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
-import PortalNav from "@/components/portal/PortalNav"
-import PortalUserMenu from "@/components/portal/PortalUserMenu"
-import PortalAIAssistant from "@/components/portal/PortalAIAssistant"
+import PortalNav from "@/app/components/features/portal/base/PortalNav"
+import PortalUserMenu from "@/app/components/features/portal/base/PortalUserMenu"
+import PortalAIAssistant from "@/app/components/features/portal/ai/PortalAIAssistant"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 
@@ -51,15 +51,110 @@ export default async function PortalLayout({
   const { contactId } = await params
   const supabase = await createClient()
 
+  // ── Auth check ────────────────────────────────────────────────────
+  const { data: { user } } = await supabase.auth.getUser()
+
   // Fetch contact (without broken embedded join)
   const { data: contact, error: contactError } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, name, contact_persona")
+    .select("id, first_name, last_name, brokerage_id, contact_type, buyer_stage, agent_id, created_at, name, contact_persona, email")
     .eq("id", contactId)
-    .single()
+    .maybeSingle()
 
   if (contactError || !contact) {
     redirect("/portal?error=contact_not_found")
+  }
+
+  // ── Access gate: 4 rules ─────────────────────────────────────────
+  let accessGranted = false
+
+  if (user) {
+    // Rule 1: Contact's own email (client self-service)
+    if (user.email?.toLowerCase() === contact.email?.toLowerCase()) {
+      accessGranted = true
+    }
+
+    // Rule 2: Assigned agent
+    if (!accessGranted && contact.agent_id) {
+      const { data: ag } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("id", contact.agent_id)
+        .maybeSingle()
+      if (ag) accessGranted = true
+    }
+
+    // Rule 3: Admin/broker of same brokerage
+    if (!accessGranted) {
+      const { data: ur } = await supabase
+        .from("users")
+        .select("user_type, brokerage_id")
+        .eq("id", user.id)
+        .maybeSingle()
+      if (
+        ur?.brokerage_id === contact.brokerage_id &&
+        ["admin", "broker", "superadmin"].includes(ur.user_type ?? "")
+      ) {
+        accessGranted = true
+      }
+    }
+
+    // Rule 4: Accepted portal invite for this contact
+    if (!accessGranted) {
+      const { data: invite } = await supabase
+        .from("portal_contact_invites")
+        .select("status, expires_at")
+        .eq("contact_id", contactId)
+        .eq("email", user.email ?? "")
+        .maybeSingle()
+      if (invite?.status === "accepted" && new Date(invite.expires_at) > new Date()) {
+        accessGranted = true
+      }
+    }
+  }
+
+  if (!accessGranted) {
+    redirect(`/portal/login?contactId=${contactId}`)
+  }
+
+  // ── First-access: mark invite accepted + notify agent (non-blocking) ──
+  if (user && user.email?.toLowerCase() === contact.email?.toLowerCase()) {
+    const { data: invite } = await supabase
+      .from("portal_contact_invites")
+      .select("id, status")
+      .eq("contact_id", contactId)
+      .eq("status", "sent")
+      .maybeSingle()
+
+    if (invite) {
+      await supabase
+        .from("portal_contact_invites")
+        .update({ status: "accepted", accepted_at: new Date().toISOString() })
+        .eq("id", invite.id)
+
+      // Notify assigned agent (non-blocking, fire-and-forget)
+      if (contact.agent_id) {
+        supabase
+          .from("agents")
+          .select("user_id")
+          .eq("id", contact.agent_id)
+          .maybeSingle()
+          .then(({ data: agent }) => {
+            if (agent?.user_id) {
+              supabase.from("notifications").insert({
+                user_id: agent.user_id,
+                brokerage_id: contact.brokerage_id,
+                type: "portal_first_login",
+                title: `${contact.first_name} just opened their portal`,
+                entity_type: "contact",
+                entity_id: contactId,
+              }).catch(() => {})
+            }
+          })
+          .catch(() => {})
+      }
+    }
   }
 
   // Resolve agent via kernel identity function
@@ -67,17 +162,20 @@ export default async function PortalLayout({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
-  // Kernel-driven portal view determination
-  const [view, modules] = await Promise.all([
-    determinePortalView(supabase, contactId),
-    determinePortalModules(supabase, contactId),
+  // Kernel-driven portal view determination — use normalized contract objects
+  const [viewOutput, modulesOutput] = await Promise.all([
+    determinePortalView(supabase, { contactId }),
+    determinePortalModules(supabase, { contactId }),
   ])
+
+  // Extract canonical PortalView string from contract output
+  const view = viewOutput.view
+  const modules = modulesOutput.modules
 
   // Build nav from kernel function
   const navItems = buildPortalNav(view, modules, contactId)
 
-  // Log portal access (non-blocking)
-  logPortalAccess(supabase, contactId, "layout", "view", agentData?.id).catch(() => {})
+  // Portal access logged below after view is derived
 
   // Derive display values
   const contactName = contact.first_name || contact.name || "Guest"
@@ -85,6 +183,8 @@ export default async function PortalLayout({
   const isBuyer = view === "buyer"
   const isSeller = view === "seller"
   const persona = contact.contact_persona || "other"
+  // Log access with resolved view for tracing
+  logPortalAccess(supabase, contactId, "layout", `view:${view}`, agentData?.id).catch(() => {})
 
   return (
     <div className="min-h-screen bg-background">

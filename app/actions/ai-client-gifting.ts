@@ -378,12 +378,12 @@ export async function getGiftAnalytics(params: { agentId: string; year?: number 
         referralsFromGiftedClients: referralCount,
         estimatedROI: `${estimatedROI}%`,
         averageGiftValue: totalSpent / gifts.length || 0,
-        topVendors: Object.entries(
+        topVendors: (Object.entries(
           gifts.reduce((acc, g) => {
             acc[g.vendor || "Unknown"] = (acc[g.vendor || "Unknown"] || 0) + 1
             return acc
           }, {} as Record<string, number>)
-        ).sort((a, b) => b[1] - a[1]).slice(0, 5),
+        ) as Array<[string, number]>).sort((a, b) => b[1] - a[1]).slice(0, 5),
       },
     }
   } catch (error) {

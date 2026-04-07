@@ -106,14 +106,16 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
 
           {/* Enhanced Tabs */}
           <Tabs defaultValue="overview" className="space-y-4">
-            <TabsList className="grid w-full grid-cols-6">
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="copilot">AI Copilot</TabsTrigger>
-              <TabsTrigger value="credit">Credit</TabsTrigger>
-              <TabsTrigger value="videos">Videos</TabsTrigger>
-              <TabsTrigger value="transactions">Transactions</TabsTrigger>
-              <TabsTrigger value="activity">Activity</TabsTrigger>
-            </TabsList>
+            <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+              <TabsList className="flex min-w-max sm:grid sm:w-full sm:grid-cols-6">
+                <TabsTrigger value="overview" className="min-h-[44px] sm:min-h-0 min-w-[90px] sm:min-w-0">Overview</TabsTrigger>
+                <TabsTrigger value="copilot" className="min-h-[44px] sm:min-h-0 min-w-[100px] sm:min-w-0">AI Copilot</TabsTrigger>
+                <TabsTrigger value="credit" className="min-h-[44px] sm:min-h-0 min-w-[80px] sm:min-w-0">Credit</TabsTrigger>
+                <TabsTrigger value="videos" className="min-h-[44px] sm:min-h-0 min-w-[80px] sm:min-w-0">Videos</TabsTrigger>
+                <TabsTrigger value="transactions" className="min-h-[44px] sm:min-h-0 min-w-[110px] sm:min-w-0">Transactions</TabsTrigger>
+                <TabsTrigger value="activity" className="min-h-[44px] sm:min-h-0 min-w-[80px] sm:min-w-0">Activity</TabsTrigger>
+              </TabsList>
+            </div>
 
             <TabsContent value="overview" className="space-y-4">
               <div className="grid md:grid-cols-2 gap-4">

@@ -15,6 +15,7 @@ import {
 } from "@/app/actions/ai-communication-hub"
 import { createClient } from "@/lib/supabase/client"
 import AIReplyCoachPanel from "./components/AIReplyCoachPanel"
+import { toast } from "sonner"
 
 type Conversation = {
   id: string
@@ -31,6 +32,8 @@ type Conversation = {
     phone?: string
     lifecycle_state: string
     lead_score?: number
+    tcpa_consent?: boolean | null
+    call_stop_flag?: boolean | null
   } | null
   last_message_preview?: string
 }
@@ -184,7 +187,8 @@ export default function InboxClient({
     subject?: string,
     channel?: string
   ): Promise<{ success: boolean; error?: string }> => {
-    if (!selectedId || !contact?.id) return { success: false, error: "No conversation or contact selected" }
+    if (!selectedId) return { success: false, error: "No conversation selected" }
+    if (!contact?.id) return { success: false, error: "Contact record missing — cannot send message" }
 
     const resolvedChannel = (channel ?? selectedConvo?.type ?? "email") as "email" | "sms" | "in_app"
 
@@ -195,21 +199,32 @@ export default function InboxClient({
       channel:        resolvedChannel,
       body,
       subject:        subject || undefined,
-    })
+    }) as { success: boolean; error?: string; tcpaBlocked?: boolean; suppressed?: boolean }
 
     if (result.success) {
       setMessages(prev => [...prev, {
-        id: crypto.randomUUID(),
+        id:          crypto.randomUUID(),
         body,
-        content: body,
+        content:     body,
         direction:   "outbound",
         sender_type: "agent",
         created_at:  new Date().toISOString(),
         type:        resolvedChannel,
         channel:     resolvedChannel,
       }])
+    } else if (result.tcpaBlocked) {
+      toast.error("TCPA Consent Required", {
+        description: result.error ?? "This contact has not opted in to SMS. Obtain written consent first.",
+      })
+    } else if (result.suppressed) {
+      toast.error("Contact Suppressed", {
+        description: result.error ?? "This contact is on a suppression list (DNC or opted out).",
+      })
+    } else if (result.error) {
+      toast.error("Send Failed", { description: result.error })
     }
-    return result as { success: boolean; error?: string }
+
+    return { success: result.success, error: result.error }
   }, [selectedId, contact?.id, agentId, selectedConvo?.type])
 
   const handleDraft = useCallback(async (currentText: string): Promise<string> => {
@@ -299,6 +314,7 @@ export default function InboxClient({
               contactId={contact?.id ?? ""}
               channel={(selectedConvo.type ?? "email") as "email" | "sms" | "in_app"}
               lifecycleState={contact?.lifecycle_state}
+              tcpaConsent={contact?.tcpa_consent ?? null}
               emailTemplates={emailTemplates}
               onSend={handleSend}
               onDraft={handleDraft}

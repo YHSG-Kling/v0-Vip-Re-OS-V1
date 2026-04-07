@@ -16,6 +16,40 @@ export class ZenrowsClient {
     const result = await scrapeWithZenRows(url, { jsRender: true, premiumProxy: true })
     return result.body
   }
+
+  /**
+   * Scrapes Nextdoor search results for a given URL.
+   * Extracts post text nodes from the rendered HTML and returns up to 30 posts.
+   */
+  async scrapeNextdoor(url: string): Promise<{ success: boolean; posts: { content: string }[]; cost: number }> {
+    try {
+      const result = await scrapeWithZenRows(url, { jsRender: true, premiumProxy: true })
+      if (!result.body) return { success: false, posts: [], cost: result.cost }
+      const posts: { content: string }[] = []
+      const matches = result.body.match(/class="[^"]*post[^"]*"[^>]*>([\s\S]*?)<\/div>/g) ?? []
+      for (const match of matches.slice(0, 30)) {
+        const text = match.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+        if (text.length > 30) posts.push({ content: text.slice(0, 500) })
+      }
+      return { success: true, posts, cost: result.cost }
+    } catch {
+      return { success: false, posts: [], cost: 0 }
+    }
+  }
+
+  /**
+   * Scrapes Facebook group posts by delegating to the Apify Facebook scraper,
+   * since Facebook requires auth that ZenRows alone cannot provide.
+   */
+  async scrapeFacebookGroups(params: { groupUrls: string[]; keywords: string[] }): Promise<{ success: boolean; posts: any[]; cost: number }> {
+    try {
+      const { scrapeFacebookGroupPosts } = await import('./apify-client')
+      const result = await scrapeFacebookGroupPosts({ groupUrls: params.groupUrls, keywords: params.keywords, limit: 50 })
+      return { success: true, posts: result.posts ?? [], cost: result.cost ?? 0 }
+    } catch {
+      return { success: false, posts: [], cost: 0 }
+    }
+  }
 }
 
 const ZENROWS_API_KEY = process.env.ZENROWS_API_KEY!

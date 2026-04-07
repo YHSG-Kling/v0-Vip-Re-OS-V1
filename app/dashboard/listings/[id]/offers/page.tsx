@@ -36,18 +36,36 @@ export default async function OffersPage({
         ai_extraction_status, offer_document_url, offer_document_name,
         status, offer_type, parent_offer_id, current_round,
         is_winning_offer, winning_offer, submitted_at, response_deadline,
-        seller_viewed_at, contact_id, agent_id, brokerage_id
+        seller_viewed_at, contact_id, agent_id, brokerage_id, form_source
       `)
       .eq("listing_id", listingId)
       .order("submitted_at", { ascending: false }),
   ])
+
+  // Resolve buyer agent names — separate query since offers.agent_id has no declared FK to users
+  const agentIds = [...new Set((offers ?? []).map((o) => o.agent_id).filter(Boolean))] as string[]
+  let agentNameMap: Record<string, string> = {}
+  if (agentIds.length > 0) {
+    const { data: agentUsers } = await supabase
+      .from("users")
+      .select("id, full_name")
+      .in("id", agentIds)
+    if (agentUsers) {
+      agentNameMap = Object.fromEntries(agentUsers.map((u) => [u.id, u.full_name ?? "Unknown"]))
+    }
+  }
+
+  const offersWithAgentNames = (offers ?? []).map((o) => ({
+    ...o,
+    buyer_agent: o.agent_id ? { full_name: agentNameMap[o.agent_id] ?? null } : null,
+  }))
 
   if (!listing) redirect("/dashboard/listings")
 
   return (
     <OffersManagerClient
       listing={listing}
-      initialOffers={offers ?? []}
+      initialOffers={offersWithAgentNames}
       currentUserId={user.id}
       brokerageId={agentRow?.brokerage_id ?? listing.brokerage_id ?? ""}
       userRole={agentRow?.role ?? agentRow?.platform_role ?? "agent"}

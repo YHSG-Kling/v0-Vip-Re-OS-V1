@@ -5,6 +5,7 @@ import { useState, useRef } from "react"
 import { Mic, Square, Loader2, CheckCircle2, AlertCircle } from "lucide-react"
 import { executeWorkflow } from "../../app/actions/workflows"
 import { useAuth } from "@/lib/auth/client"
+import { toast } from "sonner"
 
 interface VoiceCommandButtonProps {
   onNavigate?: (view: string) => void
@@ -41,7 +42,7 @@ export const VoiceCommandButton: React.FC<VoiceCommandButtonProps> = ({ onNaviga
       setIsRecording(true)
       setResult(null)
     } catch (error) {
-      alert("Microphone access denied or unavailable.")
+      toast.error("Microphone access denied or unavailable")
     }
   }
 

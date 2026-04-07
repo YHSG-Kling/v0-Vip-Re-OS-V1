@@ -14,7 +14,7 @@ export async function logISAOutreach(params: {
   brokerageId: string
   agentId?: string
   entity: Entity
-  channel: 'email' | 'direct_mail' | 'video'
+  channel: 'email' | 'sms' | 'phone' | 'direct_mail' | 'video' | 'social' | 'facebook' | 'instagram' | 'linkedin' | 'twitter'
   subject?: string
   bodySnippet?: string
   themFirstScore?: number | null
@@ -28,11 +28,12 @@ export async function logISAOutreach(params: {
   const entityId =
     entityType === 'lead' ? params.entity.leadId : params.entity.contactId
 
-  const calendarMap: Record<typeof params.channel, CalendarEventType> = {
+  const calendarMap: Partial<Record<string, CalendarEventType>> = {
     email:       CalendarEventType.ISA_OUTREACH_EMAIL,
     direct_mail: CalendarEventType.ISA_DIRECT_MAIL,
     video:       CalendarEventType.ISA_VIDEO_SEND,
   }
+  const calendarEventType = calendarMap[params.channel] ?? CalendarEventType.ISA_OUTREACH_EMAIL
 
   const now = new Date()
   const endAt = new Date(now.getTime() + 15 * 60 * 1000)
@@ -41,7 +42,7 @@ export async function logISAOutreach(params: {
   await supabase.from('calendar_events').insert({
     entity_type:          entityType,
     entity_id:            entityId,
-    event_type:           calendarMap[params.channel],
+    event_type:           calendarEventType,
     start_at:             now.toISOString(),
     end_at:               endAt.toISOString(),
     timezone_name:        'UTC',
@@ -106,6 +107,20 @@ export async function checkMaxTouches(
   brokerageId: string,
 ): Promise<boolean> {
   const supabase = createServiceClient()
+
+  // Belt-and-suspenders: if the entity is suppressed, skip touch counting entirely.
+  // evaluateOutbound is the primary gate — this ensures checkMaxTouches never logs
+  // a touch against a DNC/opted-out entity even if called out of the normal gate order.
+  const suppressionTable = entityType === 'contact' ? 'contacts' : 'leads'
+  const { data: suppressCheck } = await supabase
+    .from(suppressionTable)
+    .select('dnc_status, email_opt_out')
+    .eq('id', entityId)
+    .maybeSingle()
+
+  if (suppressCheck?.dnc_status || suppressCheck?.email_opt_out) {
+    return false  // suppressed — do not count or send
+  }
 
   let touchCount = 0
 

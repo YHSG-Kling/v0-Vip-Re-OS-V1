@@ -1,12 +1,20 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { resolveCommissionStructure, type CalculateCommissionInput } from "@/lib/kernel/adapters/financial"
+import {
+  createExpenseRecordAction,
+  createCommissionRecordAction,
+  loadAgentProfitLossSummaryAction,
+  loadCommissionQueueAction,
+} from "@/app/actions/financial-kernel"
 
 // ============================================================================
 // AI FINANCIAL MANAGEMENT SYSTEM
@@ -25,15 +33,7 @@ interface ExpenseEntry {
   isDeductible?: boolean
 }
 
-interface CommissionEntry {
-  agentId: string
-  transactionId: string
-  grossCommission: number
-  splitPercentage: number
-  brokerageFee?: number
-  franchiseFee?: number
-  additionalFees?: Array<{ name: string; amount: number }>
-}
+type CommissionEntry = CalculateCommissionInput
 
 /**
  * AI Expense Categorization and Entry
@@ -63,7 +63,7 @@ export async function aiCategorizeExpense(params: {
 
     // AI categorization
     const { text: categoryAnalysis } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `You are a real estate expense categorization expert. Categorize this expense.
 
 EXPENSE DETAILS:
@@ -126,10 +126,7 @@ export async function createExpense(params: ExpenseEntry) {
     return { success: false, error: "Invalid agent ID" }
   }
 
-  const supabase = await createClient()
-
   try {
-    // Get AI categorization
     const categoryResult = await aiCategorizeExpense({
       agentId: params.agentId,
       description: params.description,
@@ -139,35 +136,24 @@ export async function createExpense(params: ExpenseEntry) {
 
     const categorization = categoryResult.success ? categoryResult.categorization : {}
 
-    // Create expense record
-    const { data: expense, error } = await supabase
-      .from("business_expenses")
-      .insert({
-        agent_id: params.agentId,
-        amount: params.amount,
-        category: params.category || categorization.category,
-        subcategory: categorization.subcategory,
-        description: params.description,
-        vendor: params.vendor,
-        transaction_id: params.transactionId,
-        receipt_url: params.receiptUrl,
-        expense_date: params.date,
-        is_deductible: params.isDeductible ?? categorization.isDeductible,
-        deduction_percentage: categorization.deductionPercentage,
-        ai_categorization: categorization,
-        tags: categorization.suggestedTags,
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
+    const expenseResult = await createExpenseRecordAction({
+      agentId: params.agentId,
+      category: params.category || categorization.category || "other",
+      amount: params.amount,
+      description: params.description,
+      receiptUrl: params.receiptUrl,
+      expenseDate: params.date,
+    })
 
-    if (error) throw error
+    if (!expenseResult.success || !expenseResult.data) {
+      throw new Error(expenseResult.error || "Failed to create expense record")
+    }
 
-    // Sync to QuickBooks if connected
+    const expense = expenseResult.data
+
     await syncExpenseToQuickBooks(expense)
 
     revalidatePath("/financials")
-    revalidatePath("/dashboard")
 
     return {
       success: true,
@@ -251,26 +237,21 @@ export async function aiCalculateCommission(params: CommissionEntry) {
         listings(address, city, sale_price)
       `)
       .eq("id", params.transactionId)
-      .single()
+      .maybeSingle()
 
     // Get agent's commission structure
     const { data: agentProfile } = await supabase
       .from("agents")
       .select("commission_split, brokerage_id, cap_amount, cap_current")
       .eq("user_id", params.agentId)
-      .single()
+      .maybeSingle()
 
     // Calculate commission breakdown
     const grossCommission = params.grossCommission
-    
-    if (!params.splitPercentage && !params.brokerageId) {
-      throw new Error("[ai-financial-management] brokerageId required to resolve commission structure")
-    }
-    let agentSplit = params.splitPercentage
-    if (!agentSplit && params.brokerageId && params.agentId) {
-      const structure = await getDefaultCommissionStructure(params.brokerageId, params.agentId)
-      agentSplit = structure.splitDecimal * 100
-    }
+
+    const resolvedStructure = await resolveCommissionStructure(params)
+    const agentSplit = resolvedStructure.splitPercentage
+
     if (!agentSplit) {
       throw new Error("[ai-financial-management] Cannot resolve agent split — no profile configured")
     }
@@ -319,7 +300,7 @@ export async function aiCalculateCommission(params: CommissionEntry) {
 
     // AI Tax Estimation
     const { text: taxAnalysis } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Estimate tax liability for this real estate commission.
 
 COMMISSION DETAILS:
@@ -347,27 +328,21 @@ Provide JSON with tax estimates:
     }
 
     // Save commission record
-    const { data: commission, error } = await supabase
-      .from("commissions")
-      .insert({
-        agent_id: params.agentId,
-        transaction_id: params.transactionId,
-        gross_commission: grossCommission,
-        agent_split_percentage: agentSplit,
-        brokerage_share: brokerageShare,
-        agent_gross: agentGross,
-        fees_total: additionalFeesTotal,
-        fee_breakdown: feeBreakdown,
-        capped_amount: cappedAmount,
-        agent_net: finalAgentNet,
-        tax_estimate: taxEstimate,
-        status: "pending",
-        created_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
+      const commissionResult = await createCommissionRecordAction({
+      agentId: params.agentId,
+      transactionId: params.transactionId,
+      grossCommission,
+      splitPercentage: agentSplit,
+      brokerageFee: params.brokerageFee,
+      franchiseFee: params.franchiseFee,
+      additionalFees: params.additionalFees,
+    })
 
-    if (error) throw error
+    if (!commissionResult.success || !commissionResult.data) {
+      throw new Error(commissionResult.error || "Failed to create commission record")
+    }
+
+    const commission = commissionResult.data
 
     // Update agent's cap tracking
     if (agentProfile && !cappedAmount) {
@@ -421,48 +396,59 @@ export async function aiGenerateProfitLossReport(params: {
 
   try {
     // Get all income for period
-    const { data: commissions } = await supabase
-      .from("commissions")
-      .select("*")
-      .eq("agent_id", params.agentId)
-      .gte("created_at", params.startDate)
-      .lte("created_at", params.endDate)
-      .eq("status", "paid")
+  const summaryResult = await loadAgentProfitLossSummaryAction({
+  agentId: params.agentId,
+})
 
-    // Get all expenses for period
-    const { data: expenses } = await supabase
-      .from("business_expenses")
-      .select("*")
-      .eq("agent_id", params.agentId)
-      .gte("expense_date", params.startDate)
-      .lte("expense_date", params.endDate)
+if (!summaryResult.success || !summaryResult.data) {
+  throw new Error(summaryResult.error || "Failed to load agent financial summary")
+}
 
-    // Calculate totals
-    const totalIncome = commissions?.reduce((sum: number, c: any) => sum + (c.agent_net || 0), 0) || 0
-    const totalExpenses = expenses?.reduce((sum: number, e: any) => sum + (e.amount || 0), 0) || 0
-    const netProfit = totalIncome - totalExpenses
+const summary = summaryResult.data
 
-    // Categorize expenses
+const { data: expenses } = await supabase
+  .from("business_expenses")
+  .select("category, amount, is_deductible, deduction_percentage")
+  .eq("agent_id", params.agentId)
+  .gte("expense_date", params.startDate)
+  .lte("expense_date", params.endDate)
+
+const totalIncome = summary.totalIncome
+
+const totalExpenses =
+  typeof summary.totalExpenses === "number"
+    ? summary.totalExpenses
+    : expenses?.reduce((sum: number, e: any) => sum + (e.amount || 0), 0) || 0
+
+const netProfit =
+  typeof summary.netProfit === "number"
+    ? summary.netProfit
+    : totalIncome - totalExpenses
+
+const transactionCount = summary.closedTransactions
+
     const expensesByCategory: Record<string, number> = {}
     expenses?.forEach((e: any) => {
       expensesByCategory[e.category] = (expensesByCategory[e.category] || 0) + e.amount
     })
 
-    // Calculate deductible expenses
     const deductibleExpenses =
-      expenses?.filter((e: any) => e.is_deductible).reduce((sum: number, e: any) => sum + (e.amount * (e.deduction_percentage || 100)) / 100, 0) || 0
-
+      expenses?.filter((e: any) => e.is_deductible).reduce((sum: number, e: any) => {
+        const pct = typeof e.deduction_percentage === "number" ? e.deduction_percentage : 100
+        return sum + (e.amount * pct) / 100
+      }, 0) || 0
+    
     // AI Analysis and Projections
     const { text: financialAnalysis } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `Analyze this real estate agent's financial performance and provide insights.
 
 PERIOD: ${params.startDate} to ${params.endDate}
 
 INCOME:
 - Total Commissions: $${totalIncome.toLocaleString()}
-- Number of Transactions: ${commissions?.length || 0}
-- Average Commission: $${commissions?.length ? (totalIncome / commissions.length).toLocaleString() : 0}
+- Number of Transactions: ${transactionCount}
+- Average Commission: $${transactionCount ? (totalIncome / transactionCount).toLocaleString() : 0}
 
 EXPENSES BY CATEGORY:
 ${Object.entries(expensesByCategory)
@@ -531,7 +517,7 @@ Provide comprehensive analysis:
         generated_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -541,10 +527,10 @@ Provide comprehensive analysis:
       success: true,
       report: {
         period: { start: params.startDate, end: params.endDate },
-        income: {
+                income: {
           total: totalIncome,
-          transactionCount: commissions?.length || 0,
-          averageCommission: commissions?.length ? totalIncome / commissions.length : 0,
+          transactionCount,
+          averageCommission: transactionCount ? totalIncome / transactionCount : 0,
         },
         expenses: {
           total: totalExpenses,
@@ -587,7 +573,7 @@ async function syncExpenseToQuickBooks(expense: any) {
     .eq("brokerage_id", agent.brokerage_id)
     .eq("provider_name", "quickbooks")
     .eq("is_active", true)
-    .single()
+    .maybeSingle()
 
   if (!integration) {
     console.log("[v0] QuickBooks not connected, skipping sync")
@@ -638,7 +624,7 @@ async function syncCommissionToQuickBooks(commission: any) {
     .from("users")
     .select("brokerage_id")
     .eq("id", commission.agent_id)
-    .single()
+    .maybeSingle()
 
   if (!agent?.brokerage_id) {
     console.log("[v0] Agent brokerage not found, skipping sync")
@@ -652,7 +638,7 @@ async function syncCommissionToQuickBooks(commission: any) {
     .eq("brokerage_id", agent.brokerage_id)
     .eq("provider_name", "quickbooks")
     .eq("is_active", true)
-    .single()
+    .maybeSingle()
 
   if (!integration) {
     console.log("[v0] QuickBooks not connected, skipping sync")
@@ -752,7 +738,7 @@ export async function aiCreateBudget(params: {
 
     // AI Budget Generation
     const { text: budgetPlan } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `Create a smart budget plan for a real estate agent.
 
 HISTORICAL DATA (${lastYear}):
@@ -824,7 +810,7 @@ Create a detailed budget with monthly allocations:
         created_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -845,55 +831,59 @@ Create a detailed budget with monthly allocations:
  * Retrieves commission records with optional filters
  */
 export async function getCommissionRecords(params?: {
+  brokerageId?: string
   agentId?: string
   transactionId?: string
   status?: string
   startDate?: string
   endDate?: string
 }) {
-  const supabase = await createClient()
-
   try {
-    let query = supabase
-      .from("commissions")
-      .select(`
-        *,
-        transactions (
-          id,
-          property_address,
-          status,
-          close_date
-        )
-      `)
-      .order("created_at", { ascending: false })
-
-    if (params?.agentId && isValidUUID(params.agentId)) {
-      query = query.eq("agent_id", params.agentId)
+    if (!params?.brokerageId || !isValidUUID(params.brokerageId)) {
+      return { success: false, error: "Valid brokerageId is required" }
     }
 
-    if (params?.transactionId && isValidUUID(params.transactionId)) {
-      query = query.eq("transaction_id", params.transactionId)
+    const queueResult = await loadCommissionQueueAction({
+      brokerageId: params.brokerageId,
+    })
+
+    if (!queueResult.success || !queueResult.data) {
+      throw new Error(queueResult.error || "Failed to load commission queue")
     }
 
-    if (params?.status) {
-      query = query.eq("status", params.status)
+    let commissions = queueResult.data
+
+    if (params.agentId && isValidUUID(params.agentId)) {
+      commissions = commissions.filter((c: any) => c.agentId === params.agentId)
     }
 
-    if (params?.startDate) {
-      query = query.gte("created_at", params.startDate)
+    if (params.transactionId && isValidUUID(params.transactionId)) {
+      commissions = commissions.filter((c: any) => c.transactionId === params.transactionId)
     }
 
-    if (params?.endDate) {
-      query = query.lte("created_at", params.endDate)
+    if (params.status) {
+      commissions = commissions.filter((c: any) => c.status === params.status)
     }
 
-    const { data: commissions, error } = await query
+if (params.startDate) {
+  const startDate = params.startDate
+  commissions = commissions.filter((c: any) => {
+    const createdAt = c.createdAt || c.created_at
+    return createdAt ? createdAt >= startDate : true
+  })
+}
 
-    if (error) throw error
+if (params.endDate) {
+  const endDate = params.endDate
+  commissions = commissions.filter((c: any) => {
+    const createdAt = c.createdAt || c.created_at
+    return createdAt ? createdAt <= endDate : true
+  })
+}
 
     return {
       success: true,
-      commissions: commissions || [],
+      commissions,
     }
   } catch (error) {
     return handleError(error, "getCommissionRecords")
@@ -939,7 +929,7 @@ export async function trackDeposit(params: {
         created_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -955,7 +945,7 @@ export async function trackDeposit(params: {
     })
 
     revalidatePath("/financials")
-    revalidatePath("/transactions")
+    revalidatePath("/dashboard/transactions")
 
     return {
       success: true,

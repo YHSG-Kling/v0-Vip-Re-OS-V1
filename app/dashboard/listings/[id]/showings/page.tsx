@@ -30,7 +30,7 @@ export default async function ShowingsPage({ params }: Props) {
     .from("users")
     .select("brokerage_id")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   const brokerageId = userRow?.brokerage_id
   if (!brokerageId) notFound()
@@ -40,7 +40,7 @@ export default async function ShowingsPage({ params }: Props) {
     .select("id, address, city, state, agent_id, lifecycle_stage, showing_instructions")
     .eq("id", listingId)
     .eq("brokerage_id", brokerageId)
-    .single()
+    .maybeSingle()
 
   if (!listing) notFound()
 

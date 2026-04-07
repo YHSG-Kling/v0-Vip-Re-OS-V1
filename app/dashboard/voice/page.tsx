@@ -23,7 +23,7 @@ export default async function VoiceDashboardPage() {
   // ── Fetch user row ─────────────────────────────────────────────────────────
   const { data: userRow } = await supabase
     .from("users")
-    .select("id, role, brokerage_id, first_name, last_name, assistant_wake_name")
+    .select("id, user_type, brokerage_id, first_name, last_name, assistant_wake_name")
     .eq("id", authUser.id)
     .maybeSingle()
 
@@ -31,7 +31,7 @@ export default async function VoiceDashboardPage() {
 
   const wakeName: string = (userRow.assistant_wake_name as string | null) ?? "VIP"
   const brokerageId: string = userRow.brokerage_id ?? ""
-  const userRole = (userRow.role as VoiceCommandRequest["user_role"]) ?? "agent"
+  const userRole = (userRow.user_type as VoiceCommandRequest["user_role"]) ?? "agent"
 
   // ── Fetch recent voice commands ────────────────────────────────────────────
   const today = new Date()

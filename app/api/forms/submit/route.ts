@@ -6,17 +6,24 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { captureContact } from '@/lib/contact-pipeline/contact-capture'
 import { KernelEvent } from '@/lib/kernel/events'
+import { persistContactConsent } from '@/lib/kernel/compliance/require-contact-consent'
 
 export const dynamic = 'force-dynamic'
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const body = await req.json() as { slug: string; data: Record<string, unknown> }
-    const { slug, data } = body
+    const body = await req.json() as { slug: string; data: Record<string, unknown>; tcpaConsent?: boolean; tcpaConsentText?: string }
+    const { slug, data, tcpaConsent, tcpaConsentText } = body
 
     if (!slug || !data) {
       return NextResponse.json({ success: false, error: 'Missing slug or data' }, { status: 400 })
     }
+
+    // Per TCPA corrected rule: do not block lead creation when consent is absent.
+    // Only suppress phone/SMS channel when tcpaConsent is false.
+    const consentGiven = tcpaConsent === true
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
+    const userAgent = req.headers.get('user-agent') ?? null
 
     const supabase = createServiceClient()
 
@@ -32,9 +39,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ success: false, error: 'Form not found' }, { status: 404 })
     }
 
-    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null
-    const userAgent = req.headers.get('user-agent') ?? null
-
     // ── Step 2: Insert form_submissions ───────────────────────────────────────
     const { data: submission, error: submissionError } = await supabase
       .from('form_submissions')
@@ -44,7 +48,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         submission_data: data,
         ip_address: ip,
         user_agent: userAgent,
-        tcpa_consent_given: true,
+        tcpa_consent_given: consentGiven,
       })
       .select('id')
       .single()
@@ -65,18 +69,35 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const phone = (data['phone'] ?? '') as string
 
     // ── Step 5: captureContact ────────────────────────────────────────────────
+    const consentNow = new Date().toISOString()
     const { contactId, action } = await captureContact({
       brokerageId: form.brokerage_id,
-      agentUserId: null,
+      // Use agent from form record; captureContact will fallback to brokerage primary if null
+      agentUserId: form.agent_id ?? null,
       source: 'web_form',
       first_name: first_name || null,
       last_name: last_name || null,
       email: email || null,
-      phone: phone || null,
-      tcpa_consent: true,
-      tcpa_consent_date: new Date().toISOString(),
+      // Only store phone when TCPA consent given; omit to prevent calling
+      phone: consentGiven ? (phone || null) : null,
+      preferred_channel: consentGiven ? 'phone' : 'email',
+      tcpa_consent: consentGiven,
+      tcpa_consent_date: consentGiven ? consentNow : null,
       rawPayload: data,
     })
+
+    // ── Persist consent audit event ────────────────────────────────────────
+    const { persistContactConsent } = await import('@/lib/kernel/compliance/require-contact-consent')
+    await persistContactConsent({
+      brokerageId: form.brokerage_id,
+      agentId: form.agent_id ?? null,
+      contactId,
+      consentText: tcpaConsentText ?? `Form consent given on ${form.slug}`,
+      consentSource: `/forms/${slug}`,
+      consented: true,
+      ipAddress: ip,
+      userAgent: userAgent,
+    }).catch(() => {})
 
     // ── Step 6: Link submission to contact ────────────────────────────────────
     await supabase

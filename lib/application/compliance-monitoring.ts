@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 // ============================================
 // AUDIT LOGGING
@@ -143,7 +144,7 @@ export async function analyzeFairHousingRiskService(params: {
   )
 
   const { text } = await generateText({
-    model: "openai/gpt-4o-mini",
+    model: resolveModel("openai/gpt-4o-mini"),
     prompt: `Analyze this real estate communication for potential Fair Housing Act violations.
 
 Communication: "${params.communicationText}"

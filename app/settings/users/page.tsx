@@ -1,19 +1,49 @@
-'use client';
+import { createClient } from "@/lib/supabase/server"
+import { redirect } from "next/navigation"
+import { UsersManagementClient } from "./users-management-client"
 
-import React from 'react';
-import { SettingsCard } from '@/app/components/settings/SettingsCard';
+export const dynamic = "force-dynamic"
 
-export default function UsersPage() {
+export default async function SettingsUsersPage() {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  if (!user) redirect("/login")
+
+  const { data: profile } = await supabase
+    .from("users")
+    .select("user_type, brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  const userType = profile?.user_type ?? "agent"
+
+  // Only admin/broker/superadmin can manage users
+  if (!["admin", "broker", "superadmin", "broker_admin"].includes(userType)) {
+    redirect("/dashboard")
+  }
+
+  const brokerageId = profile?.brokerage_id
+
+  // Fetch all users in the brokerage
+  const { data: users } = brokerageId
+    ? await supabase
+        .from("users")
+        .select("id, email, first_name, last_name, user_type, created_at, brokerage_id")
+        .eq("brokerage_id", brokerageId)
+        .order("created_at", { ascending: false })
+    : await supabase
+        .from("users")
+        .select("id, email, first_name, last_name, user_type, created_at, brokerage_id")
+        .order("created_at", { ascending: false })
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
-        <p className="text-gray-600 mt-2">Manage brokerage users and roles</p>
-      </div>
-
-      <SettingsCard title="Users">
-        <p className="text-gray-600">User management coming soon</p>
-      </SettingsCard>
-    </div>
-  );
+    <UsersManagementClient
+      users={users ?? []}
+      currentUserId={user.id}
+      brokerageId={brokerageId}
+    />
+  )
 }

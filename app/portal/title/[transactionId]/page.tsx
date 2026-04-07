@@ -22,6 +22,7 @@ import {
 import { TitleDocumentUpload } from "./document-upload"
 import { TitleActions } from "./title-actions"
 import { ClosingChecklist } from "./closing-checklist"
+import { InternalAIAssistant } from "@/app/components/shared/internal-ai-assistant"
 
 const TITLE_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
   title_search: { label: "Title Search", color: "bg-blue-100 text-blue-800" },
@@ -378,6 +379,7 @@ export default async function TitleTransactionDetailPage({
           )}
         </div>
       </div>
+      <InternalAIAssistant role="title" />
     </div>
   )
 }

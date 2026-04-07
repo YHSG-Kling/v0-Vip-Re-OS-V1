@@ -4,7 +4,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { LayoutGrid, AlertTriangle, Eye, FileText, BarChart3, Shield, CheckSquare, Sparkles, Settings } from 'lucide-react'
 
 const COMPLIANCE_NAV = [
-  { label: 'Compliance Dashboard', href: '/compliance/dashboard', icon: LayoutGrid },
+  { label: 'Compliance Command', href: '/dashboard/compliance', icon: LayoutGrid },
   { label: 'Violations', href: '/compliance/violations', icon: AlertTriangle },
   { label: 'Audit Logs', href: '/compliance/audits', icon: Eye },
   { label: 'Policies', href: '/compliance/policies', icon: FileText },

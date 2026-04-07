@@ -297,8 +297,6 @@ function SLAExportButton() {
         const result = await exportSLAReport()
         if (result.success && result.csvData) {
           // In a real implementation, this would trigger a download
-          // For now, we'll just return the data
-          console.log("SLA Report generated")
         }
       }}
     >

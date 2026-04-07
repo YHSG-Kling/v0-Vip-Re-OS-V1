@@ -12,7 +12,10 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
   SelectContent,
@@ -51,8 +54,11 @@ import {
   AlertTriangle,
   Send,
   Sparkles,
+  Loader2,
+  CheckSquare,
 } from "lucide-react"
 import { toast } from "sonner"
+import { createClient } from "@/lib/supabase/client"
 import {
   LineChart,
   Line,
@@ -109,6 +115,65 @@ export function MarketInsightsDashboardClient({
   const [isAddingMarket, setIsAddingMarket] = useState(false)
   const [addMarketOpen, setAddMarketOpen] = useState(false)
   const [shareModalOpen, setShareModalOpen] = useState(false)
+
+  // Share modal state
+  const [shareContacts, setShareContacts] = useState<any[]>([])
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [emailDrafts, setEmailDrafts] = useState<{ subject: string; body: string }[]>([])
+  const [loadingContacts, setLoadingContacts] = useState(false)
+  const [generatingEmail, setGeneratingEmail] = useState(false)
+  const [sendingDrafts, setSendingDrafts] = useState(false)
+
+  const handleOpenShareModal = async () => {
+    setSelectedIds([])
+    setEmailDrafts([])
+    setShareModalOpen(true)
+    setLoadingContacts(true)
+    try {
+      const supabase = createClient()
+      const { data } = await supabase
+        .from("contacts")
+        .select("id, first_name, last_name, email, contact_type")
+        .eq("agent_id", agentId)
+        .in("contact_type", ["seller", "lifetime", "buyer"])
+        .not("email", "is", null)
+        .limit(50)
+      setShareContacts(data ?? [])
+    } catch {
+      toast.error("Failed to load contacts")
+    } finally {
+      setLoadingContacts(false)
+    }
+  }
+
+  const handleSaveDrafts = async () => {
+    if (!emailDrafts[0] || selectedIds.length === 0) return
+    setSendingDrafts(true)
+    try {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) throw new Error("Not authenticated")
+      const rows = selectedIds.map((contactId) => ({
+        agent_user_id: user.id,
+        brokerage_id: brokerageId,
+        contact_id: contactId,
+        channel: "email",
+        draft_subject: emailDrafts[0].subject,
+        draft_body: emailDrafts[0].body,
+        status: "pending",
+        trigger_event: "market_update_share",
+      }))
+      const { error } = await supabase.from("ai_message_drafts").insert(rows)
+      if (error) throw error
+      toast.success(`${selectedIds.length} draft${selectedIds.length !== 1 ? "s" : ""} saved`)
+      setShareModalOpen(false)
+      router.push("/dashboard/communications/inbox")
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to save drafts")
+    } finally {
+      setSendingDrafts(false)
+    }
+  }
 
   const [newMarket, setNewMarket] = useState({
     marketArea: "",
@@ -605,7 +670,7 @@ export function MarketInsightsDashboardClient({
                 )}
 
                 <div className="pt-4 border-t">
-                  <Button variant="outline" onClick={() => setShareModalOpen(true)}>
+                  <Button variant="outline"                   onClick={handleOpenShareModal}>
                     <Send className="mr-2 h-4 w-4" />
                     Send to Sellers
                   </Button>
@@ -740,32 +805,206 @@ export function MarketInsightsDashboardClient({
         </CardContent>
       </Card>
 
-      {/* Share Modal - Placeholder for now */}
-      <Dialog open={shareModalOpen} onOpenChange={setShareModalOpen}>
-        <DialogContent className="max-w-lg">
+      {/* Share Modal — 3-step workflow */}
+      <Dialog open={shareModalOpen} onOpenChange={(open) => {
+        if (!open) { setSelectedIds([]); setEmailDrafts([]) }
+        setShareModalOpen(open)
+      }}>
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Send Market Update</DialogTitle>
             <DialogDescription>
-              Generate and send a market update email to your sellers.
+              Generate and share a personalized market update with your contacts.
             </DialogDescription>
           </DialogHeader>
-          <div className="py-4">
-            <p className="text-sm text-muted-foreground">
-              This feature allows you to select contacts and generate a market
-              update email based on the current insight data. The email will be
-              created as a draft for your review before sending.
-            </p>
+
+          <div className="space-y-5 py-2">
+            {/* Step 1 — Contact selector */}
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Step 1 — Select contacts</p>
+              {loadingContacts ? (
+                <div className="flex items-center gap-2 py-6 justify-center text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span className="text-sm">Loading contacts…</span>
+                </div>
+              ) : shareContacts.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4 text-center">
+                  No contacts with email addresses — add emails in CRM first.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        setSelectedIds(
+                          shareContacts
+                            .filter((c) => c.contact_type === "seller")
+                            .map((c) => c.id)
+                        )
+                      }
+                    >
+                      Select All Sellers
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSelectedIds(shareContacts.map((c) => c.id))}
+                    >
+                      Select All
+                    </Button>
+                    {selectedIds.length > 0 && (
+                      <span className="text-xs text-muted-foreground ml-auto">
+                        {selectedIds.length} selected
+                      </span>
+                    )}
+                  </div>
+                  <ScrollArea className="h-48 rounded-md border border-border">
+                    <div className="divide-y divide-border">
+                      {shareContacts.map((contact) => (
+                        <label
+                          key={contact.id}
+                          className="flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-muted/40"
+                        >
+                          <Checkbox
+                            checked={selectedIds.includes(contact.id)}
+                            onCheckedChange={(checked) =>
+                              setSelectedIds((prev) =>
+                                checked
+                                  ? [...prev, contact.id]
+                                  : prev.filter((id) => id !== contact.id)
+                              )
+                            }
+                          />
+                          <span className="flex-1 text-sm font-medium">
+                            {contact.first_name} {contact.last_name}
+                          </span>
+                          <Badge variant="outline" className="text-[10px] capitalize shrink-0">
+                            {contact.contact_type}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground shrink-0">
+                            {contact.email}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </div>
+              )}
+            </div>
+
+            {/* Step 2 — Generate email */}
+            {selectedIds.length > 0 && emailDrafts.length === 0 && (
+              <div className="space-y-2 pt-2 border-t border-border">
+                <p className="text-sm font-medium">Step 2 — Generate email</p>
+                <Button
+                  onClick={async () => {
+                    if (!selectedMarket) {
+                      toast.error("Select a market area first")
+                      return
+                    }
+                    setGeneratingEmail(true)
+                    try {
+                      const result = await generateMarketUpdateEmail(selectedMarket, selectedIds)
+                      if (result) {
+                        setEmailDrafts([{ subject: result.subject ?? "Market Update", body: result.body ?? "" }])
+                      } else {
+                        toast.error("No market insight available for this area")
+                      }
+                    } catch (e: any) {
+                      toast.error(e.message ?? "Failed to generate email")
+                    } finally {
+                      setGeneratingEmail(false)
+                    }
+                  }}
+                  disabled={generatingEmail}
+                >
+                  {generatingEmail ? (
+                    <><Loader2 className="h-4 w-4 animate-spin mr-2" />Generating…</>
+                  ) : (
+                    <><Sparkles className="h-4 w-4 mr-2" />Generate Email</>
+                  )}
+                </Button>
+              </div>
+            )}
+
+            {/* Step 3 — Preview and send */}
+            {emailDrafts.length > 0 && (
+              <div className="space-y-3 pt-2 border-t border-border">
+                <p className="text-sm font-medium">Step 3 — Review and save drafts</p>
+                <div className="space-y-2">
+                  <Label htmlFor="draft-subject" className="text-xs text-muted-foreground">Subject</Label>
+                  <Input
+                    id="draft-subject"
+                    value={emailDrafts[0].subject}
+                    onChange={(e) =>
+                      setEmailDrafts([{ ...emailDrafts[0], subject: e.target.value }])
+                    }
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="draft-body" className="text-xs text-muted-foreground">Body</Label>
+                  <Textarea
+                    id="draft-body"
+                    rows={8}
+                    value={emailDrafts[0].body}
+                    onChange={(e) =>
+                      setEmailDrafts([{ ...emailDrafts[0], body: e.target.value }])
+                    }
+                    className="resize-none font-mono text-xs"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={generatingEmail}
+                    onClick={async () => {
+                      if (!selectedMarket) return
+                      setEmailDrafts([])
+                      setGeneratingEmail(true)
+                      try {
+                        const result = await generateMarketUpdateEmail(selectedMarket, selectedIds)
+                        if (result) {
+                          setEmailDrafts([{ subject: result.subject ?? "Market Update", body: result.body ?? "" }])
+                        }
+                      } catch (e: any) {
+                        toast.error(e.message ?? "Failed to regenerate")
+                      } finally {
+                        setGeneratingEmail(false)
+                      }
+                    }}
+                  >
+                    {generatingEmail ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                    )}
+                    Regenerate
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
-          <DialogFooter>
+
+          <DialogFooter className="flex items-center gap-2">
             <Button variant="outline" onClick={() => setShareModalOpen(false)}>
-              Close
+              Cancel
             </Button>
-            <Button disabled>
-              <Badge variant="secondary" className="mr-2">
-                Coming Soon
-              </Badge>
-              Generate Email
-            </Button>
+            {emailDrafts.length > 0 && (
+              <Button
+                onClick={handleSaveDrafts}
+                disabled={sendingDrafts || selectedIds.length === 0}
+              >
+                {sendingDrafts ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : (
+                  <CheckSquare className="h-4 w-4 mr-2" />
+                )}
+                Save {selectedIds.length} Draft{selectedIds.length !== 1 ? "s" : ""}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

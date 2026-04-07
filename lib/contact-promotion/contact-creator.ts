@@ -64,8 +64,6 @@ export async function createContactFromLead(
       throw new Error(`Failed to create contact: ${error.message}`)
     }
 
-    console.log(`[v0] Contact ${contact.id} created from lead ${data.leadId}`)
-
     return { contactId: contact.id }
 
   } catch (error: any) {

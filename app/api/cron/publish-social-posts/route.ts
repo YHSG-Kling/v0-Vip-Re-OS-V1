@@ -8,18 +8,37 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { publishToSocialPlatform } from "@/lib/social/publisher"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export const dynamic = "force-dynamic"
 export const maxDuration = 60
 
 export async function GET(request: Request) {
-  try {
-    // Verify cron secret
-    const authHeader = request.headers.get("authorization")
-    if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+  // Verify cron secret
+  const authHeader = request.headers.get("authorization")
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
 
+  const contextResult = await createCronRunContextAction({
+    cron_name: "publish-social-posts",
+    cron_path: "/app/api/cron/publish-social-posts/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[PublishSocialPosts] Failed to record cron start:", startRecordResult.error)
+  }
+
+  try {
     const supabase = await createClient()
     const now = new Date()
 
@@ -122,7 +141,7 @@ export async function GET(request: Request) {
           .select("platform, access_token, refresh_token, account_id")
           .eq("id", post.social_account_id)
           .eq("is_active", true)
-          .single()
+          .maybeSingle()
 
         if (accountError || !account) {
           throw new Error(`No active account found for social_account_id: ${post.social_account_id}`)
@@ -263,6 +282,16 @@ export async function GET(request: Request) {
       }
     }
 
+    const published = results.filter((r) => r.status === "published").length
+    const failed = results.filter((r) => r.status === "failed").length
+
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: results.length,
+      output_count: published,
+      metadata: { processed: results.length, published, failed },
+    })
+
     return NextResponse.json({
       success: true,
       processed: results.length,
@@ -271,8 +300,9 @@ export async function GET(request: Request) {
     })
   } catch (error: any) {
     console.error("[cron/publish-social-posts] Cron error:", error)
+    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
     return NextResponse.json(
-      { error: "Social publishing failed", message: error.message },
+      { error: "Social publishing failed", message: error.message, context_id: contextId },
       { status: 500 }
     )
   }

@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Loader2,
   Sparkles,
+  AlertCircle,
 } from "lucide-react"
 import { generateListingVideo } from "@/app/actions/listing-video"
 
@@ -21,6 +22,8 @@ interface LaunchActionsPanelProps {
   agentId: string
   brokerageId: string
   canLaunch: boolean
+  /** Blocker messages to display inline so the agent knows what to fix */
+  blockers?: string[]
 }
 
 export function LaunchActionsPanel({
@@ -28,6 +31,7 @@ export function LaunchActionsPanel({
   agentId,
   brokerageId,
   canLaunch,
+  blockers = [],
 }: LaunchActionsPanelProps) {
   const [isPending, startTransition] = useTransition()
   const [videoStatus, setVideoStatus] = useState<"idle" | "generating" | "success" | "error">("idle")
@@ -72,6 +76,18 @@ export function LaunchActionsPanel({
             Launch Listing Campaign
           </Button>
         </Link>
+
+        {/* Inline blockers — shown only when launch is blocked */}
+        {blockers.length > 0 && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-2 space-y-1">
+            {blockers.map((blocker, i) => (
+              <div key={i} className="flex items-start gap-1.5 text-xs text-amber-800">
+                <AlertCircle className="h-3 w-3 mt-0.5 shrink-0 text-amber-600" />
+                <span>{blocker}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Marketing Studio */}
         <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>

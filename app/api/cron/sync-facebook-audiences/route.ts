@@ -5,6 +5,12 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { syncAudience } from "@/lib/ads/facebook-audience-sync"
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from "@/app/actions/cron-kernel"
 
 export const runtime = "nodejs"
 export const maxDuration = 300 // 5 minutes
@@ -22,6 +28,19 @@ export async function GET(request: NextRequest) {
   if (authHeader !== `Bearer ${cronSecret}`) {
     console.error("[sync-facebook-audiences] Unauthorized request")
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const contextResult = await createCronRunContextAction({
+    cron_name: "sync-facebook-audiences",
+    cron_path: "/app/api/cron/sync-facebook-audiences/route.ts",
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: "Failed to create cron context" }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error("[SyncFacebookAudiences] Failed to record cron start:", startRecordResult.error)
   }
 
   const supabase = createServiceClient()
@@ -89,8 +108,11 @@ export async function GET(request: NextRequest) {
 
         const syncResult = await syncAudience(
           "system", // CRON uses system user
-          audience.id,
-          audience.brokerage_id
+          {
+            brokerageId: audience.brokerage_id,
+            agentId: "system",
+            audienceId: audience.id,
+          }
         )
 
         if (syncResult.success) {
@@ -134,6 +156,13 @@ export async function GET(request: NextRequest) {
       `[sync-facebook-audiences] Completed: ${synced} synced, ${skipped} skipped, ${failed} failed`
     )
 
+    await recordCronSuccessAction({
+      context_id: contextId,
+      records_processed: audiences.length,
+      output_count: synced,
+      metadata: { synced, skipped, failed },
+    })
+
     return NextResponse.json({
       success: true,
       summary: {
@@ -146,11 +175,9 @@ export async function GET(request: NextRequest) {
     })
   } catch (err: any) {
     console.error("[sync-facebook-audiences] Unexpected error:", err)
+    await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
     return NextResponse.json(
-      {
-        error: err.message || "Unexpected error",
-        results,
-      },
+      { error: err.message || "Unexpected error", results, context_id: contextId },
       { status: 500 }
     )
   }

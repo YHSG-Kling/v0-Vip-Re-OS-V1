@@ -26,12 +26,12 @@ export default async function BillingSettingsPage() {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   // Role gate: broker + admin only
-  if (!profile?.brokerage_id || !["broker", "admin"].includes(profile.role || "")) {
+  if (!profile?.brokerage_id || !["broker", "admin"].includes(profile.user_type || "")) {
     redirect("/dashboard")
   }
 

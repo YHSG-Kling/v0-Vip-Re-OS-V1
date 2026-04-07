@@ -49,13 +49,15 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
   return (
     <div className="container mx-auto p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Welcome Back, {firstName}</h1>
-          <p className="text-muted-foreground">Your homeowner portal</p>
+          <h1 className="text-3xl font-bold tracking-tight">Welcome Home, {firstName}</h1>
+          <p className="text-muted-foreground mt-1">
+            {"Your home is your greatest investment. Here's everything in one place."}
+          </p>
         </div>
         {agentName && (
-          <div className="text-right">
+          <div className="text-right shrink-0">
             <p className="text-sm text-muted-foreground">Your Agent</p>
             <p className="font-medium">{agentName}</p>
           </div>
@@ -150,20 +152,41 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
                 {preferredVendors.slice(0, 3).map((v: any) => (
                   <div
                     key={v.id}
-                    className="flex items-center justify-between p-2 rounded-lg bg-muted/50"
+                    className="flex items-center justify-between p-3 rounded-lg border"
                   >
                     <div>
-                      <p className="font-medium text-sm">{v.vendors?.business_name}</p>
-                      <p className="text-xs text-muted-foreground">{v.category}</p>
+                      <p className="font-medium text-sm">
+                        {v.vendors?.business_name || v.business_name}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {v.category || v.service_type}
+                      </p>
                     </div>
-                    {v.is_featured && <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />}
+                    <div className="flex items-center gap-1.5">
+                      {v.rating && (
+                        <div className="flex items-center gap-1">
+                          <Star className="h-3.5 w-3.5 fill-yellow-400 text-yellow-400" />
+                          <span className="text-xs">{v.rating}</span>
+                        </div>
+                      )}
+                      {v.is_featured && !v.rating && (
+                        <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">
-                Vendor recommendations coming soon
-              </p>
+              <div className="space-y-2">
+                <p className="text-sm text-muted-foreground">
+                  Trusted service providers recommended by your agent for home maintenance and improvements.
+                </p>
+                <Button variant="outline" size="sm" asChild>
+                  <Link href={`/portal/${contactId}/resources`}>
+                    Browse Service Providers
+                  </Link>
+                </Button>
+              </div>
             )}
             <Button variant="outline" className="w-full" asChild>
               <Link href={`/portal/${contactId}/resources`}>
@@ -195,6 +218,25 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
           </CardContent>
         </Card>
       </div>
+
+      {/* Re-engagement: thinking of moving */}
+      <Card className="border-blue-200 bg-blue-50">
+        <CardContent className="p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
+          <div className="flex-1">
+            <p className="font-semibold text-blue-900">Thinking of moving?</p>
+            <p className="text-sm text-blue-700 mt-1">
+              {agentName
+                ? `${agentName} is here whenever you're ready — whether that's next month or a few years from now.`
+                : "Your agent is here whenever you're ready to make your next move."}
+            </p>
+          </div>
+          <Button className="bg-blue-700 hover:bg-blue-800 text-white shrink-0" asChild>
+            <Link href={`/portal/${contactId}/messages`}>
+              {"Let's talk"}
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
 
       {/* Quick Links */}
       <Card>

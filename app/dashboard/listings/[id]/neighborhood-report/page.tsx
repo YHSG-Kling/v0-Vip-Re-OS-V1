@@ -33,10 +33,14 @@ import {
   AlertCircle,
   CheckCircle,
   Star,
+  Sparkles,
 } from "lucide-react"
 
 // Import chart component as a separate client component
 import { PriceHistoryChart } from "@/app/components/neighborhood-report/PriceHistoryChart"
+import { Progress } from "@/components/ui/progress"
+import { createClient } from "@/lib/supabase/server"
+import { analyzeNeighborhood } from "@/app/actions/ai-market-intelligence"
 
 export const dynamic = "force-dynamic"
 
@@ -55,11 +59,118 @@ export default async function NeighborhoodReportPage({
   params: Promise<{ id: string }>
 }) {
   const { id: listingId } = await params
+
+  // Resolve agentId from session — needed for AI calls
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  let agentId = ""
+  if (user) {
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("id")
+      .eq("user_id", user.id)
+      .maybeSingle()
+    agentId = agentRow?.id ?? ""
+  }
+
+  // Load neighborhood report + area market data in parallel
+  // Neighborhood reports are about the property's surrounding market —
+  // NOT the listed property's own valuation. We pull market_data,
+  // market_insights, home_value_estimates, and BatchData motivated-seller
+  // counts for the zip to give a true area intelligence picture.
   const { report, listing, priceHistory, dataSources } = await getNeighborhoodReport(listingId)
 
   if (!listing) {
     notFound()
   }
+
+  // listings.zip is the correct column name (confirmed from schema)
+  const zip = listing.zip
+
+  const [marketData, marketInsight, homeValueEstimate, propertyHistory] = await Promise.all([
+    // Area market snapshot from market_data table (MLS-sourced, zip-level)
+    supabase
+      .from("market_data")
+      .select(
+        "median_sale_price, median_list_price, price_trend_pct_1yr, price_trend_pct_30d, months_of_inventory, avg_days_on_market, active_listings, sold_listings_30d, list_to_sale_ratio, market_type, data_date"
+      )
+      .eq("zip_code", zip)
+      .order("data_date", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then((r) => r.data),
+
+    // AI market narrative from market_insights table (zip-level)
+    supabase
+      .from("market_insights")
+      .select("ai_narrative, headline, summary, price_trend, dom_trend, inventory_level, key_stats, market_type, insight_date")
+      .eq("zip_code", zip)
+      .order("insight_date", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then((r) => r.data),
+
+    // Property value from cma_reports (primary) — joined by listing_id.
+    // CMAs are the agent-generated comps-based valuation for this listing.
+    // Falls back to home_value_estimates (consumer-facing) only if no CMA exists.
+    supabase
+      .from("cma_reports")
+      .select("price_range_low, price_range_high, recommended_price, market_conditions, comparable_count, quality_score, created_at")
+      .eq("listing_id", listingId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(async (r) => {
+        if (r.data) {
+          // Map CMA fields to the shape the component expects
+          return {
+            estimated_value_low: r.data.price_range_low,
+            estimated_value_mid: r.data.recommended_price,
+            estimated_value_high: r.data.price_range_high,
+            ai_narrative: r.data.market_conditions ?? null,
+            market_trend: null,
+            confidence_score: r.data.quality_score ? r.data.quality_score / 100 : null,
+            comps_json: { comparable_count: r.data.comparable_count } as Record<string, unknown>,
+            generated_at: r.data.created_at,
+            source: "cma" as const,
+          }
+        }
+        // Fallback: home_value_estimates (filled by consumer valuation request flow)
+        const hve = await supabase
+          .from("home_value_estimates")
+          .select("estimated_value_low, estimated_value_mid, estimated_value_high, ai_narrative, market_trend, confidence_score, comps_json, generated_at")
+          .eq("property_address", listing.address)
+          .order("generated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        return hve.data ? { ...hve.data, source: "hve" as const } : null
+      }),
+
+    // BatchData property history: prior distress/ownership signals for this
+    // specific property address AND nearby properties in the zip.
+    // This is property history intelligence — not seller prospecting.
+    // We pull the actual records so we can show motivation types, estimated
+    // values over time, and sqft/beds — a true property history timeline.
+    supabase
+      .from("batchdata_motivated_sellers_raw")
+      .select(
+        "property_address, property_city, property_zip, property_beds, property_baths, property_sqft, property_estimated_value, motivation_type, motivation_confidence, created_at"
+      )
+      .eq("property_zip", zip)
+      .order("created_at", { ascending: false })
+      .limit(20)
+      .then((r) => r.data ?? []),
+  ])
+
+  // AI neighborhood analysis — area-based, no property specs
+  const neighborhoodAI = agentId && report
+    ? await analyzeNeighborhood({
+        agentId,
+        neighborhood: report.neighborhood_name ?? listing.city,
+        city: listing.city,
+        state: listing.state,
+      }).catch(() => null)
+    : null
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -80,6 +191,11 @@ export default async function NeighborhoodReportPage({
             priceHistory={priceHistory}
             dataSources={dataSources}
             listingId={listingId}
+            marketData={marketData}
+            marketInsight={marketInsight}
+            homeValueEstimate={homeValueEstimate}
+            propertyHistory={propertyHistory}
+            neighborhoodAI={neighborhoodAI}
           />
         ) : (
           <EmptyState listingId={listingId} listing={listing} />
@@ -112,10 +228,68 @@ interface ReportContentProps {
     market_trend: string | null
     data_source: string | null
   }
-  listing: { address: string; city: string; state: string; zip_code: string }
+  listing: { address: string; city: string; state: string; zip: string }
   priceHistory: PriceHistoryPoint[]
   dataSources: DataSource[]
   listingId: string
+  marketData: {
+    median_sale_price: number | null
+    median_list_price: number | null
+    price_trend_pct_1yr: number | null
+    price_trend_pct_30d: number | null
+    months_of_inventory: number | null
+    avg_days_on_market: number | null
+    active_listings: number | null
+    sold_listings_30d: number | null
+    list_to_sale_ratio: number | null
+    market_type: string | null
+    data_date: string | null
+  } | null
+  marketInsight: {
+    ai_narrative: string | null
+    headline: string | null
+    summary: string | null
+    price_trend: string | null
+    dom_trend: string | null
+    inventory_level: string | null
+    key_stats: Record<string, unknown> | null
+    market_type: string | null
+    insight_date: string | null
+  } | null
+  homeValueEstimate: {
+    estimated_value_low: number | null
+    estimated_value_mid: number | null
+    estimated_value_high: number | null
+    ai_narrative: string | null
+    market_trend: string | null
+    confidence_score: number | null
+    comps_json: Record<string, unknown> | null
+    generated_at: string | null
+    source?: "cma" | "hve"
+  } | null
+  propertyHistory: Array<{
+    property_address: string | null
+    property_city: string | null
+    property_zip: string | null
+    property_beds: number | null
+    property_baths: number | null
+    property_sqft: number | null
+    property_estimated_value: number | null
+    motivation_type: string | null
+    motivation_confidence: number | null
+    created_at: string
+  }>
+  neighborhoodAI: {
+    success: boolean
+    analysis?: {
+      overview: string
+      lifestyle: { walkScore: number; transitScore: number; bikeScore: number; crimeRating: string; schoolRating: string }
+      amenities: { schools: string[]; parks: string[]; shopping: string[]; dining: string[]; transportation: string[] }
+      marketMetrics: { avgHomePrice: number; priceGrowthYoY: number; avgDaysOnMarket: number; inventoryMonths: number }
+      demographics: { primaryBuyerProfile: string }
+      investmentPotential: { rating: string; reasoning: string; appreciationForecast: string }
+    }
+  } | null
 }
 
 function NeighborhoodReportContent({
@@ -124,6 +298,11 @@ function NeighborhoodReportContent({
   priceHistory,
   dataSources,
   listingId,
+  marketData,
+  marketInsight,
+  homeValueEstimate,
+  propertyHistory,
+  neighborhoodAI,
 }: ReportContentProps) {
   const generatedDate = new Date(report.generated_at)
   const now = new Date()
@@ -149,7 +328,7 @@ function NeighborhoodReportContent({
                 {report.neighborhood_name}
               </CardDescription>
               <p className="text-sm text-muted-foreground">
-                {listing.city}, {listing.state} {listing.zip_code}
+                {listing.city}, {listing.state} {listing.zip}
               </p>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -203,6 +382,191 @@ function NeighborhoodReportContent({
           )}
         </CardContent>
       </Card>
+
+      {/* Section A: Area Market Data (from market_data table — MLS-sourced) */}
+      {marketData && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <TrendingUp className="h-5 w-5" />
+              Area Market Conditions
+            </CardTitle>
+            <CardDescription>
+              {listing.zip} · {marketData.market_type ? <span className="capitalize">{marketData.market_type.replace(/_/g, " ")} market</span> : null}
+              {marketData.data_date && (
+                <span className="ml-2 text-muted-foreground">
+                  · as of {new Date(marketData.data_date).toLocaleDateString("en-US", { month: "short", year: "numeric" })}
+                </span>
+              )}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {marketData.median_sale_price && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Median Sale Price</p>
+                  <p className="text-lg font-bold">{formatCurrency(marketData.median_sale_price)}</p>
+                  {marketData.price_trend_pct_1yr !== null && (
+                    <p className={`text-xs font-medium ${marketData.price_trend_pct_1yr >= 0 ? "text-green-600" : "text-red-600"}`}>
+                      {marketData.price_trend_pct_1yr >= 0 ? "+" : ""}{marketData.price_trend_pct_1yr.toFixed(1)}% YoY
+                    </p>
+                  )}
+                </div>
+              )}
+              {marketData.avg_days_on_market !== null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Avg Days on Market</p>
+                  <p className="text-lg font-bold">{marketData.avg_days_on_market}d</p>
+                </div>
+              )}
+              {marketData.months_of_inventory !== null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Months of Inventory</p>
+                  <p className="text-lg font-bold">{marketData.months_of_inventory.toFixed(1)}</p>
+                </div>
+              )}
+              {marketData.list_to_sale_ratio !== null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">List-to-Sale Ratio</p>
+                  <p className="text-lg font-bold">{(marketData.list_to_sale_ratio * 100).toFixed(1)}%</p>
+                </div>
+              )}
+            </div>
+            {propertyHistory.length > 0 && (() => {
+              // Summarize distress events by type for the area
+              const byType = propertyHistory.reduce<Record<string, number>>((acc, r) => {
+                const t = r.motivation_type ?? "unknown"
+                acc[t] = (acc[t] ?? 0) + 1
+                return acc
+              }, {})
+              return (
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm space-y-1">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="h-4 w-4 text-amber-600 shrink-0" />
+                    <p className="font-semibold text-amber-800">
+                      {propertyHistory.length} distress/ownership signal{propertyHistory.length !== 1 ? "s" : ""} in this zip (BatchData)
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                    {Object.entries(byType).map(([type, count]) => (
+                      <Badge key={type} variant="outline" className="text-[10px] border-amber-200 text-amber-700 bg-amber-50 capitalize">
+                        {type.replace(/_/g, " ")} ×{count}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
+            {marketInsight?.ai_narrative && (
+              <p className="text-sm text-muted-foreground leading-relaxed">{marketInsight.ai_narrative}</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Property Value Estimate — sourced from CMA (primary) or home_value_estimates (fallback) */}
+      {homeValueEstimate && homeValueEstimate.estimated_value_mid && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Home className="h-5 w-5" />
+              Property Value Estimate
+            </CardTitle>
+            <CardDescription>
+              {homeValueEstimate.source === "cma"
+                ? "Based on agent CMA (comparable sales analysis)"
+                : "Based on comparable sales (valuation request)"}{" "}
+              · Confidence:{" "}
+              {homeValueEstimate.confidence_score !== null
+                ? `${Math.round(homeValueEstimate.confidence_score * 100)}%`
+                : "N/A"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-3 gap-4 text-center">
+              <div>
+                <p className="text-xs text-muted-foreground">Low</p>
+                <p className="text-xl font-bold">{homeValueEstimate.estimated_value_low ? formatCurrency(homeValueEstimate.estimated_value_low) : "—"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Mid</p>
+                <p className="text-2xl font-bold text-primary">{formatCurrency(homeValueEstimate.estimated_value_mid)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">High</p>
+                <p className="text-xl font-bold">{homeValueEstimate.estimated_value_high ? formatCurrency(homeValueEstimate.estimated_value_high) : "—"}</p>
+              </div>
+            </div>
+            {homeValueEstimate.confidence_score !== null && (
+              <Progress value={homeValueEstimate.confidence_score * 100} className="h-1.5" />
+            )}
+            {homeValueEstimate.ai_narrative && (
+              <p className="text-sm text-muted-foreground">{homeValueEstimate.ai_narrative}</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Section B: AI Neighborhood Intelligence */}
+      {neighborhoodAI?.success && neighborhoodAI.analysis && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <MapPin className="h-5 w-5" />
+              AI Neighborhood Intelligence
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <ScoreCard
+                label="Walk Score"
+                score={neighborhoodAI.analysis.lifestyle.walkScore}
+                description={
+                  neighborhoodAI.analysis.lifestyle.walkScore >= 70
+                    ? "Very Walkable"
+                    : neighborhoodAI.analysis.lifestyle.walkScore >= 50
+                      ? "Somewhat Walkable"
+                      : "Car-Dependent"
+                }
+              />
+              <ScoreCard
+                label="Transit"
+                score={neighborhoodAI.analysis.lifestyle.transitScore}
+                description={
+                  neighborhoodAI.analysis.lifestyle.transitScore >= 70
+                    ? "Excellent Transit"
+                    : neighborhoodAI.analysis.lifestyle.transitScore >= 50
+                      ? "Good Transit"
+                      : "Minimal Transit"
+                }
+              />
+              <ScoreCard
+                label="Schools"
+                score={null}
+                description={neighborhoodAI.analysis.lifestyle.schoolRating}
+              />
+              <ScoreCard
+                label="Safety"
+                score={null}
+                description={neighborhoodAI.analysis.lifestyle.crimeRating}
+              />
+            </div>
+            {neighborhoodAI.analysis.overview && (
+              <p className="text-sm text-muted-foreground">{neighborhoodAI.analysis.overview}</p>
+            )}
+            {neighborhoodAI.analysis.investmentPotential && (
+              <div className="rounded-lg bg-muted/50 p-3 text-sm">
+                <p className="font-medium capitalize mb-1">
+                  Investment Potential: {neighborhoodAI.analysis.investmentPotential.rating}
+                </p>
+                <p className="text-muted-foreground">
+                  {neighborhoodAI.analysis.investmentPotential.appreciationForecast}
+                </p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Section 4: Schools Section */}
       {report.school_ratings && report.school_ratings.length > 0 && (
@@ -352,6 +716,49 @@ function NeighborhoodReportContent({
 // ============================================================================
 // Helper Components
 // ============================================================================
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value)
+}
+
+function ScoreCard({
+  label,
+  score,
+  description,
+}: {
+  label: string
+  score: number | null
+  description?: string
+}) {
+  const color =
+    score === null
+      ? "text-muted-foreground"
+      : score >= 70
+        ? "text-green-600"
+        : score >= 50
+          ? "text-yellow-600"
+          : "text-orange-600"
+
+  return (
+    <div className="flex flex-col items-center text-center rounded-lg border p-3 gap-1">
+      {score !== null ? (
+        <>
+          <p className={`text-2xl font-bold ${color}`}>{score}</p>
+          <Progress
+            value={score}
+            className="h-1.5 w-full"
+          />
+        </>
+      ) : (
+        <p className={`text-sm font-semibold ${color} capitalize`}>{description ?? "N/A"}</p>
+      )}
+      <p className="text-xs text-muted-foreground font-medium">{label}</p>
+      {score !== null && description && (
+        <p className="text-xs text-muted-foreground leading-tight">{description}</p>
+      )}
+    </div>
+  )
+}
 
 function StatCard({
   icon,
@@ -523,9 +930,8 @@ function RefreshButton({ listingId, isExpired }: { listingId: string; isExpired:
 function EmbedButton({ listingId }: { listingId: string }) {
   async function handleCopyEmbed() {
     "use server"
-    const snippet = await generateEmbedSnippet(listingId)
+    await generateEmbedSnippet(listingId)
     // Note: Server actions can't access clipboard, this would need client component
-    console.log("Embed snippet:", snippet)
   }
 
   return (
@@ -547,7 +953,7 @@ function EmptyState({
   listing,
 }: {
   listingId: string
-  listing: { address: string; city: string; state: string; zip_code: string }
+  listing: { address: string; city: string; state: string; zip: string }
 }) {
   async function handleGenerate() {
     "use server"
@@ -562,7 +968,7 @@ function EmptyState({
         <h2 className="text-xl font-semibold mb-2">Neighborhood report not yet generated</h2>
         <p className="text-muted-foreground mb-6 max-w-md">
           Generate a comprehensive neighborhood report for {listing.address}, {listing.city},{" "}
-          {listing.state} {listing.zip_code}
+          {listing.state} {listing.zip}
         </p>
         <form action={handleGenerate}>
           <Button type="submit" size="lg" className="gap-2">

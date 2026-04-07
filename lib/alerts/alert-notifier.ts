@@ -6,6 +6,7 @@
  */
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { dispatchEmail } from "@/lib/providers/dispatch"
 
 export interface AlertMatch {
   alertId:          string
@@ -81,7 +82,7 @@ export async function sendAlertNotification(
         .maybeSingle()
 
       if (sgCred?.api_key) {
-        const fromEmail = (sgCred.config as any)?.from_email ?? "alerts@vip-re.com"
+        const fromEmail = (sgCred.config as any)?.from_email ?? process.env.SENDGRID_FROM_EMAIL ?? "alerts@vip-re.com"
         const fromName  = (sgCred.config as any)?.from_name  ?? "VIP Real Estate OS"
         const subject   = `${n} New ${n === 1 ? "Property Matches" : "Properties Match"} Your Search`
 
@@ -97,7 +98,8 @@ export async function sendAlertNotification(
             ${m.listingUrl ? `<br/><a href="${m.listingUrl}" style="color:#2563eb;font-size:12px">View Details &rarr;</a>` : ""}
           </td></tr>`).join("")
 
-        const html = `<!DOCTYPE html><html><body style="font-family:system-ui,sans-serif;background:#f9fafb;padding:32px 0">
+        // Body only — assembleEmail() in dispatchEmail() appends signature + unsubscribe + legal
+        const bodyHtml = `<!DOCTYPE html><html><body style="font-family:system-ui,sans-serif;background:#f9fafb;padding:32px 0">
           <table width="560" style="margin:0 auto;background:#fff;border-radius:8px;overflow:hidden">
             <tr><td style="padding:20px;background:#2563eb;color:#fff">
               <h2 style="margin:0">${n} New ${n === 1 ? "Property" : "Properties"} For You</h2>
@@ -106,15 +108,15 @@ export async function sendAlertNotification(
             ${cards}
           </table></body></html>`
 
-        await fetch("https://api.sendgrid.com/v3/mail/send", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${sgCred.api_key}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            personalizations: [{ to: [{ email: contact.email }] }],
-            from: { email: fromEmail, name: fromName },
-            subject,
-            content: [{ type: "text/html", value: html }],
-          }),
+        await dispatchEmail({
+          brokerageId,
+          agentId:      agentUserId,
+          leadId:       contactId,
+          systemSource: "property_alert",
+          from:         `${fromName} <${fromEmail}>`,
+          to:           contact.email,
+          subject,
+          html:         bodyHtml,
         })
         channelsUsed.push("email")
       }

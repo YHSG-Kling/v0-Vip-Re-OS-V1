@@ -1,16 +1,33 @@
 import { Suspense } from "react"
+import { redirect } from "next/navigation"
+import { createClient } from "@/lib/supabase/server"
 import { MailDashboard } from "./mail-dashboard"
+
+export const dynamic = "force-dynamic"
 
 export const metadata = {
   title: "Direct Mail | VIP Agents AI",
   description: "Manage direct mail campaigns, recipients, tracking, and responses",
 }
 
-export default function DirectMailPage() {
+export default async function DirectMailPage() {
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect("/login")
+
+  const { data: profile } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  const brokerageId = profile?.brokerage_id ?? ""
+
   return (
     <div className="flex flex-col h-full">
       <Suspense fallback={<MailLoadingSkeleton />}>
-        <MailDashboard />
+        <MailDashboard brokerageId={brokerageId} />
       </Suspense>
     </div>
   )

@@ -1,7 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -92,7 +94,7 @@ export async function generatePropertyMatches(params: {
 
     // Use AI to score and rank matches
     const { object: matchAnalysis } = await generateObject({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         matches: z.array(PropertyMatchSchema),
         overallInsights: z.string(),
@@ -186,7 +188,7 @@ export async function analyzePropertyForBuyer(params: {
     }
 
     const { text: analysis } = await generateText({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       prompt: `Analyze this property for the buyer and provide a comprehensive assessment:
 
 BUYER: ${contact.first_name} ${contact.last_name}
@@ -241,7 +243,7 @@ export async function notifyNewMatches(params: {
 
     // Generate personalized notification
     const { text: notification } = await generateText({
-      model: "openai/gpt-4o-mini",
+      model: resolveModel("openai/gpt-4o-mini"),
       prompt: `Generate a brief, exciting notification message for a buyer about ${newMatches.length} new property matches with scores of ${threshold}%+. Keep it under 160 characters for SMS. Be warm and professional.`,
     })
 
@@ -297,7 +299,7 @@ export async function learnFromBuyerFeedback(params: {
 
     if (allFeedback && allFeedback.length >= 5) {
       const { object: preferenceUpdates } = await generateObject({
-        model: "openai/gpt-4o-mini",
+        model: resolveModel("openai/gpt-4o-mini"),
         schema: z.object({
           suggestedUpdates: z.array(z.object({
             field: z.string(),

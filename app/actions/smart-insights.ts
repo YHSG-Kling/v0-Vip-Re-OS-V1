@@ -1,6 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import Anthropic from "@anthropic-ai/sdk"
+
+const anthropic = new Anthropic()
 
 // ==================== SMART INSIGHTS GENERATION ====================
 
@@ -142,63 +145,62 @@ async function generateSchoolInsights(
   propertyData: Record<string, any>,
   preferences?: ContactPreferences["schoolPreferences"],
 ): Promise<Record<string, any>> {
-  // Mock school data - in production, integrate with GreatSchools API
-  const nearbySchools = [
-    {
-      name: "Lincoln Elementary",
-      type: "public",
-      grades: "K-5",
-      rating: 8,
-      distance: 0.4,
-      students: 450,
-    },
-    {
-      name: "Jefferson Middle School",
-      type: "public",
-      grades: "6-8",
-      rating: 7,
-      distance: 0.8,
-      students: 620,
-    },
-    {
-      name: "Washington High School",
-      type: "public",
-      grades: "9-12",
-      rating: 9,
-      distance: 1.2,
-      students: 1200,
-    },
-    {
-      name: "St. Mary's Academy",
-      type: "private",
-      grades: "K-8",
-      rating: 9,
-      distance: 1.5,
-      students: 280,
-    },
-  ]
+  const address = propertyData.address || propertyData.full_address || ""
+  const city = propertyData.city || ""
+  const state = propertyData.state || ""
+  const zip = propertyData.zip || propertyData.zip_code || ""
 
-  // Filter based on preferences
-  let filteredSchools = nearbySchools
-  if (preferences?.publicPrivate && preferences.publicPrivate !== "either") {
-    filteredSchools = nearbySchools.filter((s) => s.type === preferences.publicPrivate)
-  }
-  if (preferences?.minRating) {
-    filteredSchools = filteredSchools.filter((s) => s.rating >= preferences.minRating!)
-  }
+  const filterHint = preferences?.publicPrivate && preferences.publicPrivate !== "either"
+    ? `Focus on ${preferences.publicPrivate} schools.`
+    : ""
+  const ratingHint = preferences?.minRating ? `Only include schools rated ${preferences.minRating}+.` : ""
 
-  return {
-    nearbySchools: filteredSchools,
-    summary: {
-      avgRating: Math.round((nearbySchools.reduce((acc, s) => acc + s.rating, 0) / nearbySchools.length) * 10) / 10,
-      topRated: nearbySchools.reduce((best, s) => (s.rating > best.rating ? s : best)),
-      withinWalkingDistance: nearbySchools.filter((s) => s.distance <= 0.5).length,
-    },
-    districtInfo: {
-      name: "Unified School District",
-      overallRating: 8,
-      studentTeacherRatio: "18:1",
-    },
+  try {
+    const msg = await anthropic.messages.create({
+      model: "claude-opus-4-20250514",
+      max_tokens: 600,
+      messages: [
+        {
+          role: "user",
+          content: `You are a real estate data assistant. Based on the property location below, provide realistic school data for that area. Return ONLY valid JSON — no markdown, no explanation.
+
+Property: ${address}, ${city}, ${state} ${zip}
+${filterHint} ${ratingHint}
+
+Return this exact JSON structure:
+{
+  "nearbySchools": [
+    { "name": string, "type": "public"|"private", "grades": string, "rating": number (1-10), "distance": number (miles), "students": number }
+  ],
+  "summary": { "avgRating": number, "withinWalkingDistance": number },
+  "districtInfo": { "name": string, "overallRating": number, "studentTeacherRatio": string },
+  "dataSource": "AI-estimated"
+}`,
+        },
+      ],
+    })
+
+    const raw = msg.content[0].type === "text" ? msg.content[0].text.trim() : ""
+    const parsed = JSON.parse(raw)
+
+    // Apply preference filters on top of AI result
+    let schools = parsed.nearbySchools || []
+    if (preferences?.publicPrivate && preferences.publicPrivate !== "either") {
+      schools = schools.filter((s: any) => s.type === preferences.publicPrivate)
+    }
+    if (preferences?.minRating) {
+      schools = schools.filter((s: any) => s.rating >= preferences.minRating!)
+    }
+
+    return { ...parsed, nearbySchools: schools }
+  } catch (err) {
+    console.error("[v0] generateSchoolInsights AI error:", err)
+    return {
+      nearbySchools: [],
+      summary: { avgRating: null, withinWalkingDistance: 0 },
+      districtInfo: { name: null, overallRating: null, studentTeacherRatio: null },
+      dataSource: "unavailable",
+    }
   }
 }
 
@@ -264,40 +266,100 @@ async function generateInvestmentInsights(
 }
 
 async function generateNeighborhoodInsights(propertyData: Record<string, any>): Promise<Record<string, any>> {
-  // Mock neighborhood data - in production, integrate with APIs like WalkScore, local data, etc.
-  return {
-    walkability: {
-      walkScore: propertyData.walk_score || 72,
-      bikeScore: propertyData.bike_score || 65,
-      transitScore: propertyData.transit_score || 55,
-      description: "Very Walkable - Most errands can be accomplished on foot",
-    },
-    safety: {
-      crimeIndex: 3.2, // Out of 10, lower is safer
-      trend: "improving",
-      nearestPolice: "0.8 miles",
-      nearestFire: "1.2 miles",
-    },
-    amenities: {
-      restaurants: 24,
-      groceryStores: 5,
-      parks: 3,
-      gyms: 4,
-      hospitals: 2,
-      withinOneMile: ["Whole Foods", "Starbucks", "CVS", "Planet Fitness", "Central Park"],
-    },
-    demographics: {
-      medianAge: 34,
-      medianIncome: 85000,
-      ownerOccupied: "62%",
-      collegeEducated: "48%",
-    },
-    marketTrends: {
-      medianHomePrice: 525000,
-      yoyPriceChange: 5.2,
-      avgDaysOnMarket: 28,
-      inventoryLevel: "low",
-    },
+  // If real scores exist on the property record, use them directly
+  const hasRealScores = propertyData.walk_score || propertyData.bike_score || propertyData.transit_score
+
+  const address = propertyData.address || propertyData.full_address || ""
+  const city = propertyData.city || ""
+  const state = propertyData.state || ""
+  const zip = propertyData.zip || propertyData.zip_code || ""
+
+  // Build walkability block from real data if present
+  const walkability = {
+    walkScore: propertyData.walk_score || null,
+    bikeScore: propertyData.bike_score || null,
+    transitScore: propertyData.transit_score || null,
+    description: null as string | null,
+  }
+
+  // Ask AI for everything else — safety, amenities, demographics, market trends
+  try {
+    const msg = await anthropic.messages.create({
+      model: "claude-opus-4-20250514",
+      max_tokens: 700,
+      messages: [
+        {
+          role: "user",
+          content: `You are a real estate data assistant. Based on this property location, provide realistic neighborhood data. Return ONLY valid JSON — no markdown, no explanation.
+
+Property: ${address}, ${city}, ${state} ${zip}
+${hasRealScores ? `Known scores — Walk: ${propertyData.walk_score ?? "?"}, Bike: ${propertyData.bike_score ?? "?"}, Transit: ${propertyData.transit_score ?? "?"}` : ""}
+
+Return this exact JSON structure:
+{
+  "walkability": {
+    "walkScore": number|null,
+    "bikeScore": number|null,
+    "transitScore": number|null,
+    "description": string|null
+  },
+  "safety": {
+    "crimeIndex": number,
+    "trend": "improving"|"stable"|"increasing",
+    "nearestPolice": string,
+    "nearestFire": string
+  },
+  "amenities": {
+    "restaurants": number,
+    "groceryStores": number,
+    "parks": number,
+    "gyms": number,
+    "hospitals": number,
+    "withinOneMile": [string]
+  },
+  "demographics": {
+    "medianAge": number,
+    "medianIncome": number,
+    "ownerOccupied": string,
+    "collegeEducated": string
+  },
+  "marketTrends": {
+    "medianHomePrice": number,
+    "yoyPriceChange": number,
+    "avgDaysOnMarket": number,
+    "inventoryLevel": "low"|"moderate"|"high"
+  },
+  "dataSource": "AI-estimated"
+}`,
+        },
+      ],
+    })
+
+    const raw = msg.content[0].type === "text" ? msg.content[0].text.trim() : ""
+    const parsed = JSON.parse(raw)
+
+    // Override walkability with real scores if available
+    if (hasRealScores) {
+      parsed.walkability = {
+        ...parsed.walkability,
+        walkScore: propertyData.walk_score ?? parsed.walkability.walkScore,
+        bikeScore: propertyData.bike_score ?? parsed.walkability.bikeScore,
+        transitScore: propertyData.transit_score ?? parsed.walkability.transitScore,
+      }
+    }
+
+    return parsed
+  } catch (err) {
+    console.error("[v0] generateNeighborhoodInsights AI error:", err)
+    // Return minimal structure with only confirmed real data
+    return {
+      walkability,
+      safety: null,
+      amenities: null,
+      demographics: null,
+      marketTrends: null,
+      dataSource: "unavailable",
+    }
   }
 }
 
@@ -384,15 +446,11 @@ function estimatePublicTransit(propertyData: Record<string, any>): string {
 }
 
 function estimateWalkScore(propertyData: Record<string, any>): number {
-  return Math.floor(Math.random() * 30) + 50 // 50-80 range
+  return 0 // 0 = no real data available; wire WALKSCORE_API_KEY for live scores
 }
 
 function estimateCommuteTime(from: string, to: string, mode: string, isPeak: boolean): number {
-  // Mock calculation - in production use Google Maps API
-  const baseTime = Math.floor(Math.random() * 20) + 15 // 15-35 min base
-  if (isPeak) return Math.round(baseTime * 1.4)
-  if (mode === "transit") return Math.round(baseTime * 1.6)
-  return baseTime
+  return 0 // 0 = no real data available; wire Google Maps API for live commute times
 }
 
 function calculateMortgage(principal: number, annualRate: number, years: number): number {

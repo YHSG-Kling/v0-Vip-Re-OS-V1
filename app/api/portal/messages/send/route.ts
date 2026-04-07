@@ -18,16 +18,16 @@ export async function POST(request: NextRequest) {
     if (!messageBody) {
       return NextResponse.json({ error: "messageBody is required" }, { status: 400 })
     }
-    if (!direction || !["inbound", "outbound"].includes(direction)) {
-      return NextResponse.json({ error: "direction must be 'inbound' or 'outbound'" }, { status: 400 })
+    if (!direction || !["agent_to_client", "client_to_agent"].includes(direction)) {
+      return NextResponse.json({ error: "direction must be 'agent_to_client' or 'client_to_agent'" }, { status: 400 })
     }
 
-    // Call server action
+    // Call server action — channel defaults to 'portal' if not provided
     const result = await sendPortalMessage({
       contactId,
       messageBody,
+      direction: direction as "agent_to_client" | "client_to_agent",
       channel: channel || "portal",
-      direction,
       transactionId,
     })
 

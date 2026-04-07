@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -32,31 +32,61 @@ import {
   getPendingQuoteApprovalsAction,
 } from "@/app/actions/transaction-inspections"
 import {
-  ArrowLeft,
-  ArrowRight,
-  AlertTriangle,
   CheckCircle2,
   Clock,
+  AlertTriangle,
+  CircleDot,
   FileText,
   Users,
-  DollarSign,
-  Calendar,
-  Shield,
-  Home,
-  Wrench,
-  Building2,
-  CircleDot,
-  XCircle,
-  Upload,
-  Plus,
-  Loader2,
-  MapPin,
   Sparkles,
-  CheckSquare,
+  ChevronDown,
+  Loader2,
+  Home,
+  DollarSign,
+  CalendarDays,
+  Building2,
+  Scale,
+  ClipboardList,
+  PenLine,
+  Brain,
+  TrendingDown,
+  Landmark,
+  ExternalLink,
+  Plus,
+  ShieldCheck,
+  Bell,
+  Share2,
+  ChevronRight,
+  XCircle,
 } from "lucide-react"
+import { format } from "date-fns"
+import { createClient } from "@/lib/supabase/client"
+import { DepositTrackerDialog } from "@/app/dashboard/financials/agent/components/deposit-tracker-dialog"
 import { reviewTransactionDocuments, generateDocumentChecklist } from "@/app/actions/ai-contract-review"
+import { predictDealCloseProbability } from "@/app/actions/ai-predictions"
+import {
+  logTransactionDelay,
+  getTransactionDelays,
+} from "@/app/actions/transaction-transparency"
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet"
+import { Slider } from "@/components/ui/slider"
+import { Switch } from "@/components/ui/switch"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { toast } from "sonner"
 import { Progress } from "@/components/ui/progress"
 import { SuggestedVendors } from "@/app/components/transactions/suggested-vendors"
+import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
+import { DocumentSignaturePanel } from "@/app/components/shared/DocumentSignaturePanel"
+import { isSignableDocType } from "@/lib/documents/signable-doc-types"
+import { AssignTCPanel } from "./assign-tc-panel"
+import { AssignLenderPanel } from "./assign-lender-panel"
+import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
+import {
+  analyzeTransactionDocument,
+  generateTransactionDocumentReminders,
+  checkTransactionDisclosures,
+  shareDocumentAnalysisWithClient,
+} from "@/app/actions/ai-transaction-documents"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -97,6 +127,7 @@ interface TransactionDetailClientProps {
     status: string
     completed_at: string | null
     notes: string | null
+    is_client_visible: boolean | null
   }>
   deadlines: Array<{
     id: string
@@ -124,6 +155,8 @@ interface TransactionDetailClientProps {
     uploaded_at: string
     notes: string | null
     rejection_reason: string | null
+    extracted_data: Record<string, unknown> | null
+    classification_confidence: number | null
   }>
   documentCountsByStatus: Record<string, number>
   // Uses actual Supabase deal_health_scores table columns
@@ -279,6 +312,76 @@ interface TransactionDetailClientProps {
   }>
   stages: TransactionStage[]
   currentStageIndex: number
+  // Contact details for e-sign
+  contactEmail?: string | null
+  contactName?: string | null
+  // E-sign provider resolved from platform_credentials (null = none connected)
+  connectedEsignProvider?: { platform: string; accountName: string | null } | null
+  // Linked buyer offer for signature workflow (null = no offer linked)
+  linkedOffer?: {
+    id: string
+    esign_status?: string | null
+    esign_provider?: string | null
+    esign_sent_at?: string | null
+    esign_completed_at?: string | null
+    buyer_signed_at?: string | null
+  } | null
+  // Existing contract_signatures rows for this brokerage — keyed by contract_type
+  contractSignatures?: Record<string, {
+    id: string
+    esign_status: string
+    provider_name: string | null
+    sent_at: string | null
+    agent_signed_at: string | null
+    fully_signed_at: string | null
+  }>
+  // TC assignment
+  currentCoordinatorId?: string | null
+  availableTCs?: Array<{
+    id: string
+    display_name: string | null
+    max_active_deals: number | null
+  }>
+  // Lender assignment
+  currentLenderId?: string | null
+  availableLenders?: Array<{
+    id: string
+    lender_company: string | null
+  }>
+  // Vendor bookings
+  vendorBookings?: Array<{
+    id: string
+    service_type: string | null
+    status: string | null
+    scheduled_date: string | null
+    notes: string | null
+    contact_id: string | null
+    listing_id: string | null
+    vendors: { name: string } | null
+  }>
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+const LOAN_STAGES = [
+  "lender_assigned",
+  "preapproval_received",
+  "application_in_progress",
+  "underwriting",
+  "conditional_approval",
+  "clear_to_close",
+] as const
+
+type LoanStage = typeof LOAN_STAGES[number]
+
+function deriveLoanStatus(info: TransactionDetailClientProps["lenderInfo"]): LoanStage | "no_lender_assigned" {
+  if (!info) return "no_lender_assigned"
+  if (info.clear_to_close_date) return "clear_to_close"
+  if (info.underwriting_status === "approved") return "conditional_approval"
+  if (info.underwriting_status === "in_review") return "underwriting"
+  if (info.appraisal_completed_date) return "application_in_progress"
+  if (info.pre_approval_date) return "preapproval_received"
+  return "lender_assigned"
 }
 
 // ─── COMPONENT ─────────────────────────────────────────────────────────────────
@@ -309,9 +412,22 @@ export function TransactionDetailClient({
   commissions,
   stages,
   currentStageIndex,
+  contactEmail,
+  contactName,
+  connectedEsignProvider,
+  linkedOffer,
+  contractSignatures = {},
+  currentCoordinatorId = null,
+  availableTCs = [],
+  currentLenderId = null,
+  availableLenders = [],
+  vendorBookings = [],
 }: TransactionDetailClientProps) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
+
+  // Local milestones state — allows optimistic visibility toggle updates
+  const [localMilestones, setLocalMilestones] = useState(milestones)
 
   // Stage advancement state
   const [showBlockersModal, setShowBlockersModal] = useState(false)
@@ -348,12 +464,102 @@ export function TransactionDetailClient({
   const [emHeldBy, setEmHeldBy] = useState(titleEscrow?.earnest_money_held_by ?? "")
   const [emReceivedDate, setEmReceivedDate] = useState(titleEscrow?.earnest_money_received_date ?? "")
 
+  // Deal Health Prediction — loaded once on mount, no blocking
+  const [dealPrediction, setDealPrediction] = useState<any>(null)
+  const [dealPredLoading, setDealPredLoading] = useState(false)
+
+  useEffect(() => {
+    setDealPredLoading(true)
+    predictDealCloseProbability(transaction.id)
+      .then(setDealPrediction)
+      .catch(() => null)
+      .finally(() => setDealPredLoading(false))
+  }, [transaction.id])
+
+  // E-sign local state (optimistic updates for linked offer)
+  const [esignSent, setEsignSent] = useState(false)
+
   // Contract review state
   const [contractReview, setContractReview] = useState<any>(null)
   const [reviewLoading, setReviewLoading] = useState(false)
+
+  // Delay tracking state
+  const [delays, setDelays] = useState<any>(null)
+  const [transparencyUpdates, setTransparencyUpdates] = useState<any[]>([])
+  const [delaySheetOpen, setDelaySheetOpen] = useState(false)
+  const [selectedDelayTypes, setSelectedDelayTypes] = useState<string[]>([])
+  const [delayReasonText, setDelayReasonText] = useState("")
+  const [impactDays, setImpactDays] = useState(5)
+  const [notifyClient, setNotifyClient] = useState(false)
+  const [isLoggingDelay, setIsLoggingDelay] = useState(false)
+
+  useEffect(() => {
+    getTransactionDelays(transaction.id).then(({ delays: d, updates: u }) => {
+      setDelays(d)
+      setTransparencyUpdates(u)
+    })
+  }, [transaction.id])
+
+  // Deposits state
+  const [deposits, setDeposits] = useState<Array<{
+    id: string
+    deposit_type: string
+    amount: number
+    received_date: string
+    due_date: string | null
+    escrow_company: string | null
+    check_number: string | null
+    status: string
+    delivered_to_escrow_at: string | null
+    notes: string | null
+  }>>([])
+
+  const [complianceTasks, setComplianceTasks] = useState<Array<{
+    id: string
+    task_type: string
+    description: string
+    due_date: string | null
+    status: string
+    completed_at: string | null
+    completed_by: string | null
+  }>>([])
+
+  useEffect(() => {
+    const supabase = createClient()
+    Promise.all([
+      supabase
+        .from("deposits")
+        .select("id, deposit_type, amount, received_date, due_date, escrow_company, check_number, status, delivered_to_escrow_at, notes")
+        .eq("transaction_id", transaction.id)
+        .order("received_date", { ascending: false }),
+      supabase
+        .from("compliance_tasks")
+        .select("id, task_type, description, due_date, status, completed_at, completed_by")
+        .eq("transaction_id", transaction.id)
+        .order("due_date", { ascending: true }),
+    ]).then(([depositsResult, complianceResult]) => {
+      if (depositsResult.data) setDeposits(depositsResult.data)
+      if (complianceResult.data) setComplianceTasks(complianceResult.data)
+    })
+  }, [transaction.id])
   const [docChecklist, setDocChecklist] = useState<any[]>([])
   const [checklistLoading, setChecklistLoading] = useState(false)
   const [checkedItems, setCheckedItems] = useState<Set<string>>(new Set())
+
+  // AI Document Intelligence state
+  const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null)
+  const [docAnalysisResults, setDocAnalysisResults] = useState<Record<string, Record<string, unknown>>>({})
+  const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
+  const [disclosureResult, setDisclosureResult] = useState<{
+    complianceScore?: number
+    missingDisclosures?: string[]
+    issues?: string[]
+    recommendations?: string[]
+  } | null>(null)
+  const [disclosureLoading, setDisclosureLoading] = useState(false)
+  const [remindersLoading, setRemindersLoading] = useState(false)
+  const [remindersCreated, setRemindersCreated] = useState<number | null>(null)
+  const [sharingDocId, setSharingDocId] = useState<string | null>(null)
 
   const currentStage = transaction.stage as TransactionStage
   const allowedNextStages = STAGE_TRANSITIONS[currentStage] || []
@@ -364,7 +570,7 @@ export function TransactionDetailClient({
   const missingContractDate = !transaction.contract_date
   const missingCompliance = !transaction.compliance_passed_at
 
-  // ─── HANDLERS ────────────────────────────────────────────────────────────────
+  // ──�� HANDLERS ────────────────────────────────────────────────────────────────
 
   async function handleAdvanceClick(stage: TransactionStage) {
     setTargetStage(stage)
@@ -423,6 +629,106 @@ export function TransactionDetailClient({
         router.refresh()
       }
     })
+  }
+
+  // ─── AI DOCUMENT INTELLIGENCE HANDLERS ──────────────────────────────────────
+
+  async function handleAnalyzeDocument(docId: string) {
+    setAnalyzingDocId(docId)
+    try {
+      const result = await analyzeTransactionDocument({
+        documentId: docId,
+        transactionId: transaction.id,
+        brokerageId,
+        agentId: transaction.agent_id,
+      })
+      if (result.success && result.extracted) {
+        setDocAnalysisResults((prev) => ({ ...prev, [docId]: result.extracted! }))
+        setExpandedDocId(docId)
+        toast.success("Document analyzed")
+      } else {
+        toast.error(result.error ?? "Analysis failed")
+      }
+    } finally {
+      setAnalyzingDocId(null)
+    }
+  }
+
+  async function handleCheckDisclosures() {
+    setDisclosureLoading(true)
+    try {
+      const result = await checkTransactionDisclosures({
+        transactionId: transaction.id,
+        brokerageId,
+        agentId: transaction.agent_id,
+        state: transaction.property_state ?? "CA",
+      })
+      if (result.success) {
+        setDisclosureResult(result)
+        toast.success("Disclosure check complete")
+      } else {
+        toast.error(result.error ?? "Disclosure check failed")
+      }
+    } finally {
+      setDisclosureLoading(false)
+    }
+  }
+
+  async function handleGenerateReminders() {
+    setRemindersLoading(true)
+    try {
+      const result = await generateTransactionDocumentReminders({
+        transactionId: transaction.id,
+        brokerageId,
+        agentId: transaction.agent_id,
+      })
+      if (result.success) {
+        setRemindersCreated(result.remindersCreated ?? 0)
+        toast.success(`${result.remindersCreated} reminder task(s) created`)
+        router.refresh()
+      } else {
+        toast.error(result.error ?? "Failed to generate reminders")
+      }
+    } finally {
+      setRemindersLoading(false)
+    }
+  }
+
+  async function handleShareWithClient(docId: string, docLabel: string, analysis: Record<string, unknown>) {
+    if (!transaction.contact_id) {
+      toast.error("No contact linked to this transaction")
+      return
+    }
+    setSharingDocId(docId)
+    try {
+      const analysisText = [
+        analysis.summary ? `Summary: ${analysis.summary}` : null,
+        Array.isArray(analysis.redFlags) && analysis.redFlags.length > 0
+          ? `Items to note: ${(analysis.redFlags as string[]).join(", ")}`
+          : null,
+        Array.isArray(analysis.recommendedActions) && analysis.recommendedActions.length > 0
+          ? `Next steps: ${(analysis.recommendedActions as string[]).join(", ")}`
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+
+      const result = await shareDocumentAnalysisWithClient({
+        transactionId: transaction.id,
+        contactId: transaction.contact_id,
+        brokerageId,
+        agentId: transaction.agent_id,
+        documentLabel: docLabel,
+        analysisText,
+      })
+      if (result.success) {
+        toast.success("Analysis shared with client via portal")
+      } else {
+        toast.error(result.error ?? "Failed to share")
+      }
+    } finally {
+      setSharingDocId(null)
+    }
   }
 
   // ─── INSPECTION HANDLERS ─────────────────────────────────────────────────────
@@ -580,7 +886,7 @@ export function TransactionDetailClient({
     finally { setChecklistLoading(false) }
   }
 
-  // ─── RENDER ──────────────────────────────���───────────────────────────────────
+  // ─── RENDER ──────────────────────────────���────────────────────────────────��──
 
   return (
     <div className="min-h-screen bg-background">
@@ -689,7 +995,67 @@ export function TransactionDetailClient({
 
                 {/* Lost option */}
                 {canMarkLost && (
-                  <div className="pt-3 border-t mt-3">
+                  <div className="pt-3 border-t mt-3 space-y-1">
+                    {/* Close Transaction — sets status=closed, stage=CLOSED */}
+                    {currentStage !== "CLOSED" && currentStage !== "LOST" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-start text-green-700 hover:text-green-800 hover:bg-green-50"
+                        disabled={isPending}
+                        onClick={() => {
+                          startTransition(async () => {
+                            const { closeTransaction } = await import("@/app/actions/transactions")
+                            const result = await closeTransaction({
+                              transactionId: transaction.id,
+                              brokerageId,
+                              agentId: transaction.agent_id,
+                            })
+                            if (result.success) {
+                              toast.success("Transaction closed")
+                              router.refresh()
+                            } else {
+                              toast.error(result.error ?? "Failed to close transaction")
+                            }
+                          })
+                        }}
+                      >
+                        <CheckCircle2 className="h-4 w-4 mr-2" />
+                        Close Transaction
+                      </Button>
+                    )}
+                    {/* Reopen — only shown when closed; requires broker/admin */}
+                    {currentStage === "CLOSED" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-start text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                        disabled={isPending}
+                        onClick={() => {
+                          const reason = window.prompt("Reason for reopening this transaction:")
+                          if (!reason) return
+                          startTransition(async () => {
+                            const { reopenTransactionIfAuthorized } = await import("@/app/actions/transactions")
+                            const result = await reopenTransactionIfAuthorized({
+                              transactionId: transaction.id,
+                              brokerageId,
+                              requestingUserId: transaction.agent_id,
+                              requestingUserRole: "broker",
+                              reason,
+                            })
+                            if (result.success) {
+                              toast.success("Transaction reopened")
+                              router.refresh()
+                            } else {
+                              toast.error(result.error ?? "Reopen failed — broker/admin only")
+                            }
+                          })
+                        }}
+                      >
+                        <CircleDot className="h-4 w-4 mr-2" />
+                        Reopen Transaction
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="sm"
@@ -710,8 +1076,39 @@ export function TransactionDetailClient({
           <div className="lg:col-span-6 space-y-4">
             {/* Deal Summary Card */}
             <Card>
-              <CardHeader className="pb-3">
+              <CardHeader className="pb-3 flex flex-row items-center justify-between gap-2">
                 <CardTitle className="text-sm font-medium">Deal Summary</CardTitle>
+                {/* Send Client Update — writes to client_friendly_updates table */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-xs h-7"
+                  disabled={isPending}
+                  onClick={() => {
+                    const text = window.prompt("Enter plain-language update for the client (shown in portal):")
+                    if (!text?.trim()) return
+                    startTransition(async () => {
+                      const { emitClientFriendlyUpdate } = await import("@/app/actions/transactions")
+                      const result = await emitClientFriendlyUpdate({
+                        transactionId: transaction.id,
+                        brokerageId,
+                        agentId:       transaction.agent_id,
+                        contactId:     transaction.contact_id,
+                        updateType:    "general",
+                        updateText:    text.trim(),
+                        sendVia:       "portal",
+                      })
+                      if (result.success) {
+                        toast.success("Client update sent to portal")
+                      } else {
+                        toast.error(result.error ?? "Failed to send update")
+                      }
+                    })
+                  }}
+                >
+                  <Bell className="h-3 w-3" />
+                  Client Update
+                </Button>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 gap-4 text-sm">
@@ -771,29 +1168,46 @@ export function TransactionDetailClient({
               </CardHeader>
               <CardContent>
                 {healthScore ? (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
+                    {/* Score bar */}
                     <div className="h-2 bg-muted rounded-full overflow-hidden">
                       <div
                         className={cn(
                           "h-full transition-all",
                           healthScore.risk_level === "healthy" && "bg-green-500",
-                          healthScore.risk_level === "at_risk" && "bg-amber-500",
-                          healthScore.risk_level === "critical" && "bg-red-500"
+                          (healthScore.risk_level === "at_risk" || healthScore.risk_level === "medium") && "bg-amber-500",
+                          (healthScore.risk_level === "critical" || healthScore.risk_level === "high") && "bg-red-500"
                         )}
                         style={{ width: `${healthScore.overall_score}%` }}
                       />
                     </div>
-                    {healthScore.flags && healthScore.flags.length > 0 && (
-                      <div className="space-y-1">
-                        <ul className="space-y-1">
-                          {healthScore.flags.slice(0, 3).map((issue, i) => (
-                            <li key={i} className="flex items-start gap-1">
-                              <CircleDot className="h-3 w-3 mt-0.5 shrink-0" />
-                              {issue}
-                            </li>
+
+                    {/* At-risk / critical tooltip with risk factors */}
+                    {(healthScore.risk_level === "at_risk" || healthScore.risk_level === "critical" ||
+                      healthScore.risk_level === "high" || healthScore.risk_level === "medium") && healthScore.flags && healthScore.flags.length > 0 && (
+                      <div className={cn(
+                        "rounded-md border p-3 text-xs space-y-1",
+                        (healthScore.risk_level === "critical" || healthScore.risk_level === "high")
+                          ? "border-red-200 bg-red-50 text-red-800"
+                          : "border-amber-200 bg-amber-50 text-amber-800"
+                      )}>
+                        <TooltipProvider>
+                          <p className="font-semibold flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            {(healthScore.risk_level === "critical" || healthScore.risk_level === "high") ? "Critical Risk Factors" : "Risk Factors"}
+                          </p>
+                        </TooltipProvider>
+                        <ul className="space-y-0.5 list-disc list-inside">
+                          {healthScore.flags.slice(0, 5).map((flag, i) => (
+                            <li key={i}>{flag}</li>
                           ))}
                         </ul>
                       </div>
+                    )}
+
+                    {/* No flags but has score */}
+                    {(!healthScore.flags || healthScore.flags.length === 0) && (
+                      <p className="text-xs text-green-600 font-medium">No risk flags detected</p>
                     )}
                   </div>
                 ) : (
@@ -806,6 +1220,89 @@ export function TransactionDetailClient({
                 )}
               </CardContent>
             </Card>
+
+            {/* Deal Health Prediction */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-indigo-500" />
+                  Deal Health Prediction
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {dealPredLoading && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Analyzing deal signals...
+                  </div>
+                )}
+                {!dealPredLoading && dealPrediction && !dealPrediction.error && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-muted-foreground">Close Probability</span>
+                      <span className={`text-sm font-bold ${
+                        (dealPrediction.close_probability ?? 0) >= 70
+                          ? "text-green-600"
+                          : (dealPrediction.close_probability ?? 0) >= 40
+                          ? "text-amber-600"
+                          : "text-red-600"
+                      }`}>
+                        {dealPrediction.close_probability ?? 0}%
+                      </span>
+                    </div>
+                    <Progress
+                      value={dealPrediction.close_probability ?? 0}
+                      className="h-1.5"
+                    />
+                    {dealPrediction.risk_factors?.length > 0 && (
+                      <div className="pt-1 space-y-1">
+                        {dealPrediction.risk_factors.slice(0, 2).map((r: string, i: number) => (
+                          <div key={i} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                            <TrendingDown className="h-3 w-3 text-red-400 mt-0.5 shrink-0" />
+                            {r}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {dealPrediction.recommended_action && (
+                      <p className="text-xs text-indigo-700 bg-indigo-50 rounded px-2 py-1 border border-indigo-100">
+                        {dealPrediction.recommended_action}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {!dealPredLoading && (!dealPrediction || dealPrediction.error) && (
+                  <p className="text-xs text-muted-foreground">Prediction unavailable — insufficient data.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Pending Signatures Blocker — shown when contract_signatures rows are not yet fully signed */}
+            {Object.values(contractSignatures).some(s => s.esign_status !== "fully_signed") && (
+              <Card className="border-amber-200 bg-amber-50/30">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2 text-amber-800">
+                    <PenLine className="h-4 w-4" />
+                    Signatures Pending
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1.5">
+                  {Object.entries(contractSignatures)
+                    .filter(([, s]) => s.esign_status !== "fully_signed")
+                    .map(([docType, s]) => (
+                      <div key={docType} className="flex items-center justify-between text-xs">
+                        <span className="capitalize text-amber-900">{docType.replace(/_/g, " ")}</span>
+                        <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200">
+                          {s.esign_status?.replace(/_/g, " ") ?? "pending"}
+                        </Badge>
+                      </div>
+                    ))}
+                  <p className="text-xs text-amber-700 pt-1">
+                    Go to the Documents tab to send or resend for signatures.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Next Deadline */}
             {deadlines.length > 0 && (
@@ -828,6 +1325,84 @@ export function TransactionDetailClient({
                 </CardContent>
               </Card>
             )}
+
+            {/* Assign TC Panel — broker/admin/tc only */}
+            <AssignTCPanel
+              transactionId={transaction.id}
+              currentCoordinatorId={currentCoordinatorId}
+              availableTCs={availableTCs}
+              userRole={userRole}
+            />
+
+            {/* Assign Lender Panel */}
+            <AssignLenderPanel
+              transactionId={transaction.id}
+              currentLenderId={currentLenderId}
+              availableLenders={availableLenders}
+              userRole={userRole}
+            />
+
+            {/* Lending Status Card */}
+            {(() => {
+              const loanStatus = deriveLoanStatus(lenderInfo)
+              const currentIdx = LOAN_STAGES.indexOf(loanStatus as LoanStage)
+              return (
+                <Card className="mb-4">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <Landmark className="h-4 w-4 text-muted-foreground" />
+                        Lending Status
+                      </span>
+                      <Button size="sm" variant="outline" asChild>
+                        <Link href={`/portal/lender/${transaction.id}`}>
+                          Lender Portal
+                          <ExternalLink className="h-3 w-3 ml-1.5" />
+                        </Link>
+                      </Button>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm font-medium mb-3">
+                      {lenderInfo?.lender_name ?? "No lender assigned yet"}
+                      {lenderInfo?.loan_officer_name ? ` · ${lenderInfo.loan_officer_name}` : ""}
+                    </p>
+                    {/* Pipeline strip */}
+                    <div className="flex gap-1 mb-2">
+                      {LOAN_STAGES.map((stage, i) => (
+                        <div
+                          key={stage}
+                          className={cn(
+                            "h-2 flex-1 rounded-full transition-colors",
+                            loanStatus === "no_lender_assigned"
+                              ? "bg-muted"
+                              : i < currentIdx
+                              ? "bg-green-500"
+                              : i === currentIdx
+                              ? "bg-blue-500"
+                              : "bg-muted"
+                          )}
+                          title={stage.replace(/_/g, " ")}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground capitalize">
+                      {loanStatus === "no_lender_assigned"
+                        ? "No lender assigned"
+                        : loanStatus.replace(/_/g, " ")}
+                    </p>
+                    {loanStatus === "clear_to_close" && (
+                      <div className="mt-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs font-medium text-green-800">
+                        Clear to Close
+                        {lenderInfo?.clear_to_close_date
+                          ? ` · ${new Date(lenderInfo.clear_to_close_date).toLocaleDateString()}`
+                          : ""}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )
+            })()}
 
             {/* Participants & Docs Summary */}
             <div className="grid grid-cols-2 gap-4">
@@ -912,6 +1487,64 @@ export function TransactionDetailClient({
               />
             )}
 
+            {/* Closing Timeline Status */}
+            <Card className={delays?.delays?.length > 0 ? "border-amber-300 bg-amber-50 dark:bg-amber-950/20" : "border-green-200 bg-green-50 dark:bg-green-950/20"}>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Clock className="h-4 w-4" />
+                    Closing Timeline Status
+                  </CardTitle>
+                  <Button size="sm" variant="outline" onClick={() => setDelaySheetOpen(true)}>
+                    {delays?.delays?.length > 0 ? "Update Delay" : "Log Delay"}
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {delays?.delays?.length > 0 ? (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                      {delays.impact_on_closing} day(s) impact on closing
+                    </p>
+                    {delays.delays.map((d: string, i: number) => (
+                      <p key={i} className="text-xs text-amber-700 dark:text-amber-300">{d}</p>
+                    ))}
+                    {!delays.communicated_to_client ? (
+                      <Button
+                        size="sm"
+                        className="mt-2 bg-amber-600 hover:bg-amber-700 text-white"
+                        disabled={isLoggingDelay}
+                        onClick={async () => {
+                          setIsLoggingDelay(true)
+                          const res = await logTransactionDelay({
+                            transactionId: transaction.id,
+                            delays: delays.delays,
+                            reasons: delays.reason_for_delays,
+                            impactDays: delays.impact_on_closing,
+                            notifyClient: true,
+                          })
+                          setIsLoggingDelay(false)
+                          if (res.success) {
+                            toast.success("Client notified of delay")
+                            setDelays({ ...delays, communicated_to_client: true })
+                          } else {
+                            toast.error(res.error ?? "Failed to notify client")
+                          }
+                        }}
+                      >
+                        {isLoggingDelay ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Notify Client Now
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-green-600 dark:text-green-400">Client has been notified</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-sm text-green-700 dark:text-green-300">On track — no delays recorded</p>
+                )}
+              </CardContent>
+            </Card>
+
             {/* Recent Timeline */}
             <Card>
               <CardHeader className="pb-3">
@@ -965,6 +1598,22 @@ export function TransactionDetailClient({
                 <Home className="h-3 w-3 mr-1" />
                 Title & Escrow
               </TabsTrigger>
+              <TabsTrigger value="deposits" className="text-xs">
+                <Landmark className="h-3 w-3 mr-1" />
+                Deposits &amp; Compliance
+                {(() => {
+                  const overdueCount = complianceTasks.filter(
+                    t => t.status === "pending" && t.due_date && new Date(t.due_date) < new Date()
+                  ).length
+                  return overdueCount > 0 ? (
+                    <Badge variant="destructive" className="ml-1 h-4 px-1 text-xs">
+                      {overdueCount}
+                    </Badge>
+                  ) : deposits.some(d => d.status === "received" && d.due_date && new Date(d.due_date) < new Date()) ? (
+                    <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-red-500" />
+                  ) : null
+                })()}
+              </TabsTrigger>
               <TabsTrigger value="inspection" className="text-xs">
                 <Shield className="h-3 w-3 mr-1" />
                 Inspection
@@ -987,36 +1636,142 @@ export function TransactionDetailClient({
                 <DollarSign className="h-3 w-3 mr-1" />
                 Commissions
               </TabsTrigger>
+              <TabsTrigger value="partners" className="text-xs">
+                <Landmark className="h-3 w-3 mr-1" />
+                Partners
+              </TabsTrigger>
             </TabsList>
 
             {/* Milestones Tab */}
             <TabsContent value="milestones" className="mt-4">
               <Card>
                 <CardContent className="pt-4">
+                  <div className="flex items-center gap-2 mb-3 pb-3 border-b">
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="text-xs text-muted-foreground cursor-help underline decoration-dotted">
+                            Client portal visibility
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="right" className="max-w-xs">
+                          Client portal journey only shows milestones you mark visible. Defaults to hidden so no accidental exposure.
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
                   <div className="space-y-2">
-                    {milestones.map((m) => (
+                    {localMilestones.map((m) => {
+                      const isOverdue = m.status !== "completed" && m.milestone_date
+                        ? new Date(m.milestone_date) < new Date()
+                        : false
+                      return (
                       <div key={m.id} className="flex items-center justify-between py-2 border-b last:border-0">
                         <div className="flex items-center gap-3">
                           <div
                             className={cn(
-                              "w-3 h-3 rounded-full",
+                              "w-3 h-3 rounded-full flex-shrink-0",
                               m.status === "completed" && "bg-green-500",
-                              m.status === "pending" && "bg-amber-500",
+                              isOverdue && "bg-red-500",
+                              !isOverdue && m.status === "pending" && "bg-amber-500",
                               m.status === "overdue" && "bg-red-500"
                             )}
                           />
-                          <span className="text-sm">{m.milestone_name.replace(/_/g, " ")}</span>
+                          <span className="text-sm font-medium">{m.milestone_name.replace(/_/g, " ")}</span>
                         </div>
-                        <div className="text-sm text-muted-foreground">
-                          {m.completed_at
-                            ? `Completed ${new Date(m.completed_at).toLocaleDateString()}`
-                            : m.milestone_date
-                            ? new Date(m.milestone_date).toLocaleDateString()
-                            : "No date set"}
+                        <div className="flex items-center gap-3">
+                          {/* Date — red if overdue, green if complete */}
+                          <span className={cn(
+                            "text-sm",
+                            m.completed_at ? "text-green-600 font-medium" : isOverdue ? "text-red-600 font-semibold" : "text-muted-foreground"
+                          )}>
+                            {m.completed_at
+                              ? `Completed ${format(new Date(m.completed_at), "MMM d")}`
+                              : m.milestone_date
+                              ? `${isOverdue ? "Overdue: " : ""}${format(new Date(m.milestone_date), "MMM d, yyyy")}`
+                              : "No date set"}
+                          </span>
+
+                          {/* Mark Complete button — only for non-completed milestones */}
+                          {m.status !== "completed" && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs px-2"
+                              disabled={isPending}
+                              onClick={() => {
+                                startTransition(async () => {
+                                  const supabase = createClient()
+                                  const now = new Date().toISOString()
+                                  const { error } = await supabase
+                                    .from("transaction_milestones")
+                                    .update({ status: "completed", completed_at: now })
+                                    .eq("id", m.id)
+                                  if (!error) {
+                                    // Log timeline activity
+                                    await supabase.from("transaction_timeline").insert({
+                                      transaction_id: transaction.id,
+                                      brokerage_id: brokerageId,
+                                      activity_type: "milestone_completed",
+                                      description: `Milestone completed: ${m.milestone_name.replace(/_/g, " ")}`,
+                                      performed_by: userId,
+                                      created_at: now,
+                                    })
+                                    setLocalMilestones((prev) =>
+                                      prev.map((row) =>
+                                        row.id === m.id ? { ...row, status: "completed", completed_at: now } : row
+                                      )
+                                    )
+                                    toast.success("Milestone marked complete")
+                                  } else {
+                                    toast.error("Failed to update milestone")
+                                  }
+                                })
+                              }}
+                            >
+                              Complete
+                            </Button>
+                          )}
+
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              {m.is_client_visible ? "Client sees this" : "Agent only"}
+                            </span>
+                            <Switch
+                              checked={m.is_client_visible ?? false}
+                              onCheckedChange={async (visible) => {
+                                setLocalMilestones((prev) =>
+                                  prev.map((row) =>
+                                    row.id === m.id ? { ...row, is_client_visible: visible } : row
+                                  )
+                                )
+                                const supabase = createClient()
+                                const { error } = await supabase
+                                  .from("transaction_milestones")
+                                  .update({ is_client_visible: visible })
+                                  .eq("id", m.id)
+                                if (error) {
+                                  setLocalMilestones((prev) =>
+                                    prev.map((row) =>
+                                      row.id === m.id ? { ...row, is_client_visible: !visible } : row
+                                    )
+                                  )
+                                  toast.error("Failed to update milestone visibility")
+                                } else {
+                                  toast.success(
+                                    visible
+                                      ? "Milestone now visible in client portal"
+                                      : "Milestone hidden from client portal"
+                                  )
+                                }
+                              }}
+                            />
+                          </div>
                         </div>
                       </div>
-                    ))}
-                    {milestones.length === 0 && (
+                      )
+                    })}
+                    {localMilestones.length === 0 && (
                       <p className="text-sm text-muted-foreground">No milestones defined.</p>
                     )}
                   </div>
@@ -1071,7 +1826,21 @@ export function TransactionDetailClient({
             {/* Lender Tab */}
             <TabsContent value="lender" className="mt-4">
               <Card>
-                <CardContent className="pt-4">
+                <CardContent className="pt-4 space-y-4">
+                  {/* CTC Green Banner */}
+                  {lenderInfo?.clear_to_close_date && (
+                    <div className="flex items-center gap-3 rounded-lg border border-green-300 bg-green-50 px-4 py-3">
+                      <CheckCircle2 className="h-5 w-5 text-green-600 shrink-0" />
+                      <div>
+                        <p className="text-sm font-bold text-green-800">Clear to Close</p>
+                        <p className="text-xs text-green-700">
+                          Issued {new Date(lenderInfo.clear_to_close_date).toLocaleDateString()}
+                          {lenderInfo.lender_name ? ` by ${lenderInfo.lender_name}` : ""}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {lenderInfo ? (
                     <div className="grid grid-cols-2 gap-4 text-sm">
                       <div>
@@ -1082,6 +1851,14 @@ export function TransactionDetailClient({
                         <p className="text-muted-foreground">Loan Officer</p>
                         <p className="font-medium">{lenderInfo.loan_officer_name ?? "Not set"}</p>
                       </div>
+                      {lenderInfo.loan_officer_email && (
+                        <div className="col-span-2">
+                          <p className="text-muted-foreground">Contact</p>
+                          <p className="font-medium">{lenderInfo.loan_officer_email}
+                            {lenderInfo.loan_officer_phone ? ` · ${lenderInfo.loan_officer_phone}` : ""}
+                          </p>
+                        </div>
+                      )}
                       <div>
                         <p className="text-muted-foreground">Loan Type</p>
                         <p className="font-medium">{lenderInfo.loan_type ?? "Not set"}</p>
@@ -1099,10 +1876,22 @@ export function TransactionDetailClient({
                         </p>
                       </div>
                       <div>
+                        <p className="text-muted-foreground">Underwriting</p>
+                        <p className="font-medium capitalize">
+                          {lenderInfo.underwriting_status?.replace(/_/g, " ") ?? "Not started"}
+                        </p>
+                      </div>
+                      {lenderInfo.appraisal_value && (
+                        <div>
+                          <p className="text-muted-foreground">Appraisal Value</p>
+                          <p className="font-medium">${lenderInfo.appraisal_value.toLocaleString()}</p>
+                        </div>
+                      )}
+                      <div>
                         <p className="text-muted-foreground">Clear to Close</p>
-                        <p className="font-medium">
-{lenderInfo.clear_to_close_date
-                        ? new Date(lenderInfo.clear_to_close_date).toLocaleDateString()
+                        <p className={cn("font-medium", lenderInfo.clear_to_close_date ? "text-green-600" : "text-muted-foreground")}>
+                          {lenderInfo.clear_to_close_date
+                            ? new Date(lenderInfo.clear_to_close_date).toLocaleDateString()
                             : "Pending"}
                         </p>
                       </div>
@@ -1194,6 +1983,221 @@ export function TransactionDetailClient({
                           {titleEscrow.earnest_money_holder && `held by ${titleEscrow.earnest_money_holder.replace(/_/g, " ")}`}
                         </AlertDescription>
                       </Alert>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            {/* Deposits Tab */}
+            <TabsContent value="deposits" className="mt-4">
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm font-medium flex items-center gap-2">
+                      <Landmark className="h-4 w-4" />
+                      Deposits & Earnest Money
+                    </CardTitle>
+                    <DepositTrackerDialog
+                      agentId={transaction.agent_id}
+                      transactionId={transaction.id}
+                      propertyAddress={transaction.property_address}
+                      trigger={
+                        <Button size="sm" variant="outline">
+                          <Plus className="h-3 w-3 mr-1" /> Record Deposit
+                        </Button>
+                      }
+                    />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {deposits.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No deposits recorded yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {deposits.map((dep) => {
+                        const isOverdue =
+                          dep.status === "received" &&
+                          dep.due_date != null &&
+                          new Date(dep.due_date) < new Date()
+                        return (
+                          <div
+                            key={dep.id}
+                            className={cn(
+                              "flex items-center justify-between rounded border p-3 gap-3",
+                              isOverdue && "border-red-300 bg-red-50"
+                            )}
+                          >
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="outline" className="capitalize">
+                                  {dep.deposit_type.replace(/_/g, " ")}
+                                </Badge>
+                                <span className="text-sm font-medium">
+                                  ${dep.amount?.toLocaleString()}
+                                </span>
+                                <Badge
+                                  className={cn(
+                                    "text-xs",
+                                    dep.status === "delivered"
+                                      ? "bg-green-100 text-green-800 border-green-200"
+                                      : dep.status === "received"
+                                      ? "bg-blue-100 text-blue-800 border-blue-200"
+                                      : dep.status === "forfeited"
+                                      ? "bg-red-100 text-red-800 border-red-200"
+                                      : "bg-gray-100 text-gray-800 border-gray-200"
+                                  )}
+                                >
+                                  {dep.status}
+                                </Badge>
+                                {isOverdue && (
+                                  <Badge variant="destructive" className="text-xs">
+                                    OVERDUE
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                Received: {format(new Date(dep.received_date), "MMM d, yyyy")}
+                                {dep.due_date &&
+                                  ` · Due to escrow: ${format(new Date(dep.due_date), "MMM d, yyyy")}`}
+                                {dep.escrow_company && ` · ${dep.escrow_company}`}
+                                {dep.check_number && ` · Check #${dep.check_number}`}
+                              </p>
+                              {dep.delivered_to_escrow_at && (
+                                <p className="text-xs text-green-600">
+                                  Delivered {format(new Date(dep.delivered_to_escrow_at), "MMM d, yyyy h:mm a")}
+                                </p>
+                              )}
+                            </div>
+                            {dep.status === "received" && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={async () => {
+                                  const supabase = createClient()
+                                  const now = new Date().toISOString()
+                                  const { error } = await supabase
+                                    .from("deposits")
+                                    .update({ status: "delivered", delivered_to_escrow_at: now })
+                                    .eq("id", dep.id)
+                                  if (!error) {
+                                    setDeposits((prev) =>
+                                      prev.map((d) =>
+                                        d.id === dep.id
+                                          ? { ...d, status: "delivered", delivered_to_escrow_at: now }
+                                          : d
+                                      )
+                                    )
+                                    toast.success("Deposit marked as delivered to escrow")
+                                  } else {
+                                    toast.error("Failed to update deposit")
+                                  }
+                                }}
+                              >
+                                Mark Delivered
+                              </Button>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {/* Compliance Tasks */}
+                  <div className="mt-6 border-t pt-4">
+                    <h4 className="text-sm font-semibold flex items-center gap-2 mb-3">
+                      <ClipboardList className="h-4 w-4" />
+                      Compliance Tasks
+                    </h4>
+                    {complianceTasks.length === 0 ? (
+                      <p className="text-sm text-muted-foreground py-3">No compliance tasks yet.</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {complianceTasks.map((task) => {
+                          const isOverdue =
+                            task.status === "pending" &&
+                            task.due_date != null &&
+                            new Date(task.due_date) < new Date()
+                          return (
+                            <div
+                              key={task.id}
+                              className={cn(
+                                "rounded border p-3 flex items-start justify-between text-sm",
+                                isOverdue
+                                  ? "border-red-200 bg-red-50"
+                                  : task.status === "complete"
+                                  ? "border-green-200 bg-green-50 opacity-70"
+                                  : "border-gray-200 bg-white"
+                              )}
+                            >
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium">{task.description}</p>
+                                <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground">
+                                  <span className="capitalize">{task.task_type.replace(/_/g, " ")}</span>
+                                  {task.due_date && (
+                                    <span>· Due {format(new Date(task.due_date), "MMM d, yyyy")}</span>
+                                  )}
+                                </div>
+                                {isOverdue && (
+                                  <p className="text-xs text-red-700 font-semibold mt-1">Overdue</p>
+                                )}
+                                {task.status === "complete" && task.completed_at && (
+                                  <p className="text-xs text-green-700 mt-1">
+                                    Completed {format(new Date(task.completed_at), "MMM d")}
+                                  </p>
+                                )}
+                              </div>
+                              {task.status === "pending" && (
+                                <div className="flex gap-1.5 ml-3 shrink-0">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={async () => {
+                                      const supabase = createClient()
+                                      const now = new Date().toISOString()
+                                      await supabase
+                                        .from("compliance_tasks")
+                                        .update({ status: "complete", completed_at: now, completed_by: userId })
+                                        .eq("id", task.id)
+                                      setComplianceTasks((prev) =>
+                                        prev.map((t) =>
+                                          t.id === task.id
+                                            ? { ...t, status: "complete", completed_at: now }
+                                            : t
+                                        )
+                                      )
+                                      toast.success("Task completed")
+                                    }}
+                                  >
+                                    Done
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-7 text-xs"
+                                    onClick={async () => {
+                                      const supabase = createClient()
+                                      await supabase
+                                        .from("compliance_tasks")
+                                        .update({ status: "waived" })
+                                        .eq("id", task.id)
+                                      setComplianceTasks((prev) =>
+                                        prev.map((t) =>
+                                          t.id === task.id ? { ...t, status: "waived" } : t
+                                        )
+                                      )
+                                      toast.success("Task waived")
+                                    }}
+                                  >
+                                    Waive
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
                     )}
                   </div>
                 </CardContent>
@@ -1561,33 +2565,316 @@ export function TransactionDetailClient({
             </TabsContent>
 
             {/* Documents Tab */}
-            <TabsContent value="documents" className="mt-4">
+            <TabsContent value="documents" className="mt-4 space-y-3">
+              {/* Transaction-level AI actions */}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCheckDisclosures}
+                  disabled={disclosureLoading}
+                  className="text-xs gap-1.5"
+                >
+                  {disclosureLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                  )}
+                  Check Disclosures
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleGenerateReminders}
+                  disabled={remindersLoading}
+                  className="text-xs gap-1.5"
+                >
+                  {remindersLoading ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Bell className="h-3.5 w-3.5" />
+                  )}
+                  Generate Reminders
+                </Button>
+                {remindersCreated !== null && (
+                  <Badge variant="secondary" className="text-xs">
+                    {remindersCreated} reminder task{remindersCreated !== 1 ? "s" : ""} created
+                  </Badge>
+                )}
+              </div>
+
+              {/* Disclosure check result */}
+              {disclosureResult && (
+                <Card className="border-blue-200 bg-blue-50/40">
+                  <CardContent className="p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="h-4 w-4 text-blue-600" />
+                        <span className="text-sm font-semibold text-blue-900">Disclosure Compliance</span>
+                      </div>
+                      <Badge
+                        className={cn(
+                          "text-xs",
+                          (disclosureResult.complianceScore ?? 0) >= 80
+                            ? "bg-green-100 text-green-800"
+                            : (disclosureResult.complianceScore ?? 0) >= 50
+                            ? "bg-amber-100 text-amber-800"
+                            : "bg-red-100 text-red-800"
+                        )}
+                      >
+                        Score: {disclosureResult.complianceScore ?? 0}/100
+                      </Badge>
+                    </div>
+                    {(disclosureResult.missingDisclosures?.length ?? 0) > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-red-700 mb-1">Missing disclosures:</p>
+                        <ul className="list-disc list-inside space-y-0.5">
+                          {disclosureResult.missingDisclosures!.map((item, i) => (
+                            <li key={i} className="text-xs text-red-600">{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {(disclosureResult.recommendations?.length ?? 0) > 0 && (
+                      <div>
+                        <p className="text-xs font-medium text-blue-800 mb-1">Recommendations:</p>
+                        <ul className="list-disc list-inside space-y-0.5">
+                          {disclosureResult.recommendations!.map((r, i) => (
+                            <li key={i} className="text-xs text-blue-700">{r}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
               <Card>
                 <CardContent className="pt-4">
                   {documents.length > 0 ? (
-                    <div className="space-y-2">
-                      {documents.map((d) => (
-                        <div key={d.id} className="flex items-center justify-between py-2 border-b last:border-0">
-                          <div>
-                            <p className="text-sm font-medium">{d.doc_label ?? d.doc_type}</p>
-                            <p className="text-xs text-muted-foreground">{d.doc_type.replace(/_/g, " ")}</p>
+                    <div className="space-y-3">
+                      {documents.map((d) => {
+                        const signable = isSignableDocType(d.doc_type)
+                        const sig = contractSignatures[d.doc_type] ?? null
+                        const hasAnalysis = !!(d.extracted_data && Object.keys(d.extracted_data).length > 0)
+                        const pendingAnalysis = docAnalysisResults[d.id]
+                        const analysisData = pendingAnalysis ?? (hasAnalysis ? d.extracted_data! : null)
+                        const isAnalyzed = !!analysisData
+                        const isExpanded = expandedDocId === d.id
+                        const confidence = d.classification_confidence
+                          ? Math.round(d.classification_confidence * 100)
+                          : null
+
+                        return (
+                          <div key={d.id} className="border rounded-lg overflow-hidden">
+                            {/* Document header row */}
+                            <div className="flex items-center justify-between px-4 py-3 bg-muted/30">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium truncate">{d.doc_label ?? d.doc_type}</p>
+                                  <p className="text-xs text-muted-foreground capitalize">
+                                    {d.doc_type.replace(/_/g, " ")}
+                                    {confidence !== null && (
+                                      <span className="ml-2 text-blue-600">{confidence}% confidence</span>
+                                    )}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Badge
+                                  variant={
+                                    d.status === "approved"
+                                      ? "default"
+                                      : d.status === "rejected"
+                                      ? "destructive"
+                                      : "secondary"
+                                  }
+                                  className="text-xs"
+                                >
+                                  {d.status.replace(/_/g, " ")}
+                                </Badge>
+                                {isAnalyzed ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-xs h-7 gap-1 text-blue-700"
+                                    onClick={() => setExpandedDocId(isExpanded ? null : d.id)}
+                                  >
+                                    <Brain className="h-3.5 w-3.5" />
+                                    {isExpanded ? "Hide" : "View Analysis"}
+                                    <ChevronRight
+                                      className={cn(
+                                        "h-3 w-3 transition-transform",
+                                        isExpanded && "rotate-90"
+                                      )}
+                                    />
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-xs h-7 gap-1"
+                                    onClick={() => handleAnalyzeDocument(d.id)}
+                                    disabled={analyzingDocId === d.id}
+                                  >
+                                    {analyzingDocId === d.id ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <Sparkles className="h-3.5 w-3.5" />
+                                    )}
+                                    AI Analyze
+                                  </Button>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Inline AI analysis panel */}
+                            {isExpanded && isAnalyzed && analysisData && (
+                              <div className="border-t bg-blue-50/30 px-4 py-3 space-y-3">
+                                {/* Summary */}
+                                {typeof analysisData.summary === "string" && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-foreground mb-1">Summary</p>
+                                    <p className="text-xs text-muted-foreground leading-relaxed">
+                                      {analysisData.summary}
+                                    </p>
+                                  </div>
+                                )}
+
+                                {/* Key Terms (contracts) */}
+                                {Array.isArray(analysisData.keyTerms) && analysisData.keyTerms.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-foreground mb-1">Key Terms</p>
+                                    <div className="grid grid-cols-1 gap-1">
+                                      {(analysisData.keyTerms as Array<{ term: string; value: string; importance: string }>)
+                                        .slice(0, 6)
+                                        .map((kt, i) => (
+                                          <div key={i} className="flex justify-between text-xs">
+                                            <span className="text-muted-foreground">{kt.term}</span>
+                                            <span className="font-medium text-foreground">{kt.value}</span>
+                                          </div>
+                                        ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Red Flags */}
+                                {Array.isArray(analysisData.redFlags) && analysisData.redFlags.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-destructive mb-1">Red Flags</p>
+                                    <ul className="list-disc list-inside space-y-0.5">
+                                      {(analysisData.redFlags as string[]).map((flag, i) => (
+                                        <li key={i} className="text-xs text-destructive">{flag}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* Deadlines */}
+                                {Array.isArray(analysisData.deadlines) && analysisData.deadlines.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-foreground mb-1">Deadlines</p>
+                                    <div className="space-y-1">
+                                      {(analysisData.deadlines as Array<{ description: string; date: string }>).map((dl, i) => (
+                                        <div key={i} className="flex justify-between text-xs">
+                                          <span className="text-muted-foreground">{dl.description}</span>
+                                          <span className="font-medium text-amber-700">{dl.date}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Recommended Actions */}
+                                {Array.isArray(analysisData.recommendedActions) && analysisData.recommendedActions.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-foreground mb-1">Recommended Actions</p>
+                                    <ul className="list-disc list-inside space-y-0.5">
+                                      {(analysisData.recommendedActions as string[]).map((a, i) => (
+                                        <li key={i} className="text-xs text-muted-foreground">{a}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {/* Share with client */}
+                                {transaction.contact_id && (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="text-xs h-7 gap-1 w-full"
+                                    onClick={() =>
+                                      handleShareWithClient(
+                                        d.id,
+                                        d.doc_label ?? d.doc_type,
+                                        analysisData
+                                      )
+                                    }
+                                    disabled={sharingDocId === d.id}
+                                  >
+                                    {sharingDocId === d.id ? (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                      <Share2 className="h-3.5 w-3.5" />
+                                    )}
+                                    Share with Client via Portal
+                                  </Button>
+                                )}
+                              </div>
+                            )}
+
+                            {/* E-sign panel */}
+                            {signable && (
+                              <div className="border-t px-4 py-3">
+                                <DocumentSignaturePanel
+                                  transactionId={transaction.id}
+                                  documentId={d.id}
+                                  docType={d.doc_type}
+                                  docLabel={d.doc_label}
+                                  userId={userId}
+                                  brokerageId={brokerageId}
+                                  connectedProvider={connectedEsignProvider ?? null}
+                                  existingSignatureId={sig?.id ?? null}
+                                  esignStatus={sig?.esign_status ?? null}
+                                  providerName={sig?.provider_name ?? null}
+                                  sentAt={sig?.sent_at ?? null}
+                                  agentSignedAt={sig?.agent_signed_at ?? null}
+                                  fullySignedAt={sig?.fully_signed_at ?? null}
+                                  defaultSigners={
+                                    contactEmail
+                                      ? [{ name: contactName ?? "Contact", email: contactEmail, role: "signer" }]
+                                      : []
+                                  }
+                                />
+                              </div>
+                            )}
                           </div>
-                          <Badge
-                            variant={
-                              d.status === "approved"
-                                ? "default"
-                                : d.status === "rejected"
-                                ? "destructive"
-                                : "secondary"
-                            }
-                          >
-                            {d.status}
-                          </Badge>
-                        </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   ) : (
                     <p className="text-sm text-muted-foreground">No documents uploaded.</p>
+                  )}
+
+                  {/* E-sign Panel — shown when a buyer offer is linked */}
+                  {linkedOffer && (
+                    <div className="mt-4 border-t pt-4">
+                      <p className="text-sm font-semibold mb-2">Offer Signatures</p>
+                      <SendForSignaturesPanel
+                        offerId={linkedOffer.id}
+                        userId={userId}
+                        connectedProvider={connectedEsignProvider ?? null}
+                        buyerName={contactName ?? ""}
+                        buyerEmail={contactEmail ?? ""}
+                        esignStatus={esignSent ? "sent" : (linkedOffer.esign_status ?? undefined)}
+                        esignProvider={linkedOffer.esign_provider ?? undefined}
+                        esignSentAt={esignSent ? new Date().toISOString() : (linkedOffer.esign_sent_at ?? undefined)}
+                        esignCompletedAt={linkedOffer.esign_completed_at ?? undefined}
+                        buyerSignedAt={linkedOffer.buyer_signed_at ?? undefined}
+                        onSent={() => setEsignSent(true)}
+                      />
+                    </div>
                   )}
 
                   <div className="mt-6 border-t pt-6 space-y-4">
@@ -1766,30 +3053,282 @@ export function TransactionDetailClient({
             {/* Commissions Tab */}
             <TabsContent value="commissions" className="mt-4">
               <Card>
-                <CardContent className="pt-4">
-{commissions.length > 0 ? (
-                <div className="space-y-3">
-                  {commissions.map((c) => (
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <DollarSign className="h-4 w-4" />
+                    Commission Summary
+                  </CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs h-7"
+                    disabled={isPending}
+                    onClick={() => {
+                      startTransition(async () => {
+                        const { calculateCommissions } = await import("@/app/actions/transactions")
+                        const result = await calculateCommissions(transaction.id)
+                        if (result?.success) {
+                          toast.success("Commissions recalculated")
+                          router.refresh()
+                        } else {
+                          toast.error("Recalculation failed")
+                        }
+                      })
+                    }}
+                  >
+                    {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                    Recalculate
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {/* CLOSED: show commission summary banner */}
+                  {currentStage === "CLOSED" && commissions.length > 0 && (
+                    <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-4">
+                      <p className="text-sm font-bold text-green-800 mb-2 flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4" />
+                        Transaction Closed — Final Commission Summary
+                      </p>
+                      <div className="grid grid-cols-2 gap-2 text-xs text-green-700">
+                        <span>Gross Commission</span>
+                        <span className="font-semibold text-right">
+                          ${(transaction.purchase_price * (transaction.commission_percentage ?? 3) / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        </span>
+                        <span>Total Distributed</span>
+                        <span className="font-semibold text-right">
+                          ${commissions.reduce((s, c) => s + (c.calculated_amount ?? c.flat_amount ?? 0), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {commissions.length > 0 ? (
+                    <div className="space-y-2">
+                      {commissions.map((c) => (
                         <div key={c.id} className="flex items-center justify-between py-2 border-b last:border-0">
                           <div>
                             <p className="text-sm font-medium">{c.recipient_name}</p>
-                            <p className="text-xs text-muted-foreground">{c.recipient_type}</p>
+                            <p className="text-xs text-muted-foreground capitalize">{c.recipient_type} · {c.commission_type?.replace(/_/g, " ") ?? "split"}</p>
                           </div>
                           <div className="text-right">
-                            <p className="text-sm font-medium">{c.rate_percentage ?? c.split_percentage ?? 0}%</p>
-{(c.calculated_amount || c.flat_amount) && (
-                            <p className="text-xs text-muted-foreground">${(c.calculated_amount ?? c.flat_amount ?? 0).toLocaleString()}</p>
+                            <p className="text-sm font-medium">
+                              {c.rate_percentage ?? c.split_percentage
+                                ? `${(c.rate_percentage ?? c.split_percentage ?? 0).toFixed(2)}%`
+                                : c.flat_amount ? `$${c.flat_amount.toLocaleString()}` : "—"}
+                            </p>
+                            {(c.calculated_amount || c.flat_amount) && (
+                              <p className="text-xs text-muted-foreground">
+                                ${(c.calculated_amount ?? c.flat_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                              </p>
+                            )}
+                            {c.status && (
+                              <Badge variant={c.status === "paid" ? "default" : "secondary"} className="mt-1 text-[10px] px-1 h-4">
+                                {c.status}
+                              </Badge>
                             )}
                           </div>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground">No commission splits defined.</p>
+                    <div className="py-6 text-center space-y-2">
+                      <p className="text-sm text-muted-foreground">No commission splits defined yet.</p>
+                      <p className="text-xs text-muted-foreground">
+                        Commission splits are calculated automatically when the transaction advances to Closing Prep.
+                        Click Recalculate to trigger manually.
+                      </p>
+                    </div>
                   )}
                 </CardContent>
               </Card>
             </TabsContent>
+
+          {/* Partners Tab */}
+          <TabsContent value="partners" className="mt-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+              {/* Lender Workspace Card */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Building2 className="h-4 w-4 text-muted-foreground" />
+                    Lender Workspace
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {lenderInfo ? (
+                    <>
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">{lenderInfo.lender_name ?? "—"}</p>
+                        {lenderInfo.loan_officer_name && (
+                          <p className="text-xs text-muted-foreground">{lenderInfo.loan_officer_name}</p>
+                        )}
+                        {lenderInfo.loan_officer_email && (
+                          <p className="text-xs text-muted-foreground">{lenderInfo.loan_officer_email}</p>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                        {lenderInfo.loan_type && (
+                          <>
+                            <span className="text-muted-foreground">Loan Type</span>
+                            <span className="font-medium">{lenderInfo.loan_type}</span>
+                          </>
+                        )}
+                        {lenderInfo.underwriting_status && (
+                          <>
+                            <span className="text-muted-foreground">Underwriting</span>
+                            <Badge variant="outline" className="w-fit text-[10px] px-1.5 py-0">
+                              {lenderInfo.underwriting_status.replace(/_/g, " ")}
+                            </Badge>
+                          </>
+                        )}
+                        {lenderInfo.clear_to_close_date && (
+                          <>
+                            <span className="text-muted-foreground">CTC Date</span>
+                            <span className="font-medium">
+                              {new Date(lenderInfo.clear_to_close_date).toLocaleDateString()}
+                            </span>
+                          </>
+                        )}
+                        {lenderInfo.loan_amount && (
+                          <>
+                            <span className="text-muted-foreground">Loan Amount</span>
+                            <span className="font-medium">${lenderInfo.loan_amount.toLocaleString()}</span>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No lender assigned.</p>
+                  )}
+                  <div className="pt-1">
+                    <Link href={`/portal/lender/${transaction.id}`} target="_blank">
+                      <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                        <ExternalLink className="h-3 w-3" />
+                        Open Lender Portal
+                      </Button>
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Title & Escrow Workspace Card */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Home className="h-4 w-4 text-muted-foreground" />
+                    Title & Escrow Workspace
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {titleEscrow ? (
+                    <>
+                      <div className="space-y-1">
+                        <p className="text-sm font-medium">{titleEscrow.title_company_name ?? "—"}</p>
+                        {titleEscrow.title_officer_name && (
+                          <p className="text-xs text-muted-foreground">{titleEscrow.title_officer_name}</p>
+                        )}
+                        {titleEscrow.title_officer_email && (
+                          <p className="text-xs text-muted-foreground">{titleEscrow.title_officer_email}</p>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                        {titleEscrow.escrow_number && (
+                          <>
+                            <span className="text-muted-foreground">Escrow #</span>
+                            <span className="font-medium">{titleEscrow.escrow_number}</span>
+                          </>
+                        )}
+                        {titleEscrow.closing_scheduled_date && (
+                          <>
+                            <span className="text-muted-foreground">Closing</span>
+                            <span className="font-medium">
+                              {new Date(titleEscrow.closing_scheduled_date).toLocaleDateString()}
+                            </span>
+                          </>
+                        )}
+                        {titleEscrow.title_issues && (
+                          <>
+                            <span className="text-muted-foreground">Issues</span>
+                            <Badge variant="destructive" className="w-fit text-[10px] px-1.5 py-0">
+                              {titleEscrow.title_issues}
+                            </Badge>
+                          </>
+                        )}
+                        {titleEscrow.earnest_money_amount && (
+                          <>
+                            <span className="text-muted-foreground">Earnest $</span>
+                            <span className="font-medium">${titleEscrow.earnest_money_amount.toLocaleString()}</span>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No title/escrow info assigned.</p>
+                  )}
+                  <div className="pt-1">
+                    <Link href={`/portal/title/${transaction.id}`} target="_blank">
+                      <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                        <ExternalLink className="h-3 w-3" />
+                        Open Title Portal
+                      </Button>
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Vendor Workspace Card */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Wrench className="h-4 w-4 text-muted-foreground" />
+                    Vendor Workspace
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {vendorServices.length > 0 ? (
+                    <div className="space-y-2">
+                      {vendorServices.slice(0, 4).map((v) => (
+                        <div key={v.id} className="flex items-center justify-between">
+                          <div>
+                            <p className="text-xs font-medium">{v.vendor_name}</p>
+                            <p className="text-[10px] text-muted-foreground capitalize">
+                              {v.service_type.replace(/_/g, " ")}
+                            </p>
+                          </div>
+                          <Badge
+                            variant={v.status === "completed" ? "default" : v.status === "scheduled" ? "secondary" : "outline"}
+                            className="text-[10px] px-1.5 py-0 capitalize"
+                          >
+                            {v.status.replace(/_/g, " ")}
+                          </Badge>
+                        </div>
+                      ))}
+                      {vendorServices.length > 4 && (
+                        <p className="text-[10px] text-muted-foreground">
+                          +{vendorServices.length - 4} more
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No vendor services assigned.</p>
+                  )}
+                  <div className="pt-1">
+                    <Link href="/vendor/dashboard">
+                      <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs">
+                        <ExternalLink className="h-3 w-3" />
+                        View Vendor Dashboard
+                      </Button>
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Vendor Bookings Panel */}
+              <VendorBookingsPanel bookings={vendorBookings} />
+
+            </div>
+          </TabsContent>
+
           </Tabs>
         </div>
       </div>
@@ -1919,6 +3458,132 @@ export function TransactionDetailClient({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Log Delay Sheet */}
+      <Sheet open={delaySheetOpen} onOpenChange={(open) => {
+        if (!open) {
+          setSelectedDelayTypes([])
+          setDelayReasonText("")
+          setImpactDays(5)
+          setNotifyClient(false)
+        }
+        setDelaySheetOpen(open)
+      }}>
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>Log Closing Delay</SheetTitle>
+            <SheetDescription>
+              Record delay types, reason, and estimated impact on the closing date.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="space-y-5 py-4">
+            {/* Delay type checkboxes */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Delay Types</Label>
+              {[
+                "Inspection issues",
+                "Financing/appraisal",
+                "Title issues",
+                "Repair negotiations",
+                "Buyer contingency",
+                "Document delays",
+                "Scheduling conflict",
+                "Other",
+              ].map((type) => (
+                <label key={type} className="flex items-center gap-2 cursor-pointer text-sm py-1">
+                  <input
+                    type="checkbox"
+                    className="rounded"
+                    checked={selectedDelayTypes.includes(type)}
+                    onChange={(e) =>
+                      setSelectedDelayTypes((prev) =>
+                        e.target.checked ? [...prev, type] : prev.filter((t) => t !== type),
+                      )
+                    }
+                  />
+                  {type}
+                </label>
+              ))}
+            </div>
+
+            {/* Reason textarea */}
+            <div className="space-y-1.5">
+              <Label htmlFor="delayReason" className="text-sm font-medium">
+                Reason / Notes
+              </Label>
+              <Textarea
+                id="delayReason"
+                placeholder="Describe the reason for the delay..."
+                rows={3}
+                value={delayReasonText}
+                onChange={(e) => setDelayReasonText(e.target.value)}
+              />
+            </div>
+
+            {/* Impact days slider */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-medium">Impact on Closing</Label>
+                <span className="text-sm font-semibold tabular-nums">{impactDays} day{impactDays !== 1 ? "s" : ""}</span>
+              </div>
+              <Slider
+                min={1}
+                max={30}
+                step={1}
+                value={[impactDays]}
+                onValueChange={([v]) => setImpactDays(v)}
+                className="w-full"
+              />
+              <div className="flex justify-between text-xs text-muted-foreground">
+                <span>1 day</span>
+                <span>30 days</span>
+              </div>
+            </div>
+
+            {/* Notify client toggle */}
+            <div className="flex items-center justify-between rounded-lg border border-border p-3">
+              <div className="space-y-0.5">
+                <Label className="text-sm font-medium">Notify client immediately</Label>
+                <p className="text-xs text-muted-foreground">
+                  Sends a transparency update to the client portal
+                </p>
+              </div>
+              <Switch checked={notifyClient} onCheckedChange={setNotifyClient} />
+            </div>
+          </div>
+
+          <SheetFooter>
+            <Button variant="outline" onClick={() => setDelaySheetOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={isLoggingDelay || selectedDelayTypes.length === 0}
+              onClick={async () => {
+                setIsLoggingDelay(true)
+                const res = await logTransactionDelay({
+                  transactionId: transaction.id,
+                  delays: selectedDelayTypes,
+                  reasons: delayReasonText ? [delayReasonText] : selectedDelayTypes,
+                  impactDays,
+                  notifyClient,
+                })
+                setIsLoggingDelay(false)
+                if (res.success) {
+                  toast.success("Delay logged")
+                  setDelays(res.delay)
+                  setDelaySheetOpen(false)
+                } else {
+                  toast.error(res.error ?? "Failed to log delay")
+                }
+              }}
+            >
+              {isLoggingDelay ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              Log Delay
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }

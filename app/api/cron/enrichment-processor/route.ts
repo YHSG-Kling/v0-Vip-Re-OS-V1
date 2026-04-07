@@ -6,6 +6,12 @@
 import { NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { processEnrichmentQueue } from '@/lib/lead-pipeline/enrichment-orchestrator'
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from '@/app/actions/cron-kernel'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
@@ -16,6 +22,20 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const contextResult = await createCronRunContextAction({
+    cron_name: 'enrichment-processor',
+    cron_path: '/app/api/cron/enrichment-processor/route.ts',
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: 'Failed to create cron context' }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error('[EnrichmentProcessor] Failed to record cron start:', startRecordResult.error)
+  }
+
+  try {
   const startedAt = Date.now()
   const supabase = createServiceClient()
 
@@ -26,8 +46,9 @@ export async function GET(request: Request) {
     .eq('is_active', true)
 
   if (brokErr || !brokerages) {
+    await recordCronFailureAction({ context_id: contextId, error: brokErr ?? new Error('No brokerages'), stage: 'database-fetch' })
     return NextResponse.json(
-      { success: false, error: brokErr?.message ?? 'No brokerages' },
+      { success: false, error: brokErr?.message ?? 'No brokerages', context_id: contextId },
       { status: 500 },
     )
   }
@@ -57,9 +78,24 @@ export async function GET(request: Request) {
     }
   }
 
+  const totalProcessed = results.reduce((s, r) => s + r.processed, 0)
+  const totalSucceeded = results.reduce((s, r) => s + r.succeeded, 0)
+
+  await recordCronSuccessAction({
+    context_id: contextId,
+    records_processed: totalProcessed,
+    output_count: totalSucceeded,
+    metadata: { brokerages: results.length, totalProcessed, totalSucceeded, duration_ms: Date.now() - startedAt },
+  })
+
   return NextResponse.json({
     success: true,
     results,
     duration_ms: Date.now() - startedAt,
   })
+  } catch (error) {
+    console.error('[EnrichmentProcessor] Cron failed:', error)
+    await recordCronFailureAction({ context_id: contextId, error, stage: 'main-processing' })
+    return NextResponse.json({ success: false, error: error instanceof Error ? error.message : String(error), context_id: contextId }, { status: 500 })
+  }
 }

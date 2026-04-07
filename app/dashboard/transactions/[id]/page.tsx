@@ -24,7 +24,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const brokerageId = profile.brokerage_id
   const userRole = profile.role ?? "agent"
@@ -70,6 +70,92 @@ export default async function TransactionDetailPage({ params }: PageProps) {
   if (!isOwningAgent && !hasAdminAccess) {
     redirect("/dashboard")
   }
+
+  // Fetch contact + esign provider + linked offer in parallel with main data
+  const [{ data: contactRow }, { data: providerCred }, { data: linkedOfferRow }] = await Promise.all([
+    supabase
+      .from("contacts")
+      .select("id, first_name, last_name, name, email")
+      .eq("id", transaction.contact_id)
+      .maybeSingle(),
+    supabase
+      .from("platform_credentials")
+      .select("platform, account_name")
+      .eq("brokerage_id", brokerageId)
+      .in("platform", ["dotloop", "docusign", "skyslope", "authentisign"])
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("offers")
+      .select("id, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at")
+      .eq("contact_id", transaction.contact_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ])
+
+  const contactEmail = contactRow?.email ?? null
+  const contactName = contactRow
+    ? (contactRow.name ?? ([contactRow.first_name, contactRow.last_name].filter(Boolean).join(" ") || null))
+    : null
+  const connectedEsignProvider = providerCred
+    ? { platform: providerCred.platform, accountName: providerCred.account_name ?? null }
+    : null
+
+  // Fetch transaction coordinator, available TCs, lender info, and available lenders
+  const [
+    { data: txnCoordinatorRow },
+    { data: availableTCs },
+    { data: txnLenderRow },
+    { data: availableLenders },
+  ] = await Promise.all([
+    supabase
+      .from("transactions")
+      .select("coordinator_id")
+      .eq("id", id)
+      .maybeSingle(),
+    supabase
+      .from("transaction_coordinators")
+      .select("id, display_name, max_active_deals")
+      .eq("brokerage_id", brokerageId)
+      .eq("is_active", true)
+      .order("display_name"),
+    supabase
+      .from("transactions")
+      .select("lender_id")
+      .eq("id", id)
+      .maybeSingle(),
+    supabase
+      .from("lender_portal_users")
+      .select("id, lender_company")
+      .order("lender_company"),
+  ])
+  const currentCoordinatorId = txnCoordinatorRow?.coordinator_id ?? null
+  const currentLenderId = txnLenderRow?.lender_id ?? null
+
+  // Fetch contract_signatures for this brokerage — used to show send/resend per transaction doc
+  const { data: contractSigsRows } = await supabase
+    .from("contract_signatures")
+    .select("id, contract_type, esign_status, provider_name, sent_at, agent_signed_at, fully_signed_at")
+    .eq("brokerage_id", brokerageId)
+    .order("created_at", { ascending: false })
+
+  // Key by contract_type (doc_type) — most recent wins
+  const contractSignatures = (contractSigsRows ?? []).reduce((acc, s) => {
+    if (!acc[s.contract_type]) {
+      acc[s.contract_type] = {
+        id: s.id,
+        esign_status: s.esign_status,
+        provider_name: s.provider_name,
+        sent_at: s.sent_at,
+        agent_signed_at: s.agent_signed_at,
+        fully_signed_at: s.fully_signed_at,
+      }
+    }
+    return acc
+  }, {} as Record<string, { id: string; esign_status: string; provider_name: string | null; sent_at: string | null; agent_signed_at: string | null; fully_signed_at: string | null }>)
 
   // Fetch all related data in parallel — using actual Supabase tables
   const [
@@ -206,6 +292,14 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       .eq("transaction_id", id),
   ])
 
+  // vendor_bookings with joined vendor name — includes contact_id and listing_id
+  const { data: vendorBookings } = await supabase
+    .from("vendor_bookings")
+    .select("id, service_type, status, scheduled_date, notes, contact_id, listing_id, vendors(name)")
+    .eq("transaction_id", id)
+    .not("status", "in", "(cancelled,no_show)")
+    .order("scheduled_date", { ascending: true })
+
   // Compute participant counts by role
   const participantCountsByRole = (participants ?? []).reduce((acc, p) => {
     acc[p.role] = (acc[p.role] || 0) + 1
@@ -252,6 +346,16 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       commissions={commissions ?? []}
       stages={stages}
       currentStageIndex={currentStageIndex}
+      contactEmail={contactEmail}
+      contactName={contactName}
+      connectedEsignProvider={connectedEsignProvider}
+      linkedOffer={linkedOfferRow ?? null}
+      contractSignatures={contractSignatures}
+      currentCoordinatorId={currentCoordinatorId}
+      availableTCs={availableTCs ?? []}
+      currentLenderId={currentLenderId}
+      availableLenders={availableLenders ?? []}
+      vendorBookings={vendorBookings ?? []}
     />
   )
 }

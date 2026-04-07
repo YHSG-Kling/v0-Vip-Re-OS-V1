@@ -1,120 +1,120 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
-import { ClipboardList, MapPin, User, Calendar, ChevronRight } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Home, Calendar, ChevronRight } from "lucide-react"
 import Link from "next/link"
+import { ClosingReadinessGate } from "@/app/dashboard/coordinator/components/closing-readiness-gate"
 
 interface Transaction {
   id: string
   property_address: string
-  closing_date: string
-  transaction_status: string
-  progress_percentage: number
-  contract_price: number
-  leads?: {
-    first_name: string
-    last_name: string
-  }
-  agents?: {
-    first_name: string
-    last_name: string
-  }
-  transaction_milestones?: any[]
+  status: string
+  closing_date?: string
+  agent_name?: string
+  completion_percent: number
+  stage?: string
+  agent_id?: string
 }
 
-export function CoordinatorTransactionList({ transactions }: { transactions: Transaction[] }) {
+interface CoordinatorTransactionListProps {
+  transactions?: Transaction[]
+}
+
+export function CoordinatorTransactionList({ transactions = [] }: CoordinatorTransactionListProps) {
   const getStatusColor = (status: string) => {
-    switch (status) {
-      case "under_contract":
-        return "bg-blue-100 text-blue-800"
+    switch (status.toLowerCase()) {
       case "pending":
-        return "bg-yellow-100 text-yellow-800"
-      case "closing_scheduled":
-        return "bg-green-100 text-green-800"
+        return "secondary"
+      case "active":
+      case "in_progress":
+        return "default"
+      case "closed":
+        return "outline"
+      case "at_risk":
+        return "destructive"
       default:
-        return "bg-gray-100 text-gray-800"
+        return "secondary"
     }
   }
 
-  const getDaysToClosing = (closingDate: string) => {
-    const days = Math.floor((new Date(closingDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-    return days
+  if (transactions.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Active Transactions</CardTitle>
+          <CardDescription>Transactions you are coordinating</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="text-center py-8 text-muted-foreground">
+            <Home className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p>No active transactions</p>
+          </div>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <ClipboardList className="h-5 w-5" />
-          Active Transactions
-        </CardTitle>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle>Active Transactions</CardTitle>
+            <CardDescription>{transactions.length} transactions in progress</CardDescription>
+          </div>
+          <Link href="/transactions">
+            <Button variant="ghost" size="sm">
+              View All <ChevronRight className="w-4 h-4 ml-1" />
+            </Button>
+          </Link>
+        </div>
       </CardHeader>
-      <CardContent className="p-0">
-        <div className="divide-y">
-          {transactions.length === 0 ? (
-            <div className="p-8 text-center text-muted-foreground">No active transactions assigned</div>
-          ) : (
-            transactions.map((txn) => {
-              const daysToClosing = getDaysToClosing(txn.closing_date)
-              return (
-                <div key={txn.id} className="p-4 hover:bg-muted/50 transition-colors">
-                  <div className="flex items-start justify-between">
-                    <div className="space-y-1 flex-1">
-                      <div className="flex items-center gap-2">
-                        <MapPin className="h-4 w-4 text-muted-foreground" />
-                        <span className="font-medium">{txn.property_address}</span>
-                        <Badge className={getStatusColor(txn.transaction_status)}>
-                          {txn.transaction_status?.replace(/_/g, " ")}
-                        </Badge>
-                      </div>
-
-                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                        {txn.leads && (
-                          <span className="flex items-center gap-1">
-                            <User className="h-3 w-3" />
-                            {txn.leads.first_name} {txn.leads.last_name}
-                          </span>
-                        )}
-                        {txn.agents && (
-                          <span>
-                            Agent: {txn.agents.first_name} {txn.agents.last_name}
-                          </span>
-                        )}
-                        <span className="flex items-center gap-1">
-                          <Calendar className="h-3 w-3" />
-                          Closing: {new Date(txn.closing_date).toLocaleDateString()}
-                          {daysToClosing <= 7 && daysToClosing > 0 && (
-                            <Badge variant="outline" className="ml-1 text-orange-600 border-orange-600">
-                              {daysToClosing}d
-                            </Badge>
-                          )}
-                          {daysToClosing <= 0 && (
-                            <Badge variant="destructive" className="ml-1">
-                              Overdue
-                            </Badge>
-                          )}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2 mt-2">
-                        <Progress value={txn.progress_percentage || 0} className="flex-1 h-2" />
-                        <span className="text-xs text-muted-foreground w-12">{txn.progress_percentage || 0}%</span>
-                      </div>
-                    </div>
-
-                    <Button variant="ghost" size="icon" asChild className="bg-transparent">
-                      <Link href={`/transactions/${txn.id}`}>
-                        <ChevronRight className="h-5 w-5" />
-                      </Link>
-                    </Button>
-                  </div>
+      <CardContent>
+        <div className="space-y-4">
+          {transactions.map((tx) => (
+            <div key={tx.id} className="p-4 border rounded-lg space-y-3">
+              {/* Header row */}
+              <div className="flex items-start justify-between">
+                <div>
+                  <Link
+                    href={`/transactions/${tx.id}`}
+                    className="font-medium hover:underline"
+                  >
+                    {tx.property_address}
+                  </Link>
+                  {tx.agent_name && (
+                    <p className="text-sm text-muted-foreground">Agent: {tx.agent_name}</p>
+                  )}
                 </div>
-              )
-            })
-          )}
+                <Badge variant={getStatusColor(tx.status)}>{tx.status}</Badge>
+              </div>
+
+              {/* Progress */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Completion</span>
+                  <span className="font-medium">{tx.completion_percent}%</span>
+                </div>
+                <Progress value={tx.completion_percent} className="h-2" />
+                {tx.closing_date && (
+                  <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Calendar className="w-3 h-3" />
+                    <span>Closing: {new Date(tx.closing_date).toLocaleDateString()}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Closing Readiness Gate */}
+              <ClosingReadinessGate
+                transactionId={tx.id}
+                transactionStage={tx.stage ?? tx.status}
+                agentId={tx.agent_id ?? ""}
+              />
+            </div>
+          ))}
         </div>
       </CardContent>
     </Card>

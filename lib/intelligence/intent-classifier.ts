@@ -1,4 +1,5 @@
 import { generateObject } from 'ai'
+import { resolveModel } from '@/lib/ai/resolve-model'
 import { z } from 'zod'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
@@ -58,7 +59,7 @@ export async function classifyIntent(
 
   // Step 1: Call Claude to classify intent
   const { object: result } = await generateObject({
-    model: 'anthropic/claude-sonnet-4-20250514',
+    model: resolveModel('anthropic/claude-sonnet-4-20250514'),
     schema: classificationSchema,
     maxTokens: 200,
     system: `You are a real estate message intent classifier. Classify the incoming message into exactly one primary intent and optionally one secondary intent.

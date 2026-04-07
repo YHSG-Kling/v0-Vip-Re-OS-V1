@@ -7,23 +7,38 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog"
+import { toast } from "sonner"
 import { saveNetSheet } from "@/app/actions/seller-cma"
+import {
+  shareNetSheetToPortal,
+  generateNetSheetExplanation,
+  saveNetSheetEmailDraft,
+} from "@/app/actions/cma-presentation/net-sheet-calculator"
 import type { NetSheetPageData } from "@/app/actions/seller-cma"
 
 interface Listing {
   id: string
   address: string | null
   list_price: number | null
+  seller_contact_id?: string | null
 }
 
 interface Props {
   listing: Listing
   data: NetSheetPageData
+  agentFirstName?: string
 }
 
 const fmt = (n: number) => `$${Math.round(n).toLocaleString()}`
 
-export function NetSheetTab({ listing, data }: Props) {
+export function NetSheetTab({ listing, data, agentFirstName = "Your agent" }: Props) {
   const { latestNetSheet, agreement, recommendedPrice } = data
 
   const prefillPrice =
@@ -60,6 +75,15 @@ export function NetSheetTab({ listing, data }: Props) {
   const [savedMsg, setSavedMsg] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
+  // Portal share state
+  const [sharingToPortal, setSharingToPortal] = useState(false)
+
+  // AI explanation state
+  const [generatingExplanation, setGeneratingExplanation] = useState(false)
+  const [aiExplanationText, setAiExplanationText] = useState<string | null>(null)
+  const [explanationModalOpen, setExplanationModalOpen] = useState(false)
+  const [savingDraft, setSavingDraft] = useState(false)
+
   function scenarioMultiplier() {
     if (activeScenario === "quick") return 0.95
     if (activeScenario === "premium") return 1.05
@@ -83,12 +107,21 @@ export function NetSheetTab({ listing, data }: Props) {
       ? new Date(latestNetSheet.expires_at) < new Date()
       : false
 
+  // Current net sheet snapshot for portal/AI actions
+  const currentNetSheet = {
+    estimatedSalePrice: price,
+    mortgagePayoff: payoff,
+    agentCommission: listComm + buyerComm,
+    closingCosts: closing,
+    estimatedNet: netProceeds,
+  }
+
   function handleSave() {
     startTransition(async () => {
       setSavedMsg(null)
       const result = await saveNetSheet({
         listingId: listing.id,
-        contactId: "",   // no contact context at this level
+        contactId: listing.seller_contact_id ?? "",
         salePrice: Number(salePrice),
         listingCommissionRate: Number(listingRate),
         buyerCommissionRate: Number(buyerRate),
@@ -102,6 +135,102 @@ export function NetSheetTab({ listing, data }: Props) {
       })
       setSavedMsg(result.success ? "Net sheet saved." : result.error ?? "Save failed.")
     })
+  }
+
+  async function handleShareToPortal() {
+    if (!listing.seller_contact_id) {
+      toast.error("No seller contact linked to this listing")
+      return
+    }
+    setSharingToPortal(true)
+    try {
+      const result = await shareNetSheetToPortal({
+        listingId: listing.id,
+        contactId: listing.seller_contact_id,
+        netSheetData: currentNetSheet,
+      })
+      if (result.success) {
+        toast.success("Net sheet shared to seller portal")
+      } else {
+        toast.error(`Could not share: ${result.error}`)
+      }
+    } finally {
+      setSharingToPortal(false)
+    }
+  }
+
+  async function handleGenerateExplanation() {
+    setGeneratingExplanation(true)
+    try {
+      const explanation = await generateNetSheetExplanation({
+        netSheetData: currentNetSheet,
+        agentName: agentFirstName,
+      })
+      setAiExplanationText(explanation)
+      setExplanationModalOpen(true)
+    } catch {
+      toast.error("Failed to generate explanation")
+    } finally {
+      setGeneratingExplanation(false)
+    }
+  }
+
+  async function handleCopyExplanation() {
+    if (!aiExplanationText) return
+    await navigator.clipboard.writeText(aiExplanationText)
+    toast.success("Copied to clipboard")
+  }
+
+  async function handleSendExplanationToPortal() {
+    if (!aiExplanationText || !listing.seller_contact_id) {
+      toast.error("No seller contact linked to this listing")
+      return
+    }
+    setSharingToPortal(true)
+    try {
+      const result = await shareNetSheetToPortal({
+        listingId: listing.id,
+        contactId: listing.seller_contact_id,
+        netSheetData: {
+          ...currentNetSheet,
+          notes: aiExplanationText,
+        },
+      })
+      if (result.success) {
+        toast.success("Explanation shared to seller portal")
+        setExplanationModalOpen(false)
+      } else {
+        toast.error(`Could not share: ${result.error}`)
+      }
+    } finally {
+      setSharingToPortal(false)
+    }
+  }
+
+  async function handleIncludeInEmailDraft() {
+    if (!aiExplanationText) return
+    if (!listing.seller_contact_id) {
+      // No contact — just copy to clipboard as fallback
+      await navigator.clipboard.writeText(aiExplanationText)
+      toast.success("Copied — paste into a new email")
+      return
+    }
+    setSavingDraft(true)
+    try {
+      const result = await saveNetSheetEmailDraft({
+        contactId: listing.seller_contact_id,
+        listingId: listing.id,
+        draftBody: aiExplanationText,
+      })
+      if (result.success) {
+        toast.success("Draft saved to your inbox")
+        setExplanationModalOpen(false)
+      } else {
+        toast.error(`Could not save draft: ${result.error}`)
+      }
+    } finally {
+      setSavingDraft(false)
+    }
   }
 
   return (
@@ -137,7 +266,7 @@ export function NetSheetTab({ listing, data }: Props) {
 
       {isExpired && (
         <div className="text-xs text-red-700 bg-red-50 rounded px-3 py-2 border border-red-200">
-          This net sheet expired on {new Date(latestNetSheet!.expires_at!).toLocaleDateString()}. 
+          This net sheet expired on {new Date(latestNetSheet!.expires_at!).toLocaleDateString()}.
           Update values and save to renew.
         </div>
       )}
@@ -236,14 +365,41 @@ export function NetSheetTab({ listing, data }: Props) {
               </div>
             </div>
 
-            <div className="flex gap-2 pt-1">
+            {/* Action buttons */}
+            <div className="flex flex-wrap items-center gap-2 pt-1">
               <Button size="sm" onClick={handleSave} disabled={isPending}>
                 {isPending ? "Saving..." : "Save Net Sheet"}
               </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleShareToPortal}
+                disabled={sharingToPortal || !listing.seller_contact_id}
+                title={!listing.seller_contact_id ? "No seller contact linked to this listing" : undefined}
+              >
+                {sharingToPortal ? "Sharing..." : "Share to Portal"}
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleGenerateExplanation}
+                disabled={generatingExplanation}
+              >
+                {generatingExplanation ? "Generating..." : "AI Explanation"}
+              </Button>
+
               {savedMsg && (
-                <span className="text-xs text-muted-foreground self-center">{savedMsg}</span>
+                <span className="text-xs text-muted-foreground">{savedMsg}</span>
               )}
             </div>
+
+            {!listing.seller_contact_id && (
+              <p className="text-xs text-amber-600">
+                Link a seller contact to this listing to enable portal sharing.
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -280,6 +436,44 @@ export function NetSheetTab({ listing, data }: Props) {
           </CardContent>
         </Card>
       </div>
+
+      {/* AI Explanation Modal */}
+      <Dialog open={explanationModalOpen} onOpenChange={setExplanationModalOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-base">AI-Generated Net Sheet Explanation</DialogTitle>
+          </DialogHeader>
+
+          {aiExplanationText && (
+            <div className="rounded-md border bg-muted/30 p-4 text-sm leading-relaxed text-foreground">
+              {aiExplanationText}
+            </div>
+          )}
+
+          <DialogFooter className="flex flex-wrap gap-2 sm:justify-start">
+            <Button size="sm" variant="outline" onClick={handleCopyExplanation}>
+              Copy to Clipboard
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleSendExplanationToPortal}
+              disabled={sharingToPortal || !listing.seller_contact_id}
+              title={!listing.seller_contact_id ? "No seller contact linked" : undefined}
+            >
+              {sharingToPortal ? "Sending..." : "Send to Portal"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleIncludeInEmailDraft}
+              disabled={savingDraft}
+            >
+              {savingDraft ? "Saving..." : "Include in Email Draft"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

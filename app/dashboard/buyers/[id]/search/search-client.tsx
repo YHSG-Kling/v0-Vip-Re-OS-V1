@@ -1,6 +1,8 @@
 "use client"
 
 import { useState, useEffect, useRef, useTransition, useCallback } from "react"
+import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { Button }    from "@/components/ui/button"
 import { Input }     from "@/components/ui/input"
 import { Badge }     from "@/components/ui/badge"
@@ -291,13 +293,37 @@ export function SearchClient({
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
 
+    // Resolve whether this IDX property is a brokerage listing.
+    // Only match on mls_number within the same brokerage — listing_id stays null for external MLS properties.
+    let resolvedListingId: string | null = null
+    if (property.mls_number) {
+      const { data: brokerageListing } = await supabase
+        .from("listings")
+        .select("id")
+        .eq("mls_number", property.mls_number)
+        .eq("brokerage_id", brokerageId)
+        .maybeSingle()
+      resolvedListingId = brokerageListing?.id ?? null
+    }
+
     await supabase.from("saved_properties").insert({
-      contact_id:   buyerId,
-      brokerage_id: brokerageId,
-      user_id:      user.id,
-      listing_id:   property.id ?? null,
-      notes:        null,
-      dismissed:    false,
+      contact_id:        buyerId,
+      brokerage_id:      brokerageId,
+      user_id:           user.id,
+      listing_id:        resolvedListingId,
+      notes:             null,
+      dismissed:         false,
+      // IDX snapshot — stored at save-time so display doesn't need a re-fetch
+      property_address:  property.address ?? null,
+      mls_number:        property.mls_number ?? null,
+      list_price:        property.list_price ?? null,
+      bedrooms:          property.bedrooms ?? null,
+      bathrooms:         property.bathrooms ?? null,
+      sqft:              property.sqft ?? null,
+      city:              property.city ?? null,
+      state:             property.state ?? null,
+      property_type:     property.property_type ?? null,
+      primary_photo_url: property.primary_photo_url ?? null,
     })
     await supabase.from("buyer_behavior_log").insert({
       brokerage_id:     brokerageId,
@@ -620,15 +646,16 @@ function SavedPropertiesTab({
 }: {
   buyerId: string; brokerageId: string; agentUserId: string; buyerPersona: string | null; onShowingGated: () => void
 }) {
-  const [saved, setSaved]   = useState<any[]>([])
+  const [saved, setSaved]     = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const { toast }             = useToast()
+  const router                = useRouter()
 
   useEffect(() => {
     const supabase = createClient()
     supabase
       .from("saved_properties")
-      .select("*")
+      .select("id, listing_id, property_address, mls_number, list_price, bedrooms, bathrooms, sqft, city, state, primary_photo_url, saved_at")
       .eq("contact_id", buyerId)
       .eq("dismissed", false)
       .order("saved_at", { ascending: false })
@@ -643,20 +670,88 @@ function SavedPropertiesTab({
   }
 
   if (loading) return <div className="text-xs text-muted-foreground p-4">Loading saved properties...</div>
-  if (saved.length === 0) return <div className="text-xs text-muted-foreground p-4">No saved properties</div>
+  if (saved.length === 0) return <div className="text-xs text-muted-foreground p-4">No saved properties yet</div>
 
   return (
     <div className="grid grid-cols-2 gap-4">
-      {saved.map(s => (
-        <div key={s.id} className="rounded-lg border border-border bg-card p-3 space-y-2">
-          <p className="text-sm font-medium">{s.listing_id ?? "Property"}</p>
-          <div className="flex gap-2">
-            <Button size="sm" variant="outline" className="flex-1 h-7 text-xs" onClick={onShowingGated}>Schedule</Button>
-            <Button size="sm" variant="outline" className="h-7 text-xs text-destructive border-destructive/20 hover:bg-destructive/5" onClick={() => handleRemove(s.id)}>Remove</Button>
+      {saved.map(s => {
+        const isBrokerageListing = !!s.listing_id
+        const displayAddress = s.property_address ?? (isBrokerageListing ? "Brokerage Listing" : "MLS Property")
+        const price = s.list_price ? `$${Number(s.list_price).toLocaleString()}` : null
+
+        return (
+          <div key={s.id} className="rounded-lg border border-border bg-card overflow-hidden flex flex-col">
+            {/* Photo thumbnail */}
+            <div className="aspect-[16/9] bg-muted relative overflow-hidden">
+              {s.primary_photo_url ? (
+                <img src={s.primary_photo_url} alt={displayAddress} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <svg viewBox="0 0 48 48" className="w-8 h-8 text-muted-foreground/30" fill="none">
+                    <path d="M6 42V20L24 6l18 14v22H30V28H18v14z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
+                  </svg>
+                </div>
+              )}
+              {/* Source badge — top left of photo */}
+              <div className="absolute top-2 left-2">
+                {isBrokerageListing ? (
+                  <Badge className="bg-purple-100 text-purple-800 border-purple-200 text-[10px] font-medium">Our Listing</Badge>
+                ) : (
+                  <Badge className="bg-muted text-muted-foreground border-border text-[10px] font-medium">MLS / IDX</Badge>
+                )}
+              </div>
+            </div>
+
+            <div className="p-3 flex flex-col gap-2 flex-1">
+              {price && <p className="text-sm font-semibold">{price}</p>}
+              <p className="text-xs text-muted-foreground leading-tight">
+                {displayAddress}{s.city ? `, ${s.city}` : ""}{s.state ? `, ${s.state}` : ""}
+              </p>
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                {s.bedrooms  != null && <span>{s.bedrooms} bd</span>}
+                {s.bathrooms != null && <span>{s.bathrooms} ba</span>}
+                {s.sqft      != null && <span>{Number(s.sqft).toLocaleString()} sqft</span>}
+              </div>
+
+              {/* Brokerage listing extras */}
+              {isBrokerageListing && (
+                <Link
+                  href={`/dashboard/listings/${s.listing_id}`}
+                  className="text-xs text-purple-700 hover:underline"
+                >
+                  View Listing Details
+                </Link>
+              )}
+
+              {/* Actions */}
+              <div className="flex flex-wrap gap-2 pt-1 mt-auto">
+                <Button
+                  size="sm"
+                  className="flex-1 h-7 text-xs"
+                  onClick={() => {
+                    if (isBrokerageListing) {
+                      router.push(`/dashboard/buyers/${buyerId}/offers/new?listingId=${s.listing_id}`)
+                    } else {
+                      router.push(`/dashboard/buyers/${buyerId}/offers/new?address=${encodeURIComponent(s.property_address ?? "")}`)
+                    }
+                  }}
+                >
+                  Make Offer
+                </Button>
+                <Button size="sm" variant="outline" className="flex-1 h-7 text-xs" onClick={onShowingGated}>Schedule</Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs text-destructive border-destructive/20 hover:bg-destructive/5"
+                  onClick={() => handleRemove(s.id)}
+                >
+                  Remove
+                </Button>
+              </div>
+            </div>
           </div>
-          <Button size="sm" variant="ghost" className="w-full h-7 text-xs text-muted-foreground" disabled>Add to Tour Plan (B02)</Button>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }

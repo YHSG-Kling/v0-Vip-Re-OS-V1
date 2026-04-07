@@ -12,7 +12,7 @@ export async function submitTemplateForApproval(templateId: string) {
 
   const { data: userData } = await supabase
     .from('users')
-    .select('brokerage_id, role')
+    .select('brokerage_id, user_type, role')
     .eq('id', user.id)
     .single()
 
@@ -47,11 +47,11 @@ export async function approveTemplate(templateId: string, approvingUserId: strin
   // Verify approver is broker admin
   const { data: approverData } = await supabase
     .from('users')
-    .select('role, brokerage_id')
+    .select('user_type, role, brokerage_id')
     .eq('id', user.id)
     .single()
 
-  if (!approverData || !['broker', 'admin'].includes(approverData.role)) {
+  if (!approverData || !['broker', 'admin'].includes(approverData.user_type ?? approverData.role ?? '')) {
     throw new Error('Only broker admins can approve templates')
   }
 
@@ -84,11 +84,11 @@ export async function rejectTemplate(templateId: string, rejectionReason: string
   // Verify rejector is broker admin
   const { data: rejectorData } = await supabase
     .from('users')
-    .select('role')
+    .select('user_type, role')
     .eq('id', user.id)
     .single()
 
-  if (!rejectorData || !['broker', 'admin'].includes(rejectorData.role)) {
+  if (!rejectorData || !['broker', 'admin'].includes(rejectorData.user_type ?? rejectorData.role ?? '')) {
     throw new Error('Only broker admins can reject templates')
   }
 

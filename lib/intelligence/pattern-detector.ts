@@ -2,6 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { KernelEvent } from "@/lib/kernel/events"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -597,7 +598,7 @@ async function evaluateWithAI(
 }> {
   try {
     const { text } = await generateText({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: resolveModel("anthropic/claude-sonnet-4-20250514"),
       system: `You are a real estate behavioral pattern analyzer. Evaluate if the given pattern matches the entity signals.
 Return ONLY valid JSON: {"matches": boolean, "confidence": number (0-1), "reasoning": string}`,
       prompt: `Pattern to detect: ${pattern.pattern_name}

@@ -1,11 +1,16 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import {
   createOffer, sendOfferForESign,
   type OfferFormData, type StrategyRecommendation,
 } from "@/app/actions/buyer-offers"
+import { runCompleteOfferWorkflow } from "@/app/actions/ai-offer-creation"
+import { fillPropertyDataWithAI } from "@/app/actions/buyer-offer/prefill-offer"
+import { Loader2, Sparkles, Check, Bot } from "lucide-react"
+import { createClient } from "@/lib/supabase/client"
+import { getOfferContext } from "@/lib/contacts/ownership-model"
 
 interface OfferFormWizardProps {
   contactId:    string
@@ -23,7 +28,11 @@ interface OfferFormWizardProps {
   propertyZip?:    string
   listingId?:      string | null
   propertyAddressAiFilled?: boolean
-  onBack:          () => void   // back to strategy
+  // Offer OS additions
+  contingencies?:       string[]
+  buyerMaxBudget?:      number
+  buyerRiskTolerance?:  "conservative" | "moderate" | "aggressive"
+  onBack:          () => void
   onSuccess:       () => void
 }
 
@@ -128,26 +137,86 @@ export function OfferFormWizard({
   contactId, brokerageId, agentUserId, contactName, contactEmail,
   recommendation, formSource, formProviderRef, esignProvider,
   propertyAddress, propertyCity, propertyState, propertyZip,
-  listingId, propertyAddressAiFilled, onBack, onSuccess,
+  listingId, propertyAddressAiFilled,
+  contingencies, buyerMaxBudget, buyerRiskTolerance,
+  onBack, onSuccess,
 }: OfferFormWizardProps) {
   const [step, setStep]           = useState<Step>("Price")
-  const [form, setForm]           = useState<OfferFormData>(() => ({
-    ...defaultForm(recommendation, propertyAddress),
-    property_city:              propertyCity,
-    property_state:             propertyState,
-    property_zip:               propertyZip,
-    listing_id:                 listingId ?? null,
-    property_address_ai_filled: propertyAddressAiFilled ?? false,
-    form_source:                formSource,
-    form_provider_ref:          formProviderRef,
-    esign_provider:             esignProvider,
-  }))
-  const [createdOfferId, setCreatedOfferId] = useState<string | null>(null)
-  const [submitError, setSubmitError]       = useState<string | null>(null)
-  const [isPending, startTrans]             = useTransition()
+  const [form, setForm]           = useState<OfferFormData>(() => {
+    const base = defaultForm(recommendation, propertyAddress)
+    // Override contingency booleans from the AI contingency step selection
+    // Buyers write offers on properties they don't own — listingId may be null
+    if (contingencies && contingencies.length > 0) {
+      if (!contingencies.includes("Financing Contingency")) base.financing_contingency = false
+      if (!contingencies.includes("Inspection Contingency")) base.inspection_contingency = false
+      if (!contingencies.includes("Appraisal Contingency")) base.appraisal_contingency = false
+    }
+    return {
+      ...base,
+      property_city:              propertyCity,
+      property_state:             propertyState,
+      property_zip:               propertyZip,
+      listing_id:                 listingId ?? null,   // null when buyer's property, set when listing
+      property_address_ai_filled: propertyAddressAiFilled ?? false,
+      form_source:                formSource,
+      form_provider_ref:          formProviderRef,
+      esign_provider:             esignProvider,
+    }
+  })
+  const [createdOfferId, setCreatedOfferId]   = useState<string | null>(null)
+  const [submitError, setSubmitError]         = useState<string | null>(null)
+  const [workflowResult, setWorkflowResult]   = useState<any>(null)
+  const [workflowError, setWorkflowError]     = useState<string | null>(null)
+  const [isPending, startTrans]               = useTransition()
+  const [propertyFillLoading, setPropertyFillLoading] = useState(false)
+  const [propertyAiFilled, setPropertyAiFilled]       = useState(propertyAddressAiFilled ?? false)
+
+  // When the form has no property address, ask AI to fill it from listing or buyer context
+  useEffect(() => {
+    if (propertyAddress && propertyAddress.trim()) return // already have address
+
+    async function runFill() {
+      setPropertyFillLoading(true)
+      try {
+        const filled = await fillPropertyDataWithAI({
+          listingId: listingId ?? null,
+          buyerId: contactId,
+          addressFragment: null,
+        })
+        if (filled) {
+          setForm(f => ({
+            ...f,
+            property_address:            filled.property_address,
+            property_city:               filled.property_city,
+            property_state:              filled.property_state,
+            property_zip:                filled.property_zip,
+            property_address_ai_filled:  true,
+          }))
+          setPropertyAiFilled(true)
+        }
+      } catch (err) {
+        // Non-fatal — agent can enter address manually
+      } finally {
+        setPropertyFillLoading(false)
+      }
+    }
+
+    runFill()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const stepIndex = STEPS.indexOf(step)
   const progress  = ((stepIndex + 1) / STEPS.length) * 100
+
+  // Show a loading overlay while AI is filling property data
+  if (propertyFillLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-3 py-16 text-sm text-muted-foreground">
+        <Loader2 className="h-6 w-6 animate-spin" />
+        <p>Looking up property details...</p>
+      </div>
+    )
+  }
 
   function set<K extends keyof OfferFormData>(key: K, value: OfferFormData[K]) {
     setForm(f => ({ ...f, [key]: value }))
@@ -164,6 +233,62 @@ export function OfferFormWizard({
     setStep(STEPS[idx - 1])
   }
 
+  // Notify the listing side when an offer arrives via buyer flow on a brokerage listing.
+  // Uses notes (JSON) because activities has no metadata column.
+  async function notifyListingSide(offerId: string) {
+    if (!listingId) return
+    try {
+      const supabase = createClient()
+      const { data: listingRow } = await supabase
+        .from("listings")
+        .select("seller_contact_id, agent_id, address")
+        .eq("id", listingId)
+        .single()
+      if (!listingRow) return
+
+      const baseNotes = JSON.stringify({
+        offer_id:   offerId,
+        listing_id: listingId,
+        buyer_id:   contactId,
+        source:     "buyer_offer_flow",
+      })
+
+      if (listingRow.agent_id) {
+        const ctx = getOfferContext(listingId, listingRow.agent_id, agentUserId)
+        const agencyLabel = ctx.isCrossSide && ctx.isSameAgent ? " (dual agency)" : " via another agent"
+        await supabase.from("activities").insert({
+          agent_id:      listingRow.agent_id,
+          brokerage_id:  brokerageId,
+          activity_type: "offer_received_on_listing",
+          title:         `New offer received on ${listingRow.address}`,
+          description:   `${contactName} submitted an offer${agencyLabel}. Review in the listing offer manager.`,
+          status:        "pending",
+          priority:      "high",
+          notes:         baseNotes,
+        }).then(() => {}).catch(() => {})
+      }
+
+      if (listingRow.seller_contact_id) {
+        await supabase.from("activities").insert({
+          contact_id:    listingRow.seller_contact_id,
+          brokerage_id:  brokerageId,
+          activity_type: "portal_offer_notification",
+          title:         "You have a new offer on your property",
+          description:   `An offer has been submitted on ${listingRow.address}. Your agent will review and present it to you.`,
+          status:        "pending",
+          priority:      "high",
+          notes:         JSON.stringify({
+            offer_id:      offerId,
+            listing_id:    listingId,
+            notify_portal: true,
+          }),
+        }).then(() => {}).catch(() => {})
+      }
+    } catch {
+      // Non-fatal — offer is already created; notification failure must not block the user.
+    }
+  }
+
   function submitOffer() {
     setSubmitError(null)
     startTrans(async () => {
@@ -171,6 +296,8 @@ export function OfferFormWizard({
       if (result.success && result.offerId) {
         setCreatedOfferId(result.offerId)
         setStep("Review") // stay on review but show eSign panel
+        // Cross-side notification when offer lands on a brokerage listing
+        await notifyListingSide(result.offerId)
       } else {
         setSubmitError(result.error ?? "Failed to create offer")
       }
@@ -182,6 +309,39 @@ export function OfferFormWizard({
     startTrans(async () => {
       await sendOfferForESign(createdOfferId, contactId, brokerageId, agentUserId)
       onSuccess()
+    })
+  }
+
+  // Runs the full AI-orchestrated offer workflow: creates offer, generates docs,
+  // triggers e-sign, logs timeline events — all in one call.
+  function runWorkflow() {
+    setWorkflowError(null)
+    startTrans(async () => {
+      const result = await runCompleteOfferWorkflow({
+        agentId:            agentUserId,
+        buyerId:            contactId,
+        // Buyers write offers on properties they do not own.
+        // listingId is only set when the property is one of the brokerage's listings.
+        listingId:          listingId ?? undefined,
+        propertyAddress:    form.property_address,
+        offerPrice:         form.offer_price,
+        financingType:      form.financing_type,
+        buyerMaxBudget:     buyerMaxBudget ?? form.offer_price,
+        buyerMotivation:    "primary_residence",
+        buyerRiskTolerance: buyerRiskTolerance ?? "moderate",
+        contingencies:      contingencies ?? [],
+        brokerageId,
+      })
+      if (result.success) {
+        setWorkflowResult(result)
+        if (result.offerId) {
+          setCreatedOfferId(result.offerId)
+          // Cross-side notification when offer lands on a brokerage listing
+          await notifyListingSide(result.offerId)
+        }
+      } else {
+        setWorkflowError(result.error ?? "Workflow failed — try manually submitting the offer.")
+      }
     })
   }
 
@@ -361,7 +521,16 @@ export function OfferFormWizard({
               <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-3 text-sm">
                 <p className="font-semibold">Offer Created</p>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                  <div><p className="text-xs text-muted-foreground">Property</p><p className="font-medium">{form.property_address}</p></div>
+                  <div>
+                    <p className="text-xs text-muted-foreground">Property</p>
+                    <p className="font-medium">{form.property_address || "—"}</p>
+                    {propertyAiFilled && (
+                      <span className="inline-flex items-center gap-1 mt-0.5 rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs text-blue-700">
+                        <Bot className="h-3 w-3" />
+                        AI-filled — verify before submitting
+                      </span>
+                    )}
+                  </div>
                   <div><p className="text-xs text-muted-foreground">Price</p><p className="font-medium">${form.offer_price.toLocaleString()}</p></div>
                   <div><p className="text-xs text-muted-foreground">Earnest</p><p className="font-medium">${form.earnest_money_amount.toLocaleString()}</p></div>
                   <div><p className="text-xs text-muted-foreground">Closing</p><p className="font-medium">{form.closing_date || "TBD"}</p></div>
@@ -436,6 +605,33 @@ export function OfferFormWizard({
 
   return (
     <div className="flex flex-col h-full">
+      {/* Workflow result banner */}
+      {workflowResult && (
+        <div className="mx-5 mt-4 flex items-start gap-2.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+          <Check className="h-4 w-4 text-emerald-600 mt-0.5 shrink-0" />
+          <div className="flex-1 space-y-1">
+            <p className="text-sm font-medium text-emerald-800">Offer workflow complete</p>
+            {workflowResult.stepsCompleted?.length > 0 && (
+              <ul className="space-y-0.5">
+                {workflowResult.stepsCompleted.map((s: string) => (
+                  <li key={s} className="text-xs text-emerald-700">{s}</li>
+                ))}
+              </ul>
+            )}
+            {workflowResult.nextSteps?.length > 0 && (
+              <p className="text-xs text-emerald-700 pt-1 font-medium">
+                Next: {workflowResult.nextSteps[0]}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+      {workflowError && (
+        <div className="mx-5 mt-4 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+          {workflowError}
+        </div>
+      )}
+
       {/* Progress */}
       <div className="px-5 pt-4 pb-2">
         <div className="flex items-center justify-between mb-2">
@@ -472,30 +668,58 @@ export function OfferFormWizard({
 
       {/* Footer nav */}
       {!isESignPanel && (
-        <div className="border-t border-border px-5 py-4 flex items-center gap-3">
-          <button
-            onClick={prev}
-            disabled={isPending}
-            className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
-          >
-            {stepIndex === 0 ? "Back to Strategy" : "Back"}
-          </button>
+        <div className="border-t border-border px-5 py-4">
           {isReview ? (
-            <button
-              onClick={submitOffer}
-              disabled={isPending}
-              className="ml-auto rounded-md bg-primary px-5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
-            >
-              {isPending ? "Creating..." : "Create Offer"}
-            </button>
+            <div className="space-y-2">
+              {/* Primary: full AI workflow */}
+              <button
+                onClick={runWorkflow}
+                disabled={isPending || !!workflowResult}
+                className="w-full flex items-center justify-center gap-2 rounded-md bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {isPending ? (
+                  <><Loader2 className="h-4 w-4 animate-spin" />Running workflow...</>
+                ) : workflowResult ? (
+                  <><Check className="h-4 w-4" />Workflow complete</>
+                ) : (
+                  <><Sparkles className="h-4 w-4" />Run Complete Offer Workflow</>
+                )}
+              </button>
+              {/* Secondary: manual submit */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={prev}
+                  disabled={isPending}
+                  className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={submitOffer}
+                  disabled={isPending || !!workflowResult}
+                  className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
+                >
+                  {isPending ? "Submitting..." : "Submit Manually"}
+                </button>
+              </div>
+            </div>
           ) : (
-            <button
-              onClick={next}
-              disabled={isPending}
-              className="ml-auto rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
-            >
-              Next
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={prev}
+                disabled={isPending}
+                className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 disabled:opacity-50 transition-colors"
+              >
+                {stepIndex === 0 ? "Back to Strategy" : "Back"}
+              </button>
+              <button
+                onClick={next}
+                disabled={isPending}
+                className="ml-auto rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                Next
+              </button>
+            </div>
           )}
         </div>
       )}

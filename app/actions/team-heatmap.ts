@@ -98,7 +98,7 @@ export async function getHeatmapSnapshots(
   // Check user role for filtering
   const { data: user } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
@@ -136,7 +136,7 @@ export async function getHeatmapSnapshots(
   }
 
   // Agent filter - agents can only see their own data unless privileged
-  if (!isPrivileged) {
+  if (!isPrivileged && currentAgentId) {
     query = query.eq("agent_id", currentAgentId)
   } else if (filters.agentId) {
     query = query.eq("agent_id", filters.agentId)
@@ -452,7 +452,7 @@ export async function getAgentsForFilter(): Promise<{
 
   const { data: user } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 
@@ -499,7 +499,7 @@ export async function getTeamsForFilter(): Promise<{
 
   const { data: user } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", (await supabase.auth.getUser()).data.user?.id)
     .single()
 

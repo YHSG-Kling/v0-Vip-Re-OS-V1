@@ -6,6 +6,7 @@
 // No any types. No default export.
 
 import React, { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import type { OnboardingStepRow } from "@/lib/kernel"
 import {
   createBrokerageStep,
@@ -50,6 +51,7 @@ const BLANK_FORM: CreateForm = {
 }
 
 export function OnboardingStepsClient({ initialSteps }: Props) {
+  const router = useRouter()
   const [steps, setSteps] = useState(initialSteps)
   const [showCreate, setShowCreate] = useState(false)
   const [createForm, setCreateForm] = useState<CreateForm>(BLANK_FORM)
@@ -112,6 +114,7 @@ export function OnboardingStepsClient({ initialSteps }: Props) {
         setSteps(prev => [...prev, newStep])
         setCreateForm(BLANK_FORM)
         setShowCreate(false)
+        router.refresh()
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to create step")
       }

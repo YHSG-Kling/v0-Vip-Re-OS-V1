@@ -1,6 +1,7 @@
 
 
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 export const STANDARD_CRM_STATUSES = [
   "new",
@@ -81,7 +82,7 @@ export const aiMappingService = {
   async mapStatus(externalStatus: string): Promise<StandardCRMStatus> {
     try {
       const { text } = await generateText({
-        model: "openai/gpt-4o-mini",
+        model: resolveModel("openai/gpt-4o-mini"),
         prompt: `You are a CRM data normalization expert for a real estate platform. Map the following external contact status to the CLOSEST matching standard CRM status.
 
 External status: "${externalStatus}"
@@ -127,7 +128,7 @@ Return ONLY the exact status keyword (e.g., "qualified"), nothing else.`,
   async mapPersona(externalPersona: string): Promise<StandardContactPersona> {
     try {
       const { text } = await generateText({
-        model: "openai/gpt-4o-mini",
+        model: resolveModel("openai/gpt-4o-mini"),
         prompt: `You are a CRM data normalization expert for a real estate platform. Map the following external contact persona to the CLOSEST matching standard persona.
 
 External persona: "${externalPersona}"
@@ -175,7 +176,7 @@ Return ONLY the exact persona keyword (e.g., "first_time_buyer"), nothing else.`
   async mapContactType(externalType: string): Promise<StandardContactType> {
     try {
       const { text } = await generateText({
-        model: "openai/gpt-4o-mini",
+        model: resolveModel("openai/gpt-4o-mini"),
         prompt: `You are a CRM data normalization expert for a real estate platform. Map the following external contact type to the CLOSEST matching standard type.
 
 External type: "${externalType}"

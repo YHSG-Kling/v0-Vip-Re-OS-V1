@@ -10,8 +10,14 @@ export const metadata = {
   description: "Manage and schedule your social media posts",
 }
 
-export default async function SocialDashboardPage() {
+export default async function SocialDashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ action?: string }>
+}) {
   const supabase = await createClient()
+  const { action } = await searchParams
+  const openCreate = action === "create"
 
   // Get current user
   const {
@@ -25,12 +31,12 @@ export default async function SocialDashboardPage() {
   // Get user profile with brokerage
   const { data: profile } = await supabase
     .from("users")
-    .select("id, brokerage_id, role, first_name, last_name")
+    .select("id, brokerage_id, user_type, first_name, last_name")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
   if (!profile?.brokerage_id) {
-    redirect("/onboarding")
+    redirect("/dashboard/onboarding")
   }
 
   // Get connected social accounts
@@ -55,6 +61,16 @@ export default async function SocialDashboardPage() {
     .order("scheduled_for", { ascending: true })
     .limit(100)
 
+  // Check broker approval setting from global_settings.additional_settings
+  const { data: globalSettings } = await supabase
+    .from("global_settings")
+    .select("additional_settings")
+    .eq("brokerage_id", profile.brokerage_id)
+    .maybeSingle()
+
+  const requiresBrokerApproval =
+    (globalSettings?.additional_settings as any)?.social_requires_broker_approval === true
+
   // Get publish logs for failed posts
   const failedPostIds = posts?.filter((p) => p.status === "failed").map((p) => p.id) || []
   let publishLogs: any[] = []
@@ -73,11 +89,13 @@ export default async function SocialDashboardPage() {
     <SocialDashboardClient
       userId={user.id}
       brokerageId={profile.brokerage_id}
-      userRole={profile.role || "agent"}
+      userRole={profile.user_type || "agent"}
       userName={`${profile.first_name || ""} ${profile.last_name || ""}`.trim()}
       accounts={accounts || []}
       initialPosts={posts || []}
       publishLogs={publishLogs}
+      openCreate={openCreate}
+      requiresBrokerApproval={requiresBrokerApproval}
     />
   )
 }

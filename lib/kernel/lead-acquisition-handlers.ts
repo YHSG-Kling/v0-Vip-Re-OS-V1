@@ -1,5 +1,3 @@
-'use server'
-
 // SYSTEM: Kernel Lead-Acquisition Handlers (Track A — Lead-first)
 // FILE: lib/kernel/lead-acquisition-handlers.ts
 // TRACK: Scraped/Raw pipeline only. Forms/QR/Card/Imports use captureContact()
@@ -11,7 +9,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
-import { processKernelEvent } from "@/lib/kernel/index"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { calculateLeadScore, evaluateRoutingEligibility } from "@/lib/lead-governance/index"
 
 // ─── VALID TRANSITIONS ────────────────────────────────────────────────────────

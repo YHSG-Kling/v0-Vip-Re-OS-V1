@@ -3,13 +3,14 @@ import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Receipt, ArrowLeft, Plus, TrendingDown } from 'lucide-react'
+import { Receipt, ArrowLeft, TrendingDown } from 'lucide-react'
 import Link from 'next/link'
 import {
   ExpenseIntelligencePanel,
   FinancialActionStack,
   type FinancialAction,
 } from '../components/os'
+import { AddExpenseDialog } from './components/add-expense-dialog'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,18 +22,19 @@ export default async function ExpensesPage() {
   const currentYear = new Date().getFullYear()
   const currentMonth = new Date().getMonth() + 1
 
+  // business_expenses uses agent_id and expense_date (not date)
   const { data: expenses } = await supabase
-    .from('agent_expenses')
-    .select('id, category, amount, description, date, receipt_url')
-    .eq('user_id', user.id)
-    .gte('date', `${currentYear}-01-01`)
-    .order('date', { ascending: false })
+    .from('business_expenses')
+    .select('id, category, amount, description, expense_date, receipt_url')
+    .eq('agent_id', user.id)
+    .gte('expense_date', `${currentYear}-01-01`)
+    .order('expense_date', { ascending: false })
     .limit(100)
 
   const expenseData = expenses || []
   const totalExpenses = expenseData.reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
   const mtdExpenses = expenseData.filter(e => {
-    const expenseMonth = new Date(e.date).getMonth() + 1
+    const expenseMonth = new Date(e.expense_date ?? e.date).getMonth() + 1
     return expenseMonth === currentMonth
   }).reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
 
@@ -89,10 +91,7 @@ export default async function ExpensesPage() {
             <p className="text-muted-foreground">Track and categorize your business expenses for tax purposes</p>
           </div>
         </div>
-        <Button size="sm" className="bg-blue-600 hover:bg-blue-700 text-white">
-          <Plus className="w-4 h-4 mr-2" />
-          Add Expense
-        </Button>
+        <AddExpenseDialog agentId={user.id} />
       </div>
 
       {/* KPI Row */}
@@ -193,7 +192,7 @@ export default async function ExpensesPage() {
                 <tbody className="divide-y">
                   {expenseData.map((e: any) => (
                     <tr key={e.id} className="hover:bg-muted/50">
-                      <td className="py-3 px-2 text-muted-foreground">{new Date(e.date).toLocaleDateString()}</td>
+                      <td className="py-3 px-2 text-muted-foreground">{new Date(e.expense_date ?? e.date).toLocaleDateString()}</td>
                       <td className="py-3 px-2">{e.description || 'Business Expense'}</td>
                       <td className="py-3 px-2">
                         <Badge variant="outline" className="text-xs">{e.category}</Badge>

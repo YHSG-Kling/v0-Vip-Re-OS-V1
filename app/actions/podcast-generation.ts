@@ -934,6 +934,65 @@ export async function getPodcastEpisode(episodeId: string) {
   }
 }
 
+// Get real podcast analytics aggregated from podcast_analytics_events + podcast_episodes
+export async function getPodcastAnalytics() {
+  const { brokerageId } = await getAgentContext()
+  const supabase = await createClient()
+
+  try {
+    // Total plays (play events)
+    const { count: totalPlays } = await supabase
+      .from("podcast_analytics_events")
+      .select("*", { count: "exact", head: true })
+      .eq("brokerage_id", brokerageId)
+      .eq("event_type", "play")
+
+    // Total listen time in minutes
+    const { data: listenData } = await supabase
+      .from("podcast_analytics_events")
+      .select("duration_listened_seconds")
+      .eq("brokerage_id", brokerageId)
+    const totalListenMinutes = Math.round(
+      (listenData ?? []).reduce((s: number, r: { duration_listened_seconds?: number }) => s + (r.duration_listened_seconds ?? 0), 0) / 60
+    )
+
+    // Per-episode play counts
+    const { data: episodePlays } = await supabase
+      .from("podcast_analytics_events")
+      .select("episode_id")
+      .eq("brokerage_id", brokerageId)
+      .eq("event_type", "play")
+
+    const playsByEpisode: Record<string, number> = {}
+    for (const row of episodePlays ?? []) {
+      playsByEpisode[row.episode_id] = (playsByEpisode[row.episode_id] ?? 0) + 1
+    }
+
+    // Episode titles
+    const { data: episodes } = await supabase
+      .from("podcast_episodes")
+      .select("id, title")
+      .eq("brokerage_id", brokerageId)
+      .eq("status", "published")
+
+    const episodeStats = (episodes ?? []).map((ep: { id: string; title: string }) => ({
+      id: ep.id,
+      title: ep.title,
+      plays: playsByEpisode[ep.id] ?? 0,
+    })).sort((a, b) => b.plays - a.plays)
+
+    return {
+      success: true,
+      totalPlays: totalPlays ?? 0,
+      totalListenMinutes,
+      episodeStats,
+    }
+  } catch (error: any) {
+    console.error("[v0] Error fetching podcast analytics:", error)
+    return { success: false, error: error.message, totalPlays: 0, totalListenMinutes: 0, episodeStats: [] }
+  }
+}
+
 // Delete podcast episode
 export async function deletePodcastEpisode(episodeId: string) {
   const { agentId, brokerageId } = await getAgentContext()

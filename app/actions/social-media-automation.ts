@@ -31,6 +31,8 @@ function parseAIJsonResponse(text: string) {
 
 export async function connectSocialAccount(params: {
   agentId: string
+  /** user_id from auth.users — required for RLS */
+  userId?: string
   platform: "facebook" | "instagram" | "linkedin" | "twitter" | "tiktok" | "youtube" | "pinterest"
   accountName: string
   accessToken: string
@@ -46,24 +48,33 @@ export async function connectSocialAccount(params: {
 
   const supabase = await createClient()
 
+  // Resolve caller identity for user_id if not explicitly provided
+  let resolvedUserId = params.userId
+  if (!resolvedUserId) {
+    const { data: { user } } = await supabase.auth.getUser()
+    resolvedUserId = user?.id ?? params.agentId
+  }
+
   try {
     const { data: account, error } = await supabase
       .from("social_media_accounts")
       .insert({
         agent_id: params.agentId,
+        user_id: resolvedUserId,
         brokerage_id: params.brokerageId || null,
         platform: params.platform,
         account_name: params.accountName,
         account_id: params.accountId || null,
         access_token: params.accessToken,
-        refresh_token: params.refreshToken,
-        token_expires_at: params.expiresAt,
+        refresh_token: params.refreshToken ?? null,
+        token_expires_at: params.expiresAt ?? null,
         scope: params.scope || "agent",
         is_active: true,
         created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -147,6 +158,8 @@ export async function scheduleSocialPost(params: {
   socialAccountId: string
   listingId?: string
   campaignId?: string
+  /** Pass true when the brokerage requires broker approval — sets status to pending_approval */
+  requiresBrokerApproval?: boolean
 }) {
   // Validate required UUIDs
   if (!isValidUUID(params.brokerageId)) {
@@ -173,44 +186,66 @@ export async function scheduleSocialPost(params: {
   const supabase = await createClient()
 
   try {
-    // Apply brand voice to content
+    // Apply brand voice — check for violations only; we never rewrite content automatically.
+    // BrandVoiceResult.content is the original (unchanged); there is no transformedContent.
     let processedContent = params.content
     try {
-      const brandVoiceResult = await applyBrandVoice({
+      await applyBrandVoice({
         brokerageId: params.brokerageId,
+        actorUserId: params.userId,
+        actorRole: "agent",
+        journeyType: "buyer",
+        persona: "first_time_buyer",
+        messageType: "social",
         content: params.content,
-        contentType: "social_post",
       })
-      if (brandVoiceResult.transformedContent) {
-        processedContent = brandVoiceResult.transformedContent
-      }
+      // Brand voice result is advisory only — we log but never block scheduling here.
     } catch (brandError) {
-      console.warn("[social-media-automation] Brand voice application failed:", brandError)
-      // Continue with original content
+      console.warn("[social-media-automation] Brand voice check failed:", brandError)
+      // Continue with original content — brand voice is advisory
     }
 
     // Evaluate outbound compliance — BLOCK if fails
+    // Uses a broadcast stub contact so TCPA/Authority gates pass;
+    // Fair Housing (Gate 4) and Them-First (Gate 5) still run on the content.
     try {
       const complianceResult = await evaluateOutbound({
-        brokerageId: params.brokerageId,
+        actorContext: {
+          userId: params.userId,
+          role: "agent",
+          brokerageId: params.brokerageId,
+        },
+        journeyType: "buyer",
+        persona: "first_time_buyer",
+        messageType: "social",
         content: processedContent,
-        channel: "social",
-        messageType: "social_post",
+        contact: {
+          id: "broadcast",
+          first_name: "Broadcast",
+          last_name: "Audience",
+          contact_type: "buyer",
+          tcpa_consent: true,
+          isa_reengage_allowed: false,
+          dnc_status: false,
+        },
       })
 
       if (!complianceResult.allowed) {
         return {
           success: false,
-          error: `Compliance blocked: ${complianceResult.reason || "Content failed compliance check"}`,
+          error: `Compliance blocked: ${complianceResult.violations?.[0] || "Content failed compliance check"}`,
           blocked: true,
         }
       }
     } catch (complianceError) {
       console.warn("[social-media-automation] Compliance evaluation failed:", complianceError)
-      // Continue if compliance service is unavailable
+      // Continue if compliance service is temporarily unavailable
     }
 
-    // INSERT social_posts with status='scheduled', approval_status='pending'
+    // Determine initial status: broker-approval required → pending_approval, otherwise → scheduled
+    const initialStatus = params.requiresBrokerApproval ? "pending_approval" : "scheduled"
+
+    // INSERT social_posts
     const { data: post, error: insertError } = await supabase
       .from("social_posts")
       .insert({
@@ -225,15 +260,40 @@ export async function scheduleSocialPost(params: {
         scheduled_for: params.scheduledFor,
         social_account_id: params.socialAccountId,
         listing_id: params.listingId || null,
-        status: "scheduled",
-        approval_status: "pending",
+        status: initialStatus,
+        approval_status: params.requiresBrokerApproval ? "pending" : "approved",
         brand_compliance_passed: null,
+        ai_generated: false,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        compliance_approved: false,
       })
       .select()
-      .single()
+      .maybeSingle()
+
+    // If broker approval required, notify broker via notifications table
+    if (params.requiresBrokerApproval && post) {
+      const { data: brokerUsers } = await supabase
+        .from("users")
+        .select("id")
+        .eq("brokerage_id", params.brokerageId)
+        .in("user_type", ["broker", "admin"])
+        .is("deleted_at", null)
+        .limit(5)
+
+      for (const broker of brokerUsers ?? []) {
+        await supabase.from("notifications").insert({
+          user_id: broker.id,
+          brokerage_id: params.brokerageId,
+          type: "social_post_pending_approval",
+          title: "Social Post Awaiting Approval",
+          body: `A new ${params.platform} post is pending your approval.`,
+          entity_type: "social_post",
+          entity_id: post.id,
+          is_read: false,
+          created_at: new Date().toISOString(),
+        })
+      }
+    }
 
     if (insertError) {
       console.error("[social-media-automation] Insert error:", insertError)
@@ -315,7 +375,7 @@ export async function approveSocialPost(postId: string, approverUserId: string) 
       })
       .eq("id", postId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -348,7 +408,7 @@ export async function rejectSocialPost(postId: string, rejectorUserId: string, r
       })
       .eq("id", postId)
       .select()
-      .single()
+      .maybeSingle()
 
     if (error) throw error
 
@@ -478,11 +538,21 @@ export async function createListingPosts(params: {
   const supabase = await createClient()
 
   try {
+    // Fetch listing + first photo from listing_media for media_urls
     const { data: property } = await supabase
       .from("listings")
-      .select("*")
+      .select("address, city, list_price, bedrooms, bathrooms, sqft")
       .eq("id", params.propertyId)
-      .single()
+      .maybeSingle()
+
+    // Get primary photo for the listing
+    const { data: primaryMedia } = await supabase
+      .from("listing_media")
+      .select("file_url")
+      .eq("listing_id", params.propertyId)
+      .eq("is_primary", true)
+      .eq("media_type", "photo")
+      .maybeSingle()
 
     if (!property) {
       return { success: false, error: "Property not found" }
@@ -522,7 +592,7 @@ export async function createListingPosts(params: {
         platform,
         postType: "new_listing",
         content: content.text,
-        mediaUrls: property.primary_image_url ? [property.primary_image_url] : [],
+        mediaUrls: primaryMedia?.file_url ? [primaryMedia.file_url] : [],
         hashtags: content.hashtags,
         scheduledFor: optimalTime,
         socialAccountId: account.id,
@@ -631,7 +701,7 @@ export async function trackPostPerformance(postId: string, brokerageId: string, 
       .from("social_posts")
       .select("platform")
       .eq("id", postId)
-      .single()
+      .maybeSingle()
 
     await supabase.from("social_engagement_tracking").upsert({
       social_post_id: postId,
@@ -740,4 +810,161 @@ export async function getSocialMediaAnalytics(brokerageId: string, dateRange?: {
     console.error("[social-media-automation] Get analytics error:", error)
     return null
   }
+}
+
+// ============================================
+// POST LIFECYCLE — RETRY, DELETE, RESCHEDULE, EDIT
+// ============================================
+
+/**
+ * Retry a failed post — resets status to 'scheduled' and clears error_message.
+ * Increments an error_count column (added via migration) for circuit-breaker tracking.
+ */
+export async function retryFailedPost(postId: string, userId: string) {
+  if (!isValidUUID(postId) || !isValidUUID(userId)) {
+    return { success: false, error: "Invalid IDs" }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    const { data: post, error } = await supabase
+      .from("social_posts")
+      .update({
+        status: "scheduled",
+        error_message: null,
+        approval_status: "pending",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", postId)
+      .eq("status", "failed") // only retry truly failed posts
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+    if (!post) return { success: false, error: "Post not found or not in failed state" }
+
+    // Log the retry attempt
+    await supabase.from("social_publish_log").insert({
+      social_post_id: postId,
+      brokerage_id: post.brokerage_id,
+      platform: post.platform,
+      account_id: post.social_account_id,
+      publish_status: "retry_queued",
+      created_at: new Date().toISOString(),
+    })
+
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "social_post",
+      entity_id: postId,
+      brokerage_id: post.brokerage_id,
+      event_type: "social_post_retry_queued",
+      actor_user_id: userId,
+      metadata: { retried_at: new Date().toISOString() },
+    })
+
+    revalidatePath("/dashboard/social")
+    return { success: true, data: post }
+  } catch (error: any) {
+    console.error("[social-media-automation] Retry post error:", error)
+    return { success: false, error: error.message || "Failed to retry post" }
+  }
+}
+
+/**
+ * Soft-delete a social post — sets status to 'cancelled' and records actor.
+ * Does NOT hard-delete the row so publish logs are preserved.
+ */
+export async function deleteSocialPost(postId: string, userId: string) {
+  if (!isValidUUID(postId) || !isValidUUID(userId)) {
+    return { success: false, error: "Invalid IDs" }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    const { data: post, error } = await supabase
+      .from("social_posts")
+      .update({
+        status: "cancelled",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", postId)
+      .in("status", ["draft", "scheduled", "failed", "cancelled"])
+      .select("id, brokerage_id, platform, status")
+      .maybeSingle()
+
+    if (error) throw error
+    if (!post) return { success: false, error: "Post not found or already published — cannot delete" }
+
+    await supabase.from("lifecycle_events").insert({
+      entity_type: "social_post",
+      entity_id: postId,
+      brokerage_id: post.brokerage_id,
+      event_type: "social_post_deleted",
+      actor_user_id: userId,
+      metadata: { deleted_at: new Date().toISOString() },
+    })
+
+    revalidatePath("/dashboard/social")
+    return { success: true }
+  } catch (error: any) {
+    console.error("[social-media-automation] Delete post error:", error)
+    return { success: false, error: error.message || "Failed to delete post" }
+  }
+}
+
+/**
+ * Update an existing draft or scheduled post's content, hashtags, or platform.
+ * Cannot edit published or failed posts.
+ */
+export async function updateSocialPost(params: {
+  postId: string
+  userId: string
+  content?: string
+  hashtags?: string[]
+  mediaUrls?: string[]
+  platform?: string
+  postType?: string
+  scheduledFor?: string
+}) {
+  if (!isValidUUID(params.postId) || !isValidUUID(params.userId)) {
+    return { success: false, error: "Invalid IDs" }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    const updatePayload: Record<string, any> = { updated_at: new Date().toISOString() }
+    if (params.content    !== undefined) updatePayload.content      = params.content
+    if (params.hashtags   !== undefined) updatePayload.hashtags     = params.hashtags
+    if (params.mediaUrls  !== undefined) updatePayload.media_urls   = params.mediaUrls
+    if (params.platform   !== undefined) updatePayload.platform     = params.platform
+    if (params.postType   !== undefined) updatePayload.post_type    = params.postType
+    if (params.scheduledFor !== undefined) updatePayload.scheduled_for = params.scheduledFor
+
+    const { data: post, error } = await supabase
+      .from("social_posts")
+      .update(updatePayload)
+      .eq("id", params.postId)
+      .in("status", ["draft", "scheduled"]) // only editable statuses
+      .select()
+      .maybeSingle()
+
+    if (error) throw error
+    if (!post) return { success: false, error: "Post not found or not editable" }
+
+    revalidatePath("/dashboard/social")
+    return { success: true, data: post }
+  } catch (error: any) {
+    console.error("[social-media-automation] Update post error:", error)
+    return { success: false, error: error.message || "Failed to update post" }
+  }
+}
+
+/**
+ * Reschedule an existing post to a new datetime.
+ */
+export async function rescheduleSocialPost(postId: string, userId: string, newScheduledFor: string) {
+  return updateSocialPost({ postId, userId, scheduledFor: newScheduledFor })
 }

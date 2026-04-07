@@ -1,9 +1,9 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { supabaseService } from "@/services/supabaseService"
 
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { id } = params
+    const { id } = await params
 
     console.log("[v0] API /api/transactions/[id] called with id:", id)
 
@@ -37,9 +37,9 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const { id } = params
+    const { id } = await params
     const updates = await request.json()
 
     console.log("[v0] API PATCH /api/transactions/[id] called with updates:", updates)

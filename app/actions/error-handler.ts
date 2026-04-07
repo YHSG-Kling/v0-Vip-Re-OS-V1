@@ -83,8 +83,8 @@ export async function dismissErrorGroup(groupId: string, reason: string) {
     throw new Error("Failed to dismiss error group")
   }
 
-  // Record activity
-  await supabase
+  // Record activity (fire-and-forget)
+  void supabase
     .from("activities")
     .insert({
       brokerage_id: brokerageId,
@@ -93,7 +93,6 @@ export async function dismissErrorGroup(groupId: string, reason: string) {
       status: "completed",
       metadata: { error_group_id: groupId, reason },
     })
-    .catch(err => console.error("Error recording activity:", err))
 
   return { success: true }
 }
@@ -118,7 +117,8 @@ export async function resolveErrorGroup(groupId: string, solution: string) {
     throw new Error("Failed to resolve error group")
   }
 
-  await supabase
+  // Record activity (fire-and-forget)
+  void supabase
     .from("activities")
     .insert({
       brokerage_id: brokerageId,
@@ -127,7 +127,6 @@ export async function resolveErrorGroup(groupId: string, solution: string) {
       status: "completed",
       metadata: { error_group_id: groupId, solution },
     })
-    .catch(err => console.error("Error recording activity:", err))
 
   return { success: true }
 }

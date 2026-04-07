@@ -1,4 +1,5 @@
 import { generateText } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"
 import { evaluateContentCompliance } from "@/lib/compliance-rules"
 import { validateThemFirstContent } from "@/lib/them-first"
@@ -140,7 +141,7 @@ export interface ComplianceContext {
   requiresTCPACheck: boolean
   contactId?: string
   userId?: string
-  brokerageId?: string
+  brokerageId?: string | null
   contentType?: "email" | "sms" | "social" | "listing" | "internal"
 }
 
@@ -154,7 +155,7 @@ export interface AIRequest {
   compliance?: ComplianceContext
   metadata: {
     userId: string
-    brokerageId: string
+    brokerageId?: string | null
     teamId?: string | null
     agentId?: string | null
     feature?: string
@@ -203,7 +204,7 @@ async function checkCompliance(
         .from("contacts")
         .select("dnc_status")
         .eq("id", context.contactId)
-        .single()
+        .maybeSingle()
       
       if (contact?.dnc_status === true) {
         const violation: ComplianceViolation = {
@@ -322,47 +323,29 @@ async function executeModelCall(
     throw new Error(`Unknown model: ${model}`)
   }
   
-  let modelInstance: any
+  // Build the namespaced string and resolve to a provider instance
+  let modelInstance: ReturnType<typeof resolveModel>
   
-  switch (config.provider) {
-    case "anthropic": {
-      const { anthropic } = await import("@ai-sdk/anthropic")
-      modelInstance = anthropic(config.modelId)
-      break
-    }
-    
-    case "openai": {
-      const { openai } = await import("@ai-sdk/openai")
-      modelInstance = openai(config.modelId)
-      break
-    }
-    
-    case "google": {
-      const { google } = await import("@ai-sdk/google")
-      modelInstance = google(config.modelId)
-      break
-    }
-    
-    case "perplexity": {
-      const { createOpenAI } = await import("@ai-sdk/openai")
-      const perplexity = createOpenAI({
-        apiKey: process.env.PERPLEXITY_API_KEY || "",
-        baseURL: "https://api.perplexity.ai"
-      })
-      modelInstance = perplexity(config.modelId)
-      break
-    }
-    
-    default:
-      throw new Error(`Unsupported provider: ${config.provider}`)
+  if (config.provider === "perplexity") {
+    // Perplexity uses a custom OpenAI-compatible base URL — handle separately
+    const { createOpenAI } = await import("@ai-sdk/openai")
+    const perplexity = createOpenAI({
+      apiKey: process.env.PERPLEXITY_API_KEY || "",
+      baseURL: "https://api.perplexity.ai"
+    })
+    modelInstance = perplexity(config.modelId)
+  } else {
+    // All other providers: build "provider/modelId" and resolve via utility
+    const modelStr = `${config.provider}/${config.modelId}` as Parameters<typeof resolveModel>[0]
+    modelInstance = resolveModel(modelStr)
   }
-  
+
   const result = await generateText({
     model: modelInstance,
     system,
     prompt,
     temperature,
-    maxTokens
+    maxOutputTokens: maxTokens,
   })
   
   return {
@@ -506,6 +489,79 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
 }
 
 /**
+ * generateTextRouted
+ * ─────────────────────────────────────────────────────────────
+ * Drop-in replacement for the raw AI SDK `generateText` that routes
+ * every call through AI_TASK_ROUTING → resolveAIModel instead of
+ * accepting a hardcoded model string.
+ *
+ * Usage — change the import, keep the call site exactly the same:
+ *   import { generateTextRouted as generateText } from "@/lib/ai/models"
+ *
+ * The `model` field is accepted for backwards-compat but is IGNORED —
+ * the routing table governs which model actually runs.
+ * The optional `feature` key selects the routing row (defaults to "unspecified"
+ * → claude-sonnet, which is the Anthropic default for all content tasks).
+ */
+export interface RoutedTextRequest {
+  /** Ignored — routing table governs model selection */
+  model?: string
+  prompt?: string
+  system?: string
+  maxTokens?: number
+  temperature?: number
+  messages?: Array<{ role: 'user' | 'assistant'; content: string }>
+  /**
+   * Feature key from AI_TASK_ROUTING.
+   * Defaults to "unspecified" → claude-sonnet + gpt-4o fallback.
+   * @example "email_generation" | "social_post_generation" | "lead_analysis"
+   */
+  feature?: string
+  /** Optional — used only for usage logging, not routing */
+  userId?: string
+  brokerageId?: string | null
+  agentId?: string
+}
+
+export async function generateTextRouted(
+  request: RoutedTextRequest
+): Promise<{ text: string }> {
+  const feature = request.feature ?? 'unspecified'
+  const { model: routedModel, fallback } = selectModelForTask(feature)
+
+  // Resolve primary model to provider instance via resolveModel utility
+  const primaryConfig = MODEL_CONFIG[routedModel] ?? MODEL_CONFIG['claude-sonnet']
+  const primaryModelStr = `${primaryConfig.provider}/${primaryConfig.modelId}`
+  const primaryInstance = resolveModel(primaryModelStr as Parameters<typeof resolveModel>[0])
+
+  try {
+    const result = await generateText({
+      model: primaryInstance,
+      prompt: request.prompt,
+      system: request.system,
+      maxOutputTokens: request.maxTokens,
+      temperature: request.temperature,
+      messages: request.messages as any,
+    })
+    return { text: result.text }
+  } catch {
+    // Automatic fallback to secondary model via resolveModel
+    const fallbackConfig = MODEL_CONFIG[fallback] ?? MODEL_CONFIG['gpt-4o']
+    const fallbackModelStr = `${fallbackConfig.provider}/${fallbackConfig.modelId}`
+    const fallbackInstance = resolveModel(fallbackModelStr as Parameters<typeof resolveModel>[0])
+    const result = await generateText({
+      model: fallbackInstance,
+      prompt: request.prompt,
+      system: request.system,
+      maxOutputTokens: request.maxTokens,
+      temperature: request.temperature,
+      messages: request.messages as any,
+    })
+    return { text: result.text }
+  }
+}
+
+/**
  * Generate simple text response without compliance checks
  */
 export async function generateSimpleText(
@@ -547,7 +603,7 @@ export async function generatePublicContent(
   prompt: string,
   metadata: {
     userId: string
-    brokerageId: string
+    brokerageId?: string | null
     teamId?: string
     agentId?: string
     contentType: "email" | "sms" | "social" | "listing"
@@ -582,7 +638,7 @@ export async function generateOutboundMessage(
   contactId: string,
   metadata: {
     userId: string
-    brokerageId: string
+    brokerageId?: string | null
     teamId?: string
     agentId?: string
     contentType: "email" | "sms"

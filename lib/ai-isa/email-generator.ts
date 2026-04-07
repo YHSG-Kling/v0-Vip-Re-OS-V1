@@ -14,39 +14,43 @@ export interface LeadEmailContext {
   timeline?: string
   lead_score?: number
   enrichment_context?: Record<string, any>
+  /** Brand voice system block from loadBrandVoicePrompt — injected into email tone/vocabulary */
+  brandVoiceBlock?: string
+  /** Assistant name from ai_identity_profiles — used as the email sign-off name */
+  assistantName?: string
+  /** Persona label from ai_identity_profiles — shown in greeting context */
+  personaLabel?: string | null
 }
 
 export async function generatePersonalizedEmail(context: LeadEmailContext) {
-  console.log('[AI ISA] Generating personalized email for lead:', context.leadId)
-  
-  // Generate email content focused on THEM, not us
+  const signingName = context.assistantName ?? 'Your Real Estate Team'
+
   const emailBody = `Hi ${context.firstName},
 
 I noticed you're exploring ${context.property_interest || 'properties'} in the area${context.timeline ? ` and looking to ${context.timeline}` : ''}. 
 
-${context.motivation_type ? `Understanding that you're ${context.motivation_type}, I wanted to share some insights that might be helpful for your situation.` : 'I wanted to reach out with some information that might be valuable for you.'}
+${context.motivation_type ? `Understanding that you're ${context.motivation_type.replace(/_/g, ' ')}, I wanted to share some insights that might be helpful for your situation.` : 'I wanted to reach out with some information that might be valuable for you.'}
 
 ${context.budget_min && context.budget_max ? `Based on your budget range of $${context.budget_min.toLocaleString()} to $${context.budget_max.toLocaleString()}, ` : ''}I've put together a personalized video introduction below that explains exactly how our platform works to help you achieve your real estate goals.
 
 [Video will be embedded here]
 
-This isn't about pushing you into anything—it's about making sure you have the right information and support whenever you're ready to take the next step.
+This isn't about pushing you into anything — it's about making sure you have the right information and support whenever you're ready to take the next step.
 
 If you have any questions or just want to talk through your options, feel free to reply to this email. I'm here to help.
 
 Best regards,
-Your Real Estate Team`
+${signingName}${context.personaLabel ? `\n${context.personaLabel}` : ''}`
 
-  // Generate TCPA-compliant, deliverable subject line
-  const subjectLine = context.motivation_type 
-    ? `About Your ${context.property_interest || 'Property'} Search` 
+  const subjectLine = context.motivation_type
+    ? `About Your ${context.property_interest || 'Property'} Search`
     : `Information for ${context.firstName} - Real Estate Resources`
 
   return {
     subject: subjectLine,
     body: emailBody,
-    fromName: 'Real Estate Support Team',
-    replyTo: context.email
+    fromName: signingName,
+    replyTo: context.email,
   }
 }
 

@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 
@@ -45,8 +45,6 @@ export async function generateContentIdeas(persona?: string, userId?: string, us
       Types must be one of: video, social_post, blog, tool`,
     })
 
-    console.log("[v0] Raw AI response for content ideas:", text.substring(0, 200))
-    
     const ideas = parseAIJsonResponse(text)
 
     const validUserId = userId && isValidUUID(userId) ? userId : null
@@ -93,8 +91,6 @@ export async function researchKeywords(topic: string, userId?: string) {
       Provide exactly 10 keywords with realistic search volumes for real estate.`,
     })
 
-    console.log("[v0] Raw AI response for keywords:", text.substring(0, 200))
-    
     const keywords = parseAIJsonResponse(text)
 
     return { success: true, keywords }
@@ -229,7 +225,7 @@ export async function scheduleContent(params: {
       status: "in_progress",
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) {
     console.error("[v0] Schedule content error:", error)
@@ -287,7 +283,7 @@ export async function saveContentIdea(idea: string, contentType: string, persona
       status: "idea",
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) throw error
 

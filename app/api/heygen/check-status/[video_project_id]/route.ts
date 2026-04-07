@@ -37,7 +37,7 @@ export async function GET(
       .from("ai_video_projects")
       .select("*, brokerage_id")
       .eq("id", video_project_id)
-      .single()
+      .maybeSingle()
 
     if (projectError || !project) {
       return NextResponse.json({ error: "Video project not found" }, { status: 404 })
@@ -264,7 +264,7 @@ export async function POST(
       .from("ai_video_projects")
       .select("*")
       .eq("id", video_project_id)
-      .single()
+      .maybeSingle()
 
     if (projectError || !project) {
       return NextResponse.json({ error: "Video project not found" }, { status: 404 })
@@ -303,7 +303,7 @@ export async function POST(
         tags: [project.video_type, "heygen", "ai-generated"],
       })
       .select()
-      .single()
+      .maybeSingle()
 
     if (assetError) {
       console.error("[HeyGen] Error creating video asset:", assetError)

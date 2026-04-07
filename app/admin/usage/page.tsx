@@ -32,12 +32,12 @@ export default async function UsageMeteringDashboard() {
 
   const { data: profile } = await supabase
     .from("users")
-    .select("id, role, brokerage_id")
+    .select("id, user_type, brokerage_id")
     .eq("id", user.id)
     .maybeSingle()
 
   // Role gate: broker + admin + superadmin only
-  if (!profile || !["broker", "admin", "superadmin"].includes(profile.role ?? "")) {
+  if (!profile || !["broker", "admin", "superadmin"].includes(profile.user_type ?? "")) {
     redirect("/dashboard")
   }
 

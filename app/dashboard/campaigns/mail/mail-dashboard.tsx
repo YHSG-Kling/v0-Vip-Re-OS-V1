@@ -1,8 +1,8 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/app/components/ui/tabs"
-import { Button } from "@/app/components/ui/button"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button"
 import { Plus, Mail, Users, Truck, MessageSquare } from "lucide-react"
 import { CampaignsTab } from "./components/campaigns-tab"
 import { RecipientsTab } from "./components/recipients-tab"
@@ -78,7 +78,11 @@ export interface Response {
   }
 }
 
-export function MailDashboard() {
+interface MailDashboardProps {
+  brokerageId: string
+}
+
+export function MailDashboard({ brokerageId }: MailDashboardProps) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [recipients, setRecipients] = useState<Recipient[]>([])
   const [tracking, setTracking] = useState<TrackingRecord[]>([])
@@ -88,12 +92,13 @@ export function MailDashboard() {
   const [activeTab, setActiveTab] = useState("campaigns")
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null)
 
-  // Get brokerage ID from first campaign or use a placeholder
-  const brokerageId = campaigns[0]?.brokerage_id || ""
-
   useEffect(() => {
-    loadCampaigns()
-  }, [])
+    if (brokerageId) {
+      loadCampaigns()
+    } else {
+      setLoading(false)
+    }
+  }, [brokerageId])
 
   useEffect(() => {
     if (selectedCampaignId) {
@@ -104,8 +109,7 @@ export function MailDashboard() {
   async function loadCampaigns() {
     setLoading(true)
     try {
-      // We need to get brokerage ID from session - for now use the first campaign's
-      const result = await getMailCampaigns(brokerageId || "00000000-0000-0000-0000-000000000000")
+      const result = await getMailCampaigns(brokerageId)
       if (result.success && result.campaigns) {
         setCampaigns(result.campaigns)
         if (result.campaigns.length > 0 && !selectedCampaignId) {
@@ -158,6 +162,19 @@ export function MailDashboard() {
   }
 
   const selectedCampaign = campaigns.find((c) => c.id === selectedCampaignId)
+
+  // Honest empty state — never render campaign UI with unknown scope
+  if (!brokerageId) {
+    return (
+      <div className="flex flex-col h-full items-center justify-center p-12 text-center">
+        <Mail className="h-12 w-12 text-muted-foreground mb-4" />
+        <h2 className="text-lg font-semibold text-foreground mb-2">Brokerage not configured</h2>
+        <p className="text-sm text-muted-foreground max-w-sm">
+          Your account is not linked to a brokerage. Contact your administrator or support to resolve this.
+        </p>
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col h-full">

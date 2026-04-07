@@ -35,7 +35,7 @@ export default async function CommissionsPage() {
       .limit(100),
     supabase
       .from('transactions')
-      .select('id, property_address, contract_price, status, close_date')
+      .select('id, property_address, purchase_price, status, close_date')
       .eq('agent_id', agentId)
       .eq('status', 'closed')
       .gte('close_date', `${currentYear}-01-01`)

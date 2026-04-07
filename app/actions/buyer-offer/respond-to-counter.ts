@@ -36,7 +36,7 @@ export async function respondToCounter(params: RespondToCounterParams) {
   const { data: counterEvents } = await supabase
     .from("activities")
     .select("id")
-    .eq("metadata->>offer_id", offerId)
+    .eq("contact_id", offer.contact_id)
     .in("activity_type", ["buyer.offer.counter.received", "buyer.offer.counter.submitted"])
 
   if (counterEvents && counterEvents.length >= 5 && response === "counter_back") {
@@ -46,18 +46,24 @@ export async function respondToCounter(params: RespondToCounterParams) {
     }
   }
 
+  // Resolve brokerage_id once
+  const { data: agentRowC } = await supabase.from("users").select("brokerage_id").eq("id", userId).maybeSingle()
+  const brokerageIdC = agentRowC?.brokerage_id ?? null
+
   // COMPLIANCE GATE: Must pass before accepting counter
   if (response === "accept") {
     const compliancePassed = await checkCompliancePassed(offerId)
     if (!compliancePassed) {
       await supabase.from("activities").insert({
+        brokerage_id: brokerageIdC,
+        agent_id: userId,
+        contact_id: offer.contact_id,
         activity_type: "buyer.offer.block",
-        user_id: userId,
-        metadata: {
-          offer_id: offerId,
-          reason: "compliance_gate_failed",
-          attempted_action: "accept_counter"
-        }
+        title: "Counter acceptance blocked: compliance gate failed",
+        description: "Cannot accept counter: compliance.passed event not found",
+        notes: JSON.stringify({ offer_id: offerId, reason: "compliance_gate_failed", attempted_action: "accept_counter" }),
+        status: "completed",
+        entity_type: "contact",
       })
 
       return {
@@ -70,49 +76,79 @@ export async function respondToCounter(params: RespondToCounterParams) {
     // Emit counter acceptance
     await supabase.from("activities").insert([
       {
+        brokerage_id: brokerageIdC,
+        agent_id: userId,
+        contact_id: offer.contact_id,
         activity_type: "buyer.offer.counter.accepted",
-        user_id: userId,
-        metadata: { offer_id: offerId }
+        title: "Counter offer accepted",
+        description: `Counter accepted for offer ${offerId}`,
+        notes: JSON.stringify({ offer_id: offerId }),
+        status: "completed",
+        entity_type: "contact",
       },
       {
+        brokerage_id: brokerageIdC,
+        agent_id: userId,
+        contact_id: offer.contact_id,
         activity_type: "buyer.offer.accepted",
-        user_id: userId,
-        metadata: { offer_id: offerId }
+        title: "Offer accepted via counter",
+        description: `Offer ${offerId} accepted via counter`,
+        notes: JSON.stringify({ offer_id: offerId }),
+        status: "completed",
+        entity_type: "contact",
       },
       {
+        brokerage_id: brokerageIdC,
+        agent_id: userId,
+        contact_id: offer.contact_id,
         activity_type: "buyer.under_contract",
-        user_id: userId,
-        metadata: {
-          buyer_id: offer.contact_id,
-          offer_id: offerId,
-          transaction_id: offer.transaction_id
-        }
+        title: "Buyer under contract",
+        description: "Buyer moved to under contract via counter acceptance",
+        notes: JSON.stringify({ buyer_id: offer.contact_id, offer_id: offerId, transaction_id: offer.transaction_id }),
+        status: "completed",
+        entity_type: "contact",
+        transaction_id: offer.transaction_id ?? null,
       }
     ])
 
     // Transaction handoff
     if (offer.transaction_id) {
       await supabase.from("activities").insert({
+        brokerage_id: brokerageIdC,
+        agent_id: userId,
+        contact_id: offer.contact_id,
         activity_type: "transaction.lifecycle.initiated",
-        user_id: userId,
-        metadata: {
-          transaction_id: offer.transaction_id,
-          source: "buyer_offer_counter_acceptance",
-          offer_id: offerId
-        }
+        title: "Transaction lifecycle initiated",
+        description: "Transaction initiated from counter acceptance",
+        notes: JSON.stringify({ transaction_id: offer.transaction_id, source: "buyer_offer_counter_acceptance", offer_id: offerId }),
+        status: "completed",
+        entity_type: "transaction",
+        transaction_id: offer.transaction_id,
       })
     }
   } else if (response === "reject") {
     await supabase.from("activities").insert({
+      brokerage_id: brokerageIdC,
+      agent_id: userId,
+      contact_id: offer.contact_id,
       activity_type: "buyer.offer.counter.rejected",
-      user_id: userId,
-      metadata: { offer_id: offerId, reason: rejectionReason }
+      title: "Counter offer rejected",
+      description: rejectionReason ?? `Counter rejected for offer ${offerId}`,
+      notes: JSON.stringify({ offer_id: offerId, reason: rejectionReason }),
+      status: "completed",
+      entity_type: "contact",
     })
   } else if (response === "counter_back") {
     await supabase.from("activities").insert({
+      brokerage_id: brokerageIdC,
+      agent_id: userId,
+      contact_id: offer.contact_id,
       activity_type: "buyer.offer.counter.submitted",
-      user_id: userId,
-      metadata: { offer_id: offerId, counter_terms: counterTerms }
+      title: "Counter back submitted",
+      description: `Counter back submitted for offer ${offerId}`,
+      notes: JSON.stringify({ offer_id: offerId, counter_terms: counterTerms }),
+      status: "pending",
+      entity_type: "contact",
     })
   }
 

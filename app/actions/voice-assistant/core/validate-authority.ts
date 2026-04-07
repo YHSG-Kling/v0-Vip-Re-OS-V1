@@ -117,7 +117,7 @@ async function validateListingAccess(
   // Agent must be assigned or user must be admin/broker
   const { data: user } = await supabase
     .from('users')
-    .select('role')
+    .select('user_type, role')
     .eq('id', userId)
     .single()
 
@@ -126,7 +126,7 @@ async function validateListingAccess(
   }
 
   // Admin/broker can access all listings in brokerage
-  if (['admin', 'broker', 'team_lead'].includes(user.role)) {
+  if (['admin', 'broker', 'team_lead'].includes(user.user_type ?? user.role ?? '')) {
     return true
   }
 
@@ -163,7 +163,7 @@ async function validateContactAccess(
   // Get user role
   const { data: user } = await supabase
     .from('users')
-    .select('role')
+    .select('user_type, role')
     .eq('id', userId)
     .single()
 
@@ -172,7 +172,7 @@ async function validateContactAccess(
   }
 
   // Admin/broker/team_leader can access all contacts in brokerage
-  if (['admin', 'broker', 'team_lead'].includes(user.role)) {
+  if (['admin', 'broker', 'team_lead'].includes(user.user_type ?? user.role ?? '')) {
     return true
   }
 

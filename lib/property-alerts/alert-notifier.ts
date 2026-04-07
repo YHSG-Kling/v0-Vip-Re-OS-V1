@@ -2,6 +2,7 @@
 // All channel delivery writes through the real tables only
 
 import { createServiceClient } from "@/lib/supabase/service"
+import { dispatchEmail } from "@/lib/providers/dispatch"
 import type { AlertProperty } from "./alert-matcher"
 
 export interface DeliverResult {
@@ -49,7 +50,8 @@ export async function deliverAlertResults(
 
       if (sgCred?.api_key) {
         const subject = `[${n}] New ${n === 1 ? "Property Matches" : "Properties Match"} Your Search, ${contact.first_name}!`
-        const htmlBody = buildEmailHtml({
+        // Body only — assembleEmail() in dispatchEmail() appends signature + unsubscribe + legal
+        const bodyHtml = buildEmailHtml({
           contactFirstName: contact.first_name,
           properties,
           portalUrl,
@@ -60,18 +62,15 @@ export async function deliverAlertResults(
         const fromEmail = (sgCred.config as any)?.from_email ?? process.env.SENDGRID_FROM_EMAIL ?? "alerts@vip-re.com"
         const fromName  = (sgCred.config as any)?.from_name  ?? "VIP Real Estate OS"
 
-        await fetch("https://api.sendgrid.com/v3/mail/send", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${sgCred.api_key}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            personalizations: [{ to: [{ email: contact.email, name: `${contact.first_name} ${contact.last_name}` }] }],
-            from: { email: fromEmail, name: fromName },
-            subject,
-            content: [{ type: "text/html", value: htmlBody }],
-          }),
+        await dispatchEmail({
+          brokerageId,
+          agentId:      contact.agent_id ?? undefined,
+          leadId:       alert.contact_id,
+          systemSource: "property_alert",
+          from:         `${fromName} <${fromEmail}>`,
+          to:           contact.email,
+          subject,
+          html:         bodyHtml,
         })
 
         channelsUsed.push("email")

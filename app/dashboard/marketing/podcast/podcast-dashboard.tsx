@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/app/components/ui/tabs"
 import { Button } from "@/app/components/ui/button"
-import { Plus, Mic, Settings, Radio } from "lucide-react"
+import { Card, CardContent } from "@/app/components/ui/card"
+import { Plus, Mic, Settings, Radio, BarChart2, TrendingUp, CheckCircle2, Loader2 } from "lucide-react"
 import { EpisodesTab } from "./components/episodes-tab"
 import { TemplatesTab } from "./components/templates-tab"
 import { DistributionChannelsTab } from "./components/distribution-channels-tab"
@@ -45,11 +46,23 @@ interface DistributionChannel {
   distribution_config: Record<string, any>
 }
 
-export function PodcastDashboard() {
-  const [episodes, setEpisodes] = useState<Episode[]>([])
+interface PodcastDashboardProps {
+  agentId?: string
+  brokerageId?: string
+  initialEpisodes?: Episode[]
+  totalPlays?: number
+}
+
+export function PodcastDashboard({
+  agentId = "",
+  brokerageId = "",
+  initialEpisodes = [],
+  totalPlays = 0,
+}: PodcastDashboardProps) {
+  const [episodes, setEpisodes] = useState<Episode[]>(initialEpisodes)
   const [templates, setTemplates] = useState<Template[]>([])
   const [channels, setChannels] = useState<DistributionChannel[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(initialEpisodes.length === 0)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
   const [activeTab, setActiveTab] = useState("episodes")
 
@@ -82,6 +95,12 @@ export function PodcastDashboard() {
     }
   }
 
+  // Derive analytics from real episode data
+  const totalEpisodes = episodes.length
+  const publishedCount = episodes.filter((e) => e.status === "published").length
+  const generatingCount = episodes.filter((e) => e.status === "generating").length
+  const topEpisode = episodes.find((e) => e.status === "published") ?? null
+
   function handleEpisodeCreated() {
     loadData()
     setIsCreateDialogOpen(false)
@@ -113,6 +132,71 @@ export function PodcastDashboard() {
           New Episode
         </Button>
       </header>
+
+      {/* Analytics Strip */}
+      <div className="px-6 py-4 border-b border-gray-200 bg-white">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card className="border-0 shadow-none bg-gray-50">
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 bg-primary/10 rounded-lg shrink-0">
+                <Radio className="h-4 w-4 text-primary" />
+              </div>
+              <div>
+                <p className="text-2xl font-semibold text-gray-900">
+                  {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : totalEpisodes}
+                </p>
+                <p className="text-xs text-gray-500">Total Episodes</p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-0 shadow-none bg-gray-50">
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 bg-green-100 rounded-lg shrink-0">
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+              </div>
+              <div>
+                <p className="text-2xl font-semibold text-gray-900">
+                  {loading ? <Loader2 className="h-5 w-5 animate-spin text-gray-400" /> : publishedCount}
+                </p>
+                <p className="text-xs text-gray-500">Published</p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-0 shadow-none bg-gray-50">
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 bg-blue-100 rounded-lg shrink-0">
+                <BarChart2 className="h-4 w-4 text-blue-600" />
+              </div>
+              <div>
+                <p className="text-2xl font-semibold text-gray-900">
+                  {totalPlays.toLocaleString()}
+                </p>
+                <p className="text-xs text-gray-500">Total Plays</p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-0 shadow-none bg-gray-50">
+            <CardContent className="p-4 flex items-center gap-3">
+              <div className="p-2 bg-amber-100 rounded-lg shrink-0">
+                <TrendingUp className="h-4 w-4 text-amber-600" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-gray-900 truncate">
+                  {loading
+                    ? "—"
+                    : topEpisode
+                      ? topEpisode.title
+                      : "No episodes yet"}
+                </p>
+                <p className="text-xs text-gray-500">Top Episode</p>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
 
       {/* Main Content */}
       <div className="flex-1 overflow-hidden">

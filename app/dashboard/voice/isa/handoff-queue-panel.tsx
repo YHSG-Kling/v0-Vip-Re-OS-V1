@@ -1,17 +1,17 @@
 "use client"
 
 import { useState } from "react"
-import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { 
+import {
   UserCheck,
   Phone,
   ArrowRight,
   Star,
-  Clock
+  Clock,
+  CheckCircle2,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -45,7 +45,7 @@ function formatTimeAgo(dateString: string | null): string {
   const diffMs = now.getTime() - date.getTime()
   const diffMins = Math.floor(diffMs / 60000)
   const diffHours = Math.floor(diffMins / 60)
-  
+
   if (diffMins < 60) return `${diffMins}m ago`
   if (diffHours < 24) return `${diffHours}h ago`
   return `${Math.floor(diffHours / 24)}d ago`
@@ -71,43 +71,70 @@ function getScoreBadge(score: number | null) {
   return <Badge variant="secondary">{score}</Badge>
 }
 
-export function HandoffQueuePanel({ queue, brokerageId, agentId }: HandoffQueuePanelProps) {
+export function HandoffQueuePanel({ queue: initialQueue, brokerageId, agentId }: HandoffQueuePanelProps) {
   const router = useRouter()
   const [claiming, setClaiming] = useState<string | null>(null)
+  // Optimistic removal: maintain local copy of the queue
+  const [localQueue, setLocalQueue] = useState<QualifiedContact[]>(initialQueue)
 
   const handleTakeCall = async (qualificationId: string, contactId: string | null) => {
-    if (!contactId) return
+    if (!contactId || claiming) return
     setClaiming(qualificationId)
-    
+
     const supabase = createClient()
-    
-    // Update qualification to mark as assigned
-    await supabase
-      .from("ai_isa_qualifications")
-      .update({ 
-        assigned_to_agent_id: agentId,
-        assigned_at: new Date().toISOString()
-      })
-      .eq("id", qualificationId)
 
-    // Emit kernel event for handoff
-    await supabase
-      .from("lifecycle_events")
-      .insert({
+    try {
+      // 1. Persist: mark qualification as assigned to this agent
+      const { error: assignErr } = await supabase
+        .from("ai_isa_qualifications")
+        .update({
+          assigned_to_agent_id: agentId,
+          assigned_at: new Date().toISOString(),
+        })
+        .eq("id", qualificationId)
+
+      if (assignErr) {
+        console.error("[HandoffQueue] Failed to assign qualification:", assignErr.message)
+      }
+
+      // 2. Emit Kernel handoff event
+      await supabase
+        .from("lifecycle_events")
+        .insert({
+          brokerage_id: brokerageId,
+          entity_type: "contact",
+          entity_id: contactId,
+          event_type: KernelEvent.AI_ISA_HANDOFF_TO_AGENT,
+          actor_user_id: agentId,
+          metadata: {
+            qualification_id: qualificationId,
+            handoff_type: "manual_claim",
+          },
+        })
+
+      // 3. Insert notification so agent sees it in their notification feed
+      await supabase.from("notifications").insert({
         brokerage_id: brokerageId,
-        entity_type: "contact",
-        entity_id: contactId,
-        event_type: KernelEvent.AI_ISA_HANDOFF_TO_AGENT,
-        actor_user_id: agentId,
-        metadata: {
-          qualification_id: qualificationId,
-          handoff_type: "manual_claim"
-        }
+        user_id: agentId,
+        type: "handoff_claimed",
+        title: "Handoff claimed",
+        body: `You claimed a qualified lead from the AI-ISA handoff queue.`,
+        entity_type: "qualification",
+        entity_id: qualificationId,
+        created_at: new Date().toISOString(),
+        read: false,
       })
 
-    setClaiming(null)
-    
-    // Navigate to contact
+      // 4. Optimistic removal — remove from local queue immediately
+      setLocalQueue((prev) => prev.filter((item) => item.id !== qualificationId))
+
+    } catch (err: any) {
+      console.error("[HandoffQueue] Claim error:", err.message)
+    } finally {
+      setClaiming(null)
+    }
+
+    // 5. Navigate to the contact detail page
     router.push(`/contacts/${contactId}`)
   }
 
@@ -116,64 +143,77 @@ export function HandoffQueuePanel({ queue, brokerageId, agentId }: HandoffQueueP
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <UserCheck className="h-5 w-5" />
-          Handoff Queue
-          {queue.length > 0 && (
+          Human Handoff Required
+          {localQueue.length > 0 && (
             <Badge variant="secondary" className="ml-auto">
-              {queue.length} ready
+              {localQueue.length} ready
             </Badge>
           )}
         </CardTitle>
       </CardHeader>
       <CardContent>
-        {queue.length === 0 ? (
+        {localQueue.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-8 text-center">
-            <UserCheck className="h-10 w-10 text-muted-foreground/50 mb-3" />
-            <p className="text-sm text-muted-foreground">No qualified leads waiting</p>
+            <CheckCircle2 className="h-10 w-10 text-green-500/50 mb-3" />
+            <p className="text-sm text-muted-foreground">Queue is clear</p>
             <p className="text-xs text-muted-foreground mt-1">
-              AI-qualified contacts will appear here for follow-up
+              AI-qualified contacts will appear here for agent follow-up
             </p>
           </div>
         ) : (
           <div className="space-y-3">
-            {queue.map((item) => (
-              <div 
-                key={item.id} 
-                className="flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
+            {localQueue.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-start justify-between gap-3 p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors"
               >
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">
-                      {item.contacts?.first_name || "Unknown"} {item.contacts?.last_name || ""}
-                    </span>
+                <div className="flex-1 min-w-0 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-sm font-medium">
+                      {item.contacts?.first_name} {item.contacts?.last_name}
+                    </p>
                     {getScoreBadge(item.qualification_score)}
+                    {item.qualification_result && (
+                      <Badge
+                        variant="outline"
+                        className="text-xs capitalize"
+                      >
+                        {item.qualification_result.replace(/_/g, " ")}
+                      </Badge>
+                    )}
                   </div>
-                  <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
-                    <span className="flex items-center gap-1">
+
+                  {item.contacts?.phone && (
+                    <p className="text-xs text-muted-foreground flex items-center gap-1">
                       <Phone className="h-3 w-3" />
-                      {item.contacts?.phone || "--"}
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Clock className="h-3 w-3" />
-                      {formatTimeAgo(item.qualified_at)}
-                    </span>
-                  </div>
+                      {item.contacts.phone}
+                    </p>
+                  )}
+
                   {item.notes && (
-                    <p className="text-xs text-muted-foreground mt-1 truncate">
+                    <p className="text-xs text-muted-foreground line-clamp-2">
                       {item.notes}
                     </p>
                   )}
+
+                  <p className="text-xs text-muted-foreground flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Qualified {formatTimeAgo(item.qualified_at)}
+                  </p>
                 </div>
+
                 <Button
                   size="sm"
-                  onClick={() => handleTakeCall(item.id, item.contact_id)}
+                  className="shrink-0"
                   disabled={claiming === item.id}
+                  onClick={() => handleTakeCall(item.id, item.contact_id)}
                 >
                   {claiming === item.id ? (
-                    "Claiming..."
+                    <span className="text-xs">Claiming...</span>
                   ) : (
                     <>
-                      Take Call
-                      <ArrowRight className="h-4 w-4 ml-1" />
+                      <ArrowRight className="h-3 w-3 mr-1" />
+                      <span className="text-xs">Hand Off to Human Agent</span>
                     </>
                   )}
                 </Button>

@@ -5,6 +5,7 @@
 import { demoSignIn, getDemoUsers } from '@/app/actions/demo-auth';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 
 export default function LoginPage() {
   const [demoUsers, setDemoUsers] = useState<any[]>([]);
@@ -23,7 +24,7 @@ export default function LoginPage() {
     if (result.success) {
       router.push('/dashboard');
     } else {
-      alert(result.error);
+      toast.error(result.error);
     }
   };
 

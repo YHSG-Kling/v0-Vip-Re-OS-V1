@@ -1,0 +1,60 @@
+import { loadScrapingDiagnostics } from "@/lib/kernel/scraping"
+import { createClient } from "@/lib/supabase/server"
+import { ScrapeDiagnosticsClient } from "./scrape-diagnostics-client"
+import { redirect } from "next/navigation"
+
+export const metadata = {
+  title:       "Scrape Diagnostics | Kernel OS Admin",
+  description: "Source health, raw queue, enrichment status, dedup decisions, gating status, failed batch retry, source lineage, cron run history",
+}
+
+/**
+ * Admin Scrape Diagnostics Page — Kernel OS
+ *
+ * Data loading is fully delegated to loadScrapingDiagnostics() in lib/kernel/scraping.ts.
+ * That command returns all 9 required visibility dimensions as a normalized contract:
+ *   1. Source health (executions per source, status)
+ *   2. Raw queue (funnel by source + status)
+ *   3. Enrichment status (queued_for_enrichment + enriching rows)
+ *   4. Dedup decisions (lead_deduplication_log)
+ *   5. Gating status (territory_mismatch, insufficient_identity rows)
+ *   6. Failed source batch visibility (failed scraper_executions)
+ *   7. Cron run history (cron_execution_logs)
+ *   8. Source lineage and attribution (markets + funnel by source)
+ *   9. Territory budgets (lead_scraping_markets)
+ *
+ * Zero direct DB queries in this file. Zero mock data.
+ */
+export default async function ScrapeDiagnosticsPage() {
+  // Auth guard — only admin/broker/superadmin
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) redirect("/auth/login")
+
+  const { data: userData } = await supabase
+    .from("users")
+    .select("user_type, brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  const userType    = userData?.user_type ?? "agent"
+  const brokerageId = userData?.brokerage_id ?? undefined
+
+  if (!["admin", "broker", "superadmin"].includes(userType)) {
+    redirect("/dashboard")
+  }
+
+  // Delegate all data loading to the kernel command
+  const diagnostics = await loadScrapingDiagnostics({
+    brokerageId: userType === "superadmin" ? undefined : brokerageId,
+    limit:       100,
+  })
+
+  return (
+    <ScrapeDiagnosticsClient
+      data={diagnostics}
+      isSuperadmin={userType === "superadmin"}
+      currentUserId={user.id}
+    />
+  )
+}

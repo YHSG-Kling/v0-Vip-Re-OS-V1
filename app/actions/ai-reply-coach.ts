@@ -87,7 +87,7 @@ export async function generateAIReplyDraft(
         .from("contacts")
         .select("id, first_name, last_name, contact_type, contact_persona, status, timeline, dnc_status, tcpa_consent")
         .eq("id", params.contactId)
-        .single(),
+        .maybeSingle(),
       supabase
         .from("messages")
         .select("id, direction, body, type, created_at")
@@ -217,12 +217,11 @@ ${includeSubject ? "- Start your reply with SUBJECT: <subject line> on the first
         draft_body:        draftBody,
         suggested_tone:    resolvedTone,
         confidence_score:  confidenceScore,
-        status:            "pending",
-        final_body:        null,
-        edit_delta:        null,
-        acted_at:          null,
-        sent_message_id:   null,
-        compliance_approved: false,
+        status:          "pending",
+        final_body:      null,
+        edit_delta:      null,
+        acted_at:        null,
+        sent_message_id: null,
       })
       .select("id")
       .single()
@@ -274,7 +273,7 @@ export async function acceptDraft(params: AcceptDraftParams): Promise<{ success:
     .from("ai_message_drafts")
     .select("draft_body, draft_subject, status")
     .eq("id", params.draftId)
-    .single()
+    .maybeSingle()
 
   if (fetchError || !draft) {
     return { success: false, error: fetchError?.message ?? "Draft not found" }

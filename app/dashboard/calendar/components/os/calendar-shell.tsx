@@ -5,7 +5,12 @@ import { createClient } from "@/lib/supabase/client"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
-import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet"
+import { ChevronLeft, ChevronRight, RefreshCw, CalendarClock, Loader2, CheckCircle2 } from "lucide-react"
+import { scheduleSmartFollowUps } from "@/app/actions/ai-calendar-management"
 import { CalendarRoleFilterBar, type CalendarRole } from "./calendar-role-filter-bar"
 import { CalendarTimelineView } from "./calendar-timeline-view"
 import { CalendarAgendaView } from "./calendar-agenda-view"
@@ -47,6 +52,13 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
   const [activeView, setActiveView] = useState<"timeline" | "agenda">("timeline")
   const [selectedEvent, setSelectedEvent] = useState<UnifiedCalendarEvent | null>(null)
   const [showQuickCreate, setShowQuickCreate] = useState(false)
+
+  // Section B: Smart Follow-Up Scheduler sheet
+  const [followUpSheetOpen, setFollowUpSheetOpen] = useState(false)
+  const [followUpDaysAhead, setFollowUpDaysAhead] = useState("7")
+  const [followUpLoading, setFollowUpLoading] = useState(false)
+  const [followUpResult, setFollowUpResult] = useState<any>(null)
+  const [followUpError, setFollowUpError] = useState<string | null>(null)
 
   // Get week boundaries
   const getWeekBounds = useCallback((date: Date) => {
@@ -90,38 +102,38 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .lt("scheduled_at", endISO)
           .neq("status", "cancelled"),
 
-        // 2. Calendar events (ISA appointments, etc.)
+        // 2. Calendar events (ISA appointments, deadlines — filtered by brokerage)
         supabase
           .from("calendar_events")
-          .select("*")
-          .eq("agent_id", agentId)
-          .eq("is_cancelled", false)
+          .select("id, start_at, end_at, event_type, entity_type, entity_id, metadata, brokerage_id, timezone_name")
+          .eq("brokerage_id", brokerageId)
           .gte("start_at", startISO)
           .lt("start_at", endISO),
 
-        // 3. Open houses
+        // 3. Open house events (correct table name)
         supabase
-          .from("open_houses")
+          .from("open_house_events")
           .select(`
-            id, start_time, end_time, status, notes,
+            id, event_date, start_time, end_time, status, notes,
             listing_id,
             listings(address, city)
           `)
           .eq("agent_id", agentId)
-          .gte("start_time", startISO)
-          .lt("start_time", endISO),
+          .gte("event_date", startISO)
+          .lt("event_date", endISO),
 
-        // 4. Transactions with key dates
+        // 4. Transaction milestones with target_dates (inspection, appraisal, closing, deadline)
         supabase
-          .from("transactions")
+          .from("transaction_milestones")
           .select(`
-            id, property_address, status,
-            inspection_date, appraisal_date, closing_date,
-            contact_id,
-            contacts(first_name, last_name)
+            id, milestone_type, title, target_date, status, transaction_id,
+            transactions!inner(id, property_address, status, agent_id, contact_id, contacts(first_name, last_name))
           `)
-          .eq("agent_id", agentId)
-          .in("status", ["under_contract", "inspection", "appraisal", "financing", "closing"]),
+          .eq("transactions.agent_id", agentId)
+          .eq("status", "pending")
+          .not("target_date", "is", null)
+          .gte("target_date", start.toISOString().split("T")[0])
+          .lte("target_date", end.toISOString().split("T")[0]),
 
         // 5. Tasks with due dates
         supabase
@@ -133,10 +145,11 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .neq("status", "completed"),
 
         // 6. Scheduled touchpoints / follow-ups
+        // Note: scheduled_touchpoints has touchpoint_type, message_template (no purpose/priority)
         supabase
           .from("scheduled_touchpoints")
           .select(`
-            id, scheduled_date, touchpoint_type, purpose, priority, status,
+            id, scheduled_date, touchpoint_type, message_template, status,
             contact_id,
             contacts(first_name, last_name)
           `)
@@ -145,11 +158,11 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           .gte("scheduled_date", startISO)
           .lt("scheduled_date", endISO),
 
-        // 7. Buyer tours
+        // 7. Tours (correct table name is tours, not buyer_tours)
         supabase
-          .from("buyer_tours")
+          .from("tours")
           .select(`
-            id, tour_date, start_time, end_time, status, notes,
+            id, tour_date, scheduled_at, status, notes,
             contact_id,
             contacts(first_name, last_name)
           `)
@@ -180,29 +193,30 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         })
       })
 
-      // Transform calendar events
+      // Transform calendar events (no title/location/agent_id columns — derive from metadata + event_type)
       calendarEventsRes.data?.forEach((e: any) => {
+        const meta = (e.metadata as Record<string, unknown>) || {}
+        const derivedTitle = (meta.title as string) || e.event_type?.replace(/_/g, " ") || "Calendar Event"
         unified.push({
           id: e.id,
-          title: e.title,
+          title: derivedTitle,
           startAt: e.start_at,
-          endAt: e.end_at,
+          endAt: e.end_at ?? new Date(new Date(e.start_at).getTime() + 30 * 60000).toISOString(),
           eventType: e.event_type === "isa_appointment" ? "isa_appointment" : "appointment",
           source: "calendar_events",
-          location: e.location,
           contactId: e.entity_type === "contact" ? e.entity_id : undefined,
-          agentId: e.agent_id,
-          metadata: e.metadata,
+          metadata: meta,
         })
       })
 
-      // Transform open houses
+      // Transform open house events
       openHousesRes.data?.forEach((oh: any) => {
+        const datePrefix = oh.event_date ? oh.event_date.split("T")[0] : new Date().toISOString().split("T")[0]
         unified.push({
           id: oh.id,
           title: `Open House: ${oh.listings?.address || "Property"}`,
-          startAt: oh.start_time,
-          endAt: oh.end_time,
+          startAt: `${datePrefix}T${oh.start_time || "10:00:00"}`,
+          endAt: `${datePrefix}T${oh.end_time || "13:00:00"}`,
           eventType: "open_house",
           source: "open_houses",
           listingId: oh.listing_id,
@@ -211,31 +225,31 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         })
       })
 
-      // Transform transaction milestones
-      transactionsRes.data?.forEach((t: any) => {
-        const dateFields = [
-          { field: "inspection_date", type: "inspection" as const },
-          { field: "appraisal_date", type: "appraisal" as const },
-          { field: "closing_date", type: "closing" as const },
-        ]
-        dateFields.forEach(({ field, type }) => {
-          if (t[field]) {
-            const dateStr = t[field]
-            const eventDate = new Date(dateStr)
-            if (eventDate >= start && eventDate < end) {
-              unified.push({
-                id: `${t.id}-${type}`,
-                title: `${type.charAt(0).toUpperCase() + type.slice(1)}: ${t.property_address}`,
-                startAt: new Date(dateStr + "T10:00:00").toISOString(),
-                endAt: new Date(dateStr + "T12:00:00").toISOString(),
-                eventType: type,
-                source: "transactions",
-                contactId: t.contact_id,
-                contactName: t.contacts ? `${t.contacts.first_name || ""} ${t.contacts.last_name || ""}`.trim() : undefined,
-                priority: "high",
-              })
-            }
-          }
+      // Transform transaction milestones (from transaction_milestones table)
+      transactionsRes.data?.forEach((m: any) => {
+        if (!m.target_date) return
+        const trx = m.transactions as any
+        const dateStr = m.target_date
+        const milestoneType = (m.milestone_type || "deadline") as "inspection" | "appraisal" | "closing" | "appointment"
+        const calEventType: UnifiedCalendarEvent["eventType"] =
+          milestoneType === "inspection" ? "inspection" :
+          milestoneType === "appraisal" ? "appraisal" :
+          milestoneType === "closing" || milestoneType === "close" ? "closing" :
+          "appointment"
+
+        unified.push({
+          id: `milestone-${m.id}`,
+          title: `${m.title || milestoneType.replace(/_/g, " ")}: ${trx?.property_address ?? ""}`,
+          startAt: new Date(dateStr + "T10:00:00").toISOString(),
+          endAt: new Date(dateStr + "T12:00:00").toISOString(),
+          eventType: calEventType,
+          source: "transactions",
+          contactId: trx?.contact_id,
+          contactName: trx?.contacts
+            ? `${trx.contacts.first_name || ""} ${trx.contacts.last_name || ""}`.trim()
+            : undefined,
+          priority: "high",
+          metadata: { milestoneId: m.id, transactionId: m.transaction_id, milestoneType },
         })
       })
 
@@ -253,28 +267,35 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
         })
       })
 
-      // Transform touchpoints
+      // Transform touchpoints (no purpose/priority columns — use touchpoint_type + message_template)
       touchpointsRes.data?.forEach((tp: any) => {
+        const contactName = tp.contacts
+          ? `${tp.contacts.first_name || ""} ${tp.contacts.last_name || ""}`.trim()
+          : "Contact"
+        const label = tp.touchpoint_type
+          ? tp.touchpoint_type.replace(/_/g, " ")
+          : "follow-up"
         unified.push({
           id: tp.id,
-          title: `Follow-up: ${tp.contacts?.first_name || "Contact"} - ${tp.purpose}`,
+          title: `${label}: ${contactName}`,
           startAt: tp.scheduled_date,
           endAt: new Date(new Date(tp.scheduled_date).getTime() + 15 * 60000).toISOString(),
           eventType: "follow_up",
           source: "scheduled_touchpoints",
           contactId: tp.contact_id,
-          contactName: tp.contacts ? `${tp.contacts.first_name || ""} ${tp.contacts.last_name || ""}`.trim() : undefined,
-          priority: tp.priority as "high" | "medium" | "low",
+          contactName: contactName || undefined,
         })
       })
 
-      // Transform buyer tours
+      // Transform tours (real table: tours, uses tour_date + scheduled_at)
       toursRes.data?.forEach((tour: any) => {
+        const tourStart = tour.scheduled_at || `${tour.tour_date}T10:00:00`
+        const tourEnd = new Date(new Date(tourStart).getTime() + 2 * 60 * 60000).toISOString()
         unified.push({
           id: tour.id,
           title: `Tour: ${tour.contacts?.first_name || "Buyer"}`,
-          startAt: `${tour.tour_date}T${tour.start_time || "10:00:00"}`,
-          endAt: `${tour.tour_date}T${tour.end_time || "12:00:00"}`,
+          startAt: tourStart,
+          endAt: tourEnd,
           eventType: "tour",
           source: "buyer_tours",
           contactId: tour.contact_id,
@@ -328,6 +349,18 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           <Button variant="outline" size="sm" onClick={() => loadUnifiedCalendar()}>
             <RefreshCw className="h-4 w-4 mr-1" />
             Refresh
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setFollowUpSheetOpen(true)
+              setFollowUpResult(null)
+              setFollowUpError(null)
+            }}
+          >
+            <CalendarClock className="h-4 w-4 mr-1" />
+            AI Follow-Ups
           </Button>
           <Button size="sm" onClick={() => setShowQuickCreate(true)}>
             Quick Create
@@ -402,6 +435,135 @@ export function CalendarShell({ agentId, brokerageId, defaultRole = "agent" }: C
           )}
         </div>
       </div>
+
+      {/* Section B: AI Follow-Up Scheduler Sheet */}
+      <Sheet open={followUpSheetOpen} onOpenChange={setFollowUpSheetOpen}>
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          <SheetHeader className="pb-4">
+            <SheetTitle>Schedule This Week's Follow-Ups</SheetTitle>
+            <SheetDescription>
+              AI will schedule the optimal follow-up times for your most important contacts based on their stage, last interaction, and lead score.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="space-y-5 pt-2">
+            <div className="space-y-1.5">
+              <Label className="text-sm">Schedule ahead</Label>
+              <Select value={followUpDaysAhead} onValueChange={setFollowUpDaysAhead}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="7">This week (7 days)</SelectItem>
+                  <SelectItem value="14">Next 2 weeks</SelectItem>
+                  <SelectItem value="30">Next month</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Button
+              className="w-full gap-2"
+              onClick={async () => {
+                setFollowUpLoading(true)
+                setFollowUpError(null)
+                setFollowUpResult(null)
+                const res = await scheduleSmartFollowUps({
+                  agentId,
+                  daysAhead: Number(followUpDaysAhead),
+                })
+                if (res.success) {
+                  setFollowUpResult(res)
+                  if ((res as any).scheduled > 0) loadUnifiedCalendar()
+                } else {
+                  setFollowUpError((res as any).error ?? "Follow-up scheduling failed")
+                }
+                setFollowUpLoading(false)
+              }}
+              disabled={followUpLoading}
+            >
+              {followUpLoading ? (
+                <><Loader2 className="h-4 w-4 animate-spin" />Scheduling...</>
+              ) : (
+                <><CalendarClock className="h-4 w-4" />Schedule Follow-Ups</>
+              )}
+            </Button>
+
+            {followUpError && (
+              <p className="text-sm text-destructive">{followUpError}</p>
+            )}
+
+            {followUpResult && (
+              <div className="space-y-4">
+                {/* Summary */}
+                <div className="flex items-center gap-2 rounded-md bg-emerald-50 border border-emerald-200 px-3 py-2.5">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
+                  <p className="text-sm text-emerald-900">
+                    {(followUpResult as any).scheduled > 0
+                      ? `Scheduled ${(followUpResult as any).scheduled} follow-up touchpoints`
+                      : (followUpResult as any).message ?? "All contacts already have follow-ups scheduled"}
+                  </p>
+                </div>
+
+                {/* Scheduled list */}
+                {(followUpResult as any).followUpPlan?.scheduledFollowUps?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Scheduled touchpoints</p>
+                    {(followUpResult as any).followUpPlan.scheduledFollowUps.map((f: any, i: number) => (
+                      <div key={i} className="rounded-md border border-border p-3 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium truncate">{f.contactName}</span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <Badge
+                              className={`text-[10px] py-0 ${
+                                f.priority === "high"
+                                  ? "bg-red-100 text-red-700 border-red-200"
+                                  : f.priority === "medium"
+                                  ? "bg-amber-100 text-amber-700 border-amber-200"
+                                  : "bg-slate-100 text-slate-600 border-slate-200"
+                              }`}
+                            >
+                              {f.priority}
+                            </Badge>
+                            <Badge variant="outline" className="text-[10px] py-0 capitalize">{f.channel}</Badge>
+                          </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {f.suggestedDate} at {f.suggestedTime}
+                        </p>
+                        <p className="text-xs text-muted-foreground">{f.purpose}</p>
+                        {f.talkingPoints?.length > 0 && (
+                          <ul className="space-y-0.5 pt-0.5">
+                            {f.talkingPoints.slice(0, 2).map((tp: string, j: number) => (
+                              <li key={j} className="text-xs text-muted-foreground flex gap-1.5">
+                                <span className="shrink-0 text-muted-foreground">&bull;</span>
+                                {tp}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {(followUpResult as any).scheduled > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => {
+                      setFollowUpSheetOpen(false)
+                      loadUnifiedCalendar()
+                    }}
+                  >
+                    View on Calendar
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
 
       {/* Quick Create Panel */}
       {showQuickCreate && (

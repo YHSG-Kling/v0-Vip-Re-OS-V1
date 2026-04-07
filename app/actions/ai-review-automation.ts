@@ -1,7 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -81,13 +82,9 @@ Determine:
 5. Best channel and time of day to ask`,
     })
 
-    // Save timing recommendation
-    await supabase.from("review_timing_analysis").insert({
-      transaction_id: params.transactionId,
-      agent_id: params.agentId,
-      analysis: timing,
-      created_at: new Date().toISOString(),
-    })
+    // review_timing_analysis table does not exist in live schema.
+    // Recommendation is returned to the caller but not persisted.
+    // To persist, the caller may use lifecycle_events or ai_assistant_notes.
 
     return { success: true, data: timing }
   } catch (error) {
@@ -177,17 +174,31 @@ Generate:
 4. 3-touch follow-up sequence if no response`,
     })
 
-    // Save the request
-    await supabase.from("review_requests").insert({
-      transaction_id: params.transactionId,
-      agent_id: params.agentId,
-      contact_id: transaction.contact_id,
-      platform: params.platform,
-      channel: params.channel,
-      content: request,
-      status: "pending",
-      created_at: new Date().toISOString(),
-    })
+    // Save to review_requests using live schema columns only.
+    // Non-existent columns (transaction_id, channel, content) are omitted.
+    // AI-generated content is saved to ai_assistant_notes for reference.
+    const { data: rrInsert } = await supabase
+      .from("review_requests")
+      .insert({
+        agent_id:     params.agentId,
+        contact_id:   transaction.contact_id ?? null,
+        contact_name: `${transaction.contacts?.first_name ?? ""} ${transaction.contacts?.last_name ?? ""}`.trim() || null,
+        platform:     params.platform,
+        status:       "pending",
+        created_at:   new Date().toISOString(),
+      })
+      .select("id")
+      .single()
+
+    if (rrInsert?.id) {
+      await supabase.from("ai_assistant_notes").insert({
+        agent_id:    params.agentId,
+        entity_type: "review_request",
+        entity_id:   rrInsert.id,
+        note:        JSON.stringify(request),
+        created_at:  new Date().toISOString(),
+      }).select()
+    }
 
     return { success: true, data: request }
   } catch (error) {
@@ -272,17 +283,19 @@ Generate:
 6. Private follow-up message if appropriate`,
     })
 
-    // Save the response
-    await supabase.from("review_responses").insert({
-      review_id: params.reviewId,
-      agent_id: params.agentId,
-      platform: params.platform,
-      original_review: params.reviewText,
-      rating: params.rating,
-      response: response,
-      status: "draft",
-      created_at: new Date().toISOString(),
-    })
+    // review_responses table does not exist in live schema.
+    // Save AI-generated draft response_text directly on agent_reviews.
+    // is_published stays false until the agent explicitly publishes via respondToReview kernel command.
+    if (params.reviewId) {
+      await supabase
+        .from("agent_reviews")
+        .update({
+          response_text: response.publicResponse,
+          updated_at:    new Date().toISOString(),
+        })
+        .eq("id",       params.reviewId)
+        .eq("agent_id", params.agentId)
+    }
 
     revalidatePath("/reviews")
     return { success: true, data: response }
@@ -368,15 +381,25 @@ Create a comprehensive recovery plan including:
 7. Success metrics`,
     })
 
-    // Save recovery plan
-    await supabase.from("review_recovery_plans").insert({
-      review_id: params.reviewId,
-      agent_id: params.agentId,
-      client_id: params.clientId,
-      plan: recoveryPlan,
-      status: "active",
-      created_at: new Date().toISOString(),
-    })
+    // review_recovery_plans table does not exist in live schema.
+    // Persist recovery plan to ai_assistant_notes (entity_type='agent_review').
+    // Also write a lifecycle_event so the kernel notification engine can fire.
+    await supabase.from("ai_assistant_notes").insert({
+      agent_id:    params.agentId,
+      entity_type: "agent_review",
+      entity_id:   params.reviewId,
+      note:        JSON.stringify({ type: "recovery_plan", plan: recoveryPlan }),
+      created_at:  new Date().toISOString(),
+    }).select()
+
+    await supabase.from("lifecycle_events").insert({
+      agent_id:    params.agentId,
+      entity_type: "agent_review",
+      entity_id:   params.reviewId,
+      event_type:  "review_recovery_plan_created",
+      metadata:    { severity: recoveryPlan.severity, clientId: params.clientId ?? null },
+      created_at:  new Date().toISOString(),
+    }).select()
 
     return { success: true, data: recoveryPlan }
   } catch (error) {

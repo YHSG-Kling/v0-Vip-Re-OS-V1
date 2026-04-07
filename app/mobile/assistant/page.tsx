@@ -12,6 +12,13 @@ import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
 import { Clock, MapPin, Home, Search, ChevronRight } from "lucide-react"
 import { format } from "date-fns"
 import Link from "next/link"
+import {
+  MobileCommandStrip,
+  FieldQuickActions,
+  ShowingDayPanel,
+  OpenHousePanel,
+  MobileFollowupPanel,
+} from "../components/os"
 
 export const dynamic = "force-dynamic"
 
@@ -121,6 +128,9 @@ export default async function MobileAssistantPage() {
       </header>
 
       <main className="px-4 py-4 space-y-6">
+        {/* Mobile OS Command Strip */}
+        <MobileCommandStrip agentId={agentId} activeSection="assistant" />
+
         {/* Section 1: Daily Briefing */}
         <section>
           <DailyBriefingCard
@@ -129,6 +139,9 @@ export default async function MobileAssistantPage() {
             lastBriefingDate={lastBriefingDate}
           />
         </section>
+
+        {/* Mobile OS Field Quick Actions */}
+        <FieldQuickActions agentId={agentId} />
 
         {/* Section 2: Quick Actions Grid */}
         <section>
@@ -144,41 +157,12 @@ export default async function MobileAssistantPage() {
               View All
             </Link>
           </div>
-          {calendarEvents && calendarEvents.length > 0 ? (
-            <div className="space-y-2">
-              {calendarEvents.map((event) => (
-                <Card key={event.id} className="p-3">
-                  <div className="flex items-start gap-3">
-                    <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0">
-                      <Clock className="h-5 w-5 text-primary" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm truncate">
-                        {(event.metadata as { title?: string })?.title || event.event_type?.replace(/_/g, " ")}
-                      </p>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span>{format(new Date(event.start_at), "h:mm a")}</span>
-                        {(event.metadata as { location?: string })?.location && (
-                          <>
-                            <span>•</span>
-                            <MapPin className="h-3 w-3" />
-                            <span className="truncate">{(event.metadata as { location?: string }).location}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <Badge variant="outline" className="text-xs flex-shrink-0">
-                      {event.event_type?.replace(/_/g, " ")}
-                    </Badge>
-                  </div>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <Card className="p-4 text-center text-muted-foreground text-sm">
-              No upcoming events today
-            </Card>
-          )}
+
+          {/* Mobile OS Showing & Open House Panels */}
+          <ShowingDayPanel agentId={agentId} />
+          <div className="mt-4">
+            <OpenHousePanel agentId={agentId} />
+          </div>
         </section>
 
         {/* Section 4: Recent Activity Feed */}
@@ -186,6 +170,9 @@ export default async function MobileAssistantPage() {
           <h2 className="text-sm font-medium mb-3">Recent Activity</h2>
           <MobileActivityFeed events={lifecycleEvents || []} />
         </section>
+
+        {/* Mobile OS Follow-up Panel */}
+        <MobileFollowupPanel agentId={agentId} />
 
         {/* Section 5: Active Listings Strip */}
         <section>

@@ -203,9 +203,13 @@ export class NotificationService {
       created_at: new Date().toISOString(),
     }))
 
-    await this.supabase.from("push_notification_queue").insert(pushPayloads).catch(() => {
-      // Table may not exist yet — fail silently
-    })
+    await (async () => {
+      try {
+        await this.supabase.from("push_notification_queue").insert(pushPayloads)
+      } catch (err: unknown) {
+        // Table may not exist yet — fail silently
+      }
+    })()
   }
 
   /**
@@ -235,9 +239,13 @@ export class NotificationService {
       created_at: new Date().toISOString(),
     }))
 
-    await this.supabase.from("notification_log").insert(logEntries).catch(() => {
-      // Log failure silently to avoid blocking notifications
-    })
+    await (async () => {
+      try {
+        await this.supabase.from("notification_log").insert(logEntries)
+      } catch (err: unknown) {
+        // Log failure silently to avoid blocking notifications
+      }
+    })()
   }
 
   private formatEmailBody(message: string, metadata?: Record<string, any>): string {

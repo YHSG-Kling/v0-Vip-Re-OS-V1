@@ -5,11 +5,13 @@ import useSWR from "swr"
 import { mutate } from "swr"
 import { Avatar, AvatarFallback, AvatarImage } from "@/app/components/ui/avatar"
 import { Badge } from "@/app/components/ui/badge"
+import { Button } from "@/app/components/ui/button"
 import { Card } from "@/app/components/ui/card"
-import { Phone, Mail, MessageSquare, AlertCircle } from "lucide-react"
+import { Phone, Mail, MessageSquare, AlertCircle, Sparkles, Loader2 } from "lucide-react"
 import { MessageBubble, DateSeparator, getDateLabel } from "@/app/components/portal/MessageBubble"
 import { MessageComposer } from "@/app/components/portal/MessageComposer"
 import { AIDraftSuggestion } from "@/app/components/portal/AIDraftSuggestion"
+import { generateAIDraft } from "@/app/actions/portal-messages"
 import type { PortalMessage } from "@/app/actions/portal-messages"
 
 interface MessagesClientProps {
@@ -99,6 +101,8 @@ export function MessagesClient({
         brokerage_id: "",
         body: messageBody,
         direction,
+        channel,
+        read: false,
         created_at: new Date().toISOString(),
         read_at: null,
       }
@@ -183,11 +187,13 @@ export function MessagesClient({
                       direction={msg.direction}
                       createdAt={msg.created_at}
                       readAt={msg.read_at}
+                      read={msg.read}
+                      channel={msg.channel}
                       senderName={
                         msg.direction === "agent_to_client" ? agentCard.name : "You"
                       }
                       isUnread={
-                        msg.direction === "client_to_agent" && !msg.read_at && !isAgent
+                        msg.direction === "client_to_agent" && !msg.read && !msg.read_at && !isAgent
                       }
                     />
                   ))}
@@ -206,6 +212,15 @@ export function MessagesClient({
         onUseDraft={handleUseDraft}
         isAgent={isAgent}
       />
+
+      {/* Contact-facing AI draft help — shown when portal contact is composing */}
+      {!isAgent && (
+        <ContactAIDraftButton
+          contactId={contactId}
+          transactionId={transactionContext?.id}
+          onDraft={handleUseDraft}
+        />
+      )}
 
       {/* Message Composer - Sticky bottom */}
       <MessageComposer
@@ -282,6 +297,67 @@ function EmptyState({ contactName }: { contactName: string }) {
       <p className="text-muted-foreground text-sm">
         Start the conversation below
       </p>
+    </div>
+  )
+}
+
+// ─── CONTACT AI DRAFT BUTTON ─────────────────────────────────────────────────
+
+/**
+ * ContactAIDraftButton — lets portal contacts request an AI-drafted message
+ * when they're not sure what to write. Draft is never auto-sent; contact
+ * must review it in the composer before sending.
+ */
+function ContactAIDraftButton({
+  contactId,
+  transactionId,
+  onDraft,
+}: {
+  contactId: string
+  transactionId?: string
+  onDraft: (draft: string) => void
+}) {
+  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle")
+
+  const handleRequest = async () => {
+    setStatus("loading")
+    try {
+      const result = await generateAIDraft({ contactId, transactionId })
+      if (result.success && result.draft) {
+        onDraft(result.draft)
+        setStatus("idle")
+      } else {
+        setStatus("error")
+      }
+    } catch {
+      setStatus("error")
+    }
+  }
+
+  return (
+    <div className="px-4 pb-2 flex items-center gap-2">
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={handleRequest}
+        disabled={status === "loading"}
+        className="text-muted-foreground hover:text-foreground text-xs gap-1.5"
+      >
+        {status === "loading" ? (
+          <>
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Drafting...
+          </>
+        ) : (
+          <>
+            <Sparkles className="h-3.5 w-3.5" />
+            Let AI Draft This
+          </>
+        )}
+      </Button>
+      {status === "error" && (
+        <span className="text-xs text-destructive">Could not generate draft — try again</span>
+      )}
     </div>
   )
 }

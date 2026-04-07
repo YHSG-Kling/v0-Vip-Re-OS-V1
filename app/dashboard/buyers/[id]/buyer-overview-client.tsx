@@ -9,13 +9,15 @@ import { BuyerCoachingCard }                  from "./components/buyer-coaching-
 import { ConversationCoachingPanel }          from "./components/conversation-coaching-panel"
 import BuyerInsightsPanel                     from "./components/buyer-insights-panel"
 import { FatiguePanel }                       from "./components/fatigue-panel"
+import { BuyerEngagementHealthCard }          from "./components/buyer-engagement-health-card"
+import { BuyerLifecyclePanel }               from "./components/buyer-lifecycle-panel"
 import { FatigueWidget }                      from "./components/fatigue-widget"
 import { isTourAllowed, isOfferAllowed }      from "@/lib/buyer-lifecycle/gating-helpers"
 import { TourPipelineStepper }                from "@/app/components/shared/TourPipelineStepper"
 import { createTourPlan }                     from "@/app/actions/tour-planner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button }                             from "@/components/ui/button"
-import { Users, Calendar }                    from "lucide-react"
+import { Users, Calendar, AlertTriangle }      from "lucide-react"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
 
@@ -90,7 +92,7 @@ function getOfferGateCopy() {
 
 // ─── TABS ────────────────────────────────────────────────────────────────────
 
-const TABS = ["Overview", "Search", "Alerts", "Tours", "Fatigue", "Offers"] as const
+const TABS = ["Overview", "Search", "Alerts", "Tours", "Fatigue", "Offers", "Lifecycle"] as const
 type Tab = typeof TABS[number]
 
 // ─── MAIN CLIENT SHELL ───────────────────────────────────────────────────────
@@ -111,12 +113,14 @@ interface BuyerOverviewClientProps {
   consensus:     any | null
   tours:         any[]
   nextTour:      any | null
+  dualAgencyListings: Array<{ listing_id: string; address: string }> | null
 }
 
 export function BuyerOverviewClient({
   buyerId, contact, journey, profile, partners, drafts,
   propertyInterests, brokerageId, agentUserId, agentName,
   collaborativeSearches, activeSearch, consensus, tours, nextTour,
+  dualAgencyListings,
 }: BuyerOverviewClientProps) {
   const [activeTab, setActiveTab]   = useState<Tab>("Overview")
   const [gateModal, setGateModal]   = useState<GateModalProps | null>(null)
@@ -244,6 +248,15 @@ export function BuyerOverviewClient({
             </div>
           )}
         </div>
+      ) : activeTab === "Lifecycle" ? (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <BuyerLifecyclePanel
+            contactId={buyerId}
+            agentId={agentUserId}
+            brokerageId={brokerageId}
+            userRole="agent"
+          />
+        </div>
       ) : activeTab !== "Overview" ? (
         <div className="flex items-center justify-center h-64">
           <div className="text-center space-y-2">
@@ -271,6 +284,38 @@ export function BuyerOverviewClient({
                 tourCount={tours.length}
                 buyerStage={contact.buyer_stage}
               />
+
+              {/* Dual Agency Opportunity Alert */}
+              {dualAgencyListings && dualAgencyListings.length > 0 && (
+                <Card className="border-amber-200 bg-amber-50">
+                  <CardContent className="p-4">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+                      <div>
+                        <p className="text-sm font-semibold text-amber-900">
+                          Dual Agency Opportunity — Disclosure Required
+                        </p>
+                        <p className="text-sm text-amber-700 mt-1">
+                          This buyer has saved {dualAgencyListings.length} of your listing{dualAgencyListings.length > 1 ? "s" : ""}.
+                          If they make an offer, you represent both buyer and seller.
+                          Verify your state&apos;s dual agency disclosure requirements.
+                        </p>
+                        <div className="mt-2 space-y-1">
+                          {dualAgencyListings.map(sp => (
+                            <Link
+                              key={sp.listing_id}
+                              href={`/dashboard/listings/${sp.listing_id}`}
+                              className="text-xs text-amber-600 hover:underline block"
+                            >
+                              {sp.address}
+                            </Link>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Collaborative Search Intelligence */}
               {activeSearch && (
@@ -346,6 +391,9 @@ export function BuyerOverviewClient({
                 </CardContent>
               </Card>
             </div>
+
+            {/* Buyer Engagement Health — System 5.8 fatigue signal surfaced in Overview */}
+            <BuyerEngagementHealthCard buyerId={buyerId} brokerageId={brokerageId} />
 
             {/* 1. Financial Verification Panel */}
             <div id="financial-verification-panel">

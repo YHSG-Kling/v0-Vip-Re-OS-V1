@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { z } from "zod"
 import { KernelEvent } from "@/lib/kernel/events"
 
@@ -75,7 +76,7 @@ export async function computeWeeklyMetrics(
       if (feedbackTexts && feedbackTexts.length > 0) {
         try {
           const { object } = await generateObject({
-            model: "anthropic/claude-sonnet-4-20250514",
+            model: resolveModel("anthropic/claude-sonnet-4-20250514"),
             schema: ThemesSchema,
             system:
               "Identify the top 3 themes in negative feedback. Return JSON: {themes: string[]}",

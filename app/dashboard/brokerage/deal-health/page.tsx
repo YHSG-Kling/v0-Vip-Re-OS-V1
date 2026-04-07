@@ -32,7 +32,7 @@ export default async function DealHealthDashboardPage() {
     .eq("id", user.id)
     .maybeSingle()
 
-  if (!userRecord?.brokerage_id) redirect("/onboarding")
+  if (!userRecord?.brokerage_id) redirect("/dashboard/onboarding")
 
   // Gate to broker/admin/manager/tc roles
   const allowedRoles = ["broker", "admin", "manager", "tc"]

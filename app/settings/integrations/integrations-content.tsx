@@ -14,27 +14,87 @@ import {
   verifyServiceCredential,
   type ServiceName,
 } from "@/app/actions/agent-credentials"
+import {
+  getSocialAccounts,
+  connectSocialAccount,
+  disconnectSocialAccount,
+} from "@/app/actions/social-publishing"
 import { useToast } from "@/hooks/use-toast"
+
+const SOCIAL_PLATFORMS = [
+  {
+    key: "meta",
+    label: "Meta Business Suite",
+    description: "Facebook & Instagram publishing",
+    docsUrl: "https://developers.facebook.com/docs/facebook-login/access-tokens/",
+    docsLabel: "Get your Meta token",
+    placeholder: "EAABwzLi...",
+  },
+  {
+    key: "linkedin",
+    label: "LinkedIn",
+    description: "Professional network publishing",
+    docsUrl: "https://www.linkedin.com/developers/apps",
+    docsLabel: "Get your LinkedIn token",
+    placeholder: "AQX...",
+  },
+  {
+    key: "twitter",
+    label: "Twitter / X",
+    description: "Tweet scheduling and publishing",
+    docsUrl: "https://developer.twitter.com/en/portal/dashboard",
+    docsLabel: "Get your X bearer token",
+    placeholder: "AAAAAAAAAA...",
+  },
+  {
+    key: "tiktok",
+    label: "TikTok",
+    description: "Short-form video publishing and scheduling",
+    docsUrl: "https://developers.tiktok.com/",
+    docsLabel: "Get your TikTok token",
+    placeholder: "act.xxxxx...",
+  },
+  {
+    key: "youtube",
+    label: "YouTube",
+    description: "Long-form video publishing and channel management",
+    docsUrl: "https://console.cloud.google.com/apis/credentials",
+    docsLabel: "Get your YouTube token",
+    placeholder: "ya29.xxx...",
+  },
+  {
+    key: "pinterest",
+    label: "Pinterest",
+    description: "Pin boards, listing visuals, and idea publishing",
+    docsUrl: "https://developers.pinterest.com/apps/",
+    docsLabel: "Get your Pinterest token",
+    placeholder: "pina_xxx...",
+  },
+] as const
 
 export default function IntegrationsContent() {
   const [credentials, setCredentials] = useState<any[]>([])
+  const [socialAccounts, setSocialAccounts] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [tokenInputs, setTokenInputs] = useState<Record<string, string>>({})
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [disconnecting, setDisconnecting] = useState<string | null>(null)
   const { toast } = useToast()
 
   useEffect(() => {
-    loadCredentials()
+    loadAll()
   }, [])
 
-  const loadCredentials = async () => {
+  const loadAll = async () => {
     try {
-      const data = await getAgentCredentials()
-      setCredentials(data)
+      const [creds, socials] = await Promise.all([
+        getAgentCredentials(),
+        getSocialAccounts(),
+      ])
+      setCredentials(creds)
+      setSocialAccounts(socials)
     } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      })
+      toast({ title: "Error", description: error.message, variant: "destructive" })
     } finally {
       setLoading(false)
     }
@@ -48,19 +108,51 @@ export default function IntegrationsContent() {
         description: result.isValid ? "Your credentials are working correctly." : result.errorMessage,
         variant: result.isValid ? "default" : "destructive",
       })
-      loadCredentials()
+      loadAll()
     } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      })
+      toast({ title: "Error", description: error.message, variant: "destructive" })
     }
   }
 
-  const getCredential = (serviceName: string) => {
-    return credentials.find((c) => c.service_name === serviceName)
+  const handleConnect = async (platform: string, platformLabel: string) => {
+    const token = tokenInputs[platform]
+    if (!token) return
+    setConnecting(platform)
+    try {
+      await connectSocialAccount({
+        platform,
+        accountId: platform,
+        accountName: `${platformLabel} Account`,
+        accessToken: token,
+      })
+      toast({ title: `${platformLabel} connected` })
+      setTokenInputs((prev) => ({ ...prev, [platform]: "" }))
+      loadAll()
+    } catch (err: any) {
+      toast({ title: "Connection failed", description: err.message, variant: "destructive" })
+    } finally {
+      setConnecting(null)
+    }
   }
+
+  const handleDisconnect = async (accountId: string, platformLabel: string) => {
+    setDisconnecting(accountId)
+    try {
+      await disconnectSocialAccount(accountId)
+      toast({ title: `${platformLabel} disconnected` })
+      loadAll()
+    } catch (err: any) {
+      toast({ title: "Disconnect failed", description: err.message, variant: "destructive" })
+    } finally {
+      setDisconnecting(null)
+    }
+  }
+
+  const getCredential = (serviceName: string) =>
+    credentials.find((c) => c.service_name === serviceName)
+
+  const getSocialAccount = (platform: string) =>
+    socialAccounts.find((a) => a.platform === platform && a.is_active)
 
   if (loading) {
     return (
@@ -83,7 +175,7 @@ export default function IntegrationsContent() {
         <IDXBrokerCard
           credential={getCredential("idx_broker")}
           onTest={() => handleTestConnection("idx_broker")}
-          onSave={loadCredentials}
+          onSave={loadAll}
         />
       </TabsContent>
 
@@ -92,15 +184,104 @@ export default function IntegrationsContent() {
         <GHLCard
           credential={getCredential("ghl")}
           onTest={() => handleTestConnection("ghl")}
-          onSave={loadCredentials}
+          onSave={loadAll}
         />
       </TabsContent>
 
       {/* Social Media Tab */}
       <TabsContent value="social" className="space-y-4">
-        <MetaCard credential={getCredential("meta")} onSave={loadCredentials} />
-        <LinkedInCard credential={getCredential("linkedin")} onSave={loadCredentials} />
-        <TwitterCard credential={getCredential("twitter")} onSave={loadCredentials} />
+        {SOCIAL_PLATFORMS.map((p) => {
+          const account = getSocialAccount(p.key)
+          const isConnecting = connecting === p.key
+          const isDisconnecting = disconnecting === account?.id
+          const token = tokenInputs[p.key] ?? ""
+
+          return (
+            <Card key={p.key}>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <CardTitle>{p.label}</CardTitle>
+                    <CardDescription>{p.description}</CardDescription>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary" className="text-xs font-normal">Agent scope</Badge>
+                    {account ? (
+                      <Badge variant="default" className="bg-green-500">
+                        <Check className="h-3 w-3 mr-1" />
+                        Connected
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline">Not Connected</Badge>
+                    )}
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {account ? (
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm text-muted-foreground">
+                      Connected as <span className="font-medium text-foreground">{account.account_name}</span>
+                    </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={isDisconnecting}
+                      onClick={() => handleDisconnect(account.id, p.label)}
+                    >
+                      {isDisconnecting && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+                      Disconnect
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <Badge variant="outline" className="text-amber-600 border-amber-300">
+                      Manual Connection Available
+                    </Badge>
+                    <p className="text-sm text-muted-foreground">
+                      Connect {p.label} by pasting your access token below. Get your token from{" "}
+                      {p.label} Business or Developer settings.
+                    </p>
+                    <div className="space-y-2">
+                      <Label htmlFor={`token-${p.key}`} className="sr-only">
+                        {p.label} access token
+                      </Label>
+                      <Input
+                        id={`token-${p.key}`}
+                        type="password"
+                        placeholder={p.placeholder}
+                        value={token}
+                        onChange={(e) =>
+                          setTokenInputs((prev) => ({ ...prev, [p.key]: e.target.value }))
+                        }
+                      />
+                      <Button
+                        size="sm"
+                        disabled={!token || isConnecting}
+                        onClick={() => handleConnect(p.key, p.label)}
+                      >
+                        {isConnecting ? (
+                          <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                        ) : null}
+                        Connect
+                      </Button>
+                      <p className="text-xs text-muted-foreground">
+                        <a
+                          href={p.docsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="underline underline-offset-2"
+                        >
+                          {p.docsLabel} &rarr;
+                        </a>
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )
+        })}
       </TabsContent>
     </Tabs>
   )
@@ -295,116 +476,4 @@ function GHLCard({ credential, onTest, onSave }: any) {
   )
 }
 
-function MetaCard({ credential, onSave }: any) {
-  const { toast } = useToast()
 
-  const handleConnect = () => {
-    toast({
-      title: "OAuth Coming Soon",
-      description: "Meta Business Suite OAuth will be available during onboarding.",
-    })
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle>Meta Business Suite</CardTitle>
-            <CardDescription>Facebook & Instagram publishing</CardDescription>
-          </div>
-          {credential?.is_active ? (
-            <Badge variant="default" className="bg-green-500">
-              <Check className="h-3 w-3 mr-1" />
-              Connected
-            </Badge>
-          ) : (
-            <Badge variant="outline">Not Connected</Badge>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        <Button onClick={handleConnect}>
-          <ExternalLink className="h-4 w-4 mr-2" />
-          Connect Meta Account
-        </Button>
-      </CardContent>
-    </Card>
-  )
-}
-
-function LinkedInCard({ credential, onSave }: any) {
-  const { toast } = useToast()
-
-  const handleConnect = () => {
-    toast({
-      title: "OAuth Coming Soon",
-      description: "LinkedIn OAuth will be available during onboarding.",
-    })
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle>LinkedIn</CardTitle>
-            <CardDescription>Professional network publishing</CardDescription>
-          </div>
-          {credential?.is_active ? (
-            <Badge variant="default" className="bg-green-500">
-              <Check className="h-3 w-3 mr-1" />
-              Connected
-            </Badge>
-          ) : (
-            <Badge variant="outline">Not Connected</Badge>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        <Button onClick={handleConnect}>
-          <ExternalLink className="h-4 w-4 mr-2" />
-          Connect LinkedIn
-        </Button>
-      </CardContent>
-    </Card>
-  )
-}
-
-function TwitterCard({ credential, onSave }: any) {
-  const { toast } = useToast()
-
-  const handleConnect = () => {
-    toast({
-      title: "OAuth Coming Soon",
-      description: "Twitter/X OAuth will be available during onboarding.",
-    })
-  }
-
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle>Twitter / X</CardTitle>
-            <CardDescription>Tweet scheduling and publishing</CardDescription>
-          </div>
-          {credential?.is_active ? (
-            <Badge variant="default" className="bg-green-500">
-              <Check className="h-3 w-3 mr-1" />
-              Connected
-            </Badge>
-          ) : (
-            <Badge variant="outline">Not Connected</Badge>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent>
-        <Button onClick={handleConnect}>
-          <ExternalLink className="h-4 w-4 mr-2" />
-          Connect Twitter
-        </Button>
-      </CardContent>
-    </Card>
-  )
-}

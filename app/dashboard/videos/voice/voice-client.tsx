@@ -33,6 +33,7 @@ import {
   Shield,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { toast } from "sonner"
 import {
   createVoiceProfile,
   updateVoiceProfileSamples,
@@ -202,7 +203,7 @@ export function VoiceCloneClient({
       setIsRecording(true)
     } catch (error) {
       console.error("Error starting recording:", error)
-      alert("Could not access microphone. Please check permissions.")
+      toast.error("Could not access microphone — check permissions")
     }
   }
 
@@ -287,9 +288,27 @@ export function VoiceCloneClient({
   async function handleStartTraining() {
     if (!selectedProfile || !sampleManifest) return
 
+    const HEYGEN_MIN_SAMPLES = 5
+
+    const readyPhrases = sampleManifest.phrases.filter(
+      (p) =>
+        (p.status === "recorded" || p.status === "validated") &&
+        p.audio_url &&
+        p.audio_url !== "placeholder_url" &&
+        p.audio_url.startsWith("http")
+    )
+
+    if (readyPhrases.length < HEYGEN_MIN_SAMPLES) {
+      toast.error(
+        `${HEYGEN_MIN_SAMPLES} recorded samples required. ` +
+          `You have ${readyPhrases.length}. ` +
+          `Record ${HEYGEN_MIN_SAMPLES - readyPhrases.length} more before training.`
+      )
+      return
+    }
+
     setIsStartingTraining(true)
     try {
-      // Create training job
       const trainingJob = await startVoiceCloneTraining(
         selectedProfile.id,
         brokerageId,
@@ -297,11 +316,8 @@ export function VoiceCloneClient({
         userId
       )
 
-      // In production, also call the HeyGen API route
-      // For now, just set up polling
       setPollingTrainingId(trainingJob.id)
 
-      // Call HeyGen start API
       const response = await fetch("/api/heygen/voice-clone/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -310,22 +326,22 @@ export function VoiceCloneClient({
           profile_id: selectedProfile.id,
           brokerage_id: brokerageId,
           user_id: userId,
-          sample_audio_urls: sampleManifest.phrases
-            .filter(p => p.status === "recorded" || p.status === "validated")
-            .map(p => p.audio_url || "placeholder_url"),
+          sample_audio_urls: readyPhrases.map((p) => p.audio_url),
           voice_name: selectedProfile.profile_name,
         }),
       })
 
       const result = await response.json()
 
-      if (result.status === "completed") {
-        // Instant clone completed
+      if (result.queued) {
+        toast.info("Voice training queued — HeyGen API key required to process. Contact your admin.")
+      } else if (result.status === "completed") {
         setPollingTrainingId(null)
         router.refresh()
       }
     } catch (error) {
       console.error("Error starting training:", error)
+      toast.error("Failed to start training. Please try again.")
     } finally {
       setIsStartingTraining(false)
     }
@@ -663,30 +679,57 @@ export function VoiceCloneClient({
                         />
                       )}
 
-                      {/* Start Training Button */}
-                      {canStartTraining && selectedProfile.training_status !== "completed" && (
-                        <div className="pt-4 border-t">
-                          <Alert className="mb-4">
-                            <Info className="h-4 w-4" />
-                            <AlertDescription>
-                              All samples recorded! You can now start the voice clone training process.
-                            </AlertDescription>
-                          </Alert>
-                          <Button
-                            size="lg"
-                            className="w-full"
-                            onClick={handleStartTraining}
-                            disabled={isStartingTraining}
-                          >
-                            {isStartingTraining ? (
-                              <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                            ) : (
-                              <ArrowRight className="h-4 w-4 mr-2" />
-                            )}
-                            Start Voice Clone Training
-                          </Button>
-                        </div>
-                      )}
+                      {/* Training readiness + Start Training */}
+                      {selectedProfile.training_status !== "completed" && (() => {
+                        const HEYGEN_MIN_SAMPLES = 5
+                        const readyCount = sampleManifest.phrases.filter(
+                          (p) =>
+                            (p.status === "recorded" || p.status === "validated") &&
+                            p.audio_url &&
+                            p.audio_url !== "placeholder_url" &&
+                            p.audio_url.startsWith("http")
+                        ).length
+                        const remaining = HEYGEN_MIN_SAMPLES - readyCount
+                        const isReady = readyCount >= HEYGEN_MIN_SAMPLES
+                        return (
+                          <div className="pt-4 border-t space-y-3">
+                            <div className="space-y-1.5">
+                              <div className="flex justify-between text-sm">
+                                <span className="text-muted-foreground">
+                                  {readyCount}/{HEYGEN_MIN_SAMPLES} samples ready
+                                </span>
+                                {isReady && (
+                                  <span className="text-green-600 font-medium flex items-center gap-1">
+                                    <CheckCircle2 className="h-3.5 w-3.5" />
+                                    Ready to train
+                                  </span>
+                                )}
+                              </div>
+                              <Progress
+                                value={Math.min((readyCount / HEYGEN_MIN_SAMPLES) * 100, 100)}
+                                className="h-2"
+                              />
+                            </div>
+                            <Button
+                              size="lg"
+                              className="w-full"
+                              onClick={handleStartTraining}
+                              disabled={!isReady || isStartingTraining}
+                            >
+                              {isStartingTraining ? (
+                                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                              ) : (
+                                <ArrowRight className="h-4 w-4 mr-2" />
+                              )}
+                              {isStartingTraining
+                                ? "Starting..."
+                                : isReady
+                                  ? "Start Voice Training"
+                                  : `Record ${remaining} more sample${remaining !== 1 ? "s" : ""}`}
+                            </Button>
+                          </div>
+                        )
+                      })()}
                     </CardContent>
                   </Card>
                 </div>
@@ -716,11 +759,34 @@ export function VoiceCloneClient({
                                 <span className="text-xs text-muted-foreground">
                                   Phrase {index + 1}
                                 </span>
-                                {phrase.status === "recorded" ? (
-                                  <CheckCircle2 className="h-4 w-4 text-green-600" />
-                                ) : (
-                                  <div className="h-4 w-4 rounded-full border-2 border-muted-foreground/30" />
-                                )}
+                                {phrase.status === "recorded" || phrase.status === "validated"
+                                  ? phrase.audio_url &&
+                                    phrase.audio_url !== "placeholder_url" &&
+                                    phrase.audio_url.startsWith("http")
+                                    ? (
+                                      <span className="flex items-center gap-1 text-[11px] font-medium text-green-700">
+                                        <CheckCircle2 className="h-3.5 w-3.5" />
+                                        Recorded
+                                      </span>
+                                    ) : (
+                                      <span className="flex items-center gap-1 text-[11px] font-medium text-amber-600">
+                                        <AlertTriangle className="h-3.5 w-3.5" />
+                                        Needs recording
+                                      </span>
+                                    )
+                                  : phrase.status === "recording"
+                                    ? (
+                                      <span className="flex items-center gap-1 text-[11px] font-medium text-blue-600">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        Recording...
+                                      </span>
+                                    )
+                                    : (
+                                      <span className="flex items-center gap-1 text-[11px] font-medium text-amber-600">
+                                        <AlertTriangle className="h-3.5 w-3.5" />
+                                        Needs recording
+                                      </span>
+                                    )}
                               </div>
                               <p className="text-sm line-clamp-2">
                                 {phrase.phrase_text}

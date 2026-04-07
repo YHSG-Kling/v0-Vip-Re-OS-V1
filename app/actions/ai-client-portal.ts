@@ -6,17 +6,30 @@ import { createClient } from "@/lib/supabase/server"
 export async function getEducationResources(params: {
   contactId: string
   personaType?: string
+  brokerageId?: string
 }) {
   const supabase = await createClient()
   
   try {
-    // Get contact's completed resources
+    // Get contact's brokerage if not provided
+    let brokerageId = params.brokerageId
+    if (!brokerageId) {
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", params.contactId)
+        .single()
+      brokerageId = contact?.brokerage_id
+    }
+
+    // Get contact's completed lessons from contact_education_progress
     const { data: progress } = await supabase
       .from("contact_education_progress")
-      .select("resource_id, completed_at")
+      .select("lesson_key, completed_at")
       .eq("contact_id", params.contactId)
+      .not("completed_at", "is", null)
 
-    const completedIds = new Set((progress || []).map(p => p.resource_id))
+    const completedKeys = new Set((progress || []).map(p => p.lesson_key))
 
     // Get education resources filtered by persona type
     let query = supabase
@@ -33,10 +46,10 @@ export async function getEducationResources(params: {
 
     if (error) throw error
 
-    // Mark completed resources
+    // Mark completed resources based on lesson_key matches
     const mappedResources = (resources || []).map(r => ({
       ...r,
-      completed: completedIds.has(r.id),
+      completed: completedKeys.has(r.lesson_key || r.id),
     }))
 
     return { success: true, resources: mappedResources }
@@ -96,20 +109,35 @@ export async function getRecommendedProperties(params: {
 }
 
 // Mark education resource as completed
+// Schema: contact_education_progress uses lesson_key (not resource_id) with contact_id, brokerage_id, completed_at
 export async function markResourceCompleted(params: {
   contactId: string
   resourceId: string
+  brokerageId?: string
+  completionData?: Record<string, unknown>
 }) {
   const supabase = await createClient()
   
   try {
+    // Get brokerage_id if not provided
+    let brokerageId = params.brokerageId
+    if (!brokerageId) {
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("brokerage_id")
+        .eq("id", params.contactId)
+        .single()
+      brokerageId = contact?.brokerage_id
+    }
+
     const { error } = await supabase
       .from("contact_education_progress")
       .upsert({
         contact_id: params.contactId,
-        resource_id: params.resourceId,
+        brokerage_id: brokerageId,
+        lesson_key: params.resourceId,
         completed_at: new Date().toISOString(),
-      })
+      }, { onConflict: "contact_id,lesson_key" })
 
     if (error) throw error
 

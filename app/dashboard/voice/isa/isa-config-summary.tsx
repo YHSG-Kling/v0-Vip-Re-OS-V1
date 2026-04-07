@@ -37,10 +37,10 @@ export function ISAConfigSummary({ config, agentId }: ISAConfigSummaryProps) {
         <div className="flex items-center justify-between">
           <CardTitle className="text-base flex items-center gap-2">
             <Settings className="h-4 w-4" />
-            ISA Configuration
+            AI-ISA Configuration
           </CardTitle>
           <Button variant="outline" size="sm" asChild>
-            <Link href="/settings?tab=voice">
+            <Link href="/settings?tab=ai-isa">
               Edit Configuration
               <ExternalLink className="h-3 w-3 ml-1" />
             </Link>
@@ -50,8 +50,8 @@ export function ISAConfigSummary({ config, agentId }: ISAConfigSummaryProps) {
       <CardContent>
         {!config ? (
           <div className="text-sm text-muted-foreground">
-            No voice configuration set up yet.{" "}
-            <Link href="/settings?tab=voice" className="text-primary hover:underline">
+            No AI-ISA voice configuration set up yet.{" "}
+            <Link href="/settings?tab=ai-isa" className="text-primary hover:underline">
               Configure now
             </Link>
           </div>

@@ -1,7 +1,9 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText, generateObject } from "ai"
+import { generateObject } from "ai"
+import { resolveModel } from "@/lib/ai/resolve-model"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
@@ -71,7 +73,7 @@ export async function generateListingPresentation(params: {
       .limit(5)
 
     const { object: presentation } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         title: z.string(),
         subtitle: z.string(),
@@ -219,9 +221,10 @@ export async function generateSellerNetSheet(params: {
     // TODO: Commission Engine 8.0 — replace with getDefaultCommissionStructure()
     // Commission math must not live in presentation layer.
     const commission = 0
+    const commissionRate = params.commissionRate ?? 3
     
     const { object: netSheet } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         summary: z.object({
           salePrice: z.number(),
@@ -310,7 +313,7 @@ export async function generateVideoScript(params: {
       .single()
 
     const { object: script } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         title: z.string(),
         hook: z.string(),
@@ -396,7 +399,7 @@ export async function generateBrochureContent(params: {
       .single()
 
     const { object: brochure } = await generateObject({
-      model: "openai/gpt-4o",
+      model: resolveModel("openai/gpt-4o"),
       schema: z.object({
         headline: z.string(),
         tagline: z.string(),

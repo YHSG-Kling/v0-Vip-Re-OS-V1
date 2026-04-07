@@ -265,7 +265,7 @@ export async function manualTierOverride(
 
   const { data: profile } = await supabase
     .from("users")
-    .select("role")
+    .select("user_type, role")
     .eq("id", user.id)
     .maybeSingle()
 

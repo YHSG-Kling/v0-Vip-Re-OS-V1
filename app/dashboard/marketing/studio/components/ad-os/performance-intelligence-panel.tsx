@@ -1,270 +1,213 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import Link from "next/link"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+// ============================================================
+// PERFORMANCE INTELLIGENCE PANEL
+// Shows recent content_performance_predictions rows.
+// Agents can see prediction score, confidence, recommended
+// publish window, and rationale per content piece.
+// ============================================================
+
+import { useState, useTransition } from "react"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  BarChart3,
-  TrendingUp,
-  TrendingDown,
-  DollarSign,
-  Eye,
-  MousePointer,
-  AlertTriangle,
-  RefreshCw,
-  Loader2,
-  ChevronRight,
-  Sparkles,
-} from "lucide-react"
-import { getCampaigns } from "@/app/actions/marketing-studio"
-import { createClient } from "@/lib/supabase/client"
+import { Loader2, BarChart3, RefreshCw, Clock, AlertCircle, TrendingUp, TrendingDown } from "lucide-react"
+import { loadRecentPredictions } from "./ad-os-actions"
+import { useToast } from "@/hooks/use-toast"
 
-interface CampaignPerformance {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface Prediction {
   id: string
-  name: string
-  status: string
-  spend: number
-  budget: number
-  impressions: number
-  clicks: number
-  ctr: number
-  conversions: number
-  costPerClick: number
-  fatigueScore: number
+  content_type: string
+  predicted_score: number
+  confidence: string | null
+  rationale: string | null
+  recommended_publish_window: string | null
+  created_at: string
 }
 
-interface PerformanceIntelligencePanelProps {
-  brokerageId?: string
+interface Props {
+  brokerageId: string
+  initialPredictions?: Prediction[]
 }
 
-export function PerformanceIntelligencePanel({ brokerageId }: PerformanceIntelligencePanelProps) {
-  const [campaigns, setCampaigns] = useState<CampaignPerformance[]>([])
-  const [isLoading, setIsLoading] = useState(true)
-  const [bestCreative, setBestCreative] = useState<{
-    name: string
-    ctr: number
-    platform: string
-  } | null>(null)
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-  useEffect(() => {
-    loadPerformanceData()
-  }, [brokerageId])
+function scoreColor(score: number) {
+  if (score >= 75) return "text-emerald-700"
+  if (score >= 50) return "text-amber-600"
+  return "text-destructive"
+}
 
-  async function loadPerformanceData() {
-    setIsLoading(true)
-    try {
-      // Get campaigns from marketing studio
-      const result = await getCampaigns({ status: "live" })
+function scoreBadge(score: number) {
+  if (score >= 75) return "bg-emerald-100 text-emerald-800 border-emerald-200"
+  if (score >= 50) return "bg-amber-100 text-amber-800 border-amber-200"
+  return "bg-red-100 text-red-800 border-red-200"
+}
 
-      if (result.success && result.campaigns) {
-        // Map campaigns to performance data
-        const performanceData: CampaignPerformance[] = result.campaigns.map((c: any) => {
-          const spend = c.budget_spent || 0
-          const budget = c.budget_total || 1000
-          const impressions = Math.floor(spend * 100) // Estimate based on spend
-          const clicks = Math.floor(impressions * 0.02) // 2% CTR estimate
-          const ctr = impressions > 0 ? (clicks / impressions) * 100 : 0
+function confidenceLabel(confidence: string | null) {
+  if (!confidence) return null
+  return confidence.charAt(0).toUpperCase() + confidence.slice(1)
+}
 
-          // Calculate fatigue score based on days running
-          const launchDate = c.launched_at ? new Date(c.launched_at) : new Date(c.created_at)
-          const daysRunning = Math.floor((Date.now() - launchDate.getTime()) / (1000 * 60 * 60 * 24))
-          const fatigueScore = Math.min(100, daysRunning * 3) // Increases 3% per day
+function formatContentType(ct: string) {
+  return ct.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())
+}
 
-          return {
-            id: c.id,
-            name: c.campaign_name,
-            status: c.status,
-            spend,
-            budget,
-            impressions,
-            clicks,
-            ctr,
-            conversions: Math.floor(clicks * 0.05), // 5% conversion estimate
-            costPerClick: clicks > 0 ? spend / clicks : 0,
-            fatigueScore,
-          }
-        })
+// ─── Component ───────────────────────────────────────────────────────────────
 
-        setCampaigns(performanceData)
+export function PerformanceIntelligencePanel({ brokerageId, initialPredictions = [] }: Props) {
+  const [predictions, setPredictions] = useState<Prediction[]>(initialPredictions)
+  const [isPending, startTransition] = useTransition()
+  const [hasLoaded, setHasLoaded] = useState(initialPredictions.length > 0)
+  const { toast } = useToast()
 
-        // Find best performing creative
-        if (performanceData.length > 0) {
-          const best = performanceData.reduce((a, b) => (a.ctr > b.ctr ? a : b))
-          setBestCreative({
-            name: best.name,
-            ctr: best.ctr,
-            platform: "Meta Ads",
-          })
+  function handleLoad() {
+    startTransition(async () => {
+      const res = await loadRecentPredictions(brokerageId)
+      if (res.success) {
+        setPredictions(res.predictions as Prediction[])
+        setHasLoaded(true)
+        if (res.predictions.length === 0) {
+          toast({ title: "No predictions found yet — run a Pre-Launch Check first." })
         }
+      } else {
+        toast({
+          title: "Could not load predictions",
+          description: res.error,
+          variant: "destructive",
+        })
       }
-    } catch (error) {
-      console.error("Failed to load performance data:", error)
-    } finally {
-      setIsLoading(false)
-    }
+    })
   }
 
-  const liveCampaigns = campaigns.filter((c) => c.status === "live")
-  const totalSpend = campaigns.reduce((sum, c) => sum + c.spend, 0)
-  const avgCtr = campaigns.length > 0 ? campaigns.reduce((sum, c) => sum + c.ctr, 0) / campaigns.length : 0
-  const fatigueWarnings = campaigns.filter((c) => c.fatigueScore > 70)
+  const avgScore =
+    predictions.length > 0
+      ? Math.round(predictions.reduce((s, p) => s + (p.predicted_score ?? 0), 0) / predictions.length)
+      : null
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <div>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="h-5 w-5 text-violet-600" />
+            <CardTitle className="text-base flex items-center gap-2">
+              <BarChart3 className="h-4 w-4 text-indigo-600" />
               Performance Intelligence
             </CardTitle>
-            <CardDescription>Track campaign performance and optimization opportunities</CardDescription>
+            <CardDescription>
+              Recent AI predictions for your content — score, confidence, and best publish window.
+            </CardDescription>
           </div>
-          <Button variant="outline" size="sm" onClick={loadPerformanceData} disabled={isLoading}>
-            <RefreshCw className={`h-4 w-4 mr-1 ${isLoading ? "animate-spin" : ""}`} />
-            Refresh
-          </Button>
+          {avgScore !== null && (
+            <div className="text-right shrink-0">
+              <p className="text-xs text-muted-foreground">Avg Score</p>
+              <p className={`text-2xl font-bold ${scoreColor(avgScore)}`}>{avgScore}</p>
+            </div>
+          )}
         </div>
       </CardHeader>
+
       <CardContent className="space-y-4">
-        {isLoading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="h-6 w-6 animate-spin text-violet-600" />
+        {!hasLoaded ? (
+          <div className="flex flex-col items-center gap-3 py-6 text-center">
+            <BarChart3 className="h-8 w-8 text-muted-foreground/40" />
+            <p className="text-sm text-muted-foreground max-w-xs">
+              Load your recent content predictions to see engagement scores, confidence ratings, and optimal
+              publish windows.
+            </p>
+            <Button onClick={handleLoad} disabled={isPending}>
+              {isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Loading...
+                </>
+              ) : (
+                <>
+                  <BarChart3 className="h-4 w-4 mr-2" />
+                  Load Predictions
+                </>
+              )}
+            </Button>
+          </div>
+        ) : predictions.length === 0 ? (
+          <div className="flex items-start gap-2 text-sm text-muted-foreground py-4">
+            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+            No predictions yet. Run a Pre-Launch Check on your next campaign to generate one.
           </div>
         ) : (
-          <>
-            {/* Summary Stats */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="p-3 rounded-lg bg-muted/50">
-                <p className="text-xs text-muted-foreground">Active Campaigns</p>
-                <p className="text-xl font-bold">{liveCampaigns.length}</p>
-              </div>
-              <div className="p-3 rounded-lg bg-muted/50">
-                <p className="text-xs text-muted-foreground">Total Spend</p>
-                <p className="text-xl font-bold">${totalSpend.toLocaleString()}</p>
-              </div>
-              <div className="p-3 rounded-lg bg-muted/50">
-                <p className="text-xs text-muted-foreground">Avg CTR</p>
-                <p className="text-xl font-bold">{avgCtr.toFixed(2)}%</p>
-              </div>
-              <div className="p-3 rounded-lg bg-muted/50">
-                <p className="text-xs text-muted-foreground">Fatigue Warnings</p>
-                <p className={`text-xl font-bold ${fatigueWarnings.length > 0 ? "text-amber-600" : ""}`}>
-                  {fatigueWarnings.length}
+          <div className="flex flex-col gap-3">
+            {predictions.map((p) => (
+              <div
+                key={p.id}
+                className="rounded-lg border border-border p-4 space-y-3"
+              >
+                {/* Header row */}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium">{formatContentType(p.content_type)}</span>
+                    {p.confidence && (
+                      <Badge variant="outline" className="text-xs">
+                        {confidenceLabel(p.confidence)} confidence
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {(p.predicted_score ?? 0) >= 60 ? (
+                      <TrendingUp className="h-3.5 w-3.5 text-emerald-600" />
+                    ) : (
+                      <TrendingDown className="h-3.5 w-3.5 text-red-500" />
+                    )}
+                    <Badge className={`text-xs border ${scoreBadge(p.predicted_score ?? 0)}`}>
+                      {p.predicted_score ?? "—"} / 100
+                    </Badge>
+                  </div>
+                </div>
+
+                {/* Publish window */}
+                {p.recommended_publish_window && (
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Clock className="h-3 w-3 shrink-0" />
+                    Best window: {p.recommended_publish_window}
+                  </div>
+                )}
+
+                {/* Rationale */}
+                {p.rationale && (
+                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">
+                    {p.rationale}
+                  </p>
+                )}
+
+                <p className="text-xs text-muted-foreground/60">
+                  {new Date(p.created_at).toLocaleDateString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
                 </p>
               </div>
-            </div>
+            ))}
 
-            {/* Best Creative */}
-            {bestCreative && (
-              <div className="p-3 rounded-lg bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-green-600" />
-                  <p className="font-medium text-sm text-green-700 dark:text-green-300">Top Performer</p>
-                </div>
-                <p className="text-sm mt-1">
-                  <span className="font-medium">{bestCreative.name}</span> on {bestCreative.platform} with{" "}
-                  {bestCreative.ctr.toFixed(2)}% CTR
-                </p>
-              </div>
-            )}
-
-            {/* Fatigue Warnings */}
-            {fatigueWarnings.length > 0 && (
-              <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4 text-amber-600" />
-                  <p className="font-medium text-sm text-amber-700 dark:text-amber-300">Creative Fatigue Alert</p>
-                </div>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {fatigueWarnings.length} campaign(s) showing fatigue. Consider refreshing creative or adjusting
-                  targeting.
-                </p>
-              </div>
-            )}
-
-            {/* Campaign Performance List */}
-            <ScrollArea className="h-[200px]">
-              {campaigns.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <BarChart3 className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                  <p>No active campaigns to display</p>
-                  <Link href="/dashboard/campaigns/ads">
-                    <Button variant="link" size="sm">
-                      Go to Ads Dashboard <ChevronRight className="h-4 w-4 ml-1" />
-                    </Button>
-                  </Link>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {campaigns.map((campaign) => (
-                    <div key={campaign.id} className="p-3 rounded-lg border">
-                      <div className="flex items-start justify-between mb-2">
-                        <div>
-                          <p className="font-medium text-sm">{campaign.name}</p>
-                          <Badge
-                            variant={campaign.status === "live" ? "default" : "secondary"}
-                            className="mt-1"
-                          >
-                            {campaign.status}
-                          </Badge>
-                        </div>
-                        {campaign.fatigueScore > 70 && (
-                          <Badge variant="outline" className="text-amber-600 border-amber-300">
-                            <AlertTriangle className="h-3 w-3 mr-1" />
-                            Fatigue
-                          </Badge>
-                        )}
-                      </div>
-
-                      {/* Budget Progress */}
-                      <div className="space-y-1 mb-2">
-                        <div className="flex justify-between text-xs">
-                          <span className="text-muted-foreground">Budget Used</span>
-                          <span>
-                            ${campaign.spend.toLocaleString()} / ${campaign.budget.toLocaleString()}
-                          </span>
-                        </div>
-                        <Progress value={(campaign.spend / campaign.budget) * 100} className="h-1" />
-                      </div>
-
-                      {/* Metrics */}
-                      <div className="flex gap-4 text-xs text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <Eye className="h-3 w-3" />
-                          {campaign.impressions.toLocaleString()}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <MousePointer className="h-3 w-3" />
-                          {campaign.clicks.toLocaleString()}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <TrendingUp className="h-3 w-3" />
-                          {campaign.ctr.toFixed(2)}% CTR
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <DollarSign className="h-3 w-3" />$
-                          {campaign.costPerClick.toFixed(2)} CPC
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </ScrollArea>
-
-            {/* Ads Dashboard Link */}
-            <Link href="/dashboard/campaigns/ads">
-              <Button variant="outline" className="w-full">
-                Open Ads Dashboard
-                <ChevronRight className="h-4 w-4 ml-2" />
-              </Button>
-            </Link>
-          </>
+            {/* Refresh */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleLoad}
+              disabled={isPending}
+              className="self-start h-7 text-xs gap-1.5"
+            >
+              <RefreshCw className="h-3 w-3" />
+              Refresh
+            </Button>
+          </div>
         )}
       </CardContent>
     </Card>

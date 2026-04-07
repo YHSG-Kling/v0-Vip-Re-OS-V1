@@ -1,261 +1,193 @@
 "use client"
 
-import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Textarea } from "@/components/ui/textarea"
-import { Label } from "@/components/ui/label"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Layers,
-  Copy,
-  RefreshCw,
-  Sparkles,
-  Loader2,
-  Type,
-  Target,
-  MousePointer,
-} from "lucide-react"
-import { generateText } from "@/app/actions/content-generation-engine"
+// ============================================================
+// Creative Variations Panel
+// Generates 3 ad copy variations using brand voice.
+// ============================================================
 
-type VariationType = "headline" | "hook" | "audience" | "cta"
+import { useState } from "react"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Textarea } from "@/components/ui/textarea"
+import { Badge } from "@/components/ui/badge"
+import { Loader2, Sparkles, Copy, CheckCheck } from "lucide-react"
+import { generateMarketingInsight } from "./ad-os-actions"
+import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
+
+interface Props {
+  agentId: string
+}
 
 interface Variation {
-  id: string
-  text: string
-  type: VariationType
-}
-
-interface CreativeVariationsPanelProps {
-  agentId: string
-  listingId?: string
-}
-
-const VARIATION_TYPES: Array<{
-  id: VariationType
   label: string
-  description: string
-  icon: React.ElementType
-  prompt: string
-}> = [
-  {
-    id: "headline",
-    label: "Headlines",
-    description: "Attention-grabbing headlines",
-    icon: Type,
-    prompt: "Generate 5 different headline variations for this content. Each should take a different angle - urgency, curiosity, benefit-focused, emotional, or direct. Format as a numbered list.",
-  },
-  {
-    id: "hook",
-    label: "Hooks",
-    description: "Opening hooks for videos/posts",
-    icon: Sparkles,
-    prompt: "Generate 5 different hook variations to open a video or social post about this content. Each should grab attention in the first 3 seconds. Format as a numbered list.",
-  },
-  {
-    id: "audience",
-    label: "Audience Angles",
-    description: "Different target audience approaches",
-    icon: Target,
-    prompt: "Generate 5 different messaging angles targeting different audiences: first-time buyers, investors, downsizers, upsizers, and relocators. Format as a numbered list with the audience type.",
-  },
-  {
-    id: "cta",
-    label: "CTAs",
-    description: "Call-to-action variations",
-    icon: MousePointer,
-    prompt: "Generate 5 different call-to-action variations. Include soft CTAs, urgency CTAs, curiosity CTAs, value CTAs, and direct CTAs. Format as a numbered list.",
-  },
-]
+  headline: string
+  body: string
+  cta: string
+  copied: boolean
+}
 
-export function CreativeVariationsPanel({ agentId, listingId }: CreativeVariationsPanelProps) {
-  const [sourceContent, setSourceContent] = useState("")
-  const [activeTab, setActiveTab] = useState<VariationType>("headline")
-  const [variations, setVariations] = useState<Record<VariationType, Variation[]>>({
-    headline: [],
-    hook: [],
-    audience: [],
-    cta: [],
-  })
+export function CreativeVariationsPanel({ agentId }: Props) {
+  const [headline, setHeadline] = useState("")
+  const [notes, setNotes] = useState("")
   const [isGenerating, setIsGenerating] = useState(false)
-  const [generatingType, setGeneratingType] = useState<VariationType | null>(null)
+  const [variations, setVariations] = useState<Variation[]>([])
+  const [error, setError] = useState<string | null>(null)
 
-  async function generateVariations(type: VariationType) {
-    if (!sourceContent.trim()) return
-
-    const typeConfig = VARIATION_TYPES.find((t) => t.id === type)
-    if (!typeConfig) return
-
+  async function handleGenerate() {
+    if (!headline.trim() || !agentId) return
     setIsGenerating(true)
-    setGeneratingType(type)
+    setVariations([])
+    setError(null)
 
     try {
-      const result = await generateText({
-        agent_id: agentId,
-        content_type: "ad_creative",
-        channel_intent: "social",
-        listing_id: listingId,
-        custom_prompt: `${typeConfig.prompt}\n\nSource content:\n${sourceContent}`,
-        tone: "professional",
-        length: "medium",
-      })
+      const brandVoice = await getBrandVoiceProfile(agentId)
+      const tone = (brandVoice as any)?.tone ?? "professional yet approachable"
+      const style = (brandVoice as any)?.style ?? "conversational"
 
-      if (result.success && result.content?.text) {
-        // Parse the numbered list into individual variations
-        const lines = result.content.text
-          .split("\n")
-          .filter((line) => line.trim())
-          .map((line) => line.replace(/^\d+\.\s*/, "").trim())
-          .filter((line) => line.length > 0)
+      const prompt = `Generate 3 distinct ad copy variations for a real estate listing.
 
-        const newVariations: Variation[] = lines.map((text, i) => ({
-          id: `${type}-${i}`,
-          text,
-          type,
-        }))
+HEADLINE IDEA: ${headline.trim()}
+${notes.trim() ? `ADDITIONAL NOTES: ${notes.trim()}` : ""}
+BRAND TONE: ${tone}
+BRAND STYLE: ${style}
 
-        setVariations((prev) => ({
-          ...prev,
-          [type]: newVariations,
-        }))
+For each variation, try a different angle: emotional, data-driven, and lifestyle-focused.
+
+Return ONLY valid JSON:
+[
+  {"label":"Emotional","headline":"...","body":"...","cta":"..."},
+  {"label":"Data-Driven","headline":"...","body":"...","cta":"..."},
+  {"label":"Lifestyle","headline":"...","body":"...","cta":"..."}
+]`
+
+      const res = await generateMarketingInsight(prompt)
+      if (!res.success || !res.text) {
+        setError(res.error ?? "Generation failed")
+        return
       }
-    } catch (error) {
-      console.error("Failed to generate variations:", error)
+
+      const jsonMatch = res.text.match(/\[[\s\S]*\]/)
+      if (!jsonMatch) {
+        setError("Failed to parse AI response")
+        return
+      }
+
+      const parsed: Array<{ label: string; headline: string; body: string; cta: string }> =
+        JSON.parse(jsonMatch[0])
+      setVariations(parsed.map((v) => ({ ...v, copied: false })))
+    } catch {
+      setError("Unexpected error — please try again")
     } finally {
       setIsGenerating(false)
-      setGeneratingType(null)
     }
   }
 
-  function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text)
+  function handleCopy(idx: number) {
+    const v = variations[idx]
+    navigator.clipboard.writeText(`${v.headline}\n\n${v.body}\n\n${v.cta}`)
+    setVariations((prev) => prev.map((x, i) => (i === idx ? { ...x, copied: true } : x)))
+    setTimeout(
+      () => setVariations((prev) => prev.map((x, i) => (i === idx ? { ...x, copied: false } : x))),
+      2000
+    )
   }
 
-  const currentVariations = variations[activeTab]
-  const activeTypeConfig = VARIATION_TYPES.find((t) => t.id === activeTab)
-
   return (
-    <Card>
+    <Card className="border-2">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Layers className="h-5 w-5 text-violet-600" />
+          <Sparkles className="h-5 w-5 text-violet-600" />
           Creative Variations
         </CardTitle>
         <CardDescription>
-          Generate multiple variations for A/B testing
+          Generate 3 distinct ad copy angles in your brand voice.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Source Content */}
-        <div className="space-y-2">
-          <Label>Source Content or Topic</Label>
-          <Textarea
-            value={sourceContent}
-            onChange={(e) => setSourceContent(e.target.value)}
-            placeholder="Enter your listing details, campaign topic, or base content..."
-            className="min-h-[80px]"
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Core Headline / Theme</Label>
+          <Input
+            placeholder="e.g. Stunning 4BR with rooftop views in Nashville"
+            value={headline}
+            onChange={(e) => setHeadline(e.target.value)}
+            className="h-8 text-sm"
           />
         </div>
 
-        {/* Variation Type Tabs */}
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as VariationType)}>
-          <TabsList className="grid w-full grid-cols-4">
-            {VARIATION_TYPES.map((type) => {
-              const Icon = type.icon
-              const hasVariations = variations[type.id].length > 0
-              return (
-                <TabsTrigger key={type.id} value={type.id} className="relative">
-                  <Icon className="h-4 w-4 mr-1" />
-                  <span className="hidden sm:inline">{type.label}</span>
-                  {hasVariations && (
-                    <Badge
-                      variant="secondary"
-                      className="absolute -top-1 -right-1 h-4 w-4 p-0 text-[10px] flex items-center justify-center"
-                    >
-                      {variations[type.id].length}
-                    </Badge>
-                  )}
-                </TabsTrigger>
-              )
-            })}
-          </TabsList>
+        <div className="space-y-1.5">
+          <Label className="text-xs font-medium">Additional Context (optional)</Label>
+          <Textarea
+            placeholder="Price point, target buyer, key features..."
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            className="min-h-[60px] text-sm resize-none"
+          />
+        </div>
 
-          {VARIATION_TYPES.map((type) => (
-            <TabsContent key={type.id} value={type.id} className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-sm">{type.label}</p>
-                  <p className="text-xs text-muted-foreground">{type.description}</p>
+        <Button
+          onClick={handleGenerate}
+          disabled={isGenerating || !headline.trim() || !agentId}
+          className="w-full bg-violet-600 hover:bg-violet-700"
+        >
+          {isGenerating ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Generating...
+            </>
+          ) : (
+            <>
+              <Sparkles className="mr-2 h-4 w-4" />
+              Generate 3 Variations
+            </>
+          )}
+        </Button>
+
+        {error && (
+          <p className="text-sm text-red-600 bg-red-50 rounded-md p-2">{error}</p>
+        )}
+
+        {variations.length > 0 && (
+          <div className="border-t pt-4 space-y-3">
+            {variations.map((v, idx) => (
+              <div key={v.label} className="rounded-lg border p-3 bg-muted/20 space-y-2">
+                <div className="flex items-center justify-between">
+                  <Badge variant="outline" className="text-xs">
+                    {v.label}
+                  </Badge>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => handleCopy(idx)}
+                  >
+                    {v.copied ? (
+                      <>
+                        <CheckCheck className="mr-1 h-3 w-3 text-green-600" />
+                        Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="mr-1 h-3 w-3" />
+                        Copy
+                      </>
+                    )}
+                  </Button>
                 </div>
-                <Button
-                  size="sm"
-                  onClick={() => generateVariations(type.id)}
-                  disabled={isGenerating || !sourceContent.trim()}
-                  className="bg-violet-600 hover:bg-violet-700"
-                >
-                  {isGenerating && generatingType === type.id ? (
-                    <>
-                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                      Generating...
-                    </>
-                  ) : variations[type.id].length > 0 ? (
-                    <>
-                      <RefreshCw className="h-3 w-3 mr-1" />
-                      Regenerate
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="h-3 w-3 mr-1" />
-                      Generate
-                    </>
-                  )}
-                </Button>
+                <p className="text-sm font-semibold leading-snug">{v.headline}</p>
+                <p className="text-xs text-muted-foreground leading-relaxed">{v.body}</p>
+                <p className="text-xs font-medium text-violet-700">{v.cta}</p>
               </div>
-
-              {/* Variations List */}
-              {variations[type.id].length > 0 ? (
-                <ScrollArea className="h-[200px]">
-                  <div className="space-y-2">
-                    {variations[type.id].map((variation, index) => (
-                      <div
-                        key={variation.id}
-                        className="p-3 rounded-lg border bg-muted/30 hover:bg-muted/50 transition-colors group"
-                      >
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1">
-                            <Badge variant="outline" className="mb-2 text-xs">
-                              Variation {index + 1}
-                            </Badge>
-                            <p className="text-sm">{variation.text}</p>
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => copyToClipboard(variation.text)}
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              ) : (
-                <div className="text-center py-8 text-muted-foreground border-2 border-dashed rounded-lg">
-                  <activeTypeConfig.icon className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">
-                    {sourceContent.trim()
-                      ? `Click Generate to create ${type.label.toLowerCase()}`
-                      : "Enter source content above to generate variations"}
-                  </p>
-                </div>
-              )}
-            </TabsContent>
-          ))}
-        </Tabs>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   )

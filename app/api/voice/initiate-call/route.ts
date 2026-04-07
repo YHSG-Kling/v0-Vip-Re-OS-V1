@@ -13,6 +13,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { buildCallContext } from "@/lib/ai-isa/build-call-context"
 import type { KernelContact } from "@/lib/kernel/types"
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -29,9 +30,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   let body: {
     phoneNumber: string
     contactId?: string
+    leadId?: string
     scriptId?: string
     agentId: string
     brokerageId: string
+    callPurpose?: 'isa_qualification' | 'isa_followup' | 'ghost_recovery' | 'appointment_confirm' | 'post_close'
   }
 
   try {
@@ -40,7 +43,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
 
-  const { phoneNumber, contactId, scriptId, agentId, brokerageId } = body
+  const { phoneNumber, leadId, scriptId, agentId, brokerageId, callPurpose = 'isa_qualification' } = body
+  // contactId may be provided directly OR resolved from the lead record below
+  let contactId = body.contactId ?? null
 
   if (!phoneNumber || !agentId || !brokerageId) {
     return NextResponse.json({ error: "phoneNumber, agentId, and brokerageId are required" }, { status: 400 })
@@ -48,7 +53,28 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const supabase = createServiceClient()
 
-  // ── 1. Optional compliance check when contactId is provided ───────────────
+  // ── 0. Resolve contactId only when the lead already has a linked contact ──
+  // Architecture rules:
+  //   - contactId provided directly → call operates from contact
+  //   - leadId provided + lead has contact_id → resolve and operate from contact
+  //   - leadId provided + lead has NO contact_id → call operates from lead directly;
+  //     do NOT create a contact — conversion only happens on positive call outcome
+  let resolvedLeadId: string | null = leadId ?? null
+  if (!contactId && leadId) {
+    const { data: leadRow } = await supabase
+      .from("leads")
+      .select("contact_id")
+      .eq("id", leadId)
+      .maybeSingle()
+    if (leadRow?.contact_id) {
+      // Lead already has a contact — operate from the contact
+      contactId = leadRow.contact_id
+      resolvedLeadId = null // contact takes precedence; no need to track lead separately
+    }
+    // If leadRow?.contact_id is null — leave contactId as null, call from lead
+  }
+
+  // ── 1. Optional compliance check when contactId is available ──────────────
   if (contactId) {
     const { data: contact } = await supabase
       .from("contacts")
@@ -96,40 +122,81 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // ── 2. Fetch assistant_wake_name for the agent ─────────────────────────────
-  const { data: agentUser } = await supabase
-    .from("users")
-    .select("assistant_wake_name")
-    .eq("id", agentId)
+  // ── 2. Build brokerage-branded call context via buildCallContext() ───────────
+  // This returns the assistant name, system prompt, and first message derived
+  // from ai_identity_profiles (brokerage → team → agent hierarchy).
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id, user_id")
+    .eq("user_id", agentId)
     .maybeSingle()
 
-  const wakeName = agentUser?.assistant_wake_name ?? "VIP"
+  const callCtx = await buildCallContext({
+    brokerageId,
+    agentId: agentRow?.id ?? null,
+    contactId: contactId ?? null,
+    leadId: leadId ?? null,
+    callPurpose,
+  })
+
+  if (callCtx.blocked) {
+    return NextResponse.json(
+      { blocked: true, reason: callCtx.blockReason ?? "blocked" },
+      { status: 403 }
+    )
+  }
 
   // ── 3. POST to VAPI API ────────────────────────────────────────────────────
   const vapiKey = process.env.VAPI_API_KEY
   const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID
 
   if (!vapiKey || !phoneNumberId) {
-    return NextResponse.json({ error: "VAPI environment variables not configured" }, { status: 500 })
+    return NextResponse.json(
+      {
+        error: "VAPI not configured",
+        vapiNotConfigured: true,
+        ctaMessage: "Configure VAPI to enable AI calling",
+        ctaLink: "/admin/integrations",
+      },
+      { status: 503 }
+    )
   }
 
   let vapiResponse: { id: string; status: string; createdAt?: string }
   try {
+    const vapiBody: Record<string, unknown> = {
+      phoneNumberId,
+      customer: { number: phoneNumber },
+      assistant: {
+        firstMessage: callCtx.firstMessage,
+        transcriber: { provider: "deepgram" },
+        model: {
+          provider: "anthropic",
+          model: "claude-haiku-4-5",
+          systemPrompt: callCtx.systemPrompt,
+          temperature: callCtx.temperature,
+        },
+        // Voice config from identity profile when set
+        ...(callCtx.voiceConfig
+          ? {
+              voice: {
+                provider: callCtx.voiceConfig.provider,
+                voiceId: callCtx.voiceConfig.voiceId,
+                stability: callCtx.voiceConfig.stability,
+                similarityBoost: callCtx.voiceConfig.similarityBoost,
+              },
+            }
+          : {}),
+      },
+    }
+
     const vapiRes = await fetch("https://api.vapi.ai/call", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${vapiKey}`,
       },
-      body: JSON.stringify({
-        phoneNumberId,
-        customer: { number: phoneNumber },
-        assistant: {
-          firstMessage: `Hi, this is ${wakeName} calling on behalf of your agent. How can I help you today?`,
-          transcriber: { provider: "deepgram" },
-          model: { provider: "anthropic", model: "claude-haiku-4-5" },
-        },
-      }),
+      body: JSON.stringify(vapiBody),
     })
 
     if (!vapiRes.ok) {
@@ -138,21 +205,48 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     vapiResponse = await vapiRes.json()
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: "Failed to reach VAPI" }, { status: 502 })
   }
 
-  // ── 4. INSERT voice_calls ──────────────────────────────────────────────────
-  await supabase.from("voice_calls").insert({
+  // ── 4. INSERT voice_calls ─────────────────────────────────────────���────────
+  // contact_id and lead_id are mutually exclusive per call origin:
+  //   contact_id set → call from a contact record
+  //   lead_id set    → call from a lead with no contact yet
+  const { data: voiceCallRow, error: vcInsertError } = await supabase
+    .from("voice_calls")
+    .insert({
+      brokerage_id: brokerageId,
+      agent_id: agentId,
+      contact_id: contactId ?? null,
+      lead_id: resolvedLeadId ?? null,
+      direction: "outbound",
+      status: "initiated",
+      call_type: "isa_ai",
+      phone_to: phoneNumber,
+      vapi_call_id: vapiResponse.id,
+    })
+    .select("id")
+    .single()
+
+  if (vcInsertError) {
+    console.error("[initiate-call] voice_calls insert error:", vcInsertError.message)
+  }
+
+  // ── 5. INSERT ai_isa_calls row — schema: brokerage_id, contact_id, lead_id, voice_call_id, script_used, appointment_set
+  const { error: isaInsertError } = await supabase.from("ai_isa_calls").insert({
     brokerage_id: brokerageId,
-    agent_id: agentId,
     contact_id: contactId ?? null,
-    direction: "outbound",
-    status: "initiated",
-    call_type: "agent_call",
-    phone_to: phoneNumber,
-    vapi_call_id: vapiResponse.id,
+    lead_id: resolvedLeadId ?? null,
+    voice_call_id: voiceCallRow?.id ?? null,
+    script_used: callPurpose,
+    appointment_set: false,
   })
+
+  if (isaInsertError) {
+    // Non-fatal: the VAPI call is already live; log but do not abort
+    console.error("[initiate-call] ai_isa_calls insert error:", isaInsertError.message)
+  }
 
   return NextResponse.json({ callId: vapiResponse.id, status: "initiated" }, { status: 200 })
 }

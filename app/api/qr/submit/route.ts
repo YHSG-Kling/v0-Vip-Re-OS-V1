@@ -23,13 +23,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const body = (await req.json()) as QRSubmitBody
     const { slug, qrCodeId, first_name, last_name, email, phone, tcpa_checked } = body
 
-    // ── Step 1: TCPA gate — hard stop ────────────────────────────────────────
-    if (!tcpa_checked) {
-      return NextResponse.json(
-        { success: false, error: 'TCPA consent required' },
-        { status: 400 },
-      )
-    }
+    // ── Step 1: TCPA channel check — do not block lead creation ─────────────
+    // Per TCPA corrected rule: create contact regardless of consent.
+    // Suppress phone/SMS when tcpa_checked is false.
+    const consentGiven = tcpa_checked === true
 
     if (!slug || !qrCodeId) {
       return NextResponse.json(
@@ -64,9 +61,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       first_name: first_name || null,
       last_name: last_name || null,
       email: email || null,
-      phone: phone || null,
-      tcpa_consent: true,
-      tcpa_consent_date: now,
+      // Only store phone when TCPA consent given; omit to prevent calling
+      phone: consentGiven ? (phone || null) : null,
+      preferred_channel: consentGiven ? 'phone' : 'email',
+      tcpa_consent: consentGiven,
+      tcpa_consent_date: consentGiven ? now : null,
       rawPayload: { slug, qrCodeId, first_name, last_name, email, phone },
     })
 

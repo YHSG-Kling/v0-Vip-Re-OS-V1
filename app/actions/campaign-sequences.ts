@@ -95,7 +95,7 @@ export async function getCampaignSequence(sequenceId: string): Promise<{
 }> {
   const service = createServiceClient()
   const [seqRes, stepsRes, enrollRes] = await Promise.all([
-    service.from("campaign_sequences").select("*").eq("id", sequenceId).single(),
+    service.from("campaign_sequences").select("*").eq("id", sequenceId).maybeSingle(),
     service
       .from("campaign_sequence_steps")
       .select("*")
@@ -153,7 +153,7 @@ export async function createCampaignSequence(params: {
       created_by: user.id,
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) return { sequence: null, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
@@ -225,7 +225,7 @@ export async function createSequenceStep(params: {
       reply_count: 0,
     })
     .select()
-    .single()
+    .maybeSingle()
 
   if (error) return { step: null, error: error.message }
   revalidatePath(`/dashboard/campaigns/sequences/${params.sequence_id}`)
@@ -280,4 +280,261 @@ export async function reorderSequenceSteps(
   if (failed?.error) return { success: false, error: failed.error.message }
   revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
   return { success: true }
+}
+
+// ─── Campaign Operations ──────────────────────────────────────────────────────
+
+export async function launchCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  const service = createServiceClient()
+  
+  // Check if sequence has at least one step
+  const { data: steps } = await service
+    .from("campaign_sequence_steps")
+    .select("id")
+    .eq("sequence_id", sequenceId)
+    .limit(1)
+  
+  if (!steps || steps.length === 0) {
+    return { success: false, error: "Cannot launch sequence without steps" }
+  }
+  
+  const { error } = await service
+    .from("campaign_sequences")
+    .update({ 
+      is_active: true, 
+      updated_at: new Date().toISOString() 
+    })
+    .eq("id", sequenceId)
+
+  if (error) return { success: false, error: error.message }
+  revalidatePath("/dashboard/campaigns/sequences")
+  revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
+  return { success: true }
+}
+
+export async function pauseCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  const service = createServiceClient()
+  const { error } = await service
+    .from("campaign_sequences")
+    .update({ 
+      is_active: false, 
+      updated_at: new Date().toISOString() 
+    })
+    .eq("id", sequenceId)
+
+  if (error) return { success: false, error: error.message }
+  revalidatePath("/dashboard/campaigns/sequences")
+  revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
+  return { success: true }
+}
+
+export async function resumeCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  return launchCampaignSequence(sequenceId)
+}
+
+export async function duplicateCampaignSequence(sequenceId: string, brokerageId: string): Promise<{ 
+  sequence: CampaignSequence | null
+  error?: string 
+}> {
+  const service = createServiceClient()
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { sequence: null, error: "Not authenticated" }
+  
+  // Get original sequence
+  const { data: original, error: fetchError } = await service
+    .from("campaign_sequences")
+    .select("*")
+    .eq("id", sequenceId)
+    .maybeSingle()
+  
+  if (fetchError || !original) return { sequence: null, error: "Sequence not found" }
+  
+  // Create duplicate
+  const { data: duplicate, error: createError } = await service
+    .from("campaign_sequences")
+    .insert({
+      brokerage_id: brokerageId,
+      name: `${original.name} (Copy)`,
+      description: original.description,
+      sequence_type: original.sequence_type,
+      trigger_event: original.trigger_event,
+      trigger_conditions: original.trigger_conditions,
+      is_active: false,
+      is_ab_test: original.is_ab_test,
+      ab_test_split_pct: original.ab_test_split_pct,
+      compliance_gated: true,
+      enrollments_total: 0,
+      completions_total: 0,
+      conversions_total: 0,
+      created_by: user.id,
+    })
+    .select()
+    .maybeSingle()
+  
+  if (createError) return { sequence: null, error: createError.message }
+  
+  // Duplicate steps
+  const { data: originalSteps } = await service
+    .from("campaign_sequence_steps")
+    .select("*")
+    .eq("sequence_id", sequenceId)
+    .order("step_number", { ascending: true })
+  
+  if (originalSteps && originalSteps.length > 0) {
+    const stepsToInsert = originalSteps.map(step => ({
+      sequence_id: duplicate.id,
+      step_number: step.step_number,
+      step_name: step.step_name,
+      channel: step.channel,
+      delay_days: step.delay_days,
+      delay_hours: step.delay_hours,
+      subject: step.subject,
+      body: step.body,
+      send_time: step.send_time,
+      is_active: step.is_active,
+      ab_variant: step.ab_variant,
+      condition_field: step.condition_field,
+      condition_operator: step.condition_operator,
+      condition_value: step.condition_value,
+      video_template_id: step.video_template_id,
+      direct_mail_template_id: step.direct_mail_template_id,
+      personalization_tokens: step.personalization_tokens,
+      sent_count: 0,
+      open_count: 0,
+      click_count: 0,
+      reply_count: 0,
+    }))
+    
+    await service.from("campaign_sequence_steps").insert(stepsToInsert)
+  }
+  
+  revalidatePath("/dashboard/campaigns/sequences")
+  return { sequence: duplicate as CampaignSequence }
+}
+
+export async function archiveCampaignSequence(sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  const service = createServiceClient()
+  
+  // First pause the sequence
+  await service
+    .from("campaign_sequences")
+    .update({ is_active: false })
+    .eq("id", sequenceId)
+  
+  // Update any active enrollments to "cancelled"
+  await service
+    .from("sequence_enrollments")
+    .update({ status: "cancelled" })
+    .eq("sequence_id", sequenceId)
+    .eq("status", "active")
+  
+  // Soft delete by adding archived flag (or we could hard delete)
+  const { error } = await service
+    .from("campaign_sequences")
+    .delete()
+    .eq("id", sequenceId)
+
+  if (error) return { success: false, error: error.message }
+  revalidatePath("/dashboard/campaigns/sequences")
+  return { success: true }
+}
+
+// ─── Enrollment Operations ────────────────────────────────────────────────────
+
+export async function enrollContactInSequence(params: {
+  sequenceId: string
+  contactId?: string
+  leadId?: string
+}): Promise<{ enrollment: SequenceEnrollment | null; error?: string }> {
+  if (!params.contactId && !params.leadId) {
+    return { enrollment: null, error: "Must provide contact or lead ID" }
+  }
+  
+  const service = createServiceClient()
+  const { data, error } = await service
+    .from("sequence_enrollments")
+    .insert({
+      sequence_id: params.sequenceId,
+      contact_id: params.contactId ?? null,
+      lead_id: params.leadId ?? null,
+      status: "active",
+      current_step: 1,
+      enrolled_at: new Date().toISOString(),
+    })
+    .select()
+    .maybeSingle()
+
+  if (error) return { enrollment: null, error: error.message }
+  
+  // Increment enrollment count
+  await service.rpc("increment_sequence_enrollments", { seq_id: params.sequenceId })
+  
+  revalidatePath(`/dashboard/campaigns/sequences/${params.sequenceId}`)
+  return { enrollment: data as SequenceEnrollment }
+}
+
+export async function cancelEnrollment(enrollmentId: string, sequenceId: string): Promise<{ success: boolean; error?: string }> {
+  const service = createServiceClient()
+  const { error } = await service
+    .from("sequence_enrollments")
+    .update({ status: "cancelled" })
+    .eq("id", enrollmentId)
+
+  if (error) return { success: false, error: error.message }
+  revalidatePath(`/dashboard/campaigns/sequences/${sequenceId}`)
+  return { success: true }
+}
+
+// ─── Batch Operations ─────────────────────────────────────────────────────────
+
+export async function batchPauseSequences(sequenceIds: string[]): Promise<{ success: boolean; count: number; error?: string }> {
+  const service = createServiceClient()
+  const { error } = await service
+    .from("campaign_sequences")
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .in("id", sequenceIds)
+
+  if (error) return { success: false, count: 0, error: error.message }
+  revalidatePath("/dashboard/campaigns/sequences")
+  return { success: true, count: sequenceIds.length }
+}
+
+export async function batchLaunchSequences(sequenceIds: string[]): Promise<{ success: boolean; count: number; error?: string }> {
+  const service = createServiceClient()
+  const { error } = await service
+    .from("campaign_sequences")
+    .update({ is_active: true, updated_at: new Date().toISOString() })
+    .in("id", sequenceIds)
+
+  if (error) return { success: false, count: 0, error: error.message }
+  revalidatePath("/dashboard/campaigns/sequences")
+  return { success: true, count: sequenceIds.length }
+}
+
+export async function batchArchiveSequences(sequenceIds: string[]): Promise<{ success: boolean; count: number; error?: string }> {
+  const service = createServiceClient()
+  
+  // Pause all first
+  await service
+    .from("campaign_sequences")
+    .update({ is_active: false })
+    .in("id", sequenceIds)
+  
+  // Cancel active enrollments
+  await service
+    .from("sequence_enrollments")
+    .update({ status: "cancelled" })
+    .in("sequence_id", sequenceIds)
+    .eq("status", "active")
+  
+  // Delete sequences
+  const { error } = await service
+    .from("campaign_sequences")
+    .delete()
+    .in("id", sequenceIds)
+
+  if (error) return { success: false, count: 0, error: error.message }
+  revalidatePath("/dashboard/campaigns/sequences")
+  return { success: true, count: sequenceIds.length }
 }

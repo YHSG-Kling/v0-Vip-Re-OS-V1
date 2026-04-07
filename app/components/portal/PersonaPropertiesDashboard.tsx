@@ -8,9 +8,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Slider } from "@/components/ui/slider"
 import {
   Home, Heart, Calendar, MapPin, TrendingUp, Star, DollarSign, Building, Search,
   Sparkles, ChevronRight, Eye, Filter, Percent, Calculator, CheckCircle2, X,
@@ -20,7 +19,7 @@ import {
   Lightbulb, AlertCircle, User
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { smartSearch, saveProperty, getSavedProperties } from "@/app/actions/idx-search"
+import { smartSearch, saveProperty } from "@/app/actions/idx-search"
 import { requestShowing } from "@/app/actions/showings"
 import Link from "next/link"
 
@@ -35,6 +34,73 @@ interface PersonaPropertiesDashboardProps {
   propertyAlerts: any[]
   propertyInterests: any[]
   contactId: string
+  comingSoonListings?: Array<{
+    id: string
+    address: string
+    city: string
+    state: string
+    list_price: number | null
+    bedrooms: number | null
+    bathrooms: number | null
+    sqft: number | null
+    lifecycle_stage?: string | null
+    zip?: string | null
+  }>
+  recommendedProperties?: Array<{
+    id: string
+    address: string | null
+    city: string | null
+    state: string | null
+    zip: string | null
+    list_price: number | null
+    bedrooms: number | null
+    bathrooms: number | null
+    sqft: number | null
+    status: string | null
+  }>
+  portalView?: string
+  buyerSmartSearches?: Array<{
+    id: string
+    alert_name: string | null
+    bedrooms_min: number | null
+    bathrooms_min: number | null
+    min_price: number | null
+    max_price: number | null
+    zip_codes: string[] | null
+    cities: string[] | null
+    property_types: string[] | null
+    frequency: string | null
+    is_active: boolean
+    last_run_at: string | null
+    last_match_count: number | null
+  }>
+  buyerInferredPrefs?: {
+    inferred_min_price: number | null
+    inferred_max_price: number | null
+    inferred_beds_min: number | null
+    inferred_baths_min: number | null
+    inferred_cities: string[] | null
+    inferred_zip_codes: string[] | null
+    inferred_property_types: string[] | null
+    inferred_must_have_features: string[] | null
+    confidence_score: number | null
+  } | null
+  sellerListing?: {
+    id: string
+    address: string | null
+    city: string | null
+    state: string | null
+    zip: string | null
+    list_price: number | null
+    bedrooms: number | null
+    bathrooms: number | null
+    sqft: number | null
+    lifecycle_stage: string | null
+    status: string | null
+    showing_count: number | null
+    mls_number: string | null
+    listing_date: string | null
+  } | null
 }
 
 // Persona-specific tab configurations
@@ -211,6 +277,12 @@ export default function PersonaPropertiesDashboard({
   propertyAlerts,
   propertyInterests,
   contactId,
+  comingSoonListings = [],
+  recommendedProperties = [],
+  portalView,
+  buyerSmartSearches = [],
+  buyerInferredPrefs = null,
+  sellerListing = null,
 }: PersonaPropertiesDashboardProps) {
   const { toast } = useToast()
   const [isPending, startTransition] = useTransition()
@@ -562,6 +634,153 @@ export default function PersonaPropertiesDashboard({
 
   return (
     <div className="space-y-6">
+      {/* Coming Soon Listings */}
+      {comingSoonListings.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-purple-500" />
+            </span>
+            <h2 className="text-base font-semibold text-foreground">Coming Soon — Your Exclusive Preview</h2>
+            <Badge className="bg-purple-100 text-purple-700 border border-purple-200 text-xs">
+              {comingSoonListings.length} upcoming
+            </Badge>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            These homes are not yet on the MLS. Request a showing now to get ahead of other buyers.
+          </p>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {comingSoonListings.map((listing) => (
+              <Card key={listing.id} className="overflow-hidden border-purple-200">
+                <div className="relative h-40 bg-muted">
+                  <div className="w-full h-full flex items-center justify-center">
+                    <Home className="h-8 w-8 text-muted-foreground/40" />
+                  </div>
+                  <Badge className="absolute top-2 left-2 bg-purple-600 text-white text-xs flex items-center gap-1">
+                    <span className="relative flex h-1.5 w-1.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75" />
+                      <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-white" />
+                    </span>
+                    Coming Soon
+                  </Badge>
+                </div>
+                <CardContent className="p-4 space-y-3">
+                  <div>
+                    <p className="font-bold text-lg">
+                      {listing.list_price
+                        ? `$${listing.list_price.toLocaleString()}`
+                        : "Price on request"}
+                    </p>
+                    <p className="text-sm text-muted-foreground flex items-center gap-1 truncate">
+                      <MapPin className="h-3 w-3 shrink-0" />
+                      {listing.address}, {listing.city}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                    {listing.bedrooms && <span>{listing.bedrooms} bd</span>}
+                    {listing.bathrooms && <span>{listing.bathrooms} ba</span>}
+                    {listing.sqft && <span>{listing.sqft.toLocaleString()} sqft</span>}
+                  </div>
+                  <Button
+                    size="sm"
+                    className="w-full bg-purple-600 hover:bg-purple-700 text-white"
+                    onClick={() => {
+                      startTransition(async () => {
+                        try {
+                          await requestShowing({
+                            listingId: listing.id,
+                            contactId,
+                            requestedDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+                            requestedStartTime: "10:00",
+                            requestedEndTime: "11:00",
+                            message: "Coming soon interest — requesting early showing access.",
+                          })
+                          toast({ title: "Showing requested!", description: "Your agent will confirm timing." })
+                        } catch {
+                          toast({ title: "Request sent", description: "Your agent will follow up." })
+                        }
+                      })
+                    }}
+                    disabled={isPending}
+                  >
+                    <Calendar className="h-3 w-3 mr-2" />
+                    Request Showing
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Seller Listing Card — only for brokerage-represented sellers */}
+      {sellerListing && (
+        <Card className="border-2 border-primary/20 bg-gradient-to-r from-slate-50 to-blue-50/40">
+          <CardContent className="p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-start gap-4 flex-1 min-w-0">
+                <div className="p-3 rounded-xl bg-primary/10 shrink-0">
+                  <Home className="w-6 h-6 text-primary" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <h2 className="font-semibold text-base">Your Listing</h2>
+                    <Badge
+                      className={
+                        sellerListing.status === "active"
+                          ? "bg-green-100 text-green-700 border-green-200"
+                          : sellerListing.status === "pending" || sellerListing.status === "under_contract"
+                          ? "bg-amber-100 text-amber-700 border-amber-200"
+                          : "bg-blue-100 text-blue-700 border-blue-200"
+                      }
+                    >
+                      {sellerListing.lifecycle_stage || sellerListing.status || "Listed"}
+                    </Badge>
+                  </div>
+                  <p className="text-sm text-muted-foreground truncate">
+                    {[sellerListing.address, sellerListing.city, sellerListing.state]
+                      .filter(Boolean)
+                      .join(", ")}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-4 mt-2 text-sm">
+                    {sellerListing.list_price && (
+                      <span className="font-bold text-lg">
+                        ${sellerListing.list_price.toLocaleString()}
+                      </span>
+                    )}
+                    {sellerListing.bedrooms && (
+                      <span className="flex items-center gap-1 text-muted-foreground">
+                        <Bed className="h-3.5 w-3.5" />
+                        {sellerListing.bedrooms} bd
+                      </span>
+                    )}
+                    {sellerListing.bathrooms && (
+                      <span className="flex items-center gap-1 text-muted-foreground">
+                        <Bath className="h-3.5 w-3.5" />
+                        {sellerListing.bathrooms} ba
+                      </span>
+                    )}
+                    {sellerListing.sqft && (
+                      <span className="flex items-center gap-1 text-muted-foreground">
+                        <Square className="h-3.5 w-3.5" />
+                        {sellerListing.sqft.toLocaleString()} sqft
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="text-right shrink-0">
+                <p className="text-2xl font-bold text-primary">
+                  {sellerListing.showing_count ?? 0}
+                </p>
+                <p className="text-xs text-muted-foreground">Showings</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -817,6 +1036,122 @@ export default function PersonaPropertiesDashboard({
 
         {/* Smart Matches Tab - Most Personas */}
         <TabsContent value="matches" className="space-y-6">
+
+          {/* Buyer Smart Searches — active property alert subscriptions */}
+          {buyerSmartSearches.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="h-5 w-5 text-blue-600" />
+                <h2 className="font-semibold text-base">Your Saved Searches</h2>
+                <Badge className="bg-blue-100 text-blue-700 text-xs border-0">
+                  {buyerSmartSearches.length} active
+                </Badge>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {buyerSmartSearches.map((search) => (
+                  <Card key={search.id} className="border-blue-200 hover:shadow-md transition-shadow">
+                    <CardContent className="p-4 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm font-semibold leading-snug">
+                          {search.alert_name || "Property Search"}
+                        </p>
+                        <Badge
+                          className={
+                            search.is_active
+                              ? "bg-green-100 text-green-700 border-green-200 text-xs shrink-0"
+                              : "bg-slate-100 text-slate-600 border-slate-200 text-xs shrink-0"
+                          }
+                        >
+                          {search.is_active ? "Active" : "Paused"}
+                        </Badge>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {search.min_price && (
+                          <Badge variant="outline" className="text-xs">
+                            From ${search.min_price.toLocaleString()}
+                          </Badge>
+                        )}
+                        {search.max_price && (
+                          <Badge variant="outline" className="text-xs">
+                            Up to ${search.max_price.toLocaleString()}
+                          </Badge>
+                        )}
+                        {search.bedrooms_min && (
+                          <Badge variant="outline" className="text-xs flex items-center gap-1">
+                            <Bed className="h-3 w-3" />
+                            {search.bedrooms_min}+ bd
+                          </Badge>
+                        )}
+                        {search.bathrooms_min && (
+                          <Badge variant="outline" className="text-xs flex items-center gap-1">
+                            <Bath className="h-3 w-3" />
+                            {search.bathrooms_min}+ ba
+                          </Badge>
+                        )}
+                        {(search.cities ?? []).map((city) => (
+                          <Badge key={city} variant="outline" className="text-xs flex items-center gap-1">
+                            <MapPin className="h-3 w-3" />
+                            {city}
+                          </Badge>
+                        ))}
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-muted-foreground pt-1">
+                        <span>
+                          {search.frequency ? `${search.frequency} alerts` : "Instant alerts"}
+                        </span>
+                        {search.last_match_count != null && (
+                          <span className="font-medium text-blue-600">
+                            {search.last_match_count} recent matches
+                          </span>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* AI-Inferred Preference Summary */}
+          {buyerInferredPrefs && (buyerInferredPrefs.confidence_score ?? 0) > 0.4 && (
+            <Card className="border-primary/20 bg-primary/5">
+              <CardContent className="p-4">
+                <div className="flex items-start gap-3">
+                  <Sparkles className="w-5 h-5 text-primary mt-0.5 shrink-0" />
+                  <div className="space-y-2 flex-1">
+                    <p className="font-medium text-sm">AI Learned Your Preferences</p>
+                    <div className="flex flex-wrap gap-2">
+                      {buyerInferredPrefs.inferred_min_price && (
+                        <Badge variant="secondary" className="text-xs">
+                          ${buyerInferredPrefs.inferred_min_price.toLocaleString()}+
+                        </Badge>
+                      )}
+                      {buyerInferredPrefs.inferred_max_price && (
+                        <Badge variant="secondary" className="text-xs">
+                          Up to ${buyerInferredPrefs.inferred_max_price.toLocaleString()}
+                        </Badge>
+                      )}
+                      {buyerInferredPrefs.inferred_beds_min && (
+                        <Badge variant="secondary" className="text-xs">
+                          {buyerInferredPrefs.inferred_beds_min}+ beds
+                        </Badge>
+                      )}
+                      {(buyerInferredPrefs.inferred_cities ?? []).map((c) => (
+                        <Badge key={c} variant="secondary" className="text-xs">{c}</Badge>
+                      ))}
+                      {(buyerInferredPrefs.inferred_must_have_features ?? []).slice(0, 3).map((f) => (
+                        <Badge key={f} variant="secondary" className="text-xs">{f}</Badge>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Confidence: {Math.round((buyerInferredPrefs.confidence_score ?? 0) * 100)}% — based on your search and viewing history
+                    </p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* AI Recommendation Banner */}
           <Card className="bg-gradient-to-r from-blue-50 to-purple-50 border-blue-200">
             <CardContent className="p-4">
@@ -854,6 +1189,56 @@ export default function PersonaPropertiesDashboard({
         {/* Saved Homes Tab */}
         {tabConfig.tabs.includes("saved") && (
           <TabsContent value="saved" className="space-y-6">
+
+            {/* AI Picks for You — shown above saved list when recommendations exist */}
+            {recommendedProperties.length > 0 && (
+              <section className="mb-2">
+                <div className="flex items-center gap-2 mb-4">
+                  <Sparkles className="h-5 w-5 text-primary" />
+                  <h2 className="text-base font-semibold">AI Picks for You</h2>
+                  <Badge className="bg-primary/10 text-primary text-xs border-0">Personalized</Badge>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {recommendedProperties.map((prop: any) => (
+                    <div key={prop.id} className="rounded-xl border border-border overflow-hidden hover:shadow-md transition-shadow bg-card">
+                      <div className="aspect-[4/3] bg-muted relative">
+                        {prop.primary_image_url ? (
+                          <img src={prop.primary_image_url} alt={prop.address ?? "Property"} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <Home className="h-10 w-10 text-muted-foreground" />
+                          </div>
+                        )}
+                        <div className="absolute top-2 left-2">
+                          <Badge className="bg-primary text-primary-foreground text-xs">AI Pick</Badge>
+                        </div>
+                      </div>
+                      <div className="p-4">
+                        <p className="font-semibold truncate">{prop.address}</p>
+                        <p className="text-xl font-bold text-primary">
+                          ${prop.list_price?.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {prop.bedrooms}bd &middot; {prop.bathrooms}ba
+                          {prop.sqft ? ` · ${prop.sqft.toLocaleString()} sqft` : ""}
+                        </p>
+                        {prop.match_reason && (
+                          <p className="text-xs text-primary mt-2 font-medium border-l-2 border-primary/40 pl-2">
+                            {prop.match_reason}
+                          </p>
+                        )}
+                        <div className="flex gap-2 mt-3">
+                          <Button size="sm" className="flex-1 text-xs" asChild>
+                            <Link href={`/portal/${contactId}/properties/${prop.id}`}>View</Link>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {savedProperties.length > 0 ? (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {savedProperties.map((property: any) => (

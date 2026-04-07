@@ -47,7 +47,7 @@ export async function governLead(leadId: string, brokerageId?: string, actorAgen
   const supabase = createServiceClient()
 
   try {
-    console.log(`[v0] [LEAD GOVERNANCE] Starting governance cycle for lead ${leadId}`)
+    console.log(`[LeadGovernance] Starting governance cycle for lead ${leadId}`)
 
     // STEP 1: FETCH LEAD DATA
     const { data: lead, error: fetchError } = await supabase
@@ -188,7 +188,7 @@ export async function governLead(leadId: string, brokerageId?: string, actorAgen
     }
 
   } catch (error: any) {
-    console.error(`[v0] [LEAD GOVERNANCE] Error governing lead ${leadId}:`, error.message)
+    console.error(`[LeadGovernance] Error governing lead ${leadId}:`, error.message)
 
     // Log to automation_errors
     await supabase.from('automation_errors').insert({

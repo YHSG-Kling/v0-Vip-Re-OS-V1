@@ -162,10 +162,10 @@ export {
   uploadDocument,
   deleteDocument,
   getDocumentWithAnalysis,
-  getDocumentRequirements,
-  getDocumentEducation,
   analyzeDocument,
 } from "./documents"
+// NOTE: getDocumentRequirements and getDocumentEducation were removed —
+// these functions do not exist in documents.ts
 
 // ============================================
 // AGENTS & USERS (Primary: agents.ts)
@@ -225,7 +225,21 @@ export {
 // ============================================
 // WORKFLOWS
 // ============================================
-export { executeWorkflow, getWorkflowStatus } from "./workflows"
+// NOTE: executeAITool is already exported above from ai-tools-hub — not re-exported here
+export {
+  checkFairHousingCompliance,
+  generateCopilotPlan,
+  startSmartDrip,
+  sendMessage,
+  calculateListingMetrics,
+  triggerCMAPackage,
+  grantPortalAccess,
+  triggerComplianceChecklist,
+  generateScriptContent,
+  sendNewsletterCampaign,
+  retryFailedWorkflow,
+  logUserActivity,
+} from "./workflows"
 
 // ============================================
 // APPOINTMENTS & CALENDAR
@@ -262,10 +276,6 @@ export {
 // ============================================
 export { getVendors, createVendor } from "./ai-client-gifting"
 
-// ============================================
-// DEMO CONTACTS
-// ============================================
-export { getDemoContactByPersona, getAllDemoContacts } from "./demo-contacts"
 
 // ============================================
 // COMPLIANCE MONITORING

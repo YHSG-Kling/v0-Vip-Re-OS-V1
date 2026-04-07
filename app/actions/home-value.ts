@@ -1,8 +1,10 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { KernelEvent } from "@/lib/kernel/events"
 import Anthropic from "@anthropic-ai/sdk"
+import { createPortalInviteForContact } from "./portal-invites"
 
 // ============================================================================
 // Types
@@ -18,6 +20,7 @@ interface HomeValueFormData {
   squareFeet: number
   yearBuilt: number
   condition: string
+  propertyType?: string
   firstName: string
   lastName: string
   email: string
@@ -25,6 +28,18 @@ interface HomeValueFormData {
   agentSlug?: string
   brokerageId?: string
   utmSource?: string
+  /** Caller MUST pass true — form must show and require TCPA checkbox */
+  tcpaConsent: boolean
+  tcpaConsentText?: string
+  qualificationData?: {
+    sellTimeline?: string
+    motivation?: string
+    hasAgent?: string
+    mortgageStatus?: string
+    priceExpectation?: string
+    buyAfterSell?: string
+    additionalNotes?: string
+  }
 }
 
 interface AIValuationResponse {
@@ -44,6 +59,84 @@ interface AIValuationResponse {
     sale_date: string
     distance_miles: number
   }>
+}
+
+// ============================================================================
+// convertValuationRequestToContact
+// ============================================================================
+
+export async function convertValuationRequestToContact(params: {
+  requestId: string
+  brokerageId: string
+  agentId: string
+  userId: string // users.id for portal invite
+}): Promise<{ success: boolean; contactId?: string; error?: string }> {
+  const service = createServiceClient()
+
+  try {
+    // 1. Load valuation request
+    const { data: request, error: requestError } = await service
+      .from("valuation_requests")
+      .select("*")
+      .eq("id", params.requestId)
+      .maybeSingle()
+
+    if (requestError || !request) {
+      return { success: false, error: "Request not found" }
+    }
+
+    if (request.contact_id) {
+      return { success: false, error: "Already converted" }
+    }
+
+    // 2. Extract name from qualification_data if available, else use address prefix
+    const qualData = (request.qualification_data as any) ?? {}
+    const firstName = qualData.firstName ?? "Home"
+    const lastName = qualData.lastName ?? "Seller"
+    const email = qualData.email ?? `seller-${request.id.slice(0, 8)}@pending.local`
+    const phone = qualData.phone ?? null
+    const phoneDigits = phone ? phone.replace(/\D/g, "") : null
+
+    // 3. Create contact
+    const { data: newContact, error: contactError } = await service
+      .from("contacts")
+      .insert({
+        first_name: firstName,
+        last_name: lastName,
+        email,
+        phone,
+        phone_digits: phoneDigits,
+        contact_type: "seller",
+        source: "home_value",
+        agent_id: params.agentId,
+        brokerage_id: params.brokerageId,
+      })
+      .select("id")
+      .single()
+
+    if (contactError || !newContact) {
+      return { success: false, error: "Failed to create contact" }
+    }
+
+    // 4. Link request to contact
+    await service
+      .from("valuation_requests")
+      .update({ contact_id: newContact.id, agent_id: params.agentId })
+      .eq("id", params.requestId)
+
+    // 5. Send portal invite
+    await createPortalInviteForContact({
+      contactId: newContact.id,
+      brokerageId: params.brokerageId,
+      invitedByUserId: params.userId,
+      sendMagicLink: true,
+    }).catch(() => {})
+
+    return { success: true, contactId: newContact.id }
+  } catch (error: any) {
+    console.error("[convertValuationRequestToContact] Error:", error)
+    return { success: false, error: error.message ?? "Unexpected error" }
+  }
 }
 
 // ============================================================================
@@ -68,14 +161,18 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       squareFeet,
       yearBuilt,
       condition,
+      propertyType,
       firstName,
       lastName,
       email,
       phone,
-      agentSlug,
-      brokerageId,
-      utmSource,
-    } = formData
+    agentSlug,
+    brokerageId,
+    utmSource,
+    tcpaConsent,
+    tcpaConsentText,
+    qualificationData,
+  } = formData
 
     // Step 1: Resolve agent from slug if provided, else get default brokerage agent
     let resolvedAgentId: string | null = null
@@ -110,6 +207,24 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       return { success: false, error: "Unable to determine brokerage" }
     }
 
+    // Agent assignment fallback — if no agent resolved from slug, assign the
+    // brokerage's primary active agent (earliest-created active agent = owner/primary).
+    // This ensures every home value contact has an agent owner immediately.
+    if (!resolvedAgentId) {
+      const { data: primaryAgent } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("brokerage_id", resolvedBrokerageId)
+        .eq("is_active", true)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle()
+
+      if (primaryAgent?.id) {
+        resolvedAgentId = primaryAgent.id
+      }
+    }
+
     // Step 2: Check for existing contact by email OR phone in this brokerage
     const normalizedPhone = phone.replace(/\D/g, "")
 
@@ -123,20 +238,30 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     let contactId: string
 
     // Step 3: If no match, INSERT new contact FIRST
+    // Per TCPA rules: create lead regardless of consent, but only store phone
+    // and enable phone/SMS channels when consent is explicitly given.
     if (!existingContact) {
+      const consentNow = new Date().toISOString()
       const { data: newContact, error: contactError } = await supabase
         .from("contacts")
         .insert({
           first_name: firstName,
           last_name: lastName,
           email,
-          phone,
-          phone_digits: normalizedPhone,
+          // Only store phone if TCPA consent given; otherwise omit to prevent calling
+          phone: tcpaConsent ? phone : null,
+          phone_digits: tcpaConsent ? normalizedPhone : null,
+          preferred_channel: tcpaConsent ? "phone" : "email",
           contact_type: "seller",
           source: "home_value_tool",
           buyer_stage: "BUYER_CONTACT_CREATED",
           agent_id: resolvedAgentId,
           brokerage_id: resolvedBrokerageId,
+          tcpa_consent: tcpaConsent,
+          tcpa_consent_at: tcpaConsent ? consentNow : null,
+          tcpa_consent_date: tcpaConsent ? consentNow : null,
+          tcpa_consent_text: tcpaConsent ? (tcpaConsentText ?? null) : null,
+          tcpa_consent_source: tcpaConsent ? "home_value_tool" : null,
         })
         .select("id")
         .single()
@@ -146,6 +271,27 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         return { success: false, error: "Failed to create contact" }
       }
       contactId = newContact.id
+
+      // Non-blocking portal invite with magic link for new home-value contacts.
+      // Resolve users.id from the resolved agent row if available.
+      if (resolvedAgentId) {
+        supabase
+          .from("agents")
+          .select("user_id")
+          .eq("id", resolvedAgentId)
+          .maybeSingle()
+          .then(({ data: agentRow }) => {
+            if (agentRow?.user_id) {
+              createPortalInviteForContact({
+                contactId: newContact.id,
+                brokerageId: resolvedBrokerageId!,
+                invitedByUserId: agentRow.user_id,
+                sendMagicLink: true,
+              }).catch(() => {})
+            }
+          })
+          .catch(() => {})
+      }
     } else {
       contactId = existingContact.id
     }
@@ -164,6 +310,8 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         square_feet: squareFeet,
         year_built: yearBuilt,
         condition,
+        property_type: propertyType ?? null,
+        qualification_data: qualificationData ?? null,
         agent_id: resolvedAgentId,
         brokerage_id: resolvedBrokerageId,
         utm_source: utmSource,
@@ -175,6 +323,35 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
     if (valuationError || !valuationRequest) {
       console.error("Error creating valuation request:", valuationError)
       return { success: false, error: "Failed to create valuation request" }
+    }
+
+    // ── Kernel OS seller intake chain ────────────────────────────────────────
+    // Home value form submitters have given explicit TCPA consent and are
+    // created as contacts directly above. No raw_scraped_leads row is needed —
+    // that table is for unauthenticated/non-consented inbound signals.
+    // The lifecycle_event (Step 8) and agent notification (Step 9) below are
+    // sufficient for Kernel to pick up this contact.
+
+    // Activity for immediate agent CRM visibility
+    if (resolvedAgentId) {
+      await supabase.from("activities").insert({
+        activity_type: "home_value_request_received",
+        title: `Home value request: ${firstName} ${lastName}`,
+        description: `${propertyAddress}, ${city}, ${state}`,
+        notes: JSON.stringify({
+          email,
+          phone: tcpaConsent ? phone : null,
+          sell_timeline: qualificationData?.sellTimeline ?? null,
+          motivation: qualificationData?.motivation ?? null,
+          valuation_request_id: valuationRequest.id,
+        }),
+        contact_id: contactId,
+        agent_id: resolvedAgentId,
+        brokerage_id: resolvedBrokerageId,
+        entity_type: "contact",
+        status: "pending",
+        priority: qualificationData?.sellTimeline === "immediately" ? "high" : "medium",
+      }).catch(() => {})
     }
 
     // Step 5: Generate AI estimate using Claude
@@ -236,7 +413,66 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
       },
     })
 
-    // Step 9: Return requestId for redirect
+    // Step 9: Notify the assigned agent via the notifications table.
+    // We need the agent's user_id (auth uid) to target the in-app notification.
+    if (resolvedAgentId) {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("user_id")
+        .eq("id", resolvedAgentId)
+        .maybeSingle()
+
+      if (agentRow?.user_id) {
+        await supabase.from("notifications").insert({
+          user_id: agentRow.user_id,
+          brokerage_id: resolvedBrokerageId,
+          type: "home_value_lead",
+          title: "New Home Value Request",
+          body: `${firstName} ${lastName} requested a home value for ${propertyAddress}, ${city || zipCode}. Timeline: ${qualificationData?.sellTimeline ?? "unknown"}. Motivation: ${qualificationData?.motivation ?? "unknown"}. Review and start a drip campaign.`,
+          entity_type: "contact",
+          entity_id: contactId,
+          priority: "high",
+          is_read: false,
+          channel: "in_app",
+        })
+      }
+    }
+
+    // Step 10: Enroll the contact in the seller nurture drip sequence if one
+    // exists for this brokerage. We look for an active sequence triggered by
+    // 'home_value_submitted' or typed as 'seller_nurture'.
+    const { data: dripSequence } = await supabase
+      .from("campaign_sequences")
+      .select("id")
+      .eq("brokerage_id", resolvedBrokerageId)
+      .eq("is_active", true)
+      .or("trigger_event.eq.home_value_submitted,sequence_type.eq.seller_nurture")
+      .limit(1)
+      .maybeSingle()
+
+    if (dripSequence?.id) {
+      // Only enroll if not already enrolled
+      const { data: existingEnrollment } = await supabase
+        .from("sequence_enrollments")
+        .select("id")
+        .eq("contact_id", contactId)
+        .eq("sequence_id", dripSequence.id)
+        .maybeSingle()
+
+      if (!existingEnrollment) {
+        await supabase.from("sequence_enrollments").insert({
+          contact_id: contactId,
+          sequence_id: dripSequence.id,
+          brokerage_id: resolvedBrokerageId,
+          enrolled_by: resolvedAgentId ?? undefined,
+          status: "active",
+          current_step: 1,
+          next_step_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // start in 24h
+        })
+      }
+    }
+
+    // Step 11: Return requestId for redirect
     return { success: true, requestId: valuationRequest.id }
   } catch (error) {
     console.error("Error in submitHomeValueRequest:", error)
@@ -265,7 +501,9 @@ export async function getHomeValueResult(requestId: string) {
         square_feet,
         year_built,
         condition,
-        ref_agent_slug
+        ref_agent_slug,
+        brokerage_id,
+        contact_id
       )
     `)
     .eq("valuation_request_id", requestId)
@@ -289,6 +527,8 @@ export async function getHomeValueResult(requestId: string) {
     agent = agentData
   }
 
+  const vr = estimate.valuation_requests as any
+
   return {
     success: true,
     estimate: {
@@ -307,6 +547,8 @@ export async function getHomeValueResult(requestId: string) {
       expiresAt: estimate.expires_at,
       propertyDetails: estimate.valuation_requests,
     },
+    brokerageId: vr?.brokerage_id ?? null,
+    contactId: estimate.contact_id ?? vr?.contact_id ?? null,
     agent,
   }
 }
@@ -403,6 +645,256 @@ Provide exactly 3 comparable sales. Be conservative with estimates. The narrativ
 }
 
 // ============================================================================
+// getAvailableAgentSlots
+// Returns active listing agents + their open 1-hour time slots for the next
+// 7 business days (Mon–Fri, 9am–5pm local). Conflicts are checked against
+// existing calendar_events for each agent.
+// ============================================================================
+
+export async function getAvailableAgentSlots(brokerageId: string): Promise<{
+  success: boolean
+  agents?: Array<{
+    id: string
+    userId: string
+    firstName: string
+    lastName: string
+    phone: string | null
+    email: string | null
+    profileImageUrl: string | null
+    slots: Array<{ startAt: string; endAt: string; label: string }>
+  }>
+  error?: string
+}> {
+  const supabase = await createClient()
+
+  // Fetch all active agents for this brokerage
+  const { data: agents, error: agentsError } = await supabase
+    .from("agents")
+    .select("id, user_id, phone_mobile, profile_image_url, brokerage_id, users(first_name, last_name, email)")
+    .eq("brokerage_id", brokerageId)
+    .eq("is_active", true)
+    .limit(10)
+
+  if (agentsError || !agents?.length) {
+    return { success: false, error: "No agents available" }
+  }
+
+  const now = new Date()
+  // Earliest bookable slot is 48 hours from now
+  const earliestSlot = new Date(now.getTime() + 48 * 60 * 60 * 1000)
+  const windowEnd = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000) // show 14 days ahead
+
+  const agentIds = agents.map((a) => a.id)
+
+  // Fetch existing calendar events and agent page configs in parallel
+  const [eventsRes, configsRes] = await Promise.all([
+    supabase
+      .from("calendar_events")
+      .select("entity_id, start_at, end_at")
+      .in("entity_id", agentIds)
+      .eq("entity_type", "agent")
+      .gte("start_at", now.toISOString())
+      .lte("start_at", windowEnd.toISOString()),
+    supabase
+      .from("home_value_page_configs")
+      .select("agent_id, working_hours, show_scheduler")
+      .in("agent_id", agentIds),
+  ])
+
+  const bookedByAgent: Record<string, Array<{ start: Date; end: Date }>> = {}
+  for (const ev of eventsRes.data ?? []) {
+    if (!bookedByAgent[ev.entity_id]) bookedByAgent[ev.entity_id] = []
+    bookedByAgent[ev.entity_id].push({ start: new Date(ev.start_at), end: new Date(ev.end_at) })
+  }
+
+  // Map agent_id -> working_hours config (fall back to Mon-Fri 9-17 if no config)
+  const DEFAULT_HOURS: WorkingHourSlot[] = [
+    { day: 1, start_hour: 9, end_hour: 17 },
+    { day: 2, start_hour: 9, end_hour: 17 },
+    { day: 3, start_hour: 9, end_hour: 17 },
+    { day: 4, start_hour: 9, end_hour: 17 },
+    { day: 5, start_hour: 9, end_hour: 17 },
+  ]
+  const configByAgent: Record<string, { hours: WorkingHourSlot[]; showScheduler: boolean }> = {}
+  for (const c of configsRes.data ?? []) {
+    configByAgent[c.agent_id] = {
+      hours: (c.working_hours as WorkingHourSlot[]) ?? DEFAULT_HOURS,
+      showScheduler: c.show_scheduler ?? true,
+    }
+  }
+
+  // Generate 1-hour slots within agent-defined working hours, 48h+ out
+  function generateSlots(agentId: string): Array<{ startAt: string; endAt: string; label: string }> {
+    const slots: Array<{ startAt: string; endAt: string; label: string }> = []
+    const booked = bookedByAgent[agentId] ?? []
+    const agentConfig = configByAgent[agentId]
+
+    // Skip scheduler-disabled agents
+    if (agentConfig && agentConfig.showScheduler === false) return []
+
+    const hours = agentConfig?.hours ?? DEFAULT_HOURS
+    // Build a fast lookup: day -> [{start_hour, end_hour}]
+    const hoursByDay: Record<number, Array<{ start: number; end: number }>> = {}
+    for (const h of hours) {
+      if (!hoursByDay[h.day]) hoursByDay[h.day] = []
+      hoursByDay[h.day].push({ start: h.start_hour, end: h.end_hour })
+    }
+
+    // Iterate day by day for 14 days, starting from tomorrow
+    for (let dayOffset = 0; dayOffset < 14; dayOffset++) {
+      const d = new Date(now)
+      d.setDate(d.getDate() + dayOffset)
+      d.setHours(0, 0, 0, 0)
+      const dow = d.getDay()
+      const dayRanges = hoursByDay[dow]
+      if (!dayRanges?.length) continue
+
+      for (const range of dayRanges) {
+        for (let h = range.start; h < range.end; h++) {
+          const slotStart = new Date(d)
+          slotStart.setHours(h, 0, 0, 0)
+          const slotEnd = new Date(slotStart)
+          slotEnd.setHours(h + 1)
+
+          // Must be at least 48h from now
+          if (slotStart < earliestSlot) continue
+
+          const conflict = booked.some((b) => slotStart < b.end && slotEnd > b.start)
+          if (!conflict) {
+            slots.push({
+              startAt: slotStart.toISOString(),
+              endAt: slotEnd.toISOString(),
+              label: slotStart.toLocaleString("en-US", {
+                weekday: "short",
+                month: "short",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+                hour12: true,
+              }),
+            })
+          }
+          if (slots.length >= 20) break
+        }
+        if (slots.length >= 20) break
+      }
+      if (slots.length >= 20) break
+    }
+    return slots
+  }
+
+  const result = agents.map((agent) => {
+    const user = Array.isArray(agent.users) ? agent.users[0] : (agent.users as any)
+    return {
+      id: agent.id,
+      userId: agent.user_id,
+      firstName: user?.first_name ?? "",
+      lastName: user?.last_name ?? "",
+      phone: agent.phone_mobile ?? null,
+      email: user?.email ?? null,
+      profileImageUrl: agent.profile_image_url ?? null,
+      slots: generateSlots(agent.id),
+    }
+  }).filter((a) => a.slots.length > 0)
+
+  return { success: true, agents: result }
+}
+
+// ============================================================================
+// scheduleHomeValuationAppt
+// Books a home valuation appointment: writes to calendar_events (agent entity)
+// and activities (agent + contact). Notifies the agent via notifications table.
+// ============================================================================
+
+export async function scheduleHomeValuationAppt(params: {
+  contactId: string
+  agentId: string
+  brokerageId: string
+  startAt: string // ISO
+  endAt: string // ISO
+  propertyAddress: string
+  contactName: string
+}): Promise<{ success: boolean; calendarEventId?: string; error?: string }> {
+  const supabase = await createClient()
+
+  // Double-check the slot is still free
+  const { data: conflict } = await supabase
+    .from("calendar_events")
+    .select("id")
+    .eq("entity_type", "agent")
+    .eq("entity_id", params.agentId)
+    .lt("start_at", params.endAt)
+    .gt("end_at", params.startAt)
+    .maybeSingle()
+
+  if (conflict) {
+    return { success: false, error: "That time slot is no longer available. Please select another." }
+  }
+
+  // Insert calendar event
+  const { data: calEvent, error: calError } = await supabase
+    .from("calendar_events")
+    .insert({
+      brokerage_id: params.brokerageId,
+      entity_type: "agent",
+      entity_id: params.agentId,
+      event_type: "home_valuation_appointment",
+      start_at: params.startAt,
+      end_at: params.endAt,
+      is_system_generated: false,
+      metadata: {
+        contact_id: params.contactId,
+        property_address: params.propertyAddress,
+        contact_name: params.contactName,
+        source: "home_value_page",
+      },
+    })
+    .select("id")
+    .single()
+
+  if (calError || !calEvent) {
+    return { success: false, error: "Failed to book appointment. Please try again." }
+  }
+
+  // Insert activity record
+  await supabase.from("activities").insert({
+    brokerage_id: params.brokerageId,
+    agent_id: params.agentId,
+    contact_id: params.contactId,
+    activity_type: "home_valuation_appointment",
+    title: `Home Valuation Appointment — ${params.propertyAddress}`,
+    description: `Scheduled by ${params.contactName} via the home value tool.`,
+    scheduled_at: params.startAt,
+    status: "scheduled",
+    priority: "high",
+  })
+
+  // Notify the agent
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("user_id")
+    .eq("id", params.agentId)
+    .maybeSingle()
+
+  if (agentRow?.user_id) {
+    await supabase.from("notifications").insert({
+      user_id: agentRow.user_id,
+      brokerage_id: params.brokerageId,
+      type: "appointment_scheduled",
+      title: "Home Valuation Appointment Booked",
+      body: `${params.contactName} booked a valuation appointment for ${params.propertyAddress} on ${new Date(params.startAt).toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })}.`,
+      entity_type: "contact",
+      entity_id: params.contactId,
+      priority: "high",
+      is_read: false,
+      channel: "in_app",
+    })
+  }
+
+  return { success: true, calendarEventId: calEvent.id }
+}
+
+// ============================================================================
 // getAgentBySlug (for personalization)
 // ============================================================================
 
@@ -411,9 +903,149 @@ export async function getAgentBySlug(slug: string) {
 
   const { data: agent } = await supabase
     .from("agents")
-    .select("id, first_name, last_name, phone_mobile, email, profile_image_url, brokerage_id")
-    .eq("slug", slug)
+    .select("id, user_id, phone_mobile, profile_image_url, brokerage_id, users(first_name, last_name, email)")
+    .eq("ref_agent_slug", slug)
+    .maybeSingle()
+
+  if (!agent) return null
+  const user = Array.isArray(agent.users) ? agent.users[0] : (agent.users as any)
+  return {
+    id: agent.id,
+    user_id: agent.user_id,
+    first_name: user?.first_name ?? "",
+    last_name: user?.last_name ?? "",
+    email: user?.email ?? null,
+    phone_mobile: agent.phone_mobile ?? null,
+    profile_image_url: agent.profile_image_url ?? null,
+    brokerage_id: agent.brokerage_id,
+  }
+}
+
+// ============================================================================
+// HomeValuePageConfig types
+// ============================================================================
+
+export interface WorkingHourSlot {
+  day: number        // 0=Sun … 6=Sat
+  start_hour: number // 0–23
+  end_hour: number   // 0–23 (exclusive, so 20 means last slot starts at 19:00)
+}
+
+export interface HomeValuePageConfig {
+  id?: string
+  agentId: string
+  brokerageId: string
+  headline: string
+  subheadline: string
+  ctaButtonText: string
+  primaryColor: string
+  agentBioOverride: string | null
+  showQSellTimeline: boolean
+  showQMotivation: boolean
+  showQMortgageStatus: boolean
+  showQPriceExpectation: boolean
+  showQHasAgent: boolean
+  showQBuyAfterSell: boolean
+  showQAdditionalNotes: boolean
+  labelSellTimeline: string | null
+  labelMotivation: string | null
+  labelMortgageStatus: string | null
+  labelPriceExpectation: string | null
+  labelHasAgent: string | null
+  labelBuyAfterSell: string | null
+  workingHours: WorkingHourSlot[]
+  showScheduler: boolean
+}
+
+// ============================================================================
+// savePageConfig
+// ============================================================================
+
+export async function savePageConfig(config: HomeValuePageConfig): Promise<{ success: boolean; id?: string; error?: string }> {
+  const supabase = await createClient()
+
+  const row = {
+    agent_id: config.agentId,
+    brokerage_id: config.brokerageId,
+    headline: config.headline,
+    subheadline: config.subheadline,
+    cta_button_text: config.ctaButtonText,
+    primary_color: config.primaryColor,
+    agent_bio_override: config.agentBioOverride,
+    show_q_sell_timeline: config.showQSellTimeline,
+    show_q_motivation: config.showQMotivation,
+    show_q_mortgage_status: config.showQMortgageStatus,
+    show_q_price_expectation: config.showQPriceExpectation,
+    show_q_has_agent: config.showQHasAgent,
+    show_q_buy_after_sell: config.showQBuyAfterSell,
+    show_q_additional_notes: config.showQAdditionalNotes,
+    label_sell_timeline: config.labelSellTimeline,
+    label_motivation: config.labelMotivation,
+    label_mortgage_status: config.labelMortgageStatus,
+    label_price_expectation: config.labelPriceExpectation,
+    label_has_agent: config.labelHasAgent,
+    label_buy_after_sell: config.labelBuyAfterSell,
+    working_hours: config.workingHours,
+    show_scheduler: config.showScheduler,
+    updated_at: new Date().toISOString(),
+  }
+
+  const { data, error } = await supabase
+    .from("home_value_page_configs")
+    .upsert(row, { onConflict: "agent_id" })
+    .select("id")
     .single()
 
-  return agent
+  if (error) return { success: false, error: error.message }
+  return { success: true, id: data.id }
+}
+
+// ============================================================================
+// getPageConfig — for the dashboard builder
+// ============================================================================
+
+export async function getPageConfig(agentId: string): Promise<HomeValuePageConfig | null> {
+  const supabase = await createClient()
+
+  const { data } = await supabase
+    .from("home_value_page_configs")
+    .select("*")
+    .eq("agent_id", agentId)
+    .maybeSingle()
+
+  if (!data) return null
+
+  return {
+    id: data.id,
+    agentId: data.agent_id,
+    brokerageId: data.brokerage_id,
+    headline: data.headline,
+    subheadline: data.subheadline,
+    ctaButtonText: data.cta_button_text,
+    primaryColor: data.primary_color,
+    agentBioOverride: data.agent_bio_override,
+    showQSellTimeline: data.show_q_sell_timeline,
+    showQMotivation: data.show_q_motivation,
+    showQMortgageStatus: data.show_q_mortgage_status,
+    showQPriceExpectation: data.show_q_price_expectation,
+    showQHasAgent: data.show_q_has_agent,
+    showQBuyAfterSell: data.show_q_buy_after_sell,
+    showQAdditionalNotes: data.show_q_additional_notes,
+    labelSellTimeline: data.label_sell_timeline,
+    labelMotivation: data.label_motivation,
+    labelMortgageStatus: data.label_mortgage_status,
+    labelPriceExpectation: data.label_price_expectation,
+    labelHasAgent: data.label_has_agent,
+    labelBuyAfterSell: data.label_buy_after_sell,
+    workingHours: (data.working_hours as WorkingHourSlot[]) ?? [],
+    showScheduler: data.show_scheduler,
+  }
+}
+
+// ============================================================================
+// getPageConfigByAgentId — public-facing, used by home-value/page.tsx
+// ============================================================================
+
+export async function getPageConfigByAgentId(agentId: string): Promise<HomeValuePageConfig | null> {
+  return getPageConfig(agentId)
 }

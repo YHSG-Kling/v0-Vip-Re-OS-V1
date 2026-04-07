@@ -9,7 +9,11 @@ export const metadata = {
   description: "Build and manage multi-step outreach sequences across email, SMS, video, and direct mail.",
 }
 
-export default async function CampaignSequencesPage() {
+export default async function CampaignSequencesPage({
+  searchParams,
+}: {
+  searchParams: { action?: string }
+}) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
@@ -19,17 +23,19 @@ export default async function CampaignSequencesPage() {
     .from("users")
     .select("id, brokerage_id, user_type")
     .eq("id", user.id)
-    .single()
+    .maybeSingle()
 
-  if (!profile?.brokerage_id) redirect("/onboarding")
+  if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
   const { sequences } = await listCampaignSequences(profile.brokerage_id)
+  const openCreate = searchParams.action === "create"
 
   return (
     <SequencesListClient
       sequences={sequences}
       brokerageId={profile.brokerage_id}
       userId={user.id}
+      openCreate={openCreate}
     />
   )
 }

@@ -56,6 +56,23 @@ function getSupabaseServerClient() {
   })
 }
 
+/**
+ * Get user's primary brokerage context with role and capabilities
+ * @returns UserWithRole object or null if not found
+ */
+export async function getCurrentUserContext(): Promise<UserWithRole | null> {
+  const supabase = getSupabaseServerClient()
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser()
+
+  if (authError || !user) {
+    console.error("[Auth] Error fetching current user:", authError)
+    return null
+  }
+
   // Get user's brokerage and role information
   const { data: userBrokerageRole, error: roleError } = await supabase
     .from("user_brokerage_roles")

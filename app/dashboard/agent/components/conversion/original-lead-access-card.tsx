@@ -32,13 +32,16 @@ interface LeadRecord {
   last_name: string
   email: string | null
   phone: string | null
-  lead_source: string
-  scraped_from: string | null
-  lead_status: string
-  temperature: string
-  intent_type: string
-  motivation_score: number | null
-  qualification_score: number | null
+  /** DB column: source */
+  source: string | null
+  /** DB column: status */
+  status: string | null
+  /** DB column: lifecycle_state (replaces non-existent temperature) */
+  lifecycle_state: string | null
+  /** DB column: lead_type (replaces non-existent intent_type) */
+  lead_type: string | null
+  motivation_confidence: number | null
+  lead_score: number | null
   created_at: string
   notes: string | null
 }
@@ -71,9 +74,9 @@ export function OriginalLeadAccessCard({ contactId, leadId }: OriginalLeadAccess
 
       // Get original lead record if leadId exists
       if (leadId) {
-        const { data: leadData } = await supabase
+          const { data: leadData } = await supabase
           .from("leads")
-          .select("*")
+          .select("id, first_name, last_name, email, phone, source, status, lifecycle_state, lead_type, motivation_confidence, lead_score, created_at, notes")
           .eq("id", leadId)
           .maybeSingle()
 
@@ -191,36 +194,35 @@ export function OriginalLeadAccessCard({ contactId, leadId }: OriginalLeadAccess
                   {lead.first_name} {lead.last_name}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  Source: {lead.lead_source}
-                  {lead.scraped_from && ` (${lead.scraped_from})`}
+                  Source: {lead.source ?? "Unknown"}
                 </p>
               </div>
               <div className="flex gap-1">
                 <Badge variant="outline" className="text-xs capitalize">
-                  {lead.temperature}
+                  {lead.lifecycle_state ?? "unknown"}
                 </Badge>
                 <Badge variant="outline" className="text-xs">
-                  {lead.lead_status}
+                  {lead.status ?? "unknown"}
                 </Badge>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2 text-xs">
-              {lead.motivation_score && (
+              {lead.motivation_confidence != null && (
                 <div>
                   <span className="text-muted-foreground">Motivation:</span>{" "}
-                  <span className="font-medium">{lead.motivation_score}/100</span>
+                  <span className="font-medium">{Math.round((lead.motivation_confidence ?? 0) * 100)}%</span>
                 </div>
               )}
-              {lead.qualification_score && (
+              {lead.lead_score != null && (
                 <div>
-                  <span className="text-muted-foreground">Qualification:</span>{" "}
-                  <span className="font-medium">{lead.qualification_score}/100</span>
+                  <span className="text-muted-foreground">Lead score:</span>{" "}
+                  <span className="font-medium">{lead.lead_score}</span>
                 </div>
               )}
-              {lead.intent_type && (
+              {lead.lead_type && (
                 <div>
-                  <span className="text-muted-foreground">Intent:</span>{" "}
-                  <span className="font-medium capitalize">{lead.intent_type}</span>
+                  <span className="text-muted-foreground">Type:</span>{" "}
+                  <span className="font-medium capitalize">{lead.lead_type}</span>
                 </div>
               )}
               <div>

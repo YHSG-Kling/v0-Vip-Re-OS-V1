@@ -193,7 +193,7 @@ export async function executeSequenceStep(
     providerKey: step.channel,
   }
 
-  const baseCtx = { brokerageId, systemSource: "sequence", leadId: contactId ?? undefined }
+  const baseCtx = { brokerageId, systemSource: "sequence", contactId: contactId ?? undefined }
 
   switch (step.channel) {
     case "email": {

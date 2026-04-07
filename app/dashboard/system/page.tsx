@@ -8,6 +8,7 @@ import {
   SyncHealthPanel,
   SystemAlertsPanel,
   OperationalImpactPanel,
+  SchemaReadinessPanel,
 } from './components/os'
 
 // Force dynamic rendering - this page requires authentication
@@ -28,7 +29,7 @@ export default async function SystemPage() {
 
   // Role gate: broker, admin, superadmin only (NOT agents)
   // This is a broker/admin operations surface, not superadmin-only
-  if (!['admin', 'broker', 'superadmin'].includes(context.role)) {
+  if (!['admin', 'broker', 'superadmin'].includes(context.userType)) {
     redirect('/dashboard')
   }
 
@@ -71,11 +72,14 @@ export default async function SystemPage() {
           </div>
         </div>
 
+        {/* Database Schema Readiness — full width below the grid */}
+        <SchemaReadinessPanel brokerageId={brokerageId} />
+
         {/* Footer Note */}
         <div className="text-center text-xs text-muted-foreground pt-4 border-t border-border">
           <p>
             This dashboard shows brokerage-level system health.
-            {context.role === 'superadmin' && (
+            {context.userType === 'superadmin' && (
               <span className="ml-1">
                 For full observability access, visit{' '}
                 <a 

@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import { FileText, CheckCircle, XCircle, MessageSquare, Loader2, Trophy } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
 
 interface Offer {
   id: string
@@ -33,6 +34,11 @@ interface Offer {
   submitted_at: string | null
   contingencies: string[] | null
   possession_terms: string | null
+  esign_status?: string | null
+  esign_provider?: string | null
+  esign_sent_at?: string | null
+  esign_completed_at?: string | null
+  buyer_signed_at?: string | null
 }
 
 interface Props {
@@ -91,6 +97,16 @@ export function OfferCard({ offer, listPrice, canApprove, isPending, onAccept, o
                 <Loader2 className="h-3 w-3 animate-spin" />
                 Extracting terms...
               </span>
+            )}
+            {(offer.esign_status || offer.esign_sent_at) && (
+              <SignatureStatusBadge
+                esignStatus={offer.esign_status}
+                esignProvider={offer.esign_provider}
+                esignSentAt={offer.esign_sent_at}
+                esignCompletedAt={offer.esign_completed_at}
+                buyerSignedAt={offer.buyer_signed_at}
+                compact
+              />
             )}
           </div>
         </div>

@@ -58,10 +58,7 @@ export default function LinkToVideoGenerator() {
 
   async function loadData() {
     try {
-      console.log("[v0] Loading LinkToVideo data...")
       const [orgs, queue] = await Promise.all([getUserOrganizations(), getVideoQueue()])
-      console.log("[v0] Organizations loaded:", orgs.length)
-      console.log("[v0] Video queue loaded:", queue.length)
       setOrganizations(orgs)
       if (orgs.length > 0) setSelectedOrg(orgs[0])
       setVideoQueue(queue)

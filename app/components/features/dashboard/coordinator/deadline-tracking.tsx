@@ -1,76 +1,106 @@
 "use client"
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Clock, AlertTriangle, Calendar } from "lucide-react"
+import { Clock, AlertTriangle, CheckCircle2, Calendar } from "lucide-react"
 
 interface Deadline {
   id: string
-  deadline_name: string
+  title: string
+  transaction_address: string
   due_date: string
-  status: string
-  priority: string
-  transactions?: {
-    property_address: string
-  }
+  status: "upcoming" | "due_soon" | "overdue" | "completed"
 }
 
-export function DeadlineTracking({ deadlines }: { deadlines: Deadline[] }) {
-  const getDaysRemaining = (dueDate: string) => {
-    return Math.floor((new Date(dueDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+interface DeadlineTrackingProps {
+  deadlines?: Deadline[]
+}
+
+export function DeadlineTracking({ deadlines = [] }: DeadlineTrackingProps) {
+  const getDeadlineIcon = (status: string) => {
+    switch (status) {
+      case "overdue":
+        return <AlertTriangle className="w-4 h-4 text-red-500" />
+      case "due_soon":
+        return <Clock className="w-4 h-4 text-amber-500" />
+      case "completed":
+        return <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+      default:
+        return <Calendar className="w-4 h-4 text-blue-500" />
+    }
   }
 
-  const getPriorityColor = (priority: string, daysRemaining: number) => {
-    if (daysRemaining <= 1) return "destructive"
-    if (daysRemaining <= 3 || priority === "high") return "default"
-    return "secondary"
+  const getDeadlineBadge = (status: string) => {
+    switch (status) {
+      case "overdue":
+        return <Badge variant="destructive">Overdue</Badge>
+      case "due_soon":
+        return <Badge variant="secondary" className="bg-amber-100 text-amber-800">Due Soon</Badge>
+      case "completed":
+        return <Badge variant="outline">Completed</Badge>
+      default:
+        return <Badge variant="outline">Upcoming</Badge>
+    }
+  }
+
+  const getDaysUntil = (dateStr: string) => {
+    const date = new Date(dateStr)
+    const now = new Date()
+    const diff = Math.ceil((date.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+    
+    if (diff < 0) return `${Math.abs(diff)} days overdue`
+    if (diff === 0) return "Due today"
+    if (diff === 1) return "Due tomorrow"
+    return `${diff} days left`
+  }
+
+  if (deadlines.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Upcoming Deadlines</CardTitle>
+          <CardDescription>Critical dates to track</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="text-center py-8 text-muted-foreground">
+            <Calendar className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p>No upcoming deadlines</p>
+          </div>
+        </CardContent>
+      </Card>
+    )
   }
 
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Clock className="h-5 w-5 text-orange-600" />
-          Upcoming Deadlines
-        </CardTitle>
+      <CardHeader>
+        <CardTitle>Upcoming Deadlines</CardTitle>
+        <CardDescription>{deadlines.length} deadlines to track</CardDescription>
       </CardHeader>
-      <CardContent className="p-0">
-        <div className="divide-y max-h-80 overflow-y-auto">
-          {deadlines.length === 0 ? (
-            <div className="p-4 text-center text-muted-foreground text-sm">No upcoming deadlines</div>
-          ) : (
-            deadlines.slice(0, 10).map((deadline) => {
-              const daysRemaining = getDaysRemaining(deadline.due_date)
-              return (
-                <div key={deadline.id} className="p-3 hover:bg-muted/50">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm truncate">{deadline.deadline_name}</p>
-                      <p className="text-xs text-muted-foreground truncate">
-                        {deadline.transactions?.property_address}
-                      </p>
-                    </div>
-                    <Badge variant={getPriorityColor(deadline.priority, daysRemaining)}>
-                      {daysRemaining <= 0 ? (
-                        <span className="flex items-center gap-1">
-                          <AlertTriangle className="h-3 w-3" />
-                          Overdue
-                        </span>
-                      ) : daysRemaining === 1 ? (
-                        "Tomorrow"
-                      ) : (
-                        `${daysRemaining}d`
-                      )}
-                    </Badge>
+      <CardContent>
+        <div className="space-y-3">
+          {deadlines.map((deadline) => (
+            <div
+              key={deadline.id}
+              className="flex items-start gap-3 p-3 border rounded-lg"
+            >
+              <div className="mt-0.5">{getDeadlineIcon(deadline.status)}</div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-medium truncate">{deadline.title}</p>
+                    <p className="text-sm text-muted-foreground truncate">
+                      {deadline.transaction_address}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-1 mt-1 text-xs text-muted-foreground">
-                    <Calendar className="h-3 w-3" />
-                    {new Date(deadline.due_date).toLocaleDateString()}
-                  </div>
+                  {getDeadlineBadge(deadline.status)}
                 </div>
-              )
-            })
-          )}
+                <p className="text-xs text-muted-foreground mt-1">
+                  {getDaysUntil(deadline.due_date)}
+                </p>
+              </div>
+            </div>
+          ))}
         </div>
       </CardContent>
     </Card>

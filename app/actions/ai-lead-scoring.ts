@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { handleError } from "@/lib/errors"
-import { generateText } from "ai"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 /**
  * AI-Powered Lead Scoring System

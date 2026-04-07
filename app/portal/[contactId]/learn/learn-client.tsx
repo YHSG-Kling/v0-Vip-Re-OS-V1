@@ -10,10 +10,16 @@ import { BookOpen, CheckCircle2, Clock } from "lucide-react"
 import { LessonCard, SpotlightLessonCard } from "@/app/components/portal/LessonCard"
 import { LessonDetailDrawer } from "@/app/components/portal/LessonDetailDrawer"
 import type { LessonFeedResult, LessonFeedItem } from "@/app/actions/portal-education"
+import { markResourceCompleted } from "@/app/actions/ai-client-portal"
+import { createClient } from "@/lib/supabase/client"
 
 interface LearnClientProps {
   contactId: string
   initialFeed: LessonFeedResult
+  /** agent_id of the supervising agent — used for 100% completion notification */
+  agentId?: string | null
+  /** contact first name for notification body */
+  contactFirstName?: string | null
 }
 
 type FilterTab = "all" | "unread" | "completed"
@@ -25,7 +31,7 @@ const fetcher = async (url: string) => {
   return res.json()
 }
 
-export default function LearnClient({ contactId, initialFeed }: LearnClientProps) {
+export default function LearnClient({ contactId, initialFeed, agentId, contactFirstName }: LearnClientProps) {
   const [filter, setFilter] = useState<FilterTab>("all")
   const [selectedLesson, setSelectedLesson] = useState<LessonFeedItem | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -72,28 +78,44 @@ export default function LearnClient({ contactId, initialFeed }: LearnClientProps
     setDrawerOpen(true)
   }, [])
 
-  // Handle lesson read
+  // Handle lesson read — optimistic update + cross-system persistence + 100% agent notification
   const handleLessonRead = useCallback(async (lessonKey: string) => {
-    // Optimistically update the local state
+    // Persist to contact_education_progress via ai-client-portal action
+    await markResourceCompleted({ contactId, resourceId: lessonKey }).catch(() => {})
+
+    // Optimistically update the local SWR state
     await mutate(
       (current) => {
         if (!current) return current
+        const newCompletedCount = current.completedCount + 1
+        const updatedLessons = current.lessons.map(lesson =>
+          lesson.key === lessonKey ? { ...lesson, isCompleted: true } : lesson
+        )
+
+        // Fire agent notification if all lessons are now complete
+        if (newCompletedCount >= current.totalCount && agentId) {
+          const supabase = createClient()
+          supabase.from("notifications").insert({
+            user_id: agentId,
+            type: "portal_education_completed",
+            title: `${contactFirstName ?? "Your client"} completed all portal lessons`,
+            entity_type: "contact",
+            entity_id: contactId,
+          }).then(() => {}).catch(() => {})
+        }
+
         return {
           ...current,
-          completedCount: current.completedCount + 1,
-          spotlight: current.spotlight?.key === lessonKey 
-            ? current.lessons.find(l => !l.isCompleted && l.key !== lessonKey) || null
+          completedCount: newCompletedCount,
+          spotlight: current.spotlight?.key === lessonKey
+            ? current.lessons.find(l => !l.isCompleted && l.key !== lessonKey) ?? null
             : current.spotlight,
-          lessons: current.lessons.map(lesson =>
-            lesson.key === lessonKey
-              ? { ...lesson, isCompleted: true }
-              : lesson
-          ),
+          lessons: updatedLessons,
         }
       },
       false
     )
-  }, [mutate])
+  }, [mutate, contactId, agentId, contactFirstName])
 
   const progressPercent = currentFeed.totalCount > 0
     ? Math.round((currentFeed.completedCount / currentFeed.totalCount) * 100)
@@ -103,6 +125,12 @@ export default function LearnClient({ contactId, initialFeed }: LearnClientProps
 
   return (
     <div className="space-y-6">
+      {/* Trust language */}
+      <p className="text-xs text-muted-foreground">
+        These resources are curated for your situation. They are educational guides —
+        not legal advice. Your agent is always available if you have questions.
+      </p>
+
       {/* Progress Section */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -158,6 +186,17 @@ export default function LearnClient({ contactId, initialFeed }: LearnClientProps
           </TabsTrigger>
         </TabsList>
       </Tabs>
+
+      {/* All-complete celebration */}
+      {progressPercent === 100 && filter !== "unread" && (
+        <div className="rounded-xl border-2 border-green-200 bg-green-50 p-4 text-center">
+          <CheckCircle2 className="h-8 w-8 text-green-600 mx-auto mb-2" />
+          <p className="font-semibold text-green-800 mt-1">{"You're all caught up!"}</p>
+          <p className="text-sm text-green-700 mt-1">
+            {"You've completed all the resources for this stage. Your agent has been notified."}
+          </p>
+        </div>
+      )}
 
       {/* Empty States */}
       {filteredLessons.length === 0 && filter === "completed" && (

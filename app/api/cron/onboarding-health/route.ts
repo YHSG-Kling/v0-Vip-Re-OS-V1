@@ -7,6 +7,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { KernelEvent } from '@/lib/kernel/events'
 import { processKernelEvent } from '@/lib/kernel/notification-engine'
+import {
+  createCronRunContextAction,
+  recordCronStartAction,
+  recordCronSuccessAction,
+  recordCronFailureAction,
+} from '@/app/actions/cron-kernel'
 
 // Vercel Cron config
 export const runtime = 'nodejs'
@@ -23,6 +29,20 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  const contextResult = await createCronRunContextAction({
+    cron_name: 'onboarding-health',
+    cron_path: '/app/api/cron/onboarding-health/route.ts',
+  })
+  if (!contextResult.success || !contextResult.data) {
+    return NextResponse.json({ error: 'Failed to create cron context' }, { status: 500 })
+  }
+  const contextId = contextResult.data.context_id
+  const startRecordResult = await recordCronStartAction({ context_id: contextId })
+  if (!startRecordResult.success) {
+    console.error('[OnboardingHealth] Failed to record cron start:', startRecordResult.error)
+  }
+
+  try {
   const supabase = createServiceClient()
   const now = new Date()
   const stalledThreshold = new Date(now.getTime() - STALLED_DAYS_THRESHOLD * 24 * 60 * 60 * 1000)
@@ -159,10 +179,23 @@ export async function GET(request: NextRequest) {
 
   console.log(`[OnboardingHealth] Processed ${onboardings.length} onboardings, found ${stalledAgents.length} stalled`)
 
+  await recordCronSuccessAction({
+    context_id: contextId,
+    records_processed: onboardings.length,
+    output_count: suggestions.length,
+    metadata: { processed: onboardings.length, stalledCount: stalledAgents.length, suggestionsCreated: suggestions.length },
+  })
+
   return NextResponse.json({
     message: 'Onboarding health check complete',
     processed: onboardings.length,
     stalledCount: stalledAgents.length,
     suggestionsCreated: suggestions.length,
   })
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    console.error('[OnboardingHealth] Cron failed:', error)
+    await recordCronFailureAction({ context_id: contextId, error, stage: 'main-processing' })
+    return NextResponse.json({ error: errorMessage, context_id: contextId }, { status: 500 })
+  }
 }

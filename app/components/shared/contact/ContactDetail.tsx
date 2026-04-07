@@ -1,6 +1,8 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import type { Contact } from "@/types/contact"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -10,7 +12,9 @@ import { Separator } from "@/components/ui/separator"
 import {
   User,
   Mail,
+  MailOpen,
   Phone,
+  PhoneCall,
   Calendar,
   Building,
   FileText,
@@ -26,6 +30,11 @@ import {
   Target,
   CheckCircle,
   XCircle,
+  Pause,
+  Play,
+  RefreshCw,
+  AlertTriangle,
+  ShieldOff,
 } from "lucide-react"
 import { getUrgencyColor, calculateDaysUntilTimeline, getPersonaDashboardRoute } from "@/lib/contact-utils"
 
@@ -41,6 +50,8 @@ interface ContactDetailProps {
     email: string
     phone: string
   }
+  brokerageId?: string
+  userId?: string
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -82,11 +93,175 @@ export function ContactDetail({
   onSendEmail,
   onAddNote,
   agentInfo,
+  brokerageId,
+  userId,
 }: ContactDetailProps) {
+  const router = useRouter()
   const [newNote, setNewNote] = useState("")
+  const [isaLoading, setIsaLoading] = useState<string | null>(null)
   const urgencyColors = getUrgencyColor(contact.timeline || "unknown")
   const daysUntil = calculateDaysUntilTimeline(contact.timeline || "unknown")
   const portalUrl = getPersonaDashboardRoute(contact.id, contact.contact_persona)
+
+  // ── ISA action handlers ──────────────────────────────────────────────────
+
+  async function handleAICallNow() {
+    if (!contact.phone) { toast.error("No phone number on this contact"); return }
+    if ((contact as any).call_stop_flag) { toast.error("Call stop flag is set on this contact"); return }
+    setIsaLoading("call")
+    try {
+      const res = await fetch("/api/voice/initiate-call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          phoneNumber: contact.phone,
+          contactId: contact.id,
+          agentId: userId ?? "",
+          brokerageId: brokerageId ?? (contact as any).brokerage_id ?? "",
+          callPurpose: "isa_followup",
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.blocked ? `Call blocked: ${data.reason}` : (data.error ?? "Failed to initiate call")); return }
+      toast.success(`AI call initiated — ID: ${data.callId}`)
+      router.refresh()
+    } catch { toast.error("Network error initiating AI call") }
+    finally { setIsaLoading(null) }
+  }
+
+  async function handleSendEmailNow() {
+    if (!contact.email) { toast.error("No email address on this contact"); return }
+    setIsaLoading("email")
+    try {
+      // Contacts operate via the engagement action using their linked lead id if present,
+      // otherwise we POST directly to the email dispatch API
+      const res = await fetch("/api/contacts/send-isa-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contactId: contact.id }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error ?? "Failed to send email"); return }
+      toast.success("AI email queued for immediate send")
+      router.refresh()
+    } catch { toast.error("Failed to send email") }
+    finally { setIsaLoading(null) }
+  }
+
+  async function handleSendDirectMail() {
+    const address = (contact as any).mailing_address || (contact as any).address
+    if (!address) { toast.error("No mailing address on this contact"); return }
+    setIsaLoading("mail")
+    try {
+      const res = await fetch("/api/contacts/send-isa-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contactId: contact.id, channel: "direct_mail" }),
+      })
+      const data = await res.json()
+      if (!res.ok) { toast.error(data.error ?? "Failed to queue direct mail"); return }
+      toast.success("Direct mail piece queued for dispatch")
+      router.refresh()
+    } catch { toast.error("Failed to queue direct mail") }
+    finally { setIsaLoading(null) }
+  }
+
+  async function handleHandOffToAgent() {
+    setIsaLoading("handoff")
+    try {
+      const { acceptAIISAHandoff } = await import("@/app/actions/ai-isa/accept-handoff")
+      // contacts use their linked lead or the contact id itself as the entity
+      const leadId = (contact as any).lead_id ?? contact.id
+      await acceptAIISAHandoff({
+        leadId,
+        brokerageId: brokerageId ?? (contact as any).brokerage_id ?? "",
+        actorUserId: userId ?? "system",
+      })
+      toast.success("Handed off to human agent")
+      router.refresh()
+    } catch (err: any) { toast.error(err?.message ?? "Handoff failed") }
+    finally { setIsaLoading(null) }
+  }
+
+  async function handlePauseAI() {
+    setIsaLoading("pause")
+    try {
+      const { createClient } = await import("@/lib/supabase/client")
+      const supabase = createClient()
+      await supabase.from("contacts").update({ ai_outreach_paused: true, updated_at: new Date().toISOString() }).eq("id", contact.id)
+      toast.success("AI-ISA paused for this contact")
+      router.refresh()
+    } catch { toast.error("Failed to pause AI-ISA") }
+    finally { setIsaLoading(null) }
+  }
+
+  async function handleResumeAI() {
+    setIsaLoading("resume")
+    try {
+      const { createClient } = await import("@/lib/supabase/client")
+      const supabase = createClient()
+      await supabase.from("contacts").update({ ai_outreach_paused: false, updated_at: new Date().toISOString() }).eq("id", contact.id)
+      toast.success("AI-ISA resumed for this contact")
+      router.refresh()
+    } catch { toast.error("Failed to resume AI-ISA") }
+    finally { setIsaLoading(null) }
+  }
+
+  async function handleForceReassess() {
+    setIsaLoading("reassess")
+    try {
+      const res = await fetch("/api/contacts/qualify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contactId: contact.id }),
+      })
+      if (!res.ok) { toast.error("Reassessment failed"); return }
+      toast.success("Qualification reassessment queued")
+      router.refresh()
+    } catch { toast.error("Failed to queue reassessment") }
+    finally { setIsaLoading(null) }
+  }
+
+  async function handleEscalate() {
+    setIsaLoading("escalate")
+    try {
+      const { createClient } = await import("@/lib/supabase/client")
+      const supabase = createClient()
+      await supabase.from("notifications").insert({
+        brokerage_id: brokerageId ?? (contact as any).brokerage_id,
+        type: "isa_escalation",
+        title: "Contact escalated for immediate attention",
+        message: `Contact ${contact.first_name} ${contact.last_name} has been escalated from the CRM.`,
+        entity_type: "contact",
+        entity_id: contact.id,
+        is_read: false,
+      })
+      toast.success("Contact escalated — agent notified")
+      router.refresh()
+    } catch { toast.error("Failed to escalate contact") }
+    finally { setIsaLoading(null) }
+  }
+
+  async function handleComplianceHold(hold: boolean) {
+    setIsaLoading("hold")
+    try {
+      const { createClient } = await import("@/lib/supabase/client")
+      const supabase = createClient()
+      await supabase
+        .from("contacts")
+        .update({ aiisa_state: hold ? "compliance_hold" : "ai_active", updated_at: new Date().toISOString() })
+        .eq("id", contact.id)
+      toast.success(hold ? "Compliance hold placed" : "Compliance hold removed")
+      router.refresh()
+    } catch { toast.error("Failed to update compliance hold") }
+    finally { setIsaLoading(null) }
+  }
+
+  const isAiPaused = (contact as any).ai_outreach_paused
+  const isComplianceHold = (contact as any).aiisa_state === "compliance_hold"
+  const hasPhone = !!contact.phone && !(contact as any).call_stop_flag
+  const hasEmail = !!contact.email && !(contact as any).email_opt_out
+  const hasAddress = !!((contact as any).mailing_address || (contact as any).address)
 
   const handleAddNote = () => {
     if (newNote.trim()) {
@@ -307,21 +482,147 @@ export function ContactDetail({
       {/* Right Column - Actions & Dashboard Preview */}
       <div className="space-y-4">
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Quick Actions</CardTitle>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-lg">Actions</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2">
+          <CardContent className="space-y-1.5">
+
+            {/* CRM actions */}
             {!contact.has_login && (
               <Button className="w-full justify-start" onClick={onQualify}>
-                <UserCheck className="w-4 h-4 mr-2" /> Qualify & Create Login
+                <UserCheck className="w-4 h-4 mr-2" /> Qualify &amp; Create Login
               </Button>
             )}
-            <Button variant="outline" className="w-full justify-start bg-transparent" onClick={onSendEmail}>
-              <Send className="w-4 h-4 mr-2" /> Send Email
-            </Button>
-            <Button variant="outline" className="w-full justify-start bg-transparent" onClick={onEdit}>
+            <Button variant="outline" className="w-full justify-start" onClick={onEdit}>
               <Edit className="w-4 h-4 mr-2" /> Edit Contact
             </Button>
+            <Button variant="outline" className="w-full justify-start" onClick={onSendEmail}>
+              <Send className="w-4 h-4 mr-2" /> Compose Email
+            </Button>
+
+            <Separator className="my-2" />
+
+            {/* AI-ISA outreach actions */}
+            {hasPhone && (
+              <Button
+                variant="outline"
+                className="w-full justify-start text-green-700 border-green-300 hover:bg-green-50"
+                onClick={handleAICallNow}
+                disabled={isaLoading === "call"}
+              >
+                <PhoneCall className="w-4 h-4 mr-2" />
+                {isaLoading === "call" ? "Calling..." : "AI Call Now"}
+              </Button>
+            )}
+
+            {hasEmail && (
+              <Button
+                variant="outline"
+                className="w-full justify-start text-blue-700 border-blue-300 hover:bg-blue-50"
+                onClick={handleSendEmailNow}
+                disabled={isaLoading === "email"}
+              >
+                <Mail className="w-4 h-4 mr-2" />
+                {isaLoading === "email" ? "Sending..." : "Send Email Now"}
+              </Button>
+            )}
+
+            {hasAddress && (
+              <Button
+                variant="outline"
+                className="w-full justify-start text-purple-700 border-purple-300 hover:bg-purple-50"
+                onClick={handleSendDirectMail}
+                disabled={isaLoading === "mail"}
+              >
+                <MailOpen className="w-4 h-4 mr-2" />
+                {isaLoading === "mail" ? "Queuing..." : "Send Direct Mail"}
+              </Button>
+            )}
+
+            <Separator className="my-2" />
+
+            {/* AI-ISA state controls */}
+            <Button
+              variant="outline"
+              className="w-full justify-start"
+              onClick={handleHandOffToAgent}
+              disabled={isaLoading === "handoff"}
+            >
+              <UserCheck className="w-4 h-4 mr-2" />
+              {isaLoading === "handoff" ? "Handing off..." : "Hand Off to Human Agent"}
+            </Button>
+
+            {isAiPaused ? (
+              <Button
+                variant="ghost"
+                className="w-full justify-start"
+                onClick={handleResumeAI}
+                disabled={isaLoading === "resume"}
+              >
+                <Play className="w-4 h-4 mr-2" />
+                Resume AI-ISA
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                className="w-full justify-start"
+                onClick={handlePauseAI}
+                disabled={isaLoading === "pause"}
+              >
+                <Pause className="w-4 h-4 mr-2" />
+                Pause AI-ISA
+              </Button>
+            )}
+
+            <Button
+              variant="ghost"
+              className="w-full justify-start"
+              onClick={handleForceReassess}
+              disabled={isaLoading === "reassess"}
+            >
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Force Reassess
+            </Button>
+
+            <a href={`/contacts/${contact.id}?tab=calls`} className="block">
+              <Button variant="ghost" className="w-full justify-start text-muted-foreground">
+                <Phone className="w-4 h-4 mr-2" />
+                View Call History
+              </Button>
+            </a>
+
+            <Button
+              variant="ghost"
+              className="w-full justify-start text-orange-600 hover:text-orange-700"
+              onClick={handleEscalate}
+              disabled={isaLoading === "escalate"}
+            >
+              <AlertTriangle className="w-4 h-4 mr-2" />
+              Escalate
+            </Button>
+
+            {isComplianceHold ? (
+              <Button
+                variant="ghost"
+                className="w-full justify-start text-green-700"
+                onClick={() => handleComplianceHold(false)}
+                disabled={isaLoading === "hold"}
+              >
+                <CheckCircle className="w-4 h-4 mr-2" />
+                Remove Compliance Hold
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                className="w-full justify-start text-muted-foreground"
+                onClick={() => handleComplianceHold(true)}
+                disabled={isaLoading === "hold"}
+              >
+                <ShieldOff className="w-4 h-4 mr-2" />
+                Compliance Hold
+              </Button>
+            )}
+
             <Separator className="my-2" />
             <Button variant="destructive" className="w-full justify-start" onClick={onDelete}>
               <Trash2 className="w-4 h-4 mr-2" /> Delete Contact

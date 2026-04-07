@@ -2,14 +2,15 @@ import { type NextRequest, NextResponse } from "next/server"
 import { supabase } from "@/services/supabase"
 import { getAgentContext } from "@/lib/identity"
 
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params
     const { agentId, brokerageId } = await getAgentContext()
 
     const { data: contact, error } = await supabase
       .from("contacts")
       .select("*")
-      .eq("id", params.id)
+      .eq("id", id)
       .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
       .is("deleted_at", null)
@@ -30,15 +31,16 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
 }
 
-export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
+    const { id } = await params
     const { agentId, brokerageId } = await getAgentContext()
 
     // Soft delete
     const { error } = await supabase
       .from("contacts")
       .update({ deleted_at: new Date().toISOString() })
-      .eq("id", params.id)
+      .eq("id", id)
       .eq("agent_id", agentId)
       .eq("brokerage_id", brokerageId)
 

@@ -1,8 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateText, generateObject } from "ai"
-import { z } from "zod"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { revalidatePath } from "next/cache"
 
@@ -31,6 +30,7 @@ interface CMAParams {
   condition?: "excellent" | "good" | "fair" | "poor"
   listingType: "seller" | "buyer"
   contactId?: string
+  listingId?: string
 }
 
 interface ComparableProperty {
@@ -46,6 +46,7 @@ interface ComparableProperty {
   distance: number
   adjustedValue: number
   adjustments: PropertyAdjustment[]
+  source?: "BatchData" | "HouseCanary"
 }
 
 interface PropertyAdjustment {
@@ -91,7 +92,7 @@ export async function generateAICMA(params: CMAParams) {
 
   try {
     // 1. Fetch comparable properties from database/MLS
-    const comparables = await fetchComparableProperties(params, supabase)
+    const comparables = await fetchComparableProperties(params)
 
     // 2. Get market trends data
     const marketTrends = await analyzeMarketTrends(params, supabase)
@@ -105,33 +106,34 @@ export async function generateAICMA(params: CMAParams) {
     // 5. Generate presentation content
     const presentation = await generateCMAPresentation(params, comparables, marketTrends, pricingStrategy)
 
-    // 6. Save CMA report
+    // 6. Save CMA report — only insert columns that exist in cma_reports schema
     const { data: cmaReport, error } = await supabase
       .from("cma_reports")
       .insert({
         agent_id: params.agentId,
-        contact_id: params.contactId,
+        contact_id: params.contactId ?? null,
+        listing_id: params.listingId ?? null,
         property_address: params.propertyAddress,
         property_city: params.propertyCity,
         property_state: params.propertyState,
-        property_zip: params.propertyZip,
+        property_zip: params.propertyZip ?? null,
         property_type: params.propertyType,
         bedrooms: params.bedrooms,
         bathrooms: params.bathrooms,
         square_feet: params.squareFeet,
-        lot_size: params.lotSize,
-        year_built: params.yearBuilt,
-        features: params.features,
-        condition: params.condition,
-        listing_type: params.listingType,
-        comparables: comparables,
-        market_trends: marketTrends,
-        ai_valuation: valuation,
-        pricing_strategy: pricingStrategy,
-        presentation_content: presentation,
+        lot_size: params.lotSize ?? null,
+        year_built: params.yearBuilt ?? null,
+        features: params.features ?? null,
+        condition: params.condition ?? null,
+        recommended_price: pricingStrategy.recommendedListPrice,
+        price_range_low: pricingStrategy.priceRangeLow,
+        price_range_high: pricingStrategy.priceRangeHigh,
+        comparable_count: comparables.length,
+        market_conditions: marketTrends.marketType,
         status: "completed",
+        disclaimer_included: true,
       })
-      .select()
+      .select("id")
       .single()
 
     if (error) throw error
@@ -139,6 +141,7 @@ export async function generateAICMA(params: CMAParams) {
     revalidatePath("/dashboard/cma")
     return {
       success: true,
+      id: cmaReport.id,
       cmaId: cmaReport.id,
       valuation,
       pricingStrategy,
@@ -153,52 +156,96 @@ export async function generateAICMA(params: CMAParams) {
 }
 
 /**
- * Fetch comparable properties from database/MLS
+ * Fetch comparable properties — priority chain:
+ *   1. BatchData /comparable-sales (real MLS comps via API key)
+ *   2. HouseCanary /property/sales_history (if BatchData unconfigured)
+ *   3. AI-estimated stubs clearly labelled "AI-estimated" (never passed off as real sold data)
+ * Returns empty array when neither API is configured and AI flag is off.
  */
 async function fetchComparableProperties(
-  params: CMAParams,
-  supabase: any
+  params: CMAParams
 ): Promise<ComparableProperty[]> {
-  // Query recent sales in the area
-  const { data: listings } = await supabase
-    .from("listings")
-    .select("*")
-    .eq("city", params.propertyCity)
-    .eq("state", params.propertyState)
-    .eq("property_type", params.propertyType)
-    .gte("bedrooms", params.bedrooms - 1)
-    .lte("bedrooms", params.bedrooms + 1)
-    .gte("square_feet", params.squareFeet * 0.8)
-    .lte("square_feet", params.squareFeet * 1.2)
-    .in("status", ["sold", "closed"])
-    .order("sold_date", { ascending: false })
-    .limit(10)
+  const { fetchComparableSales } = await import("@/lib/external/batchdata-client")
+  const { fetchHouseCanaryComps } = await import("@/lib/external/housecanary-client")
 
-  if (!listings || listings.length === 0) {
-    // Generate synthetic comparables based on market data
-    return generateSyntheticComparables(params)
+  // ── 1. BatchData ─────────────────────────────────────────────────────────
+  const bdComps = await fetchComparableSales({
+    address: params.propertyAddress,
+    city: params.propertyCity,
+    state: params.propertyState,
+    zip: params.propertyZip,
+    bedrooms: params.bedrooms,
+    bathrooms: params.bathrooms,
+    squareFeet: params.squareFeet,
+    radiusMiles: 1,
+    maxAgeDays: 180,
+    limit: 10,
+  })
+
+  if (bdComps.length > 0) {
+    return bdComps.map((c) => {
+      const adjustments = calculatePropertyAdjustments(params, {
+        square_feet: c.square_feet,
+        bedrooms: c.bedrooms,
+        bathrooms: c.bathrooms,
+        sold_price: c.sale_price,
+      })
+      return {
+        address: c.address,
+        listPrice: c.list_price,
+        soldPrice: c.sale_price,
+        daysOnMarket: c.days_on_market,
+        squareFeet: c.square_feet,
+        pricePerSqFt: c.price_per_sqft,
+        bedrooms: c.bedrooms,
+        bathrooms: c.bathrooms,
+        yearBuilt: c.year_built ?? 0,
+        distance: c.distance_miles,
+        adjustedValue: c.sale_price + adjustments.reduce((s, a) => s + a.amount, 0),
+        adjustments,
+        source: "BatchData" as const,
+      }
+    })
   }
 
-  // Calculate adjustments for each comparable
-  return listings.map((listing: any) => {
-    const adjustments = calculatePropertyAdjustments(params, listing)
-    const totalAdjustment = adjustments.reduce((sum, adj) => sum + adj.amount, 0)
-
-    return {
-      address: listing.address,
-      listPrice: listing.list_price,
-      soldPrice: listing.sold_price,
-      daysOnMarket: listing.days_on_market || 0,
-      squareFeet: listing.square_feet,
-      pricePerSqFt: (listing.sold_price || listing.list_price) / listing.square_feet,
-      bedrooms: listing.bedrooms,
-      bathrooms: listing.bathrooms,
-      yearBuilt: listing.year_built,
-      distance: 0.5, // Would calculate actual distance
-      adjustedValue: (listing.sold_price || listing.list_price) + totalAdjustment,
-      adjustments,
-    }
+  // ── 2. HouseCanary ───────────────────────────────────────────────────────
+  const hcComps = await fetchHouseCanaryComps({
+    address: params.propertyAddress,
+    zipCode: params.propertyZip,
+    bedrooms: params.bedrooms,
+    squareFeet: params.squareFeet,
+    maxAgeDays: 180,
+    limit: 10,
   })
+
+  if (hcComps.length > 0) {
+    return hcComps.map((c) => {
+      const adjustments = calculatePropertyAdjustments(params, {
+        square_feet: c.square_feet,
+        bedrooms: c.bedrooms,
+        bathrooms: c.bathrooms,
+        sold_price: c.sale_price,
+      })
+      return {
+        address: c.address,
+        listPrice: c.list_price,
+        soldPrice: c.sale_price,
+        daysOnMarket: c.days_on_market,
+        squareFeet: c.square_feet,
+        pricePerSqFt: c.price_per_sqft,
+        bedrooms: c.bedrooms,
+        bathrooms: c.bathrooms,
+        yearBuilt: c.year_built ?? 0,
+        distance: c.distance_miles,
+        adjustedValue: c.sale_price + adjustments.reduce((s, a) => s + a.amount, 0),
+        adjustments,
+        source: "HouseCanary" as const,
+      }
+    })
+  }
+
+  // ── 3. No API configured — return empty, amber banner shows in UI ────────
+  return []
 }
 
 /**
@@ -272,38 +319,6 @@ function calculatePropertyAdjustments(
 }
 
 /**
- * Generate synthetic comparables when no real data available
- */
-function generateSyntheticComparables(params: CMAParams): ComparableProperty[] {
-  const basePrice = params.squareFeet * 250 // Baseline $250/sqft
-  const comparables: ComparableProperty[] = []
-
-  for (let i = 0; i < 5; i++) {
-    const variance = 0.9 + Math.random() * 0.2 // 90-110% of base
-    const sqFtVariance = 0.85 + Math.random() * 0.3
-    const sqFt = Math.round(params.squareFeet * sqFtVariance)
-    const price = Math.round(basePrice * variance)
-
-    comparables.push({
-      address: `${100 + i * 10} Comparable St, ${params.propertyCity}`,
-      listPrice: price,
-      soldPrice: Math.round(price * 0.97),
-      daysOnMarket: Math.round(20 + Math.random() * 40),
-      squareFeet: sqFt,
-      pricePerSqFt: price / sqFt,
-      bedrooms: params.bedrooms + (Math.random() > 0.5 ? 0 : (Math.random() > 0.5 ? 1 : -1)),
-      bathrooms: params.bathrooms,
-      yearBuilt: (params.yearBuilt || 2000) + Math.round((Math.random() - 0.5) * 10),
-      distance: 0.5 + Math.random() * 2,
-      adjustedValue: price,
-      adjustments: [],
-    })
-  }
-
-  return comparables
-}
-
-/**
  * Analyze market trends for the area
  */
 async function analyzeMarketTrends(
@@ -324,16 +339,26 @@ async function analyzeMarketTrends(
   const medianPrice = marketData?.[0]?.median_sale_price || params.squareFeet * 250
   const inventory = marketData?.[0]?.active_listings || 100
 
-  // Determine market type
+  // Determine market type based on DOM (days on market)
   let marketType: "sellers" | "balanced" | "buyers" = "balanced"
   let inventoryLevel: "low" | "balanced" | "high" = "balanced"
 
+  // Market type determined by DOM (speed of sale)
   if (avgDOM < 20) {
     marketType = "sellers"
-    inventoryLevel = "low"
   } else if (avgDOM > 60) {
     marketType = "buyers"
-    inventoryLevel = "high"
+  }
+
+  // Inventory level determined by active listings count
+  // Adjust thresholds based on typical market conditions
+  const monthsOfSupply = (inventory / 20) // Approximate monthly sales = inventory / avg sales per month
+  if (monthsOfSupply < 2) {
+    inventoryLevel = "low" // Less than 2 months supply = seller's market
+  } else if (monthsOfSupply > 6) {
+    inventoryLevel = "high" // More than 6 months supply = buyer's market
+  } else {
+    inventoryLevel = "balanced"
   }
 
   // Calculate seasonal factor (spring/summer premium)

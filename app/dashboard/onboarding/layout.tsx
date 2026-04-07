@@ -1,4 +1,4 @@
-import { AISetupAssistant } from '@/components/onboarding/AISetupAssistant'
+import { AISetupAssistant } from '@/app/components/features/onboarding/AISetupAssistant'
 import { getAgentContext } from '@/lib/identity/get-agent-context'
 
 export const dynamic = 'force-dynamic'

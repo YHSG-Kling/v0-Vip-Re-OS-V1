@@ -215,6 +215,58 @@ export async function getAdminDashboardStats() {
     volume: agent.ytd_gci || 0,
   }))
 
+  // Wire previously hardcoded metrics from real DB queries
+  const [
+    docsAwaitingResult,
+    upcomingDeadlinesResult,
+    unreadMessagesResult,
+    avgDaysResult,
+  ] = await Promise.all([
+    // Documents awaiting agent or broker review
+    supabase
+      .from('transaction_documents')
+      .select('id', { count: 'exact' })
+      .eq('brokerage_id', brokerageId)
+      .in('review_status', ['pending', 'needs_revision']),
+
+    // Transaction milestones due within the next 7 days
+    supabase
+      .from('transaction_milestones')
+      .select('id', { count: 'exact' })
+      .eq('brokerage_id', brokerageId)
+      .eq('status', 'pending')
+      .lte('target_date', new Date(Date.now() + 7 * 86400000).toISOString().split('T')[0])
+      .gte('target_date', now.toISOString().split('T')[0]),
+
+    // Unread notifications for this brokerage's agents
+    supabase
+      .from('notifications')
+      .select('id', { count: 'exact' })
+      .eq('brokerage_id', brokerageId)
+      .eq('is_read', false),
+
+    // Average days-to-close from actual closed transactions this year
+    supabase
+      .from('transactions')
+      .select('created_at, close_date')
+      .eq('brokerage_id', brokerageId)
+      .eq('status', 'closed')
+      .gte('close_date', startOfYear.toISOString().split('T')[0])
+      .not('close_date', 'is', null)
+      .not('created_at', 'is', null),
+  ])
+
+  const avgDays = (() => {
+    const rows = avgDaysResult.data || []
+    if (rows.length === 0) return 30
+    const total = rows.reduce((sum, t) => {
+      const created = new Date(t.created_at).getTime()
+      const closed = new Date(t.close_date).getTime()
+      return sum + Math.max(0, (closed - created) / 86400000)
+    }, 0)
+    return Math.round(total / rows.length)
+  })()
+
   return {
     // Agent metrics
     totalAgents,
@@ -227,7 +279,7 @@ export async function getAdminDashboardStats() {
     closedThisMonth,
     monthlyVolume,
     ytdVolume,
-    avgDaysToClose: 30, // TODO: Calculate from actual data
+    avgDaysToClose: avgDays,
     // Listing metrics
     activeListings,
     newListingsThisMonth,
@@ -241,11 +293,11 @@ export async function getAdminDashboardStats() {
     // Compliance & approvals
     pendingApprovals: approvalsResult.count || 0,
     complianceAlerts: complianceResult.count || 0,
-    documentsAwaitingReview: 0, // TODO: Add document review tracking
+    documentsAwaitingReview: docsAwaitingResult.count || 0,
     // Activity metrics
     tasksOverdue: tasksResult.count || 0,
-    upcomingDeadlines: 0, // TODO: Add deadline tracking
-    unreadMessages: 0, // TODO: Add message tracking
+    upcomingDeadlines: upcomingDeadlinesResult.count || 0,
+    unreadMessages: unreadMessagesResult.count || 0,
     scheduledShowings: showingsResult.count || 0,
     // Recent activity
     recentActivities: [],
