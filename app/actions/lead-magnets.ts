@@ -47,7 +47,7 @@ export default function AdminLeadMagnetsPage() {
         .eq("user_id", user.id)
         .single()
 
-      if (!profile || !["admin", "broker", "superadmin"].includes(profile.user_type)) {
+      if (!profile || !["admin", "broker", "superadmin", "agent", "team_leader"].includes(profile.user_type)) {
         setAuthError("Insufficient permissions")
         return
       }
