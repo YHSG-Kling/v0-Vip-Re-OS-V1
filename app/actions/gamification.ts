@@ -300,7 +300,7 @@ export async function getLeaderboard(options: {
   return {
     rankings: data || [],
     currentAgentId: agentData?.id,
-    brokerageId: profile.brokerage_id,
+    brokerageId: profile.brokerage_id ?? "", // brokerage_id guarded above
   }
 }
 
