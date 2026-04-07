@@ -2157,24 +2157,17 @@ export async function getAgentTransactionKanban() {
 }
 
 export async function updateTransactionStage(transactionId: string, targetStage: string, reason?: string) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { success: false, error: "Not authenticated" }
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("brokerage_id, role")
-    .eq("id", user.id)
-    .single()
-
-  if (!profile?.brokerage_id) return { success: false, error: "User brokerage not found" }
+  // Kernel OS: requireWriteContext — resolves userId, brokerageId, userType via canonical chain
+  const { requireWriteContext } = await import("@/lib/kernel")
+  const ctx = await requireWriteContext().catch(() => null)
+  if (!ctx) return { success: false, error: "Not authenticated" }
 
   const { TransactionOrchestrator } = await import("@/lib/transactions/transaction-orchestrator")
   const orchestrator = new TransactionOrchestrator({
     transactionId,
-    brokerageId: profile.brokerage_id,
-    userId: user.id,
-    userRole: profile.role,
+    brokerageId: ctx.brokerageId,
+    userId: ctx.userId,
+    userRole: ctx.userType, // userType is already canonical — never use .role
   })
 
   const result = await orchestrator.advanceToStage(targetStage as any, reason)
