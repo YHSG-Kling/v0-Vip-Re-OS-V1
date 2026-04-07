@@ -1,48 +1,55 @@
-import { createClient } from "@/lib/supabase/server"
-import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { redirect } from "next/navigation"
-import { AutomationsClient } from "./automations-client"
+import { getListingMedia, getSocialPosts, getVideoProjects, getVideoTemplates, getSocialAccounts } from "@/app/actions/listing-media"
+import { MediaManagerClient } from "./media-manager-client"
+import { getAgentContext } from "@/lib/identity"
+import { toCanonicalRoleOrDefault } from "@/lib/security"
+import { createClient } from "@/lib/supabase/server"
 
-export const dynamic = "force-dynamic"
-
-export const metadata = {
-  title: "Workflow Automations | Admin",
-  description: "Create and manage workflow automations for your brokerage",
+interface PageProps {
+  params: Promise<{ id: string }>
 }
 
-export default async function AutomationsPage() {
-  const ctx = await getAgentContext()
-  if (!ctx) redirect("/login")
+export default async function ListingMediaPage({ params }: PageProps) {
+  const { id: listingId } = await params
 
-  const allowedRoles = ["admin", "broker", "superadmin"]
-  if (!allowedRoles.some((r) => ctx.roles.includes(r))) {
-    redirect("/dashboard")
-  }
+  // Kernel OS: getAgentContext — canonical identity resolution
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect("/login")
+  if (!ctx.brokerageId) redirect("/dashboard")
+
+  // toCanonicalRoleOrDefault handles legacy DB values (TC → tc etc.)
+  const userRole = toCanonicalRoleOrDefault(ctx.userType, "agent")
 
   const supabase = await createClient()
 
-  // Load existing automations for this brokerage
-  const { data: automations } = await supabase
-    .from("workflow_automations")
-    .select("*")
+  const { data: listing } = await supabase
+    .from("listings")
+    .select("id, address, lifecycle_stage, status")
+    .eq("id", listingId)
     .eq("brokerage_id", ctx.brokerageId)
-    .order("created_at", { ascending: false })
+    .single()
+  if (!listing) redirect("/dashboard/listings")
 
-  // Load recent unresolved workflow errors
-  const { data: recentErrors } = await supabase
-    .from("automation_errors")
-    .select("*")
-    .eq("brokerage_id", ctx.brokerageId)
-    .neq("status", "resolved")
-    .order("created_at", { ascending: false })
-    .limit(20)
+  const [mediaResult, videosResult, socialResult, templatesResult, accountsResult] =
+    await Promise.all([
+      getListingMedia(listingId),
+      getVideoProjects(listingId),
+      getSocialPosts(listingId),
+      getVideoTemplates(),
+      getSocialAccounts(ctx.brokerageId),
+    ])
 
   return (
-    <AutomationsClient
-      automations={automations ?? []}
-      recentErrors={recentErrors ?? []}
-      brokerageId={ctx.brokerageId ?? ""}
-      currentUserId={ctx.userId ?? ""}
+    <MediaManagerClient
+      listingId={listingId}
+      listing={listing}
+      brokerageId={ctx.brokerageId}
+      userRole={userRole}
+      initialMedia={mediaResult.data ?? []}
+      initialVideos={videosResult.data ?? []}
+      initialPosts={socialResult.data ?? []}
+      videoTemplates={templatesResult.data ?? []}
+      socialAccounts={accountsResult.data ?? []}
     />
   )
 }
