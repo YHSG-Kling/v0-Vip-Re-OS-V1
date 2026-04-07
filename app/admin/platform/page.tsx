@@ -5,16 +5,20 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ShieldAlert, Building2, Users, Activity, CreditCard, Settings, TrendingUp, Eye } from 'lucide-react'
 import Link from 'next/link'
+import { getAgentContext } from '@/lib/identity'
+import { toCanonicalRoleOrDefault } from '@/lib/security'
 
 export const dynamic = 'force-dynamic'
 
 export default async function PlatformAdminPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/login')
+  // Kernel OS: getAgentContext — canonical identity, never raw auth.getUser()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect('/login')
 
-  const { data: profile } = await supabase.from('users').select('role').eq('id', user.id).single()
-  if (profile?.role !== 'superadmin') redirect('/dashboard/admin')
+  const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
+  if (userRole !== 'superadmin') redirect('/dashboard/admin')
+
+  const supabase = await createClient()
 
   const [brokeragesRes, usersRes] = await Promise.all([
     supabase.from('brokerages').select('id, name, status, created_at').order('created_at', { ascending: false }).limit(10),
