@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
-import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { getAgentContext } from '@/lib/identity'
+import { toCanonicalRoleOrDefault } from '@/lib/security'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
@@ -17,12 +18,12 @@ export const metadata = {
 
 export default async function AdminTasksPage() {
   const ctx = await getAgentContext()
-  if (!ctx) redirect('/login')
+  if (!ctx.isAuthenticated) redirect('/login')
 
+  // toCanonicalRoleOrDefault normalises legacy DB strings (TC→tc etc.)
+  const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
   const allowedRoles = ['admin', 'broker', 'superadmin']
-  if (!allowedRoles.some((r) => ctx.roles.includes(r))) {
-    redirect('/dashboard')
-  }
+  if (!allowedRoles.includes(userRole)) redirect('/dashboard')
 
   const supabase = await createClient()
 
@@ -30,7 +31,7 @@ export default async function AdminTasksPage() {
   const { data: tasks } = await supabase
     .from('tasks')
     .select('*')
-    .eq('brokerage_id', ctx.brokerageId)
+    .eq('brokerage_id', ctx.brokerageId ?? '')
     .or('status.eq.pending,status.eq.overdue,status.eq.in_progress')
     .order('due_date', { ascending: true })
     .limit(50)
