@@ -5,16 +5,20 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Sparkles, Eye, AlertTriangle, CheckCircle2, TrendingUp } from 'lucide-react'
 import Link from 'next/link'
+import { getAgentContext } from '@/lib/identity'
+import { toCanonicalRoleOrDefault } from '@/lib/security'
 
 export const dynamic = 'force-dynamic'
 
 export default async function AIAuditPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/login')
+  // Kernel OS: getAgentContext — canonical identity, never raw auth.getUser()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect('/login')
 
-  const { data: profile } = await supabase.from('users').select('role').eq('id', user.id).single()
-  if (!['admin', 'superadmin', 'compliance_officer'].includes(profile?.role)) redirect('/dashboard')
+  const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
+  if (!['admin', 'superadmin', 'compliance_officer'].includes(userRole)) redirect('/dashboard')
+
+  const supabase = await createClient()
 
   // Fetch AI quality metrics
   const { data: aiOutputs } = await supabase
