@@ -5,6 +5,7 @@
 
 import { predictContentPerformance, getPrediction, type ContentType } from "@/lib/content/performance-predictor"
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity"
 
 export interface PredictPerformanceParams {
   brokerageId: string
@@ -39,26 +40,14 @@ export async function getPredictionAction(
  * Server action to get current user context for predictions.
  */
 export async function getUserContextForPrediction() {
-  const supabase = await createClient()
-  
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return { success: false, error: "Not authenticated" }
-  }
-
-  const { data: profile } = await supabase
-    .from("users")
-    .select("id, brokerage_id")
-    .eq("id", user.id)
-    .single()
-
-  if (!profile?.brokerage_id) {
-    return { success: false, error: "No brokerage found" }
-  }
+  // Kernel OS: getAgentContext — canonical, typed, one call
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+  if (!ctx.brokerageId) return { success: false, error: "No brokerage found" }
 
   return {
     success: true,
-    userId: user.id,
-    brokerageId: profile.brokerage_id,
+    userId: ctx.userId,
+    brokerageId: ctx.brokerageId, // narrowed to string by guard above
   }
 }
