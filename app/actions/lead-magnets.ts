@@ -1,184 +1,221 @@
 
-"use server"
+"use client"
 
-import {
-  createLeadMagnet,
-  publishLeadMagnet,
-  captureFormSubmission,
-  generateQRCode,
-  trackMagnetEvent,
-  getMagnetPerformance,
-  updateMagnetSettings,
-  listLeadMagnets,
-  type CreateLeadMagnetInput,
-  type CreateLeadMagnetOutput,
-  type PublishLeadMagnetInput,
-  type PublishLeadMagnetOutput,
-  type CaptureFormSubmissionInput,
-  type CaptureFormSubmissionOutput,
-  type GenerateQRCodeInput,
-  type GenerateQRCodeOutput,
-  type GetMagnetPerformanceInput,
-  type GetMagnetPerformanceOutput,
-  type UpdateMagnetSettingsInput,
-  type UpdateMagnetSettingsOutput,
-  type ListLeadMagnetsInput,
-  type ListLeadMagnetsOutput,
-} from "@/lib/kernel/lead-magnets"
-import { createClient } from "@/lib/supabase/server"
-import { headers } from "next/headers"
+import { useEffect, useState, useTransition } from "react"
+import { createClient } from "@/lib/supabase/client"
+import { MagnetLibrary } from "@/app/components/features/lead-magnets/MagnetLibrary"
+import { MagnetBuilder } from "@/app/components/features/lead-magnets/MagnetBuilder"
+import { QRCodeGenerator } from "@/app/components/features/lead-magnets/QRCodeGenerator"
+import { PerformanceDashboard } from "@/app/components/features/lead-magnets/PerformanceDashboard"
+import { Button } from "@/components/ui/button"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { ArrowLeft, BarChart2, FileText, QrCode, Magnet } from "lucide-react"
 
-// ── Kernel Command 1: createLeadMagnetAction ──────────────────────────────────
-// Input:  CreateLeadMagnetInput
-// Output: CreateLeadMagnetOutput
-// Validation: auth required, brokerageId FK match
-export async function createLeadMagnetAction(
-  input: CreateLeadMagnetInput
-): Promise<CreateLeadMagnetOutput> {
-  try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) return { success: false, error: "Unauthorized" }
+type View = "library" | "new" | "detail"
 
-    if (!input.title?.trim()) return { success: false, error: "Title is required" }
-    if (!input.brokerageId) return { success: false, error: "brokerageId is required" }
-    if (!input.agentId) return { success: false, error: "agentId is required" }
-
-    return await createLeadMagnet({ ...input, createdBy: user.id })
-  } catch (err) {
-    console.error("[lead-magnets] createLeadMagnetAction:", err)
-    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
-  }
+interface UserContext {
+  userId: string
+  brokerageId: string
+  agentId: string
+  userType: string
 }
 
-// ── Kernel Command 2: publishLeadMagnetAction ─────────────────────────────────
-// Input:  PublishLeadMagnetInput
-// Output: PublishLeadMagnetOutput
-export async function publishLeadMagnetAction(
-  input: PublishLeadMagnetInput
-): Promise<PublishLeadMagnetOutput> {
-  try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) return { success: false, error: "Unauthorized" }
-
-    if (!input.magnetId) return { success: false, error: "magnetId is required" }
-    if (!input.channels?.length) return { success: false, error: "At least one channel required" }
-
-    const headersList = await headers()
-    const host = headersList.get("host") ?? "localhost:3000"
-    const proto = host.startsWith("localhost") ? "http" : "https"
-    const baseUrl = input.baseUrl || `${proto}://${host}`
-
-    return await publishLeadMagnet({ ...input, actorUserId: user.id, baseUrl })
-  } catch (err) {
-    console.error("[lead-magnets] publishLeadMagnetAction:", err)
-    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
-  }
+interface SelectedMagnet {
+  id: string
+  name: string
+  slug: string
+  qrCodeId?: string
 }
 
-// ── Kernel Command 3: captureFormSubmissionAction ─────────────────────────────
-// Input:  CaptureFormSubmissionInput
-// Output: CaptureFormSubmissionOutput
-// No auth required — public-facing form submissions
-export async function captureFormSubmissionAction(
-  input: CaptureFormSubmissionInput
-): Promise<CaptureFormSubmissionOutput> {
-  try {
-    if (!input.formId) return { success: false, error: "formId is required" }
-    if (!input.brokerageId) return { success: false, error: "brokerageId is required" }
-    if (!input.submissionData) return { success: false, error: "submissionData is required" }
+export default function AdminLeadMagnetsPage() {
+  const [ctx, setCtx] = useState<UserContext | null>(null)
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [view, setView] = useState<View>("library")
+  const [selected, setSelected] = useState<SelectedMagnet | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [isPending, startTransition] = useTransition()
 
-    const headersList = await headers()
-    const ipAddress = headersList.get("x-forwarded-for")?.split(",")[0] ?? headersList.get("x-real-ip") ?? undefined
-    const userAgent = headersList.get("user-agent") ?? undefined
+  useEffect(() => {
+    async function loadUser() {
+      const supabase = createClient()
+      const { data: { user }, error } = await supabase.auth.getUser()
+      if (error || !user) { setAuthError("Not authenticated"); return }
 
-    return await captureFormSubmission({ ...input, ipAddress, userAgent })
-  } catch (err) {
-    console.error("[lead-magnets] captureFormSubmissionAction:", err)
-    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
+      const { data: profile } = await supabase
+        .from("user_profiles")
+        .select("user_type, brokerage_id")
+        .eq("user_id", user.id)
+        .single()
+
+      if (!profile || !["admin", "broker", "superadmin"].includes(profile.user_type)) {
+        setAuthError("Insufficient permissions")
+        return
+      }
+
+      setCtx({
+        userId: user.id,
+        // brokerage_id is string|null in DB — guard prevents null reaching here
+        brokerageId: profile.brokerage_id ?? "",
+        agentId: user.id,
+        userType: profile.user_type,
+      })
+    }
+    loadUser()
+  }, [])
+
+  async function handleSelectMagnet(magnetId: string) {
+    if (!ctx) return
+    startTransition(async () => {
+      const supabase = createClient()
+      const { data: form } = await supabase
+        .from("lead_capture_forms")
+        .select("id, name, slug")
+        .eq("id", magnetId)
+        .eq("brokerage_id", ctx.brokerageId)
+        .single()
+
+      if (form) {
+        // Look up QR code for this magnet
+        const { data: qr } = await supabase
+          .from("qr_codes")
+          .select("id")
+          .eq("brokerage_id", ctx.brokerageId)
+          .eq("purpose", "lead_magnet")
+          .ilike("target_url", `%${form.slug}%`)
+          .eq("is_active", true)
+          .maybeSingle()
+
+        setSelected({ id: form.id, name: form.name, slug: form.slug, qrCodeId: qr?.id })
+        setView("detail")
+      }
+    })
   }
-}
 
-// ── Kernel Command 4: generateQRCodeAction ────────────────────────────────────
-// Input:  GenerateQRCodeInput
-// Output: GenerateQRCodeOutput
-export async function generateQRCodeAction(
-  input: GenerateQRCodeInput
-): Promise<GenerateQRCodeOutput> {
-  try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) return { success: false, error: "Unauthorized" }
-
-    if (!input.magnetId) return { success: false, error: "magnetId is required" }
-    if (!input.targetUrl) return { success: false, error: "targetUrl is required" }
-
-    return await generateQRCode(input)
-  } catch (err) {
-    console.error("[lead-magnets] generateQRCodeAction:", err)
-    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
+  function handleCreated(magnetId: string, slug: string) {
+    setSelected({ id: magnetId, name: slug, slug })
+    setRefreshKey((k) => k + 1)
+    setView("detail")
   }
-}
 
-// ── Kernel Command 6: getMagnetPerformanceAction ──────────────────────────────
-// Input:  GetMagnetPerformanceInput
-// Output: GetMagnetPerformanceOutput
-export async function getMagnetPerformanceAction(
-  input: GetMagnetPerformanceInput
-): Promise<GetMagnetPerformanceOutput> {
-  try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) return { success: false, error: "Unauthorized" }
-
-    if (!input.magnetId) return { success: false, error: "magnetId is required" }
-    if (!input.brokerageId) return { success: false, error: "brokerageId is required" }
-
-    return await getMagnetPerformance(input)
-  } catch (err) {
-    console.error("[lead-magnets] getMagnetPerformanceAction:", err)
-    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
+  if (authError) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <p className="text-sm text-destructive">{authError}</p>
+      </div>
+    )
   }
-}
 
-// ── Kernel Command 7: updateMagnetSettingsAction ──────────────────────────────
-// Input:  UpdateMagnetSettingsInput
-// Output: UpdateMagnetSettingsOutput
-export async function updateMagnetSettingsAction(
-  input: UpdateMagnetSettingsInput
-): Promise<UpdateMagnetSettingsOutput> {
-  try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) return { success: false, error: "Unauthorized" }
-
-    if (!input.magnetId) return { success: false, error: "magnetId is required" }
-    if (!input.updates || !Object.keys(input.updates).length) return { success: false, error: "No updates provided" }
-
-    return await updateMagnetSettings({ ...input, actorUserId: user.id })
-  } catch (err) {
-    console.error("[lead-magnets] updateMagnetSettingsAction:", err)
-    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
+  if (!ctx) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh] text-sm text-muted-foreground">
+        Loading...
+      </div>
+    )
   }
-}
 
-// ── Kernel Command 8: listLeadMagnetsAction ───────────────────────────────────
-// Input:  ListLeadMagnetsInput
-// Output: ListLeadMagnetsOutput
-export async function listLeadMagnetsAction(
-  input: ListLeadMagnetsInput
-): Promise<ListLeadMagnetsOutput> {
-  try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) return { success: false, error: "Unauthorized" }
+  return (
+    <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        {view !== "library" && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => { setView("library"); setSelected(null) }}
+            aria-label="Back to library"
+          >
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        )}
+        <div className="flex items-center gap-2">
+          <Magnet className="h-6 w-6 text-primary" />
+          <div>
+            <h1 className="text-2xl font-bold leading-none">
+              {view === "library" ? "Lead Magnets" : view === "new" ? "New Lead Magnet" : selected?.name ?? "Lead Magnet Detail"}
+            </h1>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              {view === "library"
+                ? "Create and manage lead capture campaigns"
+                : view === "new"
+                ? "Configure your lead magnet and publishing channels"
+                : `/lm/${selected?.slug}`}
+            </p>
+          </div>
+        </div>
+      </div>
 
-    if (!input.brokerageId) return { success: false, error: "brokerageId is required" }
+      {/* Library View */}
+      {view === "library" && (
+        <MagnetLibrary
+          key={refreshKey}
+          brokerageId={ctx.brokerageId}
+          agentId={ctx.agentId}
+          onSelectMagnet={handleSelectMagnet}
+          onCreateNew={() => setView("new")}
+        />
+      )}
 
-    return await listLeadMagnets(input)
-  } catch (err) {
-    console.error("[lead-magnets] listLeadMagnetsAction:", err)
-    return { success: false, error: err instanceof Error ? err.message : "Unknown error" }
-  }
+      {/* Builder View */}
+      {view === "new" && (
+        <MagnetBuilder
+          brokerageId={ctx.brokerageId}
+          agentId={ctx.agentId}
+          onCreated={handleCreated}
+        />
+      )}
+
+      {/* Detail View — tabbed: Analytics | QR Code */}
+      {view === "detail" && selected && (
+        <Tabs defaultValue="analytics" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="analytics" className="flex items-center gap-2">
+              <BarChart2 className="h-4 w-4" />
+              Analytics
+            </TabsTrigger>
+            <TabsTrigger value="qr" className="flex items-center gap-2">
+              <QrCode className="h-4 w-4" />
+              QR Code
+            </TabsTrigger>
+            <TabsTrigger value="preview" className="flex items-center gap-2">
+              <FileText className="h-4 w-4" />
+              Preview
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="analytics">
+            <PerformanceDashboard
+              magnetId={selected.id}
+              brokerageId={ctx.brokerageId}
+              magnetName={selected.name}
+            />
+          </TabsContent>
+
+          <TabsContent value="qr">
+            <QRCodeGenerator
+              magnetId={selected.id}
+              magnetSlug={selected.slug}
+              brokerageId={ctx.brokerageId}
+              agentId={ctx.agentId}
+              existingQrCodeId={selected.qrCodeId}
+            />
+          </TabsContent>
+
+          <TabsContent value="preview">
+            <div className="border rounded-xl overflow-hidden bg-muted/20">
+              <div className="bg-muted/40 border-b px-4 py-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <span className="font-mono">/lm/{selected.slug}</span>
+                <span>—</span>
+                <span>Public landing page preview</span>
+              </div>
+              <iframe
+                src={`/lm/${selected.slug}`}
+                title={`Preview of ${selected.name}`}
+                className="w-full h-[600px] border-0"
+              />
+            </div>
+          </TabsContent>
+        </Tabs>
+      )}
+    </div>
+  )
 }
