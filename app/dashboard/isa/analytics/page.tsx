@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { getAgentContext } from '@/lib/identity'
 import { getQualificationOutcomes } from '@/app/actions/ai-isa'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -9,15 +10,13 @@ import Link from 'next/link'
 export const dynamic = 'force-dynamic'
 
 export default async function ISAAnalyticsPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/login')
-
-  const { data: profile } = await supabase.from('users').select('brokerage_id').eq('id', user.id).single()
+  // Kernel OS: getAgentContext — canonical identity
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect('/login')
 
   let outcomes: any = { totalQualified: 0, totalContacted: 0, conversionRate: 0 }
-  if (profile?.brokerage_id) {
-    try { outcomes = await getQualificationOutcomes(profile.brokerage_id) || outcomes } catch {}
+  if (ctx.brokerageId) {
+    try { outcomes = await getQualificationOutcomes(ctx.brokerageId) || outcomes } catch {}
   }
 
   const conversionRate = outcomes.totalContacted > 0
