@@ -1,34 +1,29 @@
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
+import { getAgentContext } from "@/lib/identity"
+import { toCanonicalRoleOrDefault } from "@/lib/security"
 import { TCSettingsClient } from "./tc-settings-client"
 
 export const metadata = { title: "Transaction Coordinators | Team Settings" }
 
 export default async function TCSettingsPage() {
+  // Kernel OS: getAgentContext — canonical identity resolution
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect("/login")
+
+  const userRole = toCanonicalRoleOrDefault(ctx.userType, "agent")
+  if (!ctx.brokerageId) return (
+    <div className="p-6 text-red-600 text-sm">No brokerage found. Please contact your administrator.</div>
+  )
+  if (!["broker", "admin", "superadmin"].includes(userRole)) return (
+    <div className="p-6 text-red-600 text-sm">
+      You do not have permission to access this page. Only brokers and admins can manage TC settings.
+    </div>
+  )
+
   const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) redirect("/login")
-
-  // Check user role
-  const { data: userData } = await supabase.from("users").select("brokerage_id, role").eq("id", user.id).single()
-
-  if (!userData?.brokerage_id) {
-    return (
-      <div className="p-6 text-red-600 text-sm">No brokerage found. Please contact your administrator.</div>
-    )
-  }
-
-  // Only allow broker and admin roles
-  if (!["broker", "admin", "superadmin"].includes(userData.role || "")) {
-    return (
-      <div className="p-6 text-red-600 text-sm">
-        You do not have permission to access this page. Only brokers and admins can manage TC settings.
-      </div>
-    )
-  }
+  // alias for downstream usage
+  const userData = { brokerage_id: ctx.brokerageId }
 
   // Fetch all transaction coordinators for this brokerage
   const { data: coordinators } = await supabase
