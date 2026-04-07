@@ -1,5 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
-import { getAgentContext } from '@/lib/identity/get-agent-context'
+import { getAgentContext } from '@/lib/identity'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
@@ -33,7 +33,7 @@ export const metadata = {
 
 export default async function DashboardHelpPage() {
   const ctx = await getAgentContext()
-  if (!ctx) redirect('/login')
+  if (!ctx.isAuthenticated) redirect('/login')
 
   const supabase = await createClient()
 
@@ -41,7 +41,7 @@ export default async function DashboardHelpPage() {
   const { data: brokerage } = await supabase
     .from('brokerages')
     .select('name, support_email, support_phone')
-    .eq('id', ctx.brokerageId)
+    .eq('id', ctx.brokerageId ?? '')
     .single()
 
   const faqs = [
