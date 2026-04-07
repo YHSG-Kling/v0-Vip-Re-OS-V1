@@ -5,6 +5,8 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Plug, CheckCircle2, AlertTriangle, Settings } from 'lucide-react'
 import Link from 'next/link'
+import { getAgentContext } from '@/lib/identity'
+import { toCanonicalRoleOrDefault } from '@/lib/security'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,12 +23,14 @@ const KNOWN_INTEGRATIONS = [
 ]
 
 export default async function AdminIntegrationsPage() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/login')
+  // Kernel OS: getAgentContext — canonical identity, never raw auth.getUser()
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect('/login')
 
-  const { data: profile } = await supabase.from('users').select('role').eq('id', user.id).single()
-  if (!['admin', 'superadmin'].includes(profile?.role)) redirect('/dashboard')
+  const userRole = toCanonicalRoleOrDefault(ctx.userType, 'agent')
+  if (!['admin', 'superadmin'].includes(userRole)) redirect('/dashboard')
+
+  const supabase = await createClient()
 
   return (
     <div className="p-6 space-y-6">
