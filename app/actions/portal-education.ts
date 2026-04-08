@@ -244,12 +244,11 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
 
   // Emit kernel event
   await processKernelEvent({
-    eventType: KernelEvent.PORTAL_EDUCATION_VIEWED,
+    event: KernelEvent.PORTAL_EDUCATION_VIEWED,
     entityType: "contact",
     entityId: contactId,
     agentId: contact.agent_id,
     brokerageId: contact.brokerage_id,
-    metadata: { lessonKey },
   }).catch(err => {
     console.error("[PortalEducation] Error emitting kernel event:", err)
   })
