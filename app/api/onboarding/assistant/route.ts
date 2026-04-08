@@ -40,12 +40,8 @@ export async function POST(request: Request) {
       brokerage_id: brokerageId,
       entity_type: 'agent',
       entity_id: agentId,
-      event_type: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
+      event: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
       actor_user_id: agentId,
-      metadata: {
-        query: latestQuery,
-        kb_results_count: uniqueResults.length,
-        timestamp: new Date().toISOString(),
       },
     })
 
@@ -61,7 +57,7 @@ ${kbContext || 'No specific documentation found for this query.'}`
       system: systemPrompt,
       messages: await convertToModelMessages(messages),
       temperature: 0.7,
-      maxTokens: 500,
+      maxOutputTokens: 400,
       onFinish: async ({ text: aiResponse }) => {
         // aiResponse is the final streamed text
 
