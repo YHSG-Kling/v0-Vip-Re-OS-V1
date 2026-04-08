@@ -2442,8 +2442,7 @@ Analyze for:
 2. Life events (marriage, baby = moving triggers)
 3. Equity position (ready to move up?)
 4. Anniversary dates (time to check in)
-
-{
+Output example:{
   "referralOpportunities": [
     {
       "source_client": "John Smith",
@@ -2532,7 +2531,7 @@ Find:
 3. Underpriced listings (steal for investors)
 4. Market share by agent
 5. Competitor strategies
-
+Output Example:
 {
   "competitorRankings": [
     {
