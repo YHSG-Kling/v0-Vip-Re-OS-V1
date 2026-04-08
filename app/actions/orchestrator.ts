@@ -1,4 +1,5 @@
 
+import { registerEventDispatcher, type OrchestratorEvent as WorkflowEvent } from "@/lib/events"
 
 import { createServerClient } from "@/lib/supabase/server"
 import { generateSmartSuggestion } from "./assistant"
@@ -240,7 +241,7 @@ export async function orchestrateEvent(event: Event): Promise<void> {
 // EVENT HANDLERS - Specific logic for each event type
 // =====================================================
 
-async function handleLeadCreated(event: Event): Promise<ProcessingResult> {
+async function handleLeadCreated(event: WorkflowEvent): Promise<ProcessingResult>
   const startTime = Date.now()
   try {
     const { contact_id, source, timeline } = event.payload
