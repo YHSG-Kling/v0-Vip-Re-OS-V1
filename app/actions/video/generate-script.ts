@@ -150,15 +150,17 @@ ${bvp.prohibited_words?.length ? `- NEVER use: ${bvp.prohibited_words.join(", ")
         role: "agent",
         brokerageId: params.brokerageId,
       },
-      journeyType: "buyer",
-      persona: "first_time_buyer",
-      messageType: "video_script",
+      journeyType: "buyer"| "seller"| "investor",
+        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
+//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
+//   "expired" | "foreclosure" | "other",
+        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
       content: params.description,
       contact: {
         id: "broadcast",
         first_name: "Broadcast",
         last_name: "Audience",
-        contact_type: "buyer",
+        contact_type: "buyer"| "seller",
         tcpa_consent: true,
         isa_reengage_allowed: false,
         dnc_status: false,
@@ -228,15 +230,17 @@ ${bvp.prohibited_words?.length ? `- NEVER use: ${bvp.prohibited_words.join(", ")
         role: "agent",
         brokerageId: params.brokerageId,
       },
-      journeyType: "buyer",
-      persona: "first_time_buyer",
-      messageType: "video_script",
+      journeyType: "buyer"| "seller"| "investor",
+        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
+//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
+//   "expired" | "foreclosure" | "other",
+        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail"
       content: script,
       contact: {
         id: "broadcast",
         first_name: "Broadcast",
         last_name: "Audience",
-        contact_type: "buyer",
+        contact_type: "buyer"| "seller",
         tcpa_consent: true,
         isa_reengage_allowed: false,
         dnc_status: false,
