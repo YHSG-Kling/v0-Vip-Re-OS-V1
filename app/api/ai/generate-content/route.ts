@@ -60,7 +60,7 @@ Target Contact Profile:
     const response = await generateAIResponse({
       prompt,
       temperature: 0.7,
-      maxTokens: contentType === "blog_post" ? 2000 : 500,
+      maxOutputTokens: 400: contentType === "blog_post" ? 2000 : 500,
       metadata: {
         userId: agentId,
         brokerageId: actorContext?.brokerageId,
