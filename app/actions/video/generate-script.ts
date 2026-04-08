@@ -206,7 +206,7 @@ ${bvp.prohibited_words?.length ? `- NEVER use: ${bvp.prohibited_words.join(", ")
       model: "claude-sonnet",
       system: systemPrompt,
       prompt: userPrompt,
-      maxTokens: 1024,
+      maxOutputTokens: 1024,
       temperature: 0.7,
       metadata: {
         feature: "video_script_generation",
