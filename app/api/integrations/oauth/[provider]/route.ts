@@ -268,10 +268,7 @@ export async function GET(
         brokerageId: stateData.brokerageId,
         entityType: "platform_credentials",
         entityId: stateData.brokerageId,
-        metadata: {
-          provider,
-          oauthProvider,
-        },
+        
       }).catch(err => {
         console.error("[OAuth] Kernel event failed (non-blocking):", err)
       })
