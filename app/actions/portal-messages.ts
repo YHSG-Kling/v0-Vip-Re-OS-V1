@@ -126,14 +126,11 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
 
     // Emit kernel event (non-blocking)
     processKernelEvent({
-      eventType: KernelEvent.CLIENT_PORTAL_MESSAGE_SENT,
+      event: KernelEvent.CLIENT_PORTAL_MESSAGE_SENT,
       entityType: "contact",
       entityId: contactId,
       agentId,
       brokerageId: contact.brokerage_id,
-      metadata: {
-        messageId: message.id,
-        direction,
       },
     }).catch(() => {})
 
