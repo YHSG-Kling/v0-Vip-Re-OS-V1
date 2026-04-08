@@ -315,7 +315,7 @@ export async function compareOffersForListing(params: {
   }
 
   const commissionStructure = await getDefaultCommissionStructure(brokerageId, agentId)
-  const totalRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
+  commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
 
   const netByOffer: Record<string, number> = {}
   const matrix = offers.map(o => {
