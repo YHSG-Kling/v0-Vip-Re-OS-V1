@@ -165,14 +165,12 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
       userType:     requestedRole,
       brokerageId:  resolvedBrokerageId,
       callerUserId: user.id,
-      eventType:    KernelEvent.USER_INVITED,
-      metadata: {
+      event:    KernelEvent.USER_INVITED,
         email:        params.email,
         invitedRole:  requestedRole,
         brokerageId:  resolvedBrokerageId,
         teamId:       resolvedTeamId,
         invitedBy:    user.id,
-      },
     })
   }
 
@@ -196,12 +194,6 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   } catch (err: unknown) {
     console.error("[v0] Audit log error:", err)
   }
-await processKernelEvent({
-    event:      KernelEvent.NEW_USER_INVITE,
-    brokerageId: brokearageId,
-    userId: userId,
-    entityType: "listing_stage_machine",
-    entityId:   listingId,
   }).catch(() => {})
   return { success: true }
 }
