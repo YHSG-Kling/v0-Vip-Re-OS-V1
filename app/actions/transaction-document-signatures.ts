@@ -112,7 +112,7 @@ export async function sendDocumentForSignature(params: {
     brokerage_id:  brokerageId,
     entity_type:   "transaction_document",
     entity_id:     documentId,
-    event_type:    KernelEvent.DOCUMENT_SENT_FOR_SIGNATURE ?? "document.signature.requested",
+    event_type:    KernelEvent.CONTRACT_SENT_FOR_SIGNATURE ?? "document.signature.requested",
     actor_user_id: userId,
     metadata: {
       transaction_id:  transactionId,
