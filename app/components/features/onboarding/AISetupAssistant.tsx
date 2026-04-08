@@ -21,7 +21,11 @@ export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps
 
   // AI SDK 6 requires the transport pattern; the legacy api/body form leaves
   // `input` undefined on first render in @ai-sdk/react v3, causing .trim() crash.
-  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
+  const [inputValue, setInputValue] = useState('')
+const { messages, append, status } = useChat({...})
+const isLoading = status === 'streaming' || status === 'submitted'
+// submit: append({ role: 'user', content: inputValue.trim() })
+// display: getMessageText(message) using parts[] or content fallback
     transport: new DefaultChatTransport({
       api: '/api/onboarding/assistant',
       prepareSendMessagesRequest: ({ messages }) => ({
