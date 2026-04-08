@@ -194,9 +194,11 @@ export async function scheduleSocialPost(params: {
         brokerageId: params.brokerageId,
         actorUserId: params.userId,
         actorRole: "agent",
-        journeyType: "buyer",
-        persona: "first_time_buyer",
-        messageType: "social",
+        journeyType: "buyer"| "seller"| "investor",
+        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
+//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
+//   "expired" | "foreclosure" | "other",
+        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
         content: params.content,
       })
       // Brand voice result is advisory only — we log but never block scheduling here.
@@ -215,9 +217,11 @@ export async function scheduleSocialPost(params: {
           role: "agent",
           brokerageId: params.brokerageId,
         },
-        journeyType: "buyer",
-        persona: "first_time_buyer",
-        messageType: "social",
+        journeyType: "buyer"| "seller"| "investor",
+        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
+//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
+//   "expired" | "foreclosure" | "other",
+        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
         content: processedContent,
         contact: {
           id: "broadcast",
