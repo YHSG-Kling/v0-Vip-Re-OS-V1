@@ -236,7 +236,7 @@ async function getContactSuggestions(contactId: string) {
 
 Suggest a specific, actionable next step in 1-2 sentences.`,
       temperature: 0.7,
-      maxTokens: 150,
+      maxOutputTokens: 400,
     })
 
     suggestions.push({
