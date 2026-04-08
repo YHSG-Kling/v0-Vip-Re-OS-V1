@@ -114,9 +114,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const entityType = contactId ? 'contact' : 'lead'
 
     await processKernelEvent({
-      brokerageId,
-      entityType,
-      entityId,
+      brokerageId: brokerageId,
+      entitentityType,
+      entityType: contactId ? 'contact' : 'lead'
       event:    KernelEvent.WEBSITE_VISITOR_IDENTIFIED,
       contextJson:  JSON.stringify({ sessionId, email: email ?? null, phone: phone ?? null }),
       triggeredBy:  'system',
