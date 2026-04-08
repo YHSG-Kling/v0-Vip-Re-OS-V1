@@ -19,7 +19,11 @@ export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
-  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat({
+  const [inputValue, setInputValue] = useState('')
+const { messages, append, status } = useChat({...})
+const isLoading = status === 'streaming' || status === 'submitted'
+// submit: append({ role: 'user', content: inputValue.trim() })
+// display: getMessageText(message) using parts[] or content fallback
     transport: new DefaultChatTransport({
       api: '/api/onboarding/assistant',
       prepareSendMessagesRequest: ({ messages }) => ({
