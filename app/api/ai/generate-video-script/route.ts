@@ -324,7 +324,7 @@ Return ONLY the script text, ready to be read by the agent.`
     const response = await generateAIResponse({
       prompt: `${systemPrompt}\n\n${userPrompt}`,
       temperature: 0.7,
-      maxTokens: 2000,
+      maxOutputTokens: 2000,
       metadata: {
         userId: agent_id,
         brokerageId: brokerage_id,
