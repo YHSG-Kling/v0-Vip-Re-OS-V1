@@ -184,16 +184,12 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
 
     // Emit kernel event (non-blocking)
     processKernelEvent({
-      eventType: KernelEvent.PORTAL_MODULE_VIEWED,
+      event: KernelEvent.PORTAL_MODULE_VIEWED,
       entityType: "contact",
       entityId: contactId,
       agentId: agentId || null,
       brokerageId: null,
-      metadata: {
-        moduleKey: "messages",
-        action: "mark_read",
-        messagesMarked: data?.length || 0,
-      },
+      
     }).catch(() => {})
 
     return { success: true, count: data?.length || 0 }
@@ -331,7 +327,7 @@ ${stageContext ? stageContext + "\n\n" : ""}Recent conversation:
 ${conversationContext || "No recent messages - this will be the first message."}
 
 Write a brief, helpful message that moves the conversation forward. Be specific and actionable.`,
-      maxTokens: 200,
+      maxOutputTokens: 400,
     })
 
     return {
