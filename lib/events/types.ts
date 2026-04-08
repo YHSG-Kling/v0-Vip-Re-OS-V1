@@ -16,6 +16,8 @@ export interface EventInput {
   source: "ui" | "webhook" | "system" | "cron"
   dedupe_key?: string
 }
+/** @alias Event — avoids collision with DOM Event in server-action contexts. */
+export type OrchestratorEvent = Event
 
 export interface Event extends EventInput {
   id: string
