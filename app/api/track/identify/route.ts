@@ -117,7 +117,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       brokerageId,
       entityType,
       entityId,
-      eventType:    KernelEvent.WEBSITE_VISITOR_IDENTIFIED,
+      event:    KernelEvent.WEBSITE_VISITOR_IDENTIFIED,
       contextJson:  JSON.stringify({ sessionId, email: email ?? null, phone: phone ?? null }),
       triggeredBy:  'system',
     })
