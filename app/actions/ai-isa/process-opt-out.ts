@@ -145,7 +145,6 @@ export async function processOptOut(params: OptOutParams): Promise<{
     brokerageId,
     entityType,
     entityId,
-    metadata: { channel, source, globalDNC },
   })
 
   return { success: true, channelsSuppressed, globalDNC }
