@@ -126,7 +126,7 @@ export async function getReinvigorationSuggestions(
             `Generate 4 specific reinvigoration suggestions for the agent.`,
         },
       ],
-      maxTokens: 300,
+      maxOutputTokens: 400,
     })
 
     const suggestions: string[] = JSON.parse(text.trim())
