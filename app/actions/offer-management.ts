@@ -160,7 +160,7 @@ export async function analyzeOffer(offerId: string, userId: string) {
   if (!brokerageId) return { success: false, error: "User brokerage not found" }
 
   const commissionStructure = await getDefaultCommissionStructure(brokerageId, userId)
-  const totalRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
+  const totalRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
 
   const netToSeller = calcNetToSeller({
     offer_price:              offer.offer_price,
@@ -250,7 +250,7 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
   if (!brokerageId) return { success: false, error: "User brokerage not found" }
 
   const commissionStructure = await getDefaultCommissionStructure(brokerageId, userId)
-  const totalRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
+  const totalRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
 
   const offerComparisons = offers.map((offer) => {
     const net = calcNetToSeller({
