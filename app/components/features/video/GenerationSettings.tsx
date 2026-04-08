@@ -70,7 +70,7 @@ export function GenerationSettings({ projectId }: { projectId: string }) {
             </label>
           </div>
           <div className="flex items-center gap-2">
-            <Checkbox id="watermark" checked={watermark} onCheckedChange={setWatermark} />
+            <Checkbox id="watermark" checked={watermark} onCheckedChange={(v) => setWatermark(v === true)} />
             <label htmlFor="watermark" className="text-sm font-medium cursor-pointer">
               Add Watermark
             </label>
