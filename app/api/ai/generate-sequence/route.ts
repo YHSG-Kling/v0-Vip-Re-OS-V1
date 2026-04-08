@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
 
     const response = await generateAIResponse({
       prompt: `${SYSTEM_PROMPT}\n\n${prompt.trim()}`,
-      maxTokens: 4000,
+      maxOutputTokens: 4000,
       metadata: {
         userId: user.id,
         brokerageId: actorContext?.brokerageId,
