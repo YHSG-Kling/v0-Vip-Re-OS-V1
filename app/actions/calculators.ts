@@ -44,7 +44,7 @@ export async function calculateSellerNet(data: {
 
   // Get brokerage commission structure
   const commissionStructure = await getDefaultCommissionStructure(data.brokerageId)
-  const totalCommissionRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
+  const totalCommissionRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
 
   const costs = {
     agent_commission: data.homeValue * totalCommissionRate,
