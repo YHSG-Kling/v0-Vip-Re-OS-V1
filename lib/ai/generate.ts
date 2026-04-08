@@ -11,7 +11,7 @@ import { z } from "zod"
 
 // ─── JSON GENERATION ─────────────────────────────────────────────────────────
 
-export async function generateAIJSON<T = Record<string, unknown>>(
+export async function generateAIJSON<T = Record<string, any>>(
   prompt: string,
   options?: {
     model?: string
