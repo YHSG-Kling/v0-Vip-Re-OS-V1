@@ -4,7 +4,8 @@ import { UserRole } from './roles'
 
 export interface NavItem {
   id: string
-  label: string
+  /** Required for normal nav items. Optional when divider: true */
+  label?: string
   href?: string
   icon?: string
   /**
