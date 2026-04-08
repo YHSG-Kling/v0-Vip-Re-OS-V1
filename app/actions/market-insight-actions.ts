@@ -181,7 +181,7 @@ export async function generateMarketUpdateEmail(
       subject: z.string(),
       body: z.string(),
     }),
-    maxTokens: 400,
+    maxOutputTokens: 400,
     system:
       "You are a real estate agent writing a professional market update email to clients. Be informative but concise. Include a call to action.",
     prompt: `Generate a market update email for ${marketArea}.
