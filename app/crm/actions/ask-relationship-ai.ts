@@ -19,7 +19,7 @@ export async function askRelationshipAI(params: {
       model: anthropic("claude-sonnet-4-20250514"),
       system: `You are a real estate relationship advisor. The agent is asking about their client named ${contactName}${contactPersona ? ` (persona: ${contactPersona})` : ""}. Give concise, actionable advice in 2-3 sentences. Be specific and practical.`,
       prompt: question.trim(),
-      maxTokens: 200,
+      maxOutputTokens: 400,
     })
 
     return { success: true, answer: text.trim() }
