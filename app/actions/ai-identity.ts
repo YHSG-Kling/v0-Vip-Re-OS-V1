@@ -159,7 +159,7 @@ export async function generateIdentityPreview(input: {
     const { text } = await generateTextRouted({
       feature: "ai_isa_response",
       prompt,
-      maxTokens: 120,
+      maxOutputTokens: 400
     })
 
     return { success: true, preview: text }
