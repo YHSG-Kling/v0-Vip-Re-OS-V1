@@ -340,12 +340,12 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                   </CardContent>
                 </Card>
               </DialogTrigger>
-              <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-background">
+              <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-white dark:bg-gray-950 shadow-2xl border-2">
                 {/* Premium Header with Gradient Background */}
-                <div className="sticky top-0 z-10 -m-6 mb-0 bg-gradient-to-br from-primary/10 via-primary/5 to-background border-b backdrop-blur-sm">
+                <div className="sticky top-0 z-10 -m-6 mb-0 bg-gradient-to-br from-blue-50 via-purple-50 to-white dark:from-blue-950 dark:via-purple-950 dark:to-gray-950 border-b">
                   <DialogHeader className="p-6 pb-5">
                     <div className="flex items-start gap-4">
-                      <div className={`p-3 rounded-xl bg-gradient-to-br from-background to-muted border-2 shadow-lg ${power.iconColor}`}>
+                      <div className={`p-3 rounded-xl bg-white dark:bg-gray-900 border-2 shadow-lg ${power.iconColor}`}>
                         <power.icon className="h-7 w-7" />
                       </div>
                       <div className="flex-1">
@@ -374,10 +374,10 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                   {/* Left Column - Inputs & Generation */}
                   <div className="space-y-5">
                     {/* AI Capabilities Card */}
-                    <div className="p-4 bg-gradient-to-br from-primary/10 to-primary/5 rounded-xl border-2 border-primary/20">
+                    <div className="p-4 bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-950 dark:to-purple-950 rounded-xl border-2 border-blue-200 dark:border-blue-800">
                       <div className="flex items-start gap-3 mb-3">
-                        <div className="p-2 bg-primary/20 rounded-lg">
-                          <Sparkles className="h-5 w-5 text-primary" />
+                        <div className="p-2 bg-blue-100 dark:bg-blue-900 rounded-lg">
+                          <Sparkles className="h-5 w-5 text-blue-600 dark:text-blue-400" />
                         </div>
                         <div className="flex-1">
                           <h3 className="font-semibold text-sm mb-1">What This Does</h3>
@@ -407,7 +407,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                     </div>
 
                     {/* Form Section */}
-                    <div className="p-5 bg-muted/30 rounded-xl border-2">
+                    <div className="p-5 bg-gray-50 dark:bg-gray-900 rounded-xl border-2">
                       <h4 className="text-sm font-semibold mb-4 flex items-center gap-2">
                         Customize Your Content
                         <span className="text-xs font-normal text-muted-foreground">(Optional)</span>
@@ -441,7 +441,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                     {!output ? (
                       <div className="h-full flex flex-col">
                         {/* Example Preview */}
-                        <div className="flex-1 p-5 bg-muted/30 rounded-xl border-2 border-dashed">
+                        <div className="flex-1 p-5 bg-gray-50 dark:bg-gray-900 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-700">
                           <h4 className="text-sm font-semibold mb-3">What You'll Get</h4>
                           <div className="space-y-3 text-sm text-muted-foreground">
                             <div className="flex items-start gap-2">
@@ -466,7 +466,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                             </div>
                           </div>
                           
-                          <div className="mt-6 p-4 bg-background rounded-lg border">
+                          <div className="mt-6 p-4 bg-white dark:bg-gray-950 rounded-lg border-2 border-gray-200 dark:border-gray-800">
                             <p className="text-xs font-medium mb-2">Example Output Preview:</p>
                             <div className="text-xs text-muted-foreground space-y-2 leading-relaxed">
                               <p className="italic">"The Miami real estate market is showing strong momentum this quarter! 📈"</p>
@@ -505,7 +505,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                             value={output} 
                             onChange={(e) => setOutput(e.target.value)} 
                             rows={12}
-                            className="bg-background border-2 text-sm leading-relaxed resize-none shadow-inner" 
+                            className="bg-white dark:bg-gray-950 border-2 text-sm leading-relaxed resize-none shadow-inner text-foreground" 
                           />
                           {output.toLowerCase().includes('error') && (
                             <div className="absolute top-3 right-3 bg-destructive text-destructive-foreground text-xs px-3 py-1.5 rounded-md font-medium shadow-lg">
@@ -521,7 +521,7 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                         </div>
 
                         {/* Next Steps Card */}
-                        <div className="p-4 bg-gradient-to-br from-primary/10 to-primary/5 rounded-lg border-2 border-primary/20">
+                        <div className="p-4 bg-gradient-to-br from-blue-50 to-purple-50 dark:from-blue-950 dark:to-purple-950 rounded-lg border-2 border-blue-200 dark:border-blue-800">
                           <p className="text-sm font-medium mb-2">Next Steps</p>
                           <p className="text-xs text-muted-foreground mb-3">
                             Take this content to the full studio to add images, schedule posts, track performance, and more.
