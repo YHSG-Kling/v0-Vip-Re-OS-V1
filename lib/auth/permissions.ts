@@ -27,10 +27,10 @@ export interface BrokerageContext {
  * Creates a Supabase server client for server-side operations
  * ✅ FIXED: Wrapped cookies() call to handle static generation context
  */
-function getSupabaseServerClient() {
+async function getSupabaseServerClient() {
   let cookieStore
   try {
-    cookieStore = cookies()
+    cookieStore = await cookies()
   } catch (error) {
     // If cookies() fails (e.g., during static generation), return a minimal client
     // This allows pages to generate statically without auth context
@@ -39,7 +39,7 @@ function getSupabaseServerClient() {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
         cookies: {
-          get(name: string) {
+          get(_name: string) {
             return undefined
           },
         },
@@ -61,7 +61,7 @@ function getSupabaseServerClient() {
  * @returns UserWithRole object or null if not found
  */
 export async function getCurrentUserContext(): Promise<UserWithRole | null> {
-  const supabase = getSupabaseServerClient()
+  const supabase = await getSupabaseServerClient()
 
   const {
     data: { user },
@@ -123,11 +123,19 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
 }
 
 /**
+ * Alias for getCurrentUserContext — provides UserWithRole shape for permission checks.
+ * Used by hasCapability, hasRole, isAdmin, requireRole, etc.
+ */
+export async function getCurrentUserWithRole(): Promise<UserWithRole | null> {
+  return getCurrentUserContext()
+}
+
+/**
  * Get all brokerages the current user belongs to
  * @returns Array of BrokerageContext objects
  */
 export async function getUserBrokerages(): Promise<BrokerageContext[]> {
-  const supabase = getSupabaseServerClient()
+  const supabase = await getSupabaseServerClient()
 
   const {
     data: { user },

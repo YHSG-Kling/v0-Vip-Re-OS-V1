@@ -29,6 +29,7 @@ const BATCHDATA_API_KEY = process.env.BATCHDATA_API_KEY!
 const BATCHDATA_API_URL = 'https://api.batchdata.com/api/v1'
 
 export interface BatchDataRecord {
+  [key: string]: unknown  // enables cast to Record<string, unknown>
   firstName: string
   lastName: string
   phone: string | null

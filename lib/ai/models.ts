@@ -234,19 +234,19 @@ async function checkCompliance(
     if (context.requiresFairHousingCheck) {
       try {
         const fairHousingResult = await evaluateContentCompliance({
-          content,
+          context: content,
           contentType: context.contentType || "internal",
           userId: context.userId || "",
           brokerageId: context.brokerageId || ""
         })
         
-        if (!fairHousingResult.compliant && fairHousingResult.violations) {
+        if (!fairHousingResult.passed && fairHousingResult.violations) {
           for (const v of fairHousingResult.violations) {
             const violation: ComplianceViolation = {
               type: "fair_housing",
               severity: v.severity as "low" | "medium" | "high" | "critical",
-              message: v.message,
-              blockSending: v.severity === "high" || v.severity === "critical"
+              message: v.description,
+              blockSending: (v.severity as string) === "high" || (v.severity as string) === "critical"
             }
             violations.push(violation)
             
@@ -276,11 +276,12 @@ async function checkCompliance(
       try {
         const themFirstResult = await validateThemFirstContent(content, "email")
         
-        if (themFirstResult.score < 0.6) {
+        if (!themFirstResult.isValid || (themFirstResult as any).score < 0.6) {
+          const score = (themFirstResult as any).score ?? 0
           const violation: ComplianceViolation = {
             type: "them_first",
-            severity: themFirstResult.score < 0.3 ? "medium" : "low",
-            message: `Content is too agent-focused (score: ${themFirstResult.score.toFixed(2)}). Consider rewriting to focus on client benefits.`,
+            severity: score < 0.3 ? "medium" : "low",
+            message: `Content is too agent-focused (score: ${score.toFixed(2)}). Consider rewriting to focus on client benefits.`,
             blockSending: false // Them-First is advisory, not blocking
           }
           violations.push(violation)
@@ -350,8 +351,8 @@ async function executeModelCall(
   
   return {
     text: result.text,
-    inputTokens: result.usage?.promptTokens || estimateTokens(prompt + (system || "")),
-    outputTokens: result.usage?.completionTokens || estimateTokens(result.text),
+    inputTokens: (result.usage as any)?.inputTokens ?? (result.usage as any)?.promptTokens ?? estimateTokens(prompt + (system || "")),
+    outputTokens: (result.usage as any)?.outputTokens ?? (result.usage as any)?.completionTokens ?? estimateTokens(result.text),
     modelUsed: model
   }
 }

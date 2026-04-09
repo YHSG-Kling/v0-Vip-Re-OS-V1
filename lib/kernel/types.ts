@@ -315,3 +315,65 @@ export interface PortalMilestone {
   date: string
   metadata: Record<string, any>
 }
+
+// ─── DATABASE ROW TYPES ───────────────────────────────────────────────────────
+
+export interface NotificationRuleRow {
+  id: string
+  brokerage_id: string
+  trigger_event: string
+  channel: 'email' | 'sms' | 'in_app' | 'push'
+  template_key?: string | null
+  recipient_role?: string | null
+  delay_minutes?: number | null
+  is_active: boolean
+  created_at: string
+  updated_at?: string | null
+}
+
+export interface GlobalSettingsRow {
+  id: string
+  brokerage_id?: string | null
+  setting_key: string
+  setting_value: string | null
+  is_encrypted?: boolean
+  created_at: string
+  updated_at?: string | null
+}
+
+export interface AutomationErrorRow {
+  id: string
+  brokerage_id?: string | null
+  workflow_id?: string | null
+  error_type: string
+  error_message: string
+  stack_trace?: string | null
+  entity_type?: string | null
+  entity_id?: string | null
+  retry_count: number
+  resolved: boolean
+  created_at: string
+}
+
+export interface CalendarSyncLogRow {
+  id: string
+  brokerage_id?: string | null
+  user_id: string
+  provider: string
+  sync_type: 'push' | 'pull' | 'full'
+  status: 'success' | 'error' | 'partial'
+  records_synced?: number | null
+  error_message?: string | null
+  synced_at: string
+}
+
+export interface OnboardingStepRow {
+  id: string
+  user_id: string
+  brokerage_id?: string | null
+  step_key: string
+  status: 'pending' | 'in_progress' | 'completed' | 'skipped'
+  completed_at?: string | null
+  metadata?: Record<string, any> | null
+  created_at: string
+}
