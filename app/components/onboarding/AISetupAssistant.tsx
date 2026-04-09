@@ -1,13 +1,13 @@
 'use client'
 
 import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport } from 'ai'
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Bot, Send, X, MessageCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { getMessageText } from '@/lib/ai/get-message-text'
 
 interface AISetupAssistantProps {
   brokerageId?: string
@@ -18,19 +18,14 @@ export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps
   const [isOpen, setIsOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-
   const [inputValue, setInputValue] = useState('')
-const { messages, append, status } = useChat({...})
-const isLoading = status === 'streaming' || status === 'submitted'
-// submit: append({ role: 'user', content: inputValue.trim() })
-// display: getMessageText(message) using parts[] or content fallback
-    transport: new DefaultChatTransport({
-      api: '/api/onboarding/assistant',
-      prepareSendMessagesRequest: ({ messages }) => ({
-        body: { messages, brokerageId, agentId },
-      }),
-    }),
+
+  const { messages, append, status } = useChat({
+    api: '/api/onboarding/assistant',
+    body: { brokerageId, agentId },
   })
+
+  const isLoading = status === 'streaming' || status === 'submitted'
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -44,12 +39,13 @@ const isLoading = status === 'streaming' || status === 'submitted'
       const maxHeight = 20 * 3 + 16
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`
     }
-  }, [input])
+  }, [inputValue])
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!input?.trim() || isLoading) return
-    handleSubmit(e)
+    if (!inputValue.trim() || isLoading) return
+    append({ role: 'user', content: inputValue.trim() })
+    setInputValue('')
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -133,7 +129,7 @@ const isLoading = status === 'streaming' || status === 'submitted'
                           : 'bg-white border border-border text-foreground rounded-bl-md shadow-sm'
                       )}
                     >
-                      {message.content}
+                      {getMessageText(message)}
                     </div>
                   </div>
                 ))}
@@ -159,8 +155,8 @@ const isLoading = status === 'streaming' || status === 'submitted'
               <form onSubmit={onSubmit} className="flex gap-2 items-end">
                 <textarea
                   ref={textareaRef}
-                  value={input}
-                  onChange={handleInputChange}
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Ask a question..."
                   disabled={isLoading}
@@ -171,7 +167,7 @@ const isLoading = status === 'streaming' || status === 'submitted'
                 <Button
                   type="submit"
                   size="icon"
-                  disabled={isLoading || !input?.trim()}
+                  disabled={isLoading || !inputValue.trim()}
                   className="h-9 w-9 rounded-xl bg-[#1e3a5f] hover:bg-[#2a4a73] flex-shrink-0"
                 >
                   <Send className="w-4 h-4" />
