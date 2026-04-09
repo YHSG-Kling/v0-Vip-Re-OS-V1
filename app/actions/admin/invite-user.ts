@@ -194,6 +194,6 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
   } catch (err: unknown) {
     console.error("[v0] Audit log error:", err)
   }
-  }).catch(() => {})
+
   return { success: true }
 }
