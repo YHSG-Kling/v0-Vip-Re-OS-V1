@@ -66,7 +66,11 @@ async function evaluateSingleCheck(
     case "documents_verified":
       return await checkDocumentsVerified(supabase, listingId)
     
+    case "provider_signatures":
+      return await checkProviderSignatures(supabase, listingId)
+    
     case "dotloop_signatures":
+      // Legacy alias for provider_signatures
       return await checkProviderSignatures(supabase, listingId)
     
     case "media_approved":
@@ -165,7 +169,7 @@ async function checkProviderSignatures(
   const signatureComplete = activities && activities.length > 0
   
   return {
-    check: "dotloop_signatures",
+    check: "provider_signatures",
     passed: signatureComplete ?? false,
     reason: signatureComplete ? undefined : "Provider signatures not complete",
     details: signatureComplete ? { provider: activities[0]?.metadata?.provider } : {},
