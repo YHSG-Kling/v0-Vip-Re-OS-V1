@@ -164,7 +164,13 @@ export default async function BrokerageDashboard({
       .limit(20),
   ])
 
-  const { agents, activeTransactions, complianceRate, totalGCI, pendingCommissions } = dashboard
+  const { 
+    agents = [], 
+    activeTransactions = 0, 
+    complianceRate = 0, 
+    totalGCI = 0, 
+    pendingCommissions = 0 
+  } = dashboard
 
   const pendingDistributions = pendingDistributionsResult.data ?? []
   const totalPendingBrokerageCommission = pendingDistributions.reduce(

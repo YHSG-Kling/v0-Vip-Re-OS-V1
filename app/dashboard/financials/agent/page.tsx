@@ -61,19 +61,19 @@ const financialSummaryResult = await loadAgentFinancialDashboardSummaryAction({
   const syncStatus = await getProviderConnectionStatus(brokerageId).catch(() => null)
 
   // Extract data from kernel result
-  const mtdEarnings = summary.mtdEarnings
-  const ytdEarnings = summary.ytdEarnings
-  const businessExpenses = summary.expenses
-  const pendingCommissions = summary.pendingCommissions
-  const teamSplits = summary.teamSplits
-  const bonusCredits = summary.bonusCredits
-  const monthlyTrend = summary.monthlyTrendData
-  const ytdTransactionCount = summary.ytdTransactionCount
-  const commissionProfile = summary.commissionProfile
-  const capTracking = summary.capTracking
-  const agentData = summary.agentData
-  const pipelineTransactions = summary.pipelineTransactions
-  const earningsHistory = summary.earningsHistory
+  const mtdEarnings = summary.mtdEarnings ?? 0
+  const ytdEarnings = summary.ytdEarnings ?? 0
+  const businessExpenses = summary.expenses ?? []
+  const pendingCommissions = summary.pendingCommissions ?? []
+  const teamSplits = summary.teamSplits ?? []
+  const bonusCredits = summary.bonusCredits ?? []
+  const monthlyTrend = summary.monthlyTrendData ?? []
+  const ytdTransactionCount = summary.ytdTransactionCount ?? 0
+  const commissionProfile = summary.commissionProfile ?? null
+  const capTracking = summary.capTracking ?? null
+  const agentData = summary.agentData ?? null
+  const pipelineTransactions = summary.pipelineTransactions ?? []
+  const earningsHistory = summary.earningsHistory ?? []
 
   // Additional derived data
   const currentBilling = null

@@ -704,7 +704,7 @@ export async function createTransactionShellFromAcceptedOffer(input: {
 export async function closeListingLifecycle(input: {
   listingId: string
   actorUserId: string
-}): Promise<KernelResult<Record<string, never>>> {
+}): Promise<KernelResult<object>> {
   const result = await updateListingStage({
     listingId:   input.listingId,
     targetStage: "CLOSED",
