@@ -1,6 +1,12 @@
 // Lead Magnets Kernel Types
 // Domain types for lead magnet functionality
 
+// Kernel Response Pattern
+export type KernelResponse<T> = {
+  data: T | null
+  error: string | null
+}
+
 export type LeadMagnetType =
   | "ebook"
   | "guide"
@@ -25,7 +31,8 @@ export type DownloadFormat =
   | "video"
   | "link"
 
-export interface KernelLeadMagnet {
+// Database row (snake_case)
+export interface DbLeadMagnet {
   id: string
   brokerage_id: string
   title: string
@@ -42,7 +49,26 @@ export interface KernelLeadMagnet {
   updated_at: string
 }
 
-export interface KernelLeadMagnetDownload {
+// Kernel returns (camelCase)
+export interface KernelLeadMagnet {
+  id: string
+  brokerageId: string
+  title: string
+  description?: string
+  magnetType: LeadMagnetType
+  fileUrl?: string
+  downloadFormat?: DownloadFormat
+  thumbnailUrl?: string
+  status: LeadMagnetStatus
+  downloadCount: number
+  conversionRate?: number
+  createdBy?: string
+  createdAt: string
+  updatedAt: string
+}
+
+// Database row (snake_case)
+export interface DbLeadMagnetDownload {
   id: string
   lead_magnet_id: string
   contact_id: string
@@ -51,6 +77,18 @@ export interface KernelLeadMagnetDownload {
   source_channel?: string
   converted_to_lead: boolean
   converted_at?: string
+}
+
+// Kernel returns (camelCase)
+export interface KernelLeadMagnetDownload {
+  id: string
+  leadMagnetId: string
+  contactId: string
+  brokerageId: string
+  downloadedAt: string
+  sourceChannel?: string
+  convertedToLead: boolean
+  convertedAt?: string
 }
 
 export interface CreateLeadMagnetParams {
