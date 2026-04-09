@@ -88,13 +88,20 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Generating social content:", { contentType: socialContentType, userId: agentId })
       const result = await generateSocialContent({
         contentType: socialContentType,
         userId: agentId
       })
-      setOutput(result.content || "No content generated")
-    } catch (e) {
-      setOutput("Error generating social content")
+      console.log("[v0] Social content result:", result)
+      if (result && result.content) {
+        setOutput(result.content)
+      } else {
+        setOutput("Generated content is empty. Please try again or adjust your settings.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error generating social content:", e)
+      setOutput(`Error: ${e?.message || "Failed to generate content. Please check your AI model configuration and try again."}`)
     }
     setGenerating(false)
   }
@@ -305,35 +312,40 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                   </CardContent>
                 </Card>
               </DialogTrigger>
-              <DialogContent className="max-w-lg">
-                <DialogHeader>
-                  <DialogTitle className="flex items-center gap-2">
+              <DialogContent className="max-w-lg bg-background border shadow-lg">
+                <DialogHeader className="border-b pb-4">
+                  <DialogTitle className="flex items-center gap-2 text-lg">
                     <power.icon className={`h-5 w-5 ${power.iconColor}`} />
                     {power.title}
                   </DialogTitle>
                 </DialogHeader>
-                <div className="space-y-4">
+                <div className="space-y-4 py-4">
                   {power.form}
                   <Button onClick={power.onGenerate} disabled={generating} className="w-full">
                     {generating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
                     Generate
                   </Button>
                   {output && (
-                    <div className="space-y-2">
-                      <Textarea value={output} onChange={(e) => setOutput(e.target.value)} rows={7} />
+                    <div className="space-y-2 p-4 bg-muted/50 rounded-lg border">
+                      <Textarea 
+                        value={output} 
+                        onChange={(e) => setOutput(e.target.value)} 
+                        rows={7}
+                        className="bg-background" 
+                      />
                       <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={handleCopy}>
+                        <Button variant="outline" size="sm" onClick={handleCopy} className="bg-background">
                           {copied ? <Check className="h-4 w-4 mr-1" /> : <Copy className="h-4 w-4 mr-1" />}
                           {copied ? "Copied" : "Copy"}
                         </Button>
                         <Link href={power.href}>
-                          <Button variant="outline" size="sm">{power.linkText}</Button>
+                          <Button variant="outline" size="sm" className="bg-background">{power.linkText}</Button>
                         </Link>
                       </div>
                     </div>
                   )}
                 </div>
-                <DialogFooter>
+                <DialogFooter className="border-t pt-4">
                   <DialogClose asChild>
                     <Button variant="ghost">Close</Button>
                   </DialogClose>
