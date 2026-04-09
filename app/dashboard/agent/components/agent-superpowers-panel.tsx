@@ -54,15 +54,22 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Generating video script:", { purpose: videoPurpose, persona: videoPersona, contactName: videoContactName, userId: agentId })
       const result = await generateVideoScript({
         purpose: videoPurpose,
         persona: videoPersona,
         contactName: videoContactName,
         userId: agentId
       })
-      setOutput(result.script || "No script generated")
-    } catch (e) {
-      setOutput("Error generating script")
+      console.log("[v0] Video script result:", result)
+      if (result && result.script) {
+        setOutput(result.script)
+      } else {
+        setOutput("Generated script is empty. Please try again or adjust your settings.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error generating video script:", e)
+      setOutput(`Error: ${e?.message || "Failed to generate script. Please check your AI model configuration and try again."}`)
     }
     setGenerating(false)
   }
@@ -71,15 +78,22 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Generating direct mail:", { agentId, campaignType: mailCampaignType, targetArea: mailTargetArea, headline: mailHeadline })
       const result = await generateAIDirectMail({
         agentId,
         campaignType: mailCampaignType,
         targetArea: mailTargetArea,
         headline: mailHeadline
       })
-      setOutput(result.content || "No content generated")
-    } catch (e) {
-      setOutput("Error generating mail content")
+      console.log("[v0] Direct mail result:", result)
+      if (result && result.content) {
+        setOutput(result.content)
+      } else {
+        setOutput("Generated content is empty. Please try again or provide more details.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error generating direct mail:", e)
+      setOutput(`Error: ${e?.message || "Failed to generate mail content. Please check your configuration and try again."}`)
     }
     setGenerating(false)
   }
@@ -110,14 +124,21 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Generating market report:", { marketArea, reportType, agentId })
       const result = await generateMarketReport({
         marketArea,
         reportType,
         agentId
       })
-      setOutput(result.report || "No report generated")
-    } catch (e) {
-      setOutput("Error generating report")
+      console.log("[v0] Market report result:", result)
+      if (result && result.report) {
+        setOutput(result.report)
+      } else {
+        setOutput("Generated report is empty. Please provide a valid market area and try again.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error generating market report:", e)
+      setOutput(`Error: ${e?.message || "Failed to generate report. Please check your market area and try again."}`)
     }
     setGenerating(false)
   }
@@ -126,15 +147,22 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     setGenerating(true)
     setOutput("")
     try {
+      console.log("[v0] Creating podcast episode:", { title: podcastTitle, topic: podcastTopic })
       const result = await createPodcastEpisode({
         title: podcastTitle,
         description: podcastTopic,
         script: podcastTopic,
         category: 'market_update'
       })
-      setOutput(result.success ? "Podcast episode created successfully!" : "Error creating podcast")
-    } catch (e) {
-      setOutput("Error creating podcast episode")
+      console.log("[v0] Podcast result:", result)
+      if (result && result.success) {
+        setOutput("Podcast episode created successfully! You can find it in the Podcast Studio.")
+      } else {
+        setOutput("Failed to create podcast episode. Please provide a title and topic and try again.")
+      }
+    } catch (e: any) {
+      console.error("[v0] Error creating podcast:", e)
+      setOutput(`Error: ${e?.message || "Failed to create podcast episode. Please check your inputs and try again."}`)
     }
     setGenerating(false)
   }
