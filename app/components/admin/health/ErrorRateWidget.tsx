@@ -82,7 +82,10 @@ export function ErrorRateWidget({ data }: ErrorRateWidgetProps) {
               width={120}
             />
             <Tooltip
-              formatter={(value: number, name: string) => [value, name]}
+              formatter={(value: number | undefined, name: string) => {
+                const v = value ?? 0
+                return [v, name]
+              }}
               contentStyle={{
                 backgroundColor: "hsl(var(--background))",
                 border: "1px solid hsl(var(--border))",
@@ -93,7 +96,7 @@ export function ErrorRateWidget({ data }: ErrorRateWidgetProps) {
               dataKey="total"
               radius={[0, 4, 4, 0]}
               cursor="pointer"
-              onClick={(data) => setSelectedWorkflow(data.fullName)}
+              onClick={(data: any) => setSelectedWorkflow(data.fullName)}
             >
               {chartData.map((entry, index) => {
                 // Color based on highest severity

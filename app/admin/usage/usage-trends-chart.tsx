@@ -64,7 +64,10 @@ export function UsageTrendsChart({ data }: UsageTrendsChartProps) {
           <YAxis 
             tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
             axisLine={{ stroke: "hsl(var(--border))" }}
-            tickFormatter={(value) => value.toLocaleString()}
+            tickFormatter={(value: number | undefined) => {
+              const v = value ?? 0
+              return v.toLocaleString()
+            }}
           />
           <Tooltip
             contentStyle={{
@@ -73,15 +76,16 @@ export function UsageTrendsChart({ data }: UsageTrendsChartProps) {
               borderRadius: "8px",
             }}
             labelStyle={{ color: "hsl(var(--foreground))" }}
-            labelFormatter={formatMonth}
-            formatter={(value: number, name: string) => {
+            labelFormatter={(label: React.ReactNode) => formatMonth(String(label))}
+            formatter={(value: number | undefined, name: string) => {
+              const v = value ?? 0
               const labels: Record<string, string> = {
                 ai_call: "AI Calls",
                 voice_call: "Voice Minutes",
                 storage: "Storage (MB)",
                 video: "Video Minutes",
               }
-              return [value.toLocaleString(), labels[name] || name]
+              return [v.toLocaleString(), labels[name] || name]
             }}
           />
           <Legend 
