@@ -717,6 +717,66 @@ export async function generateSocialPost(params: {
       return { success: false, error: result.error || "Failed to generate social post" }
     }
 
+    // ── BRAND VOICE & COMPLIANCE LAYER ────────────────────────────────────────
+    const generatedContent = result.content?.generated_content || ""
+    
+    // Apply brand voice to ensure consistency
+    const brandVoiceResult = await applyBrandVoice({
+      brokerageId: agentContext.brokerageId,
+      teamId: agentContext.teamId || null,
+      actorUserId: agentContext.userId,
+      actorRole: agentContext.role,
+      journeyType: "seller", // Default to seller for social posts
+      persona: (params.targetPersona as any) || "homeowner",
+      messageType: "social_post",
+      content: generatedContent,
+    })
+
+    const finalContent = brandVoiceResult.success ? brandVoiceResult.content : generatedContent
+
+    // Check compliance (fair housing, brand guidelines)
+    const complianceResult = await evaluateOutbound({
+      brokerageId: agentContext.brokerageId,
+      actorUserId: agentContext.userId,
+      actorRole: agentContext.role,
+      journeyType: "seller",
+      persona: (params.targetPersona as any) || "homeowner",
+      messageType: "social_post",
+      content: finalContent,
+      channel: params.platform,
+      recipientContactId: null, // Social posts don't have specific recipients
+    })
+
+    if (!complianceResult.passed) {
+      console.error("[v0] Social post failed compliance:", complianceResult.violations)
+      return {
+        success: false,
+        error: `Compliance check failed: ${complianceResult.violations?.join(", ")}`,
+        violations: complianceResult.violations,
+      }
+    }
+
+    // Update content with compliant version
+    if (result.content?.id) {
+      const supabase = await createClient()
+      await supabase
+        .from("ai_generated_content")
+        .update({
+          generated_content: finalContent,
+          compliance_approved: true,
+          compliance_status: "approved",
+        })
+        .eq("id", result.content.id)
+    }
+
+    // Log kernel event for content generation
+    await processKernelEvent({
+      event: KernelEvent.CONTENT_AI_GENERATED,
+      brokerageId: agentContext.brokerageId,
+      entityType: "ai_generated_content",
+      entityId: result.content?.id || "",
+    })
+
     // ── LAYER 0.1: Track usage after successful generation ──────────────────
     await incrementFeatureUsage(agentContext.userId, "ai_social_content")
 
@@ -725,7 +785,7 @@ export async function generateSocialPost(params: {
       success: true,
       data: result.content,
       contentId: result.content?.id,
-      caption: result.content?.generated_content,
+      caption: finalContent,
       hashtags: result.content?.hashtags ?? [],
     }
   } catch (error) {
@@ -771,13 +831,75 @@ export async function generateEmail(params: {
       return { success: false, error: result.error || "Failed to generate email" }
     }
 
+    // ── BRAND VOICE & COMPLIANCE LAYER ────────────────────────────────────────
+    const agentContext = await getAgentContext()
+    const generatedContent = result.content?.generated_content || ""
+    
+    // Apply brand voice to ensure consistency
+    const brandVoiceResult = await applyBrandVoice({
+      brokerageId: agentContext.brokerageId,
+      teamId: agentContext.teamId || null,
+      actorUserId: agentContext.userId,
+      actorRole: agentContext.role,
+      journeyType: params.emailType === "welcome" || params.emailType === "follow_up" ? "buyer" : "seller",
+      persona: (params.targetPersona as any) || "homebuyer",
+      messageType: "email",
+      content: generatedContent,
+    })
+
+    const finalContent = brandVoiceResult.success ? brandVoiceResult.content : generatedContent
+
+    // ── DNC & UNSUBSCRIBE CHECK ────────────────────────────────────────────────
+    // Check compliance including DNC/opt-out verification for email channel
+    const complianceResult = await evaluateOutbound({
+      brokerageId: agentContext.brokerageId,
+      actorUserId: agentContext.userId,
+      actorRole: agentContext.role,
+      journeyType: params.emailType === "welcome" || params.emailType === "follow_up" ? "buyer" : "seller",
+      persona: (params.targetPersona as any) || "homebuyer",
+      messageType: "email",
+      content: finalContent,
+      channel: "email",
+      recipientContactId: params.contactId || null,
+    })
+
+    if (!complianceResult.passed) {
+      console.error("[v0] Email failed compliance:", complianceResult.violations)
+      return {
+        success: false,
+        error: `Email cannot be sent: ${complianceResult.violations?.join(", ")}`,
+        violations: complianceResult.violations,
+      }
+    }
+
+    // Update content with compliant version
+    if (result.content?.id) {
+      const supabase = await createClient()
+      await supabase
+        .from("ai_generated_content")
+        .update({
+          generated_content: finalContent,
+          compliance_approved: true,
+          compliance_status: "approved",
+        })
+        .eq("id", result.content.id)
+    }
+
+    // Log kernel event for content generation
+    await processKernelEvent({
+      event: KernelEvent.CONTENT_AI_GENERATED,
+      brokerageId: agentContext.brokerageId,
+      entityType: "ai_generated_content",
+      entityId: result.content?.id || "",
+    })
+
     revalidatePath("/dashboard/content/email")
-        return {
+    return {
       success: true,
       data: result.content,
       contentId: result.content?.id,
       subject: result.content?.subject,
-      body: result.content?.generated_content,
+      body: finalContent,
     }
   } catch (error) {
     console.error("Generate email error:", error)

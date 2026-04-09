@@ -285,6 +285,69 @@ export async function transitionCampaignStatus(
 
   const fromStatus = campaign.status
 
+  // ── DNC & COMPLIANCE CHECK BEFORE LAUNCH ────────────────────────────────────
+  if (toStatus === "live") {
+    // Get campaign details including content and channel
+    const { data: fullCampaign } = await supabase
+      .from("marketing_campaigns")
+      .select("*, assets:marketing_assets(*)")
+      .eq("id", campaignId)
+      .single()
+
+    if (fullCampaign) {
+      // Extract content from campaign assets
+      const campaignContent = fullCampaign.assets
+        ?.map((asset: any) => asset.content_url || asset.asset_name)
+        .join(" ") || fullCampaign.campaign_name
+
+      // Determine channel and message type
+      const campaignType = fullCampaign.campaign_type || "email"
+      const channel = campaignType.includes("email") ? "email" : 
+                     campaignType.includes("sms") ? "sms" :
+                     campaignType.includes("social") ? "social_media" : "email"
+      
+      const messageType: MessageType = campaignType.includes("email") ? "email" :
+                                       campaignType.includes("sms") ? "sms" :
+                                       "social_post"
+
+      // Run compliance check including DNC/opt-out verification
+      const complianceResult = await evaluateOutbound({
+        brokerageId,
+        actorUserId: userId,
+        actorRole: "agent" as ActorRole,
+        journeyType: "seller",
+        persona: "homeowner" as Persona,
+        messageType,
+        content: campaignContent,
+        channel,
+        recipientContactId: null, // Campaign doesn't have single recipient
+      })
+
+      if (!complianceResult.passed) {
+        console.error("[v0] Campaign failed compliance check:", complianceResult.violations)
+        return {
+          success: false,
+          error: `Campaign cannot be launched: ${complianceResult.violations?.join(", ")}`,
+          violations: complianceResult.violations,
+        }
+      }
+
+      // Apply brand voice to campaign content
+      const brandVoiceResult = await applyBrandVoice({
+        brokerageId,
+        teamId: null,
+        actorUserId: userId,
+        actorRole: "agent" as ActorRole,
+        journeyType: "seller",
+        persona: "homeowner" as Persona,
+        messageType,
+        content: campaignContent,
+      })
+
+      console.log("[v0] Campaign passed compliance and brand voice checks")
+    }
+  }
+
   // Use kernel lifecycle transition
   const result = await transitionLifecycle({
     brokerageId,
