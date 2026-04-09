@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "next build",
-    "dev": "next dev",
+    "dev": "rm -f .next/dev/lock 2>/dev/null; next dev",
     "lint": "next lint",
     "start": "next start",
     "type-check": "tsc --noEmit",
