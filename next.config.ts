@@ -47,6 +47,17 @@ const nextConfig: NextConfig = {
   },
   reactStrictMode: true,
   poweredByHeader: false,
+  // Reduce aggressive file watching to prevent duplicate dev server spawns
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.watchOptions = {
+        ...config.watchOptions,
+        aggregateTimeout: 500, // Wait 500ms after last change before rebuilding
+        ignored: ['**/node_modules', '**/.git', '**/.next'],
+      }
+    }
+    return config
+  },
 }
 
 export default nextConfig
