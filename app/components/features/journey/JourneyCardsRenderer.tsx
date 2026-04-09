@@ -19,9 +19,9 @@ import {
   Sparkles,
   ArrowRight,
 } from "lucide-react"
-import { supabaseService } from "../services/supabaseService"
-import { executeWorkflow } from "../app/actions/workflows"
-import type { JourneyState, JourneyBlueprint, JourneyStage } from "../types"
+import { supabaseService } from "@/services/supabaseService"
+import { executeWorkflow } from "@/app/actions/workflows"
+import type { JourneyState, JourneyBlueprint, JourneyStage } from "@/types"
 import { toast } from "sonner"
 
 interface JourneyCardsRendererProps {

@@ -22,8 +22,8 @@ import {
   Sparkles,
   Users,
 } from "lucide-react"
-import { supabaseService } from "../services/supabaseService"
-import type { DealTeamMember, AIISAActivity } from "../types"
+import { supabaseService } from "@/services/supabaseService"
+import type { DealTeamMember, AIISAActivity } from "@/types"
 
 interface DealTeamSectionProps {
   dealId?: string
