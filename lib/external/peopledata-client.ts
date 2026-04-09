@@ -60,8 +60,6 @@ export interface PeopleDataEnrichment {
   githubUrl?: string
   enrichmentConfidence: number
   dataQualityScore: number
-}
-  // ADD AFTER the closing brace of existing fields:
   // Extended AI-enrichment fields (optional)
   demographics?: { age?: number; ageRange?: string; gender?: string; maritalStatus?: string; childrenCount?: number; householdSize?: number; education?: string; incomeLevel?: string }
   employment?: { employer?: string; title?: string; industry?: string; yearsOfExperience?: number; linkedinUrl?: string }
@@ -73,6 +71,8 @@ export interface PeopleDataEnrichment {
   lifeEvents?: Array<{ type: string; date?: string; description?: string }>
   social?: Array<{ platform: string; url: string; username?: string }>
   additionalContacts?: Array<{ type: string; value: string; label?: string }>
+}
+
 export async function skipTraceWithPeopleData(params: {
   name?: string
   phone?: string
