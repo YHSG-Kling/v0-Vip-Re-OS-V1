@@ -55,7 +55,10 @@ export function ExpensesDonutChart({ data }: ExpensesDonutChartProps) {
             ))}
           </Pie>
           <Tooltip
-            formatter={(value: number) => formatCurrency(value)}
+            formatter={(value: number | undefined) => {
+              const v = value ?? 0
+              return formatCurrency(v)
+            }}
             contentStyle={{
               backgroundColor: "hsl(var(--card))",
               border: "1px solid hsl(var(--border))",

@@ -51,17 +51,23 @@ export function EarningsTrendChart({ data }: EarningsTrendChartProps) {
             className="text-muted-foreground"
           />
           <YAxis
-            tickFormatter={formatCurrency}
+            tickFormatter={(value: number | undefined) => {
+              const v = value ?? 0
+              return formatCurrency(v)
+            }}
             tick={{ fontSize: 12 }}
             tickLine={false}
             axisLine={false}
             className="text-muted-foreground"
           />
           <Tooltip
-            formatter={(value: number, name: string) => [
-              formatTooltipValue(value),
-              name === "net" ? "Agent Net" : "Gross Commission",
-            ]}
+            formatter={(value: number | undefined, name: string) => {
+              const v = value ?? 0
+              return [
+                formatTooltipValue(v),
+                name === "net" ? "Agent Net" : "Gross Commission",
+              ]
+            }}
             contentStyle={{
               backgroundColor: "hsl(var(--card))",
               border: "1px solid hsl(var(--border))",
