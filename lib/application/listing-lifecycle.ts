@@ -61,13 +61,14 @@ export async function markListingSignedService(
 ) {
   const supabase = await createClient()
 
-  const { data, error } = await supabase
+  const { data, error} = await supabase
     .from("listings")
     .update({
-      stage: "signed",
-      listing_agreement_signed_date: params.listing_agreement_signed_date,
+      current_stage: "SIGNED",
+      lifecycle_stage: "SIGNED",
+      // listing_agreement_signed_date doesn't exist in schema
       go_live_date: params.go_live_date,
-      commission_rate: params.commission_rate,
+      // commission_rate doesn't exist in listings table
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.listing_id)
@@ -96,10 +97,11 @@ export async function markListingLiveService(
   const { data, error } = await supabase
     .from("listings")
     .update({
-      stage: "live",
+      current_stage: "ACTIVE",
+      lifecycle_stage: "ACTIVE",
       mls_number: params.mls_number,
       mls_link: params.mls_link,
-      live_date: new Date().toISOString(),
+      listing_date: new Date().toISOString().split("T")[0], // live_date doesn't exist, use listing_date
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.listing_id)
@@ -149,8 +151,9 @@ export async function updateListingStageService(params: {
   const { data, error } = await supabase
     .from("listings")
     .update({
-      stage: params.stage,
-      notes: params.notes,
+      current_stage: params.stage,
+      lifecycle_stage: params.stage,
+      // notes column doesn't exist on listings table
       updated_at: new Date().toISOString(),
     })
     .eq("id", params.listing_id)
@@ -450,7 +453,7 @@ async function postListingToSocial(listingId: string) {
   const supabase = await createClient()
   const { data: listing } = await supabase
     .from("listings")
-    .select("*, agent_id, address, price, bedrooms, bathrooms, square_footage, photos")
+    .select("*, agent_id, address, list_price, bedrooms, bathrooms, sqft")
     .eq("id", listingId)
     .single()
 
@@ -470,8 +473,8 @@ async function postListingToSocial(listingId: string) {
       listing_id: listingId,
       platform: account.platform,
       post_type: "new_listing",
-      content: `Just Listed! ${listing.address} - $${listing.price?.toLocaleString() || "Call for price"} | ${listing.bedrooms || 0} BD | ${listing.bathrooms || 0} BA | ${listing.square_footage?.toLocaleString() || "N/A"} sqft`,
-      media_urls: listing.photos || [],
+      content: `Just Listed! ${listing.address} - $${listing.list_price?.toLocaleString() || "Call for price"} | ${listing.bedrooms || 0} BD | ${listing.bathrooms || 0} BA | ${listing.sqft?.toLocaleString() || "N/A"} sqft`,
+      media_urls: [], // photos are in separate listing_media table
       status: "scheduled",
       scheduled_for: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
     })
