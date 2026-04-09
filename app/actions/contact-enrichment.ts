@@ -143,29 +143,43 @@ export async function enrichContact(
       }
     }
 
-  // 5. Save enrichment data to lead_enrichment_queue
-  const { error: upsertError } = await supabase.from("lead_enrichment_queue").upsert(
-    {
-      contact_id: contactId,
-      enrichment_results: enrichmentData,
-      status: "completed",
-      confidence_score: enrichmentData.confidence_score || 70,
-      completed_at: new Date().toISOString(),
-    },
-    {
-      onConflict: "contact_id",
-    },
-  )
+    // 5. Save enrichment data directly to the contacts table
+    const { error: updateError } = await supabase
+      .from("contacts")
+      .update({
+        // Demographic data
+        age_range: enrichmentData.age_range,
+        gender: enrichmentData.gender,
+        marital_status: enrichmentData.marital_status,
+        household_income: enrichmentData.household_income,
+        home_owner_status: enrichmentData.home_owner_status,
+        home_value_estimate: enrichmentData.home_value_estimate,
+        length_of_residence: enrichmentData.length_of_residence,
+        occupation: enrichmentData.occupation,
+        education_level: enrichmentData.education_level,
+        // Social profiles
+        linkedin_url: enrichmentData.linkedin_url,
+        facebook_url: enrichmentData.facebook_url,
+        twitter_url: enrichmentData.twitter_url,
+        instagram_url: enrichmentData.instagram_url,
+        // Life events and OSINT data
+        life_events: enrichmentData.life_events || [],
+        last_life_event_detected: enrichmentData.last_life_event_detected,
+        public_records: enrichmentData.public_records || [],
+        court_records: enrichmentData.court_records || [],
+        property_records: enrichmentData.property_records || [],
+        // Metadata
+        data_source: enrichmentData.data_source,
+        confidence_score: enrichmentData.confidence_score || 70,
+      })
+      .eq("id", contactId)
 
-    if (upsertError) {
-      console.error("[ContactEnrichment] Error saving enrichment data:", upsertError)
+    if (updateError) {
+      console.error("[ContactEnrichment] Error saving enrichment data:", updateError)
+      return { success: false, enriched: false, error: updateError.message }
     }
 
-    // 6. Process any detected life changes (stored in contact_enrichment_data.life_events)
-    // Life events are already stored in the enrichmentData above
-    // No separate insertion needed as they're part of contact_enrichment_data
-
-    // 7. Update contact as enriched
+    // 6. Update contact enrichment tracking metadata
     await supabase
       .from("contacts")
       .update({
@@ -240,33 +254,39 @@ export async function checkContactLifeChanges(
     let changesFound = 0
 
     if (osintData?.lifeEvents?.length > 0) {
-      // Get existing life changes to avoid duplicates
-      const { data: existingChanges } = await supabase
-        .from("contact_enrichment_data")
+      // Get existing life events from the contact
+      const { data: contactData } = await supabase
+        .from("contacts")
         .select("life_events")
-        .eq("contact_id", contactId)
+        .eq("id", contactId)
         .single()
 
-      const existingEvents = existingChanges?.life_events as any[] || []
-      const existingTypes = new Set(existingEvents.map((e) => e.type))
+      const existingEvents = (contactData?.life_events as any[]) || []
+      const existingTypes = new Set(existingEvents.map((e: any) => e.type))
 
       for (const event of osintData.lifeEvents) {
         // Skip if we already detected this type recently
         if (existingTypes.has(event.type)) continue
 
-        // Update existing record with new life events
-        const updatedEvents = [...existingEvents, {
-          type: event.type,
-          details: event.details,
-          detected_at: new Date().toISOString(),
-          confidence: event.confidence || 50
-        }]
+        // Add new life event to the array
+        const updatedEvents = [
+          ...existingEvents,
+          {
+            type: event.type,
+            details: event.details,
+            detected_at: new Date().toISOString(),
+            confidence: event.confidence || 50,
+          },
+        ]
 
-        await supabase.from("contact_enrichment_data").upsert({
-          contact_id: contactId,
-          life_events: updatedEvents,
-          updated_at: new Date().toISOString(),
-        })
+        // Update contact with new life events
+        await supabase
+          .from("contacts")
+          .update({
+            life_events: updatedEvents,
+            last_life_event_detected: new Date().toISOString(),
+          })
+          .eq("id", contactId)
 
         changesFound++
       }
@@ -334,77 +354,65 @@ export async function getContactsNeedingLifeChangeCheck(limit = 50): Promise<{ c
 
 /**
  * Get recent life changes for agent notification
- * Life events are stored in contact_enrichment_data.life_events (JSONB array)
+ * Life events are stored in contacts.life_events (JSONB array)
  */
 export async function getRecentLifeChanges(agentId?: string, daysBack = 7): Promise<any[]> {
   const supabase = await createClient()
 
   const cutoffDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString()
 
-  // Get enrichment data with life events from lead_enrichment_queue
+  // Get contacts with recent life events
   let query = supabase
-    .from("lead_enrichment_queue")
-    .select(`
-      contact_id,
-      enrichment_results,
-      completed_at,
-      contacts (
-        first_name,
-        last_name,
-        email,
-        agent_id
-      )
-    `)
-    .eq("status", "completed")
-    .not("enrichment_results", "is", null)
-    .gte("updated_at", cutoffDate)
-    .order("updated_at", { ascending: false })
+    .from("contacts")
+    .select("id, first_name, last_name, email, phone, agent_id, life_events, last_life_event_detected")
+    .not("life_events", "is", null)
+    .gte("last_life_event_detected", cutoffDate)
+    .order("last_life_event_detected", { ascending: false })
     .limit(50)
 
-  const { data: enrichmentData, error } = await query
+  // Filter by agent if provided
+  if (agentId) {
+    query = query.eq("agent_id", agentId)
+  }
+
+  const { data: contacts, error } = await query
 
   if (error) {
     console.error("[ContactEnrichment] Error getting recent life changes:", error)
     return []
   }
 
-  if (!enrichmentData || enrichmentData.length === 0) {
+  if (!contacts || contacts.length === 0) {
     return []
   }
 
-  // Get contact details for the enrichment records
-  const contactIds = enrichmentData.map(e => e.contact_id).filter(Boolean)
-  
-  const { data: contacts } = await supabase
-    .from("contacts")
-    .select("id, first_name, last_name, email, phone, agent_id")
-    .in("id", contactIds)
-
-  const contactMap = new Map(contacts?.map(c => [c.id, c]) || [])
-
-  // Filter by agent if provided and transform data
-  const results = enrichmentData
-    .map(e => {
-      const contact = contactMap.get(e.contact_id)
-      if (!contact) return null
-      if (agentId && contact.agent_id !== agentId) return null
+  // Transform data - expand life events from each contact
+  const results = contacts
+    .map((contact) => {
+      const lifeEvents = (contact.life_events as any[]) || []
       
-      // Parse life_events and return recent ones
-      const lifeEvents = Array.isArray(e.life_events) ? e.life_events : []
-      return lifeEvents.map((event: any) => ({
-        ...event,
-        contact_id: e.contact_id,
-        contact: contact,
-        detected_at: event.detected_at || e.updated_at,
-      }))
+      // Return life events with contact info
+      return lifeEvents
+        .filter((event: any) => {
+          // Only include events detected within the time window
+          const detectedAt = new Date(event.detected_at || contact.last_life_event_detected || 0)
+          return detectedAt >= new Date(cutoffDate)
+        })
+        .map((event: any) => ({
+          ...event,
+          contact_id: contact.id,
+          contact: {
+            id: contact.id,
+            first_name: contact.first_name,
+            last_name: contact.last_name,
+            email: contact.email,
+            phone: contact.phone,
+            agent_id: contact.agent_id,
+          },
+          detected_at: event.detected_at || contact.last_life_event_detected,
+        }))
     })
-    .filter(Boolean)
     .flat()
-    .filter(event => {
-      // Filter events within the date range
-      const detectedAt = new Date(event.detected_at)
-      return detectedAt >= new Date(cutoffDate)
-    })
 
   return results
 }
@@ -427,7 +435,7 @@ export const enrichContactData = enrichContact
 
 /**
  * Get enrichment insights for a contact including enrichment data and recent life changes
- * Life events are stored in contact_enrichment_data.life_events (JSONB array)
+ * All enrichment data is stored directly on the contacts table
  */
 export async function getContactInsights(contactId: string): Promise<{
   enrichment: any | null
@@ -438,31 +446,77 @@ export async function getContactInsights(contactId: string): Promise<{
   const supabase = await createClient()
 
   try {
-    // Get enrichment data from lead_enrichment_queue
-    const { data: enrichment, error: enrichmentError } = await supabase
-      .from("lead_enrichment_queue")
-      .select("*")
-      .eq("contact_id", contactId)
-      .eq("status", "completed")
+    // Get contact with all enrichment data
+    const { data: contact, error: contactError } = await supabase
+      .from("contacts")
+      .select(`
+        id,
+        enriched_at,
+        enrichment_source,
+        confidence_score,
+        data_source,
+        age_range,
+        gender,
+        marital_status,
+        household_income,
+        home_owner_status,
+        home_value_estimate,
+        length_of_residence,
+        occupation,
+        education_level,
+        linkedin_url,
+        facebook_url,
+        twitter_url,
+        instagram_url,
+        life_events,
+        last_life_event_detected,
+        public_records,
+        court_records,
+        property_records
+      `)
+      .eq("id", contactId)
       .maybeSingle()
 
-    // Extract life changes from enrichment data
-    const lifeChanges = Array.isArray(enrichment?.life_events) 
-      ? enrichment.life_events 
-      : []
+    if (contactError) {
+      return {
+        enrichment: null,
+        lifeChanges: [],
+        lastEnriched: null,
+        error: contactError.message,
+      }
+    }
 
-    // Get last enriched timestamp from contact
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("enriched_at")
-      .eq("id", contactId)
-      .single()
+    // Extract life changes from contact data
+    const lifeChanges = (contact?.life_events as any[]) || []
+
+    // Build enrichment object from contact data
+    const enrichment = contact
+      ? {
+          age_range: contact.age_range,
+          gender: contact.gender,
+          marital_status: contact.marital_status,
+          household_income: contact.household_income,
+          home_owner_status: contact.home_owner_status,
+          home_value_estimate: contact.home_value_estimate,
+          length_of_residence: contact.length_of_residence,
+          occupation: contact.occupation,
+          education_level: contact.education_level,
+          linkedin_url: contact.linkedin_url,
+          facebook_url: contact.facebook_url,
+          twitter_url: contact.twitter_url,
+          instagram_url: contact.instagram_url,
+          public_records: contact.public_records,
+          court_records: contact.court_records,
+          property_records: contact.property_records,
+          data_source: contact.data_source,
+          confidence_score: contact.confidence_score,
+        }
+      : null
 
     return {
-      enrichment: enrichment || null,
+      enrichment,
       lifeChanges,
       lastEnriched: contact?.enriched_at || null,
-      error: enrichmentError?.message
     }
   } catch (error) {
     console.error("Error getting contact insights:", error)
@@ -470,7 +524,7 @@ export async function getContactInsights(contactId: string): Promise<{
       enrichment: null,
       lifeChanges: [],
       lastEnriched: null,
-      error: String(error)
+      error: String(error),
     }
   }
 }
