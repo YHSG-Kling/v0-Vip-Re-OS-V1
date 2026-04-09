@@ -101,11 +101,9 @@ export async function createPodcastEpisode(params: {
       brokerageId,
       actorUserId: userId,
       actorRole: "agent",
-      journeyType: "buyer"| "seller"| "investor", // podcasts are typically outbound marketing
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
+      journeyType: "buyer",
+      persona: "first_time",
+      messageType: "social",
       content: finalScript,
     })
 
@@ -134,11 +132,9 @@ export async function createPodcastEpisode(params: {
         teamId: undefined,
         role: "agent",
       },
-      journeyType: "buyer"| "seller"| "investor",
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail"
+      journeyType: "buyer",
+      persona: "first_time",
+      messageType: "social",
       content: finalScript,
       contact: {
         id: agentId, // Use agent as the "contact" for broadcast content
