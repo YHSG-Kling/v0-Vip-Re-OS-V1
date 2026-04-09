@@ -896,11 +896,11 @@ export async function createCommissionRecord(
     }
 
     await processKernelEvent({
-      event: KernelEvent.COMMISSION_UPDATED,
+      event: KernelEvent.COMMISSION_PAID,
       brokerageId: ctx.brokerageId,
       entityType: "commission",
       entityId: commission.id,
-    }).catch(() => {})
+    })
 
     return {
       success: true,
