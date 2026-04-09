@@ -29,14 +29,10 @@ import { getAgentContext } from "@/lib/identity/get-agent-context"
 import {
   canAccessFeature,
   incrementFeatureUsage,
-  transitionLifecycle,
-  processKernelEvent,
-  KernelEvent,
-  applyBrandVoice,
-  evaluateOutbound,
-  checkBrandCompliance,
-} from "@/lib/kernel"
-import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
+} from "@/lib/kernel/0.1-feature-access"
+import { applyBrandVoice, checkBrandCompliance } from "@/lib/kernel/compliance"
+import { transitionLifecycle } from "@/lib/kernel/lifecycle"
+import type { ActorRole, Persona } from "@/lib/kernel/types"
 import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks } from "@/lib/marketing/qr-asset-linker"
 import { getCampaignRegistry, registerCampaignSource } from "@/lib/marketing/campaign-registry"
 

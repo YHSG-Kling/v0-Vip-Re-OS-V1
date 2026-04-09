@@ -1,9 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "ai"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
-import { z } from "zod"
 
 // =====================================================
 // UNIVERSAL AI TOOL EXECUTOR
