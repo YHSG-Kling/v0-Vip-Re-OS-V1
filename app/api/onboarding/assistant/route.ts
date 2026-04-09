@@ -1,4 +1,5 @@
-import { streamText, convertToModelMessages, type Message } from 'ai'
+import { streamText, convertToModelMessages } from 'ai'
+import type { UIMessage } from 'ai'
 import { createClient } from '@/lib/supabase/server'
 import { KernelEvent } from '@/lib/kernel/events'
 import { searchKB } from '@/lib/intelligence/kb-search'
@@ -7,7 +8,7 @@ export async function POST(request: Request) {
   try {
     const body = await request.json()
     const { messages, brokerageId, agentId } = body as {
-      messages: Message[]
+      messages: UIMessage[]
       brokerageId: string
       agentId: string
     }

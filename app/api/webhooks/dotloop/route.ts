@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
               transactionId: doc.transaction_id,
               loopId: loop_id,
             },
-            source: "dotloop_webhook",
+            source: "webhook",
             dedupe_key: `docs-complete-${doc.transaction_id}`,
           })
 
@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
               external_id: loop_id,
               provider: "dotloop",
             },
-            source: "dotloop_webhook",
+            source: "webhook",
             dedupe_key: `provider-sigs-complete-${doc.transaction_id}`,
           })
         }

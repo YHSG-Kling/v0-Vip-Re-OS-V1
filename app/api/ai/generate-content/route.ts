@@ -76,8 +76,8 @@ Target Contact Profile:
       agentId,
       contentType,
       prompt,
-      model: response.modelUsed || "email_generation",
-      tokensUsed: (response.inputTokens || 0) + (response.outputTokens || 0),
+      model: response.model || "email_generation",
+      tokensUsed: (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0),
       generationTime,
       success: true,
     })
@@ -100,7 +100,7 @@ Target Contact Profile:
       content: text,
       hashtags,
       seoKeywords,
-      tokensUsed: usage?.totalTokens || 0,
+      tokensUsed: response.usage?.totalTokens || 0,
       generationTime,
     })
   } catch (error: any) {

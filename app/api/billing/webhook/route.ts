@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
       case "invoice.paid": {
         const invoice = event.data.object as Stripe.Invoice
         const stripeInvoiceId = invoice.id
-        const subscriptionId = invoice.subscription as string
+        const subscriptionId = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id
 
         // Get brokerage_id from subscription metadata
         let brokerageId: string | null = null
@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
       case "invoice.payment_failed": {
         const invoice = event.data.object as Stripe.Invoice
         const stripeInvoiceId = invoice.id
-        const subscriptionId = invoice.subscription as string
+        const subscriptionId = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id
 
         // Get brokerage_id from subscription metadata
         let brokerageId: string | null = null
