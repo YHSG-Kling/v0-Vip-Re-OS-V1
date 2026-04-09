@@ -425,8 +425,6 @@ export async function completeOnboarding(
       title: 'Agent Onboarding Complete',
       body: `${agentName} has completed onboarding and is ready to start.`,
       is_read: false,
-    }).catch(err => {
-      console.error('[CertificationEngine] Admin notification insert failed:', err)
     })
   }
 

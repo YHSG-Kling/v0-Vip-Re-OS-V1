@@ -197,7 +197,7 @@ export async function haltEngagementForNegativeReply(params: {
     entity_type: 'lead',
     entity_id: params.leadId,
     is_read: false,
-  }).catch(() => {})
+  })
 
   return true
 }

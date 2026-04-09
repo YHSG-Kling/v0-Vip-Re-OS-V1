@@ -194,15 +194,7 @@ export async function evaluateAndAssignLead(params: {
 
   // Step 7: Increment times_triggered on the matched rule
   if (matchedRuleId) {
-    await supabase.rpc("increment_rule_triggered", { rule_id: matchedRuleId }).catch(() => {
-      // Non-fatal: fall back to manual increment
-      supabase
-        .from("assignment_rules")
-        .update({ times_triggered: supabase.raw("times_triggered + 1") as unknown as number })
-        .eq("id", matchedRuleId)
-        .then(() => undefined)
-        .catch(() => undefined)
-    })
+    await supabase.rpc("increment_rule_triggered", { rule_id: matchedRuleId })
   }
 
   // Step 8: Return result

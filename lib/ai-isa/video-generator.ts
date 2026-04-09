@@ -44,7 +44,7 @@ export async function generateHeyGenVideo(context: VideoGenerationContext) {
       provider_message_id: result.messageId ?? null,
       provider_status:     result.success ? 'sent' : 'failed',
       error_message:       result.error ?? null,
-    }).then(() => {}).catch(() => {})
+    })
 
     return {
       success:  result.success,

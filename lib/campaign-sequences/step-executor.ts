@@ -390,7 +390,7 @@ export async function executeSequenceStep(
     // FK → isa_outreach_log.id — audit trail now complete
     outreach_log_id: isaOutreachLogId,
     created_at: now,
-  }).then(() => {}).catch(() => {})
+  })
 
   // ── Step 8: Emit ISA_OUTREACH_SENT ──────────────────────────────────────────
   if (dispatchResult.success) {
@@ -399,7 +399,7 @@ export async function executeSequenceStep(
       brokerageId,
       entityType: "contact",
       entityId: contactId ?? enrollmentId,
-    }).catch(() => {})
+    })
   }
 
   // ── Steps 9–10: Advance enrollment ──────────────────────────────────────────

@@ -66,7 +66,6 @@ export async function requireAdminMaintenanceAccess(request: Request): Promise<
         ip: request.headers.get("x-forwarded-for") || "unknown",
       },
     })
-    .catch(() => {})
 
   return { authorized: true }
 }

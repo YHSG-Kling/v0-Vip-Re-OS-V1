@@ -191,8 +191,4 @@ function logActivity(
       metadata,
       created_at: new Date().toISOString(),
     })
-    .then(() => {})
-    .catch((err) => {
-      console.error('[RBAC] Error logging activity:', err)
-    })
 }

@@ -262,7 +262,6 @@ export async function advanceStage(params: {
           updated_at: new Date().toISOString(),
         })
         .eq("id", closedTxn.seller_contact_id)
-        .catch(err => console.error("[stage-progression] seller contact_type update failed:", err))
 
       // 3. Grant portal access to the sold listing view if not already enabled
       await supabase
@@ -274,7 +273,6 @@ export async function advanceStage(params: {
           enabled_by_agent_id: params.userId,
           enabled_at: new Date().toISOString(),
         }, { onConflict: "contact_id,module_key" })
-        .catch(err => console.error("[stage-progression] portal module upsert failed:", err))
     }
 
     // 4. Mark the listing as sold
@@ -289,7 +287,6 @@ export async function advanceStage(params: {
         })
         .eq("id", closedTxn.listing_id)
         .eq("brokerage_id", params.brokerageId)
-        .catch(err => console.error("[stage-progression] listing sold update failed:", err))
     }
   }
 

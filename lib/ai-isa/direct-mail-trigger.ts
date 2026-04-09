@@ -100,7 +100,7 @@ export async function triggerDirectMailCampaign(context: DirectMailContext) {
       provider_message_id: result.messageId ?? null,
       provider_status:     result.success ? 'sent' : 'failed',
       error_message:       result.error ?? null,
-    }).then(() => {}).catch(() => {})
+    })
 
     // Log activity
     await supabase.from('activities').insert({

@@ -350,9 +350,6 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
         deals_at_risk_count: finalDealsAtRisk.length,
       },
     })
-    .catch((err) => {
-      console.error("[DailyBriefing] Lifecycle event insert failed:", err)
-    })
 
   // 6. Return briefing data
   return upsertedBriefing as DailyBriefing
