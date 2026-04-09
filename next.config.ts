@@ -52,7 +52,8 @@ const nextConfig: NextConfig = {
     if (!isServer) {
       config.watchOptions = {
         ...config.watchOptions,
-        aggregateTimeout: 500, // Wait 500ms after last change before rebuilding
+        aggregateTimeout: 1000, // Wait 1s after last change before rebuilding (increased from 500ms)
+        poll: 2000, // Check for changes every 2s instead of continuous watching
         ignored: ['**/node_modules', '**/.git', '**/.next'],
       }
     }
