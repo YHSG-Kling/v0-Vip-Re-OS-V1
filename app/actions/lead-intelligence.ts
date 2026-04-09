@@ -282,9 +282,9 @@ export async function getIntelligenceDashboardStats() {
           .select("*", { count: "exact", head: true })
           .eq("ready_for_outreach", true),
         supabase
-          .from("motivated_seller_scores")
+          .from("batchdata_motivated_sellers_raw")
           .select("*", { count: "exact", head: true })
-          .gte("readiness_to_sell_score", 70),
+          .gte("motivation_confidence", 0.7),
       ])
 
     return {
@@ -1469,12 +1469,17 @@ Determine:
       const analysis = await generateAIJSON(prompt)
 
       if (analysis.data?.is_motivated_seller) {
-        await supabase.from("motivated_seller_scores").insert({
-          property_address: signal.property_address || "Unknown",
-          motivation_factors: analysis.data.motivation_factors,
-          readiness_to_sell_score: analysis.data.motivation_level === "urgent" ? 90 : analysis.data.motivation_level === "high" ? 75 : 50,
-          predicted_timeframe: analysis.data.urgency_timeline,
-          data_source: signal.source,
+        await supabase.from("motivated_seller_signals").insert({
+          lead_id: signal.contact_id || null,
+          signal_type: "social_media",
+          signal_details: {
+            property_address: signal.property_address || "Unknown",
+            motivation_factors: analysis.data.motivation_factors,
+            urgency_level: analysis.data.motivation_level,
+            timeframe: analysis.data.urgency_timeline,
+          },
+          signal_strength: analysis.data.motivation_level === "urgent" ? "urgent" : analysis.data.motivation_level === "high" ? "strong" : "moderate",
+          detected_via: signal.source,
         })
 
         // Create social intelligence record
