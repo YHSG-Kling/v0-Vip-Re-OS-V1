@@ -54,6 +54,7 @@ export async function listUnassignedLeads(params: {
   return {
     success: true,
     leads: leads || [],
+    total: leads?.length || 0,
     count: leads?.length || 0
   }
 }

@@ -74,12 +74,17 @@ export async function enrichLead(leadId: string) {
   }
 }
 
-export async function convertLeadToContact(leadId: string) {
+export async function convertLeadToContact(params: { leadId: string; agentId?: string; brokerageId?: string }) {
   try {
+    const { leadId, agentId: providedAgentId, brokerageId: providedBrokerageId } = params
     if (!leadId) return { success: false, error: "Lead ID is required" }
-    const { agentId, brokerageId } = await getAgentContext()
+    
+    const context = await getAgentContext()
+    const agentId = providedAgentId || context.agentId
+    const brokerageId = providedBrokerageId || context.brokerageId
+    
     const contact = await serviceConvertLeadToContact(agentId, brokerageId, leadId)
-    return { success: true, contact }
+    return { success: true, contact, contactId: contact?.id }
   } catch (error) {
     return { success: false, error: String(error) }
   }

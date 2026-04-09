@@ -251,9 +251,19 @@ export async function assignLeadToAgent(leadId: string, agentId: string) {
   }
 }
 
-export async function convertLeadToContact(leadId: string) {
+export async function convertLeadToContact(params: { leadId: string; agentId?: string; brokerageId?: string } | string) {
   try {
-    const { userId, brokerageId, userType, agentId } = await getAgentContext()
+    // Handle both signature styles: object or string
+    const leadId = typeof params === 'string' ? params : params.leadId
+    const providedAgentId = typeof params === 'object' ? params.agentId : undefined
+    const providedBrokerageId = typeof params === 'object' ? params.brokerageId : undefined
+    
+    if (!leadId) return { success: false, error: "Lead ID is required" }
+    
+    const { userId, brokerageId: contextBrokerageId, userType, agentId: contextAgentId } = await getAgentContext()
+    const brokerageId = providedBrokerageId || contextBrokerageId
+    const agentId = providedAgentId || contextAgentId
+    
     assertISARole(userType)
     if (!brokerageId) return { success: false, error: "No brokerage context" }
 
