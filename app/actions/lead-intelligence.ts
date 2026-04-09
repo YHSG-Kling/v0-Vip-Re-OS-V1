@@ -209,13 +209,11 @@ export async function getMotivatedSellers(filters?: {
   try {
     const supabase = createServiceClient()
 
-    let query = supabase
-      .from("motivated_seller_scores")
-      .select(`
-        *,
-        property:property_intelligence(*)
-      `)
-      .order("readiness_to_sell_score", { ascending: false })
+  let query = supabase
+    .from("batchdata_motivated_sellers_raw")
+    .select("*")
+    .gte("motivation_confidence", 0.7)
+    .order("motivation_confidence", { ascending: false })
 
     if (filters?.min_score) {
       query = query.gte("readiness_to_sell_score", filters.min_score)

@@ -143,17 +143,19 @@ export async function enrichContact(
       }
     }
 
-    // 5. Save enrichment data
-    const { error: upsertError } = await supabase.from("contact_enrichment_data").upsert(
-      {
-        contact_id: contactId,
-        ...enrichmentData,
-        updated_at: new Date().toISOString(),
-      },
-      {
-        onConflict: "contact_id",
-      },
-    )
+  // 5. Save enrichment data to lead_enrichment_queue
+  const { error: upsertError } = await supabase.from("lead_enrichment_queue").upsert(
+    {
+      contact_id: contactId,
+      enrichment_results: enrichmentData,
+      status: "completed",
+      confidence_score: enrichmentData.confidence_score || 70,
+      completed_at: new Date().toISOString(),
+    },
+    {
+      onConflict: "contact_id",
+    },
+  )
 
     if (upsertError) {
       console.error("[ContactEnrichment] Error saving enrichment data:", upsertError)
@@ -339,15 +341,22 @@ export async function getRecentLifeChanges(agentId?: string, daysBack = 7): Prom
 
   const cutoffDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString()
 
-  // Get enrichment data with life events
+  // Get enrichment data with life events from lead_enrichment_queue
   let query = supabase
-    .from("contact_enrichment_data")
+    .from("lead_enrichment_queue")
     .select(`
       contact_id,
-      life_events,
-      updated_at
+      enrichment_results,
+      completed_at,
+      contacts (
+        first_name,
+        last_name,
+        email,
+        agent_id
+      )
     `)
-    .not("life_events", "is", null)
+    .eq("status", "completed")
+    .not("enrichment_results", "is", null)
     .gte("updated_at", cutoffDate)
     .order("updated_at", { ascending: false })
     .limit(50)
@@ -429,12 +438,13 @@ export async function getContactInsights(contactId: string): Promise<{
   const supabase = await createClient()
 
   try {
-    // Get enrichment data (includes life_events in JSONB)
+    // Get enrichment data from lead_enrichment_queue
     const { data: enrichment, error: enrichmentError } = await supabase
-      .from("contact_enrichment_data")
+      .from("lead_enrichment_queue")
       .select("*")
       .eq("contact_id", contactId)
-      .single()
+      .eq("status", "completed")
+      .maybeSingle()
 
     // Extract life changes from enrichment data
     const lifeChanges = Array.isArray(enrichment?.life_events) 
