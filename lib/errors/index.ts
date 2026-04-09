@@ -200,7 +200,7 @@ export async function handleAction<T>(
 ): Promise<{ success: true; data: T } | { success: false; error: string; code?: string }> {
   try {
     const data = await action()
-    return createSuccessResponse(data)
+    return createSuccessResponse(data) as { success: true; data: T }
   } catch (error) {
     logError(error as Error, { ...options, context })
 

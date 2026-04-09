@@ -455,7 +455,7 @@ export async function distributeVideoProject(
       // Record social post
       await supabase.from("social_posts").insert({
         agent_id: project.agent_id,
-        platform,
+        platform: resolvedPlatform,
         content: input.description,
         media_url: project.video_url,
         published_url: publishUrl,

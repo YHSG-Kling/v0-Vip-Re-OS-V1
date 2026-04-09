@@ -875,40 +875,36 @@ export async function recordAiIsaOutcome(
       leadUpdate.ai_outreach_paused = true
     }
 
-    const ops = [
-      supabase
-        .from("leads")
-        .update(leadUpdate)
-        .eq("id", leadId)
-        .eq("brokerage_id", ctx.brokerageId),
+    // Update lead
+    await supabase
+      .from("leads")
+      .update(leadUpdate)
+      .eq("id", leadId)
+      .eq("brokerage_id", ctx.brokerageId)
 
-      supabase.from("ai_isa_activities").insert({
-        brokerage_id: ctx.brokerageId,
-        lead_id: leadId,
-        action: "outcome_recorded",
-        actor_user_id: ctx.userId,
-        notes: notes ?? null,
-        outcome,
-        appointment_date: appointmentDate ?? null,
-        created_at: now,
-      }),
-    ]
+    // Insert activity
+    await supabase.from("ai_isa_activities").insert({
+      brokerage_id: ctx.brokerageId,
+      lead_id: leadId,
+      action: "outcome_recorded",
+      actor_user_id: ctx.userId,
+      notes: notes ?? null,
+      outcome,
+      appointment_date: appointmentDate ?? null,
+      created_at: now,
+    })
 
     // Update the call record if callId is provided
     if (callId) {
-      ops.push(
-        supabase
-          .from("ai_isa_calls")
-          .update({
-            call_outcome: outcome,
-            appointment_set: outcome === "appointment_set",
-          })
-          .eq("id", callId)
-          .eq("brokerage_id", ctx.brokerageId)
-      )
+      await supabase
+        .from("ai_isa_calls")
+        .update({
+          call_outcome: outcome,
+          appointment_set: outcome === "appointment_set",
+        })
+        .eq("id", callId)
+        .eq("brokerage_id", ctx.brokerageId)
     }
-
-    await Promise.all(ops)
 
     await supabase
       .from("lifecycle_events")
