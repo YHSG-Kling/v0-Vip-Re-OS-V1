@@ -237,11 +237,9 @@ export async function generateSocialPostContent(params: {
 
     const complianceResult = await evaluateOutbound({
       actorContext:  { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
-      journeyType: "buyer"| "seller"| "investor",
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
+      journeyType: "buyer",
+      persona: "first_time",
+      messageType: "social",
       content:       object.content,
       contact:       broadcastContactStub,
     })
@@ -407,11 +405,9 @@ export async function generateContextualDraft(params: {
 
       const compliance = await evaluateOutbound({
         actorContext: { userId: params.agentId, role: "agent", brokerageId: params.brokerageId, teamId: params.teamId },
-        journeyType: "buyer"| "seller"| "investor",
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail",
+        journeyType: "buyer",
+        persona: "first_time",
+        messageType: "social",
         content:      object.draft,
         contact:      stubContact,
       })
