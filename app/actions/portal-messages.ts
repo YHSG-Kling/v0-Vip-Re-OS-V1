@@ -125,14 +125,16 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
     }
 
     // Emit kernel event (non-blocking)
-    processKernelEvent({
-      event: KernelEvent.CLIENT_PORTAL_MESSAGE_SENT,
-      entityType: "contact",
-      entityId: contactId,
-      agentId,
-      brokerageId: contact.brokerage_id,
-      },
-    }).catch(() => {})
+    try {
+      await processKernelEvent({
+        event: KernelEvent.CLIENT_PORTAL_MESSAGE_SENT,
+        entityType: "contact",
+        entityId: contactId,
+        brokerageId: contact.brokerage_id,
+      })
+    } catch {
+      // Non-blocking - ignore kernel event errors
+    }
 
     return { success: true, message }
   } catch (error) {
