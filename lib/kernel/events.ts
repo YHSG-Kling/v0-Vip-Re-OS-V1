@@ -45,6 +45,8 @@ export enum KernelEvent {
   OFFER_COUNTER_SENT                        = 'offer_counter_sent',
   OFFER_ACCEPTED                            = 'offer_accepted',
   OFFER_REJECTED                            = 'offer_rejected',
+  LISTING_CREATED                           = 'listing_created',
+  LISTING_UNDER_CONTRACT                    = 'listing_under_contract',
   OPEN_HOUSE_SCHEDULED                      = 'open_house_scheduled',
   OPEN_HOUSE_CONTACT_RESOLVED               = 'open_house_contact_resolved',
   OPEN_HOUSE_ATTENDEE_CREATED               = 'open_house_attendee_created',
@@ -241,7 +243,7 @@ export enum KernelEvent {
   VIDEO_HIGH_PERFORMER_DETECTED  = 'video_high_performer_detected',
   VIDEO_LOW_PERFORMER_DETECTED   = 'video_low_performer_detected',
 
-  // ── Layer 9 — Marketing & Automation ──────��─────────────────────────────
+  // ── Layer 9 — Marketing & Automation ──────���─────────────────────────────
   MARKETING_CAMPAIGN_CREATED         = 'marketing_campaign_created',
   MARKETING_CAMPAIGN_APPROVED        = 'marketing_campaign_approved',
   MARKETING_CAMPAIGN_LAUNCHED        = 'marketing_campaign_launched',
@@ -364,6 +366,7 @@ export enum KernelEvent {
   COMMISSION_CALCULATED              = 'commission_calculated',
   COMMISSION_DISTRIBUTED             = 'commission_distributed',
   COMMISSION_PAID                    = 'commission_paid',
+  COMMISSION_UPDATED                 = 'commission_updated',
   COMMISSION_DISPUTED                = 'commission_disputed',
   CAP_HIT                            = 'cap_hit',
   CAP_RESET                          = 'cap_reset',
@@ -431,7 +434,6 @@ export enum KernelEvent {
   REVIEW_RESPONSE_PUBLISHED          = 'review_response_published',
   REFERRAL_CREATED                   = 'referral_created',
   REFERRAL_ADVANCED                  = 'referral_advanced',
-  REFERRAL_CONVERTED                 = 'referral_converted',
 
   // ── Vendor Marketplace ──────────────────────────────────────────────────────
   VENDOR_BOOKING_CREATED             = 'vendor_booking_created',
@@ -494,12 +496,10 @@ export enum KernelEvent {
   // ── CRM / Contact OS ────────────────────────────────────────────────────
   // Emitted by lib/kernel/crm.ts and app/actions/contacts.ts.
   // Downstream: notification rules, automation triggers, audit log.
-  CONTACT_CREATED                    = 'contact_created',
   CONTACT_UPDATED                    = 'contact_updated',
   CONTACT_ARCHIVED                   = 'contact_archived',
   CONTACT_MERGED                     = 'contact_merged',
   CONTACT_DEDUP_MATCH_FOUND          = 'contact_dedup_match_found',
-  CONTACT_ENRICHMENT_QUEUED          = 'contact_enrichment_queued',
   CONTACT_ENRICHED                   = 'contact_enriched',
   CONTACT_SUPPRESSION_APPLIED        = 'contact_suppression_applied',
   CONTACT_SUPPRESSION_CLEARED        = 'contact_suppression_cleared',
