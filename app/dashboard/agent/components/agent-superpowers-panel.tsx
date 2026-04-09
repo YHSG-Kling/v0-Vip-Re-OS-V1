@@ -340,117 +340,210 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                   </CardContent>
                 </Card>
               </DialogTrigger>
-              <DialogContent className="max-w-2xl bg-background border shadow-lg">
-                <DialogHeader className="border-b pb-4 bg-gradient-to-r from-primary/5 to-transparent -m-6 mb-0 p-6">
-                  <div className="flex items-start justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className={`p-2 rounded-lg bg-background border ${power.iconColor}`}>
-                        <power.icon className="h-6 w-6" />
+              <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto bg-background">
+                {/* Premium Header with Gradient Background */}
+                <div className="sticky top-0 z-10 -m-6 mb-0 bg-gradient-to-br from-primary/10 via-primary/5 to-background border-b backdrop-blur-sm">
+                  <DialogHeader className="p-6 pb-5">
+                    <div className="flex items-start gap-4">
+                      <div className={`p-3 rounded-xl bg-gradient-to-br from-background to-muted border-2 shadow-lg ${power.iconColor}`}>
+                        <power.icon className="h-7 w-7" />
                       </div>
-                      <div>
-                        <DialogTitle className="text-xl font-semibold">{power.title}</DialogTitle>
-                        <p className="text-sm text-muted-foreground mt-1">{power.description}</p>
+                      <div className="flex-1">
+                        <DialogTitle className="text-2xl font-bold mb-1">{power.title}</DialogTitle>
+                        <p className="text-sm text-muted-foreground">{power.description}</p>
+                        <div className="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+                          <div className="flex items-center gap-1.5">
+                            <Sparkles className="h-3.5 w-3.5 text-primary" />
+                            <span>AI-Powered</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Check className="h-3.5 w-3.5 text-green-600" />
+                            <span>Brand Voice Applied</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Check className="h-3.5 w-3.5 text-green-600" />
+                            <span>Compliance Checked</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                </DialogHeader>
+                  </DialogHeader>
+                </div>
                 
-                <div className="space-y-6 py-6">
-                  {/* AI Capabilities Info */}
-                  <div className="flex items-start gap-3 p-3 bg-primary/5 rounded-lg border border-primary/20">
-                    <Sparkles className="h-5 w-5 text-primary mt-0.5" />
-                    <div className="flex-1">
-                      <p className="text-sm font-medium">AI-Powered Generation</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Leverages your brand voice, market data, and proven templates to create personalized content in seconds.
-                      </p>
+                <div className="grid md:grid-cols-2 gap-6 py-6">
+                  {/* Left Column - Inputs & Generation */}
+                  <div className="space-y-5">
+                    {/* AI Capabilities Card */}
+                    <div className="p-4 bg-gradient-to-br from-primary/10 to-primary/5 rounded-xl border-2 border-primary/20">
+                      <div className="flex items-start gap-3 mb-3">
+                        <div className="p-2 bg-primary/20 rounded-lg">
+                          <Sparkles className="h-5 w-5 text-primary" />
+                        </div>
+                        <div className="flex-1">
+                          <h3 className="font-semibold text-sm mb-1">What This Does</h3>
+                          <p className="text-xs text-muted-foreground leading-relaxed">
+                            Uses advanced AI to analyze your market data, apply your unique brand voice, and generate professional content that resonates with your audience. Takes 10-15 seconds.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                          <span>Market data integrated</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                          <span>SEO optimized</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                          <span>Platform adapted</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-muted-foreground">
+                          <div className="h-1.5 w-1.5 rounded-full bg-green-500" />
+                          <span>Ready to publish</span>
+                        </div>
+                      </div>
                     </div>
+
+                    {/* Form Section */}
+                    <div className="p-5 bg-muted/30 rounded-xl border-2">
+                      <h4 className="text-sm font-semibold mb-4 flex items-center gap-2">
+                        Customize Your Content
+                        <span className="text-xs font-normal text-muted-foreground">(Optional)</span>
+                      </h4>
+                      {power.form}
+                    </div>
+
+                    {/* Generate Button */}
+                    <Button 
+                      onClick={power.onGenerate} 
+                      disabled={generating} 
+                      className="w-full h-14 text-lg font-bold shadow-lg hover:shadow-xl transition-all"
+                      size="lg"
+                    >
+                      {generating ? (
+                        <>
+                          <Loader2 className="h-6 w-6 animate-spin mr-2" />
+                          Generating Your Content...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-6 w-6 mr-2" />
+                          Generate with AI
+                        </>
+                      )}
+                    </Button>
                   </div>
 
-                  {/* Form Inputs */}
-                  <div className="space-y-4">
-                    <h4 className="text-sm font-semibold">Customize Your Content</h4>
-                    {power.form}
-                  </div>
-
-                  {/* Generate Button */}
-                  <Button 
-                    onClick={power.onGenerate} 
-                    disabled={generating} 
-                    className="w-full h-11 text-base font-semibold"
-                    size="lg"
-                  >
-                    {generating ? (
-                      <>
-                        <Loader2 className="h-5 w-5 animate-spin mr-2" />
-                        Generating with AI...
-                      </>
+                  {/* Right Column - Preview & Output */}
+                  <div className="space-y-5">
+                    {!output ? (
+                      <div className="h-full flex flex-col">
+                        {/* Example Preview */}
+                        <div className="flex-1 p-5 bg-muted/30 rounded-xl border-2 border-dashed">
+                          <h4 className="text-sm font-semibold mb-3">What You'll Get</h4>
+                          <div className="space-y-3 text-sm text-muted-foreground">
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Platform-optimized content (Facebook, Instagram, LinkedIn, Twitter)</p>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Your brand voice and personality baked in</p>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Engaging hooks and calls-to-action</p>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Hashtag recommendations included</p>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Check className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                              <p>Fully editable and ready to post</p>
+                            </div>
+                          </div>
+                          
+                          <div className="mt-6 p-4 bg-background rounded-lg border">
+                            <p className="text-xs font-medium mb-2">Example Output Preview:</p>
+                            <div className="text-xs text-muted-foreground space-y-2 leading-relaxed">
+                              <p className="italic">"The Miami real estate market is showing strong momentum this quarter! 📈"</p>
+                              <p className="italic">"Here are 3 trends every homeowner should know..."</p>
+                              <p className="text-primary font-medium">[Full personalized content will appear here]</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     ) : (
-                      <>
-                        <Sparkles className="h-5 w-5 mr-2" />
-                        Generate {power.title}
-                      </>
-                    )}
-                  </Button>
-
-                  {/* Output Section */}
-                  {output && (
-                    <div className="space-y-3 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                      <div className="flex items-center justify-between">
-                        <h4 className="text-sm font-semibold">Generated Content</h4>
-                        <div className="flex gap-2">
-                          <Button variant="outline" size="sm" onClick={handleCopy}>
+                      <div className="space-y-4 animate-in fade-in slide-in-from-right duration-500">
+                        {/* Output Header */}
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h4 className="text-sm font-semibold">Your Generated Content</h4>
+                            <p className="text-xs text-muted-foreground">Edit as needed, then copy or publish</p>
+                          </div>
+                          <Button variant="outline" size="sm" onClick={handleCopy} className="gap-1.5">
                             {copied ? (
                               <>
-                                <Check className="h-4 w-4 mr-1.5" />
+                                <Check className="h-4 w-4" />
                                 Copied!
                               </>
                             ) : (
                               <>
-                                <Copy className="h-4 w-4 mr-1.5" />
-                                Copy
+                                <Copy className="h-4 w-4" />
+                                Copy All
                               </>
                             )}
                           </Button>
                         </div>
-                      </div>
-                      
-                      <div className="relative">
-                        <Textarea 
-                          value={output} 
-                          onChange={(e) => setOutput(e.target.value)} 
-                          rows={10}
-                          className="bg-muted/30 border-2 font-mono text-sm resize-none" 
-                        />
-                        {output.toLowerCase().includes('error') && (
-                          <div className="absolute top-2 right-2 bg-destructive/10 text-destructive text-xs px-2 py-1 rounded">
-                            Generation Error
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-2 p-3 bg-muted/50 rounded-lg border">
-                        <div className="flex-1">
-                          <p className="text-xs text-muted-foreground">
-                            Ready to use this content? Open the full studio to refine, schedule, and publish.
-                          </p>
+                        
+                        {/* Output Content */}
+                        <div className="relative">
+                          <Textarea 
+                            value={output} 
+                            onChange={(e) => setOutput(e.target.value)} 
+                            rows={12}
+                            className="bg-background border-2 text-sm leading-relaxed resize-none shadow-inner" 
+                          />
+                          {output.toLowerCase().includes('error') && (
+                            <div className="absolute top-3 right-3 bg-destructive text-destructive-foreground text-xs px-3 py-1.5 rounded-md font-medium shadow-lg">
+                              Generation Error
+                            </div>
+                          )}
+                          {!output.toLowerCase().includes('error') && (
+                            <div className="absolute bottom-3 right-3 bg-green-600 text-white text-xs px-3 py-1.5 rounded-md font-medium shadow-lg flex items-center gap-1.5">
+                              <Check className="h-3 w-3" />
+                              Ready to Use
+                            </div>
+                          )}
                         </div>
-                        <Link href={power.href}>
-                          <Button size="sm" variant="default">
-                            {power.linkText}
-                          </Button>
-                        </Link>
+
+                        {/* Next Steps Card */}
+                        <div className="p-4 bg-gradient-to-br from-primary/10 to-primary/5 rounded-lg border-2 border-primary/20">
+                          <p className="text-sm font-medium mb-2">Next Steps</p>
+                          <p className="text-xs text-muted-foreground mb-3">
+                            Take this content to the full studio to add images, schedule posts, track performance, and more.
+                          </p>
+                          <Link href={power.href} className="block">
+                            <Button className="w-full" size="sm">
+                              {power.linkText}
+                            </Button>
+                          </Link>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
 
-                <DialogFooter className="border-t pt-4 flex items-center justify-between">
+                {/* Footer */}
+                <DialogFooter className="border-t pt-4 flex-row items-center justify-between">
                   <p className="text-xs text-muted-foreground">
-                    Powered by AI • Brand voice applied • Compliance checked
+                    Content generated instantly with GPT-4 • Compliance verified • Your brand voice applied
                   </p>
                   <DialogClose asChild>
-                    <Button variant="ghost">Close</Button>
+                    <Button variant="outline">Close</Button>
                   </DialogClose>
                 </DialogFooter>
               </DialogContent>
