@@ -291,7 +291,6 @@ export async function createOrRepairUserDomainRecords(
             start_date:           new Date().toISOString().slice(0, 10),
             created_at:           new Date().toISOString(),
           })
-          .catch(() => {})
 
         created.push("agent_onboarding")
       }
@@ -313,7 +312,6 @@ export async function createOrRepairUserDomainRecords(
           },
           { onConflict: "user_id" }
         )
-        .catch(() => {})
 
       if (!existingRole) created.push("user_role_assignments")
     }
@@ -449,7 +447,6 @@ export async function assignUserRoleAndEntitlements(
           },
           { onConflict: "user_id" }
         )
-        .catch(() => {})
     }
 
     await emitUserProvisionedEvent({
@@ -488,14 +485,12 @@ export async function assignUserToBrokerage(params: {
     .from("agents")
     .update({ brokerage_id: params.brokerageId })
     .eq("user_id", params.userId)
-    .catch(() => {})
 
   // Update user_role_assignments
   await service
     .from("user_role_assignments")
     .update({ brokerage_id: params.brokerageId, updated_at: new Date().toISOString() })
     .eq("user_id", params.userId)
-    .catch(() => {})
 
   await emitUserProvisionedEvent({
     userId:       params.userId,
@@ -530,7 +525,6 @@ export async function assignUserToTeam(params: {
     .from("agents")
     .update({ team_id: params.teamId })
     .eq("user_id", params.userId)
-    .catch(() => {})
 
   await emitUserProvisionedEvent({
     userId:       params.userId,
@@ -622,5 +616,4 @@ export async function emitUserProvisionedEvent(params: {
       metadata:      params.metadata ?? {},
       created_at:    new Date().toISOString(),
     })
-    .catch(() => {}) // Non-fatal — audit trail should not block provisioning
 }

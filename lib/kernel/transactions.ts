@@ -101,14 +101,14 @@ async function emitTransactionEvent(params: {
     event_type:    event,
     actor_user_id: actorUserId,
     metadata:      metadata ?? {},
-  }).catch(() => {})
+  })
 
   await processKernelEvent({
     event,
     brokerageId,
     entityType: "transaction",
     entityId,
-  }).catch(() => {})
+  })
 }
 
 // ─── 1. EVALUATE OFFER COMPLIANCE ────────────────────────────────────────────
@@ -192,7 +192,7 @@ export async function acceptOfferConditionally(
       is_blocking:    true,
       checked_at:     new Date().toISOString(),
       created_at:     new Date().toISOString(),
-    }).catch(() => {})
+    })
 
     return {
       success: true,   // not a system error — a business hold
@@ -339,7 +339,7 @@ export async function createTransactionFromCompliantAcceptedOffer(
       is_blocking:    false,
       checked_at:     new Date().toISOString(),
       created_at:     new Date().toISOString(),
-    }).catch(() => {})
+    })
 
     return { success: true, data: { transactionId: result.transactionId } }
   } catch (err) {

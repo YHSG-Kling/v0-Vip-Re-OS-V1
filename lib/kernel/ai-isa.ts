@@ -421,8 +421,6 @@ export async function evaluateAiIsaEligibility(
         lead_stage: lead.lifecycle_stage ?? null,
         evaluated_at: new Date().toISOString(),
       })
-      .then(() => void 0)
-      .catch(() => void 0) // non-fatal
 
     return {
       success: true,
@@ -520,8 +518,6 @@ export async function assignAiIsaToLeadAfterGate(
           campaign_id: campaignId ?? null,
         },
       })
-      .then(() => void 0)
-      .catch(() => void 0)
 
     return { success: true }
   } catch (err) {
@@ -608,8 +604,6 @@ export async function startAiIsaAutomation(
         event_type: "ai_isa_automation_started",
         metadata: { channel, campaign_id: campaignId ?? null, actor: ctx.userId },
       })
-      .then(() => void 0)
-      .catch(() => void 0)
 
     return { success: true }
   } catch (err) {
@@ -677,8 +671,6 @@ export async function pauseAiIsaAutomation(
         event_type: "ai_isa_automation_paused",
         metadata: { reason, actor: ctx.userId },
       })
-      .then(() => void 0)
-      .catch(() => void 0)
 
     return { success: true }
   } catch (err) {
@@ -754,8 +746,6 @@ export async function resumeAiIsaAutomation(
         event_type: "ai_isa_automation_resumed",
         metadata: { actor: ctx.userId, notes: notes ?? null },
       })
-      .then(() => void 0)
-      .catch(() => void 0)
 
     return { success: true }
   } catch (err) {
@@ -836,8 +826,6 @@ export async function handoffToHumanAgent(
           reason: handoffReason,
         },
       })
-      .then(() => void 0)
-      .catch(() => void 0)
 
     return { success: true, data: { handoffId: handoffRes.data.id } }
   } catch (err) {
@@ -887,7 +875,7 @@ export async function recordAiIsaOutcome(
       leadUpdate.ai_outreach_paused = true
     }
 
-    const ops: Promise<unknown>[] = [
+    const ops = [
       supabase
         .from("leads")
         .update(leadUpdate)
@@ -931,8 +919,6 @@ export async function recordAiIsaOutcome(
         event_type: "ai_isa_outcome_recorded",
         metadata: { outcome, call_id: callId ?? null, actor: ctx.userId },
       })
-      .then(() => void 0)
-      .catch(() => void 0)
 
     return { success: true }
   } catch (err) {
