@@ -1,10 +1,10 @@
 "use client"
 
 import { useChat } from "@ai-sdk/react"
-import { DefaultChatTransport } from "ai"
 import { useSearchParams } from "next/navigation"
 import { useEffect, useRef, useState, useCallback } from "react"
 import { Send, X, MessageCircle, Loader2 } from "lucide-react"
+import { getMessageText } from "@/lib/ai/get-message-text"
 
 interface WidgetIdentity {
   assistant_name: string
@@ -86,22 +86,25 @@ export default function WidgetChatClient() {
     initSession()
   }, [brokerageId, agentId])
 
-  // ── useChat — streams from /api/widget/message ────────────────────────────
-  const { messages, input, handleInputChange, handleSubmit, isLoading, append } = useChat({
-    transport: new DefaultChatTransport({
-      url: "/api/widget/message",
-      prepareFetchOptions: () => ({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      }),
-      // Send session_token alongside messages
-      prepareRequestBody: ({ messages }) => ({
-        session_token: sessionToken,
-        messages,
-      }),
-    }),
-    initialMessages: [],
+  // ── AI SDK v6: Manual input state + useChat ───────────────────────────────
+  const [inputValue, setInputValue] = useState("")
+  
+  const { messages, append, status } = useChat({
+    api: "/api/widget/message",
+    body: {
+      session_token: sessionToken,
+    },
   })
+  
+  const isLoading = status === 'streaming' || status === 'submitted'
+
+  // ── Submit handler for AI SDK v6 ───────────────────────────────────────────
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!inputValue.trim() || !sessionReady || isLoading) return
+    append({ role: "user", content: inputValue.trim() })
+    setInputValue("")
+  }
 
   // Auto-scroll to newest message
   useEffect(() => {
@@ -112,7 +115,7 @@ export default function WidgetChatClient() {
   useEffect(() => {
     const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant")
     if (!lastAssistant || intakeSubmitted) return
-    const text = lastAssistant.content ?? ""
+    const text = getMessageText(lastAssistant)
     const INTAKE_SIGNALS = /your name|your email|contact info|get in touch|reach you|follow.?up|phone number/i
     if (INTAKE_SIGNALS.test(text) && !showIntakeForm) {
       setShowIntakeForm(true)
@@ -126,7 +129,7 @@ export default function WidgetChatClient() {
     setIntakeSubmitting(true)
 
     try {
-      const lastMsg = [...messages].filter((m) => m.role === "user").slice(-3).map((m) => m.content).join(" | ")
+      const lastMsg = [...messages].filter((m) => m.role === "user").slice(-3).map((m) => getMessageText(m)).join(" | ")
 
       await fetch("/api/widget/intake", {
         method: "POST",
@@ -215,7 +218,7 @@ export default function WidgetChatClient() {
                   : "bg-gray-100 text-gray-800 rounded-tl-md"
               }`}
             >
-              {m.content}
+              {getMessageText(m)}
             </div>
           </div>
         ))}
@@ -279,13 +282,13 @@ export default function WidgetChatClient() {
         <input
           className="flex-1 bg-gray-100 rounded-full px-4 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder:text-gray-400"
           placeholder="Type a message..."
-          value={input}
-          onChange={handleInputChange}
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
           disabled={!sessionReady || isLoading}
         />
         <button
           type="submit"
-          disabled={!input.trim() || !sessionReady || isLoading}
+          disabled={!inputValue.trim() || !sessionReady || isLoading}
           className="h-8 w-8 flex items-center justify-center bg-blue-700 text-white rounded-full disabled:opacity-40 flex-shrink-0"
           aria-label="Send"
         >
