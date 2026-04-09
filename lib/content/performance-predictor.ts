@@ -247,18 +247,10 @@ Return ONLY valid JSON in this exact format, no other text:
     await incrementFeatureUsage(userId, "content_performance_predictor")
 
     await processKernelEvent({
-      eventType: KernelEvent.CONTENT_PERFORMANCE_PREDICTED,
+      event: KernelEvent.CONTENT_PERFORMANCE_PREDICTED,
       brokerageId,
-      userId,
       entityType: "content_performance_predictions",
       entityId: prediction.id,
-      metadata: {
-        content_type: contentType,
-        source_table: sourceTable,
-        source_id: sourceId,
-        predicted_score: predictedScore,
-        confidence,
-      },
     })
 
     return {

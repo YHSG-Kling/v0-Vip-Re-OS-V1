@@ -201,7 +201,7 @@ export async function processEnrichmentQueue(
           })
 
           await processKernelEvent({
-            eventType: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
+            event: KernelEvent.CONTACT_ENRICHMENT_COMPLETED,
             entityType: 'contact',
             entityId,
             brokerageId,

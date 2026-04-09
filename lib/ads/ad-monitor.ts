@@ -423,14 +423,10 @@ Be specific to real estate marketing. Identify patterns like:
         // Fire kernel event for high/critical severity
         if (severity === "high" || severity === "critical") {
           await processKernelEvent({
-            eventType: KernelEvent.COMPETITOR_CONTENT_ALERTED,
+            event: KernelEvent.COMPETITOR_CONTENT_ALERTED,
             brokerageId,
-            payload: {
-              alert_id: alertData?.id,
-              alert_type: insight.insightType,
-              alert_message: insight.insightSummary,
-              severity,
-            },
+            entityType: "ad_insight",
+            entityId: alertData?.id ?? "unknown",
           })
         }
       }

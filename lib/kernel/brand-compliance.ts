@@ -185,7 +185,6 @@ export async function checkBrandCompliance(
     brokerageId,
     entityType: contentType,
     entityId:   contentId,
-    metadata:   { passed, violations },
   })
 
   // ── Step 7: UPDATE content record ─────────────────────────────────────────

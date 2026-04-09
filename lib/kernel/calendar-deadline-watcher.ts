@@ -86,7 +86,6 @@ export async function checkUpcomingDeadlines(): Promise<void> {
         brokerageId: calEvent.brokerage_id,
         entityType:  calEvent.entity_type,
         entityId:    calEvent.entity_id,
-        metadata:    { calendarEventId: calEvent.id },
       })
 
       notifiedIds.push(calEvent.id)

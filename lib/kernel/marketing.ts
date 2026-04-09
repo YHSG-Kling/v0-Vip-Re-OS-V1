@@ -351,11 +351,9 @@ export async function scheduleNewsletterSend(params: {
 
   await processKernelEvent({
     event: KernelEvent.EMAIL_CAMPAIGN_CREATED,
-    actorUserId: params.userId,
     brokerageId: params.brokerageId,
     entityId:    params.campaignId,
     entityType:  "newsletter_campaign",
-    metadata:    { scheduledTime: params.scheduledTime },
   })
 
   return { success: true, data: { scheduleId: insertResult.data?.id ?? "" } }
@@ -434,11 +432,9 @@ if (!compliance.allowed) {
 
   await processKernelEvent({
     event:      KernelEvent.EMAIL_CAMPAIGN_SENT,
-    actorUserId: params.userId,
     brokerageId: params.brokerageId,
     entityId:   params.campaignId,
     entityType: "newsletter_campaign",
-    metadata:   { sentAt: new Date().toISOString() },
   })
 
   return { success: true }
@@ -611,11 +607,9 @@ export async function submitDirectMailCampaign(params: {
 
   await processKernelEvent({
     event:      KernelEvent.DIRECT_MAIL_CAMPAIGN_CREATED,
-    actorUserId: params.userId,
     brokerageId: params.brokerageId,
     entityId:   params.campaignId,
     entityType: "direct_mail_campaign",
-    metadata:   { quantity: campaign.quantity },
   })
 
   return { success: true }
@@ -1178,11 +1172,9 @@ export async function publishPodcastEpisode(params: {
 
   await processKernelEvent({
     event:      KernelEvent.PODCAST_EPISODE_GENERATED,
-    actorUserId: params.userId,
     brokerageId: params.brokerageId,
     entityId:   params.episodeId,
     entityType: "podcast_episode",
-    metadata:   { publishedAt: new Date().toISOString() },
   })
 
   return { success: true }
@@ -1237,11 +1229,9 @@ export async function createMarketingCampaign(
 
   await processKernelEvent({
     event:      KernelEvent.MARKETING_CAMPAIGN_CREATED,
-    actorUserId: ctx.userId,
     brokerageId: ctx.brokerageId,
     entityId:   data.id,
     entityType: "marketing_campaign",
-    metadata:   { campaignType: input.campaignType },
   })
 
   return { success: true, data: { campaignId: data.id } }
@@ -1301,7 +1291,7 @@ export async function repurposeContentAsset(params: {
 // Output: { qrCodeId, slug }
 // Tables write: qr_codes
 // Rules:  slug must be unique; targetUrl must be a valid URL
-// ─────────────────────────────────────────────────────────────────────────────
+// ───────────────────���─────────────────────────────────────────────────────────
 
 export interface CreateQrAssetInput {
   ctx:        MarketingActorContext
