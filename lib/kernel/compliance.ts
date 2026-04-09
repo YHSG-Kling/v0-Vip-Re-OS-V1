@@ -107,7 +107,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
     teamId: actorContext.teamId,
     actorUserId: actorContext.userId,
     actorRole: actorContext.role,
-    journeyType,
+    journeyType: journeyType === 'dual' ? 'buyer' : journeyType,
     persona,
     messageType,
     content,

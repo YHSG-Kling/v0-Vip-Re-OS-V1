@@ -59,16 +59,14 @@ export async function getBuyerJourneyStatus(
     const supabase = createServiceClient()
     
     // 1. Get current state (inferred from activities)
-    const currentStateResult = await getCurrentState(contactId)
+    const currentState = await getCurrentState(contactId)
     
-    if (!currentStateResult.success || !currentStateResult.currentState) {
+    if (!currentState) {
       return {
         success: false,
         error: 'Unable to determine buyer state'
       }
     }
-    
-    const currentState = currentStateResult.currentState
     
     // 2. Check financial verification
     const financialVerification = await checkFinancialVerification({ contactId })

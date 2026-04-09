@@ -52,7 +52,7 @@ async function checkHumanOverride(
  */
 function findAgentForCapability(capability: AgentCapability): AgentType | null {
   for (const [agentType, config] of Object.entries(AGENT_REGISTRY)) {
-    if (config.capabilities.includes(capability)) {
+    if (config.handles.includes(capability as any)) {
       return agentType as AgentType
     }
   }
@@ -77,14 +77,14 @@ export async function routeToAgent(request: RouteRequest): Promise<RouteResult> 
   
   // Step 2: Find appropriate agent for capability
   const agentType = findAgentForCapability(request.capability)
-  if (!agentType) {
+  if (!agentType || agentType === 'none' || agentType === 'human') {
     return {
       success: false,
       message: `No agent found for capability: ${request.capability}`,
     }
   }
   
-  const agentConfig = AGENT_REGISTRY[agentType]
+  const agentConfig = AGENT_REGISTRY[agentType as keyof typeof AGENT_REGISTRY]
   
   // Step 3: Check for existing active session on this entity
   const { data: existingSession } = await supabase
@@ -246,7 +246,13 @@ async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
     .eq('id', request.fromSessionId)
   
   // Create new session for the receiving agent
-  const toAgentConfig = AGENT_REGISTRY[request.toAgentType]
+  if (request.toAgentType === 'none' || request.toAgentType === 'human') {
+    return {
+      success: false,
+      message: 'Cannot handoff to none/human agent type',
+    }
+  }
+  const toAgentConfig = AGENT_REGISTRY[request.toAgentType as keyof typeof AGENT_REGISTRY]
   
   const { data: newSession, error } = await supabase
     .from('agent_state_machine')

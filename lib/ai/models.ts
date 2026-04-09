@@ -12,6 +12,8 @@ import {
   type AIModel 
 } from "./cost-tracking"
 
+export type { AIModel } from "./cost-tracking"
+
 const MODEL_CONFIG: Record<AIModel, { provider: string; modelId: string }> = {
   "claude-sonnet": { provider: "anthropic", modelId: "claude-sonnet-4-20250514" },
   "claude-opus": { provider: "anthropic", modelId: "claude-opus-4-20250514" },

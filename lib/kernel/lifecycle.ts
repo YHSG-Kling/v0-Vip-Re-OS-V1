@@ -52,7 +52,6 @@ const LIFECYCLE_TO_KERNEL_EVENT: Record<string, KernelEvent> = {
   'touring':               KernelEvent.TOUR_PLANNED,
   'tour_completed':        KernelEvent.TOUR_COMPLETED,
   'offer_strategy':        KernelEvent.OFFER_STRATEGY_RECOMMENDED,
-  'offer_submitted':       KernelEvent.OFFER_SUBMITTED,
   'buyer_under_contract':  KernelEvent.CONTRACT_SIGNED,
   'buyer_closed':          KernelEvent.DEAL_CLOSED,
   'buyer_disengaged':      KernelEvent.BUYER_DISENGAGED,

@@ -18,12 +18,10 @@
 //   9. Provider account connection required before campaign launch
 //   10. All ad content subject to real estate compliance gates
 
-import { generateText } from "ai"
-import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import type { ActorContext } from "@/lib/kernel/types"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -712,7 +710,7 @@ export async function previewAdCreative(input: PreviewAdCreativeInput): Promise<
 // Returns: creative
 
 export async function approveAdCreative(input: {
-  ctx: KernelContext
+  ctx: ActorContext
   creativeVariationId: string
 }): Promise<KernelAdsResult> {
   const { ctx, creativeVariationId } = input
@@ -783,7 +781,7 @@ export async function approveAdCreative(input: {
       throw error
     }
 
-    return { success: true, creative: updatedCreative }
+    return { success: true, creatives: updatedCreative }
   } catch (err) {
     return {
       success: false,

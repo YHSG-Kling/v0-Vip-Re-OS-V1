@@ -170,7 +170,7 @@ async function checkProviderSignatures(
   
   return {
     check: "provider_signatures",
-    passed: signatureComplete,
+    passed: signatureComplete ?? false,
     reason: signatureComplete ? undefined : "Provider signatures not complete",
     details: signatureComplete ? { provider: activities[0]?.metadata?.provider } : {},
   }

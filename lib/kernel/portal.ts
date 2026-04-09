@@ -273,10 +273,10 @@ export async function logPortalAccess(
       eventType: KernelEvent.PORTAL_ACCESSED,
       entityType: "contact",
       entityId: contactId,
-      agentId: agentId ?? null,
-      brokerageId: null,
+      agentId: agentId ?? '',
+      brokerageId: '',
       metadata: { moduleKey, action },
-    }).catch(() => {}) // Non-blocking
+    })
   } catch (error) {
     // Fail silently — portal_access_logs table may not exist yet
     console.warn("[Portal] Unable to log portal access:", error)

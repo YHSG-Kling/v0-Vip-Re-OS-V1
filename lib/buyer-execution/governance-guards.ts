@@ -90,17 +90,15 @@ export async function checkBuyerGovernance(params: {
  * Frozen states CANNOT execute search/tour/offer actions
  */
 async function checkFrozenState(contactId: string): Promise<GovernanceCheckResult> {
-  const stateResult = await getCurrentState(contactId)
+  const currentState = await getCurrentState(contactId)
   
-  if (!stateResult.success || !stateResult.currentState) {
+  if (!currentState) {
     return {
       allowed: false,
       blockerType: 'lifecycle_gate',
       reason: 'Unable to determine buyer state'
     }
   }
-
-  const currentState = stateResult.currentState
 
   // Check if state is frozen
   const frozenStates: BuyerState[] = [
@@ -131,17 +129,15 @@ async function checkLifecycleEligibility(
   contactId: string,
   action: 'search' | 'tour' | 'offer'
 ): Promise<GovernanceCheckResult> {
-  const stateResult = await getCurrentState(contactId)
+  const currentState = await getCurrentState(contactId)
   
-  if (!stateResult.success || !stateResult.currentState) {
+  if (!currentState) {
     return {
       allowed: false,
       blockerType: 'lifecycle_gate',
       reason: 'Unable to determine buyer state'
     }
   }
-
-  const currentState = stateResult.currentState
 
   // Define allowed states for each action
   const allowedStates: Record<string, BuyerState[]> = {
@@ -320,10 +316,8 @@ export async function getDiagnosticGovernanceStatus(contactId: string): Promise<
   error?: string
 }> {
   try {
-    const stateResult = await getCurrentState(contactId)
+    const currentState = await getCurrentState(contactId)
     const verification = await checkFinancialVerification({ contactId })
-    
-    const currentState = stateResult.currentState || null
     const isFrozen = currentState ? ['BUYER_UNDER_CONTRACT', 'BUYER_CLOSED', 'BUYER_LIFETIME'].includes(currentState) : false
     const isFinanciallyVerified = verification.isVerified
     const isVerificationExpired = isFinanciallyVerified && isVerificationExpired(verification)
