@@ -30,9 +30,11 @@ import {
   canAccessFeature,
   incrementFeatureUsage,
 } from "@/lib/kernel/0.1-feature-access"
-import { applyBrandVoice, checkBrandCompliance } from "@/lib/kernel/compliance"
+import { applyBrandVoice, evaluateOutbound, checkBrandCompliance } from "@/lib/kernel/compliance"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
-import type { ActorRole, Persona } from "@/lib/kernel/types"
+import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
+import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { linkQrToAsset, unlinkQrFromAsset, getAssetQrLinks } from "@/lib/marketing/qr-asset-linker"
 import { getCampaignRegistry, registerCampaignSource } from "@/lib/marketing/campaign-registry"
 
