@@ -590,7 +590,6 @@ export async function launchEsignEnvelope(input: {
         },
         created_at: new Date().toISOString(),
       })
-      .catch(() => {}) // Non-blocking
 
     return { success: true, data: { envelope_launched: true } }
   } catch (error: any) {
@@ -756,7 +755,6 @@ export async function recordBuyerPropertyAction(input: {
           },
           created_at: new Date().toISOString(),
         })
-        .catch(() => {})
     }
 
     return { success: true, data: { interest_id: upserted.id } }

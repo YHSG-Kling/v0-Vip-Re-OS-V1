@@ -351,14 +351,12 @@ export async function attachOpenHouseSourceAttribution(input: {
         event_type: KernelEvent.OPEN_HOUSE_CONTACT_RESOLVED,
         brokerage_id,
         metadata: {
-          open_house_id,
           attendee_id,
           agent_id,
           resolved_at: new Date().toISOString(),
         },
         created_at: new Date().toISOString(),
       })
-      .catch(() => {}) // Don't fail if event emission fails
 
     console.log(`[Kernel] Attached open_house attribution to contact ${contact_id}`)
     return { success: true }
@@ -428,7 +426,6 @@ export async function notifyAssignedAgentForOpenHouseLead(input: {
         },
         scheduled_for: new Date(Date.now() + 30 * 60000).toISOString(), // 30 min from now
       })
-      .catch((err) => ({ error: err }))
 
     if (actionErr) {
       console.error(`[Kernel] Failed to create next action:`, actionErr?.message)

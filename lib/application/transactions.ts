@@ -1048,8 +1048,7 @@ export async function calculateCommissions(transactionId: string) {
             transaction_count: 1,
           },
           { onConflict: "agent_id,period_type,period_label" },
-        )
-        .catch(() => {}),
+        ),
     )
 
     await Promise.all(writes)
@@ -2159,20 +2158,24 @@ export async function getAgentTransactionKanban() {
 export async function updateTransactionStage(transactionId: string, targetStage: string, reason?: string) {
   // Kernel OS: requireWriteContext — resolves userId, brokerageId, userType via canonical chain
   const { requireWriteContext } = await import("@/lib/kernel")
-  const ctx = await requireWriteContext().catch(() => null)
-  if (!ctx) return { success: false, error: "Not authenticated" }
+  try {
+    const ctx = await requireWriteContext()
+    if (!ctx) return { success: false, error: "Not authenticated" }
 
-  const { TransactionOrchestrator } = await import("@/lib/transactions/transaction-orchestrator")
-  const orchestrator = new TransactionOrchestrator({
-    transactionId,
-    brokerageId: ctx.brokerageId,
-    userId: ctx.userId,
-    userRole: ctx.userType, // userType is already canonical — never use .role
-  })
+    const { TransactionOrchestrator } = await import("@/lib/transactions/transaction-orchestrator")
+    const orchestrator = new TransactionOrchestrator({
+      transactionId,
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+      userRole: ctx.userType, // userType is already canonical — never use .role
+    })
 
-  const result = await orchestrator.advanceToStage(targetStage as any, reason)
-  if (result.success) revalidatePath("/transactions")
-  return result
+    const result = await orchestrator.advanceToStage(targetStage as any, reason)
+    if (result.success) revalidatePath("/transactions")
+    return result
+  } catch (err) {
+    return { success: false, error: "Not authenticated" }
+  }
 }
 
 export async function getClientTasks(transactionId: string) {

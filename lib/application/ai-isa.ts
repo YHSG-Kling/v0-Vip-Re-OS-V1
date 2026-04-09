@@ -180,7 +180,7 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
   })
 
   // Write voice_calls row first — ai_isa_calls.voice_call_id is an FK to it
-  const { data: voiceCallRow } = await supabase
+  const voiceCallResult = await supabase
     .from("voice_calls")
     .insert({
       contact_id:  contactId,
@@ -194,8 +194,8 @@ export async function queueAIISACallService(campaignId: string, contactId: strin
     })
     .select("id")
     .single()
-    .then((r) => r.data)
-    .catch(() => null)
+  
+  const voiceCallRow = voiceCallResult.data
 
   // Write vapi_voice_calls billing row
   void supabase
@@ -271,8 +271,6 @@ export async function handleVapiCallCompleteService(payload: any) {
   if (call?.isa_campaign_id) {
     await supabase.rpc("increment_campaign_calls_completed", {
       p_campaign_id: call.isa_campaign_id,
-    }).catch(() => {
-      // rpc may not exist yet — non-blocking
     })
   }
 
@@ -295,7 +293,7 @@ export async function handleVapiCallCompleteService(payload: any) {
       if (call?.isa_campaign_id) {
         await supabase.rpc("increment_campaign_appointments_booked", {
           p_campaign_id: call.isa_campaign_id,
-        }).catch(() => {})
+        })
       }
 
       if (voiceCall.agent_id) {
@@ -306,7 +304,7 @@ export async function handleVapiCallCompleteService(payload: any) {
           title:        "AI-ISA Booked Appointment",
           body:         `Appointment with ${analysis.contact_name || "contact"} scheduled for ${new Date(analysis.appointment_time).toLocaleString()}`,
           priority:     "high",
-        }).catch(() => {})
+        })
       }
     }
   }
@@ -321,7 +319,7 @@ export async function handleVapiCallCompleteService(payload: any) {
       due_date:    new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString().split("T")[0],
       priority:    "urgent",
       status:      "pending",
-    }).catch(() => {})
+    })
   }
 
   return { success: true }

@@ -292,12 +292,13 @@ async function checkDocument(ctx: {
 
   // client_documents table exists — attempt a read but
   // treat a missing table gracefully; only the lifecycle_event and result matter
-  const { data: doc } = await supabase
+  const result = await supabase
     .from("client_documents")
     .select("content, document_type")
     .eq("id", contentId)
     .maybeSingle()
-    .catch(() => ({ data: null, error: null }))
+  
+  const doc = result.data
 
   if (!doc) {
     // No documents table or record not found — emit as passed with a note
