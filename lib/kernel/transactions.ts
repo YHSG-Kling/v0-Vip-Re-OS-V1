@@ -53,6 +53,42 @@ export interface AcceptOfferConditionallyResult {
   holdReason?:    string
 }
 
+// Database row types (snake_case)
+export interface DbTransaction {
+  id: string
+  brokerage_id: string
+  listing_id: string
+  buyer_contact_id: string
+  seller_contact_id?: string
+  listing_agent_id: string
+  buyer_agent_id?: string
+  purchase_price: number
+  status: string
+  closing_date?: string
+  contract_date: string
+  compliance_passed_at?: string
+  created_at: string
+  updated_at: string
+}
+
+// Application types (camelCase) - what kernel returns
+export interface KernelTransaction {
+  id: string
+  brokerageId: string
+  listingId: string
+  buyerContactId: string
+  sellerContactId?: string
+  listingAgentId: string
+  buyerAgentId?: string
+  purchasePrice: number
+  status: string
+  closingDate?: string
+  contractDate: string
+  compliancePassedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface CreateTransactionInput {
   offerId:            string
   brokerageId:        string
@@ -79,6 +115,27 @@ export interface SeedMilestonesInput {
     appraisalDeadline?:  string
     financingDeadline?:  string
     earnestMoneyDue?:    string
+  }
+}
+
+// ─── MAPPING: snake_case → camelCase ──────────────────────────────────────────
+
+function mapDbToKernelTransaction(db: DbTransaction): KernelTransaction {
+  return {
+    id: db.id,
+    brokerageId: db.brokerage_id,
+    listingId: db.listing_id,
+    buyerContactId: db.buyer_contact_id,
+    sellerContactId: db.seller_contact_id,
+    listingAgentId: db.listing_agent_id,
+    buyerAgentId: db.buyer_agent_id,
+    purchasePrice: db.purchase_price,
+    status: db.status,
+    closingDate: db.closing_date,
+    contractDate: db.contract_date,
+    compliancePassedAt: db.compliance_passed_at,
+    createdAt: db.created_at,
+    updatedAt: db.updated_at,
   }
 }
 
@@ -653,7 +710,7 @@ export async function createManualTransaction(
 // ─── loadTransactionWorkspace ─────────────────────────────────────────────────
 
 export async function loadTransactionWorkspace(transactionId: string): Promise<KernelTxResult<{
-  transaction: Record<string, unknown>
+  transaction: KernelTransaction
   milestones:  unknown[]
   documents:   unknown[]
   participants: unknown[]
@@ -674,7 +731,7 @@ export async function loadTransactionWorkspace(transactionId: string): Promise<K
     return {
       success: true,
       data: {
-        transaction:    txResult.data as Record<string, unknown>,
+        transaction:    mapDbToKernelTransaction(txResult.data as DbTransaction),
         milestones:     msResult.data  ?? [],
         documents:      docResult.data ?? [],
         participants:   ptResult.data  ?? [],
