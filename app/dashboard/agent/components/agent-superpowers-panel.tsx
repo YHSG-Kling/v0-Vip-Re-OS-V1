@@ -340,40 +340,115 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
                   </CardContent>
                 </Card>
               </DialogTrigger>
-              <DialogContent className="max-w-lg bg-background border shadow-lg">
-                <DialogHeader className="border-b pb-4">
-                  <DialogTitle className="flex items-center gap-2 text-lg">
-                    <power.icon className={`h-5 w-5 ${power.iconColor}`} />
-                    {power.title}
-                  </DialogTitle>
+              <DialogContent className="max-w-2xl bg-background border shadow-lg">
+                <DialogHeader className="border-b pb-4 bg-gradient-to-r from-primary/5 to-transparent -m-6 mb-0 p-6">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-2 rounded-lg bg-background border ${power.iconColor}`}>
+                        <power.icon className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <DialogTitle className="text-xl font-semibold">{power.title}</DialogTitle>
+                        <p className="text-sm text-muted-foreground mt-1">{power.description}</p>
+                      </div>
+                    </div>
+                  </div>
                 </DialogHeader>
-                <div className="space-y-4 py-4">
-                  {power.form}
-                  <Button onClick={power.onGenerate} disabled={generating} className="w-full">
-                    {generating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                    Generate
+                
+                <div className="space-y-6 py-6">
+                  {/* AI Capabilities Info */}
+                  <div className="flex items-start gap-3 p-3 bg-primary/5 rounded-lg border border-primary/20">
+                    <Sparkles className="h-5 w-5 text-primary mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">AI-Powered Generation</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Leverages your brand voice, market data, and proven templates to create personalized content in seconds.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Form Inputs */}
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-semibold">Customize Your Content</h4>
+                    {power.form}
+                  </div>
+
+                  {/* Generate Button */}
+                  <Button 
+                    onClick={power.onGenerate} 
+                    disabled={generating} 
+                    className="w-full h-11 text-base font-semibold"
+                    size="lg"
+                  >
+                    {generating ? (
+                      <>
+                        <Loader2 className="h-5 w-5 animate-spin mr-2" />
+                        Generating with AI...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-5 w-5 mr-2" />
+                        Generate {power.title}
+                      </>
+                    )}
                   </Button>
+
+                  {/* Output Section */}
                   {output && (
-                    <div className="space-y-2 p-4 bg-muted/50 rounded-lg border">
-                      <Textarea 
-                        value={output} 
-                        onChange={(e) => setOutput(e.target.value)} 
-                        rows={7}
-                        className="bg-background" 
-                      />
-                      <div className="flex gap-2">
-                        <Button variant="outline" size="sm" onClick={handleCopy} className="bg-background">
-                          {copied ? <Check className="h-4 w-4 mr-1" /> : <Copy className="h-4 w-4 mr-1" />}
-                          {copied ? "Copied" : "Copy"}
-                        </Button>
+                    <div className="space-y-3 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-semibold">Generated Content</h4>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={handleCopy}>
+                            {copied ? (
+                              <>
+                                <Check className="h-4 w-4 mr-1.5" />
+                                Copied!
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-4 w-4 mr-1.5" />
+                                Copy
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                      
+                      <div className="relative">
+                        <Textarea 
+                          value={output} 
+                          onChange={(e) => setOutput(e.target.value)} 
+                          rows={10}
+                          className="bg-muted/30 border-2 font-mono text-sm resize-none" 
+                        />
+                        {output.toLowerCase().includes('error') && (
+                          <div className="absolute top-2 right-2 bg-destructive/10 text-destructive text-xs px-2 py-1 rounded">
+                            Generation Error
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 p-3 bg-muted/50 rounded-lg border">
+                        <div className="flex-1">
+                          <p className="text-xs text-muted-foreground">
+                            Ready to use this content? Open the full studio to refine, schedule, and publish.
+                          </p>
+                        </div>
                         <Link href={power.href}>
-                          <Button variant="outline" size="sm" className="bg-background">{power.linkText}</Button>
+                          <Button size="sm" variant="default">
+                            {power.linkText}
+                          </Button>
                         </Link>
                       </div>
                     </div>
                   )}
                 </div>
-                <DialogFooter className="border-t pt-4">
+
+                <DialogFooter className="border-t pt-4 flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground">
+                    Powered by AI • Brand voice applied • Compliance checked
+                  </p>
                   <DialogClose asChild>
                     <Button variant="ghost">Close</Button>
                   </DialogClose>
