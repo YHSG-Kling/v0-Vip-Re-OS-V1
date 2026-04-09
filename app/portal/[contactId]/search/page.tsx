@@ -28,8 +28,8 @@ export default async function SearchPage({
   const supabase = await createClient()
 
   // Verify buyer portal view
-  const portalView = await determinePortalView(supabase, contactId)
-  if (portalView !== "buyer") {
+  const portalView = await determinePortalView(supabase, { contactId })
+  if (portalView.view !== "buyer") {
     redirect(`/portal/${contactId}`)
   }
 

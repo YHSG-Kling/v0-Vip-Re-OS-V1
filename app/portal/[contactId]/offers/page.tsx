@@ -102,7 +102,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   const supabase = await createClient()
 
   // Check portal view
-  const portalView = await determinePortalView(supabase, contactId)
+  const portalView = await determinePortalView(supabase, { contactId })
 
   // Get contact
   const { data: contact, error: contactError } = await supabase
@@ -116,7 +116,7 @@ export default async function OffersPage({ params }: { params: Promise<{ contact
   }
 
   // BUYER VIEW: Show offers the buyer has submitted (using canonical offer_price)
-  if (portalView === "buyer") {
+  if (portalView.view === "buyer") {
     const { data: buyerOffers } = await supabase
       .from("offers")
       .select("id, listing_id, transaction_id, offer_price, status, created_at, expiration_date, esign_status, esign_provider, esign_sent_at, esign_completed_at, buyer_signed_at, listing:listings(id, address, property_address, list_price)")

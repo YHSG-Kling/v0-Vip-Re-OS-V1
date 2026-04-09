@@ -57,7 +57,7 @@ export default async function PortalJourneyPage({
   }
 
   // Determine portal view from kernel
-  const portalView = await determinePortalView(supabase, contactId)
+  const portalView = await determinePortalView(supabase, { contactId })
 
   // Get active transaction for this contact
   const { data: transactions } = await supabase
@@ -85,7 +85,7 @@ export default async function PortalJourneyPage({
   }
 
   // Get label map based on portal view
-  const labelMap = portalView === "seller" ? SELLER_MILESTONE_LABELS : BUYER_MILESTONE_LABELS
+  const labelMap = portalView.view === "seller" ? SELLER_MILESTONE_LABELS : BUYER_MILESTONE_LABELS
 
   // Get contact display name
   const contactName = contact.first_name || contact.name || "there"
@@ -94,7 +94,7 @@ export default async function PortalJourneyPage({
     <JourneyClient
       contactId={contactId}
       contactName={contactName}
-      portalView={portalView}
+      portalView={portalView.view}
       transaction={transaction}
       milestones={milestones}
       labelMap={labelMap}

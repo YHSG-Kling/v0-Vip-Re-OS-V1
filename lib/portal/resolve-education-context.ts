@@ -136,7 +136,8 @@ export async function resolveEducationContext(
   contactId: string
 ): Promise<EducationContext> {
   // Get portal view from kernel
-  const portalView = await determinePortalView(supabase, contactId)
+  const portalViewOutput = await determinePortalView(supabase, { contactId })
+  const portalView: PortalView = portalViewOutput.view
 
   // Get contact details
   const { data: contact } = await supabase

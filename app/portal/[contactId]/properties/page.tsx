@@ -68,7 +68,7 @@ export default async function PropertiesPage({ params }: { params: Promise<{ con
     : { data: [] }
 
   // Determine portal view via kernel gate — buyer vs seller vs lifetime
-  const portalView = await determinePortalView(supabase, contactId)
+  const portalView = await determinePortalView(supabase, { contactId })
 
   // BUYER PATH: Surface the buyer's own smart searches (property_alerts) and
   // inferred preferences (property_preferences). Buyers own their searches —
