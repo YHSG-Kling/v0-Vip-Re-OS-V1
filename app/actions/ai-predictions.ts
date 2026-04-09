@@ -2248,11 +2248,11 @@ export async function optimizeShowingRoute(data: {
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const idxClient = new IDXBrokerClient()
 
-  const properties = await Promise.all(data.propertyIds.map((id) => idxClient.getProperties(params))
+  const properties = await Promise.all(data.propertyIds.map((_id) => idxClient.getProperties({ ...params })))
 
   const prompt = `You are an AI showing coordinator. Optimize this showing route:
 
-Start Location: ${data.startLocation}idxClient.getProperties(params)
+Start Location: ${data.startLocation}
 Date: ${data.preferredDate}
 Properties to Show (${properties.length}):
 ${properties

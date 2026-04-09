@@ -43,7 +43,6 @@ export async function POST(request: Request) {
       entity_id: agentId,
       event: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
       actor_user_id: agentId,
-      },
     })
 
     // Build system prompt
@@ -83,7 +82,7 @@ ${kbContext || 'No specific documentation found for this query.'}`
             brokerage_id: brokerageId,
             entity_type: 'agent',
             entity_id: agentId,
-            event_type: KernelEvent.SETUP_ASSISTANT_ESCALATED,
+            event: KernelEvent.SETUP_ASSISTANT_ESCALATED,
             actor_user_id: agentId,
             metadata: {
               query: latestQuery,

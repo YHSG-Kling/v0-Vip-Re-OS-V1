@@ -60,7 +60,7 @@ Target Contact Profile:
     const response = await generateAIResponse({
       prompt,
       temperature: 0.7,
-      maxOutputTokens: 400: contentType === "blog_post" ? 2000 : 500,
+      maxOutputTokens: contentType === "blog_post" ? 2000 : 500,
       metadata: {
         userId: agentId,
         brokerageId: actorContext?.brokerageId,
@@ -106,13 +106,12 @@ Target Contact Profile:
   } catch (error: any) {
     console.error("Content generation error:", error)
 
-    // Log failed generation
-    const body = await request.json() // Declare body variable here
-    if (body?.agentId) {
+    // Log failed generation (use already-parsed body variables)
+    if (agentId) {
       await logContentGeneration({
-        agentId: body.agentId,
-        contentType: body.contentType,
-        prompt: body.topic || "",
+        agentId,
+        contentType,
+        prompt: topic || "",
         success: false,
         errorMessage: error.message,
       })

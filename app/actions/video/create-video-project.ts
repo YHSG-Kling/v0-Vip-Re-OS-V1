@@ -134,11 +134,9 @@ Return only the script text.`
       role: "agent",
       brokerageId: params.brokerageId,
     },
-    journeyType: "buyer"| "seller"| "investor",
-        persona: "first_time" | "relocated" | "luxury" | "fsbo" | 
-//   "probate" | "upsize" | "downsize" | "military" | "divorce" | "senior" | 
-//   "expired" | "foreclosure" | "other",
-        messageType: "email"|"sms"|"social"|"phone"|"in_app"|"ai"|"direct_mail"
+    journeyType: "buyer",
+    persona: "first_time",
+    messageType: "social",
     content: scriptContent,
     contact: {
       id: "broadcast",
