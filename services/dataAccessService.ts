@@ -322,7 +322,7 @@ export const dataAccessService = {
   // =====================================================
 
   async getFinancials(ctx: UserAccessContext, type: string) {
-    const financials = await supabaseService.getFinancials(type)
+    const financials = await supabaseService.getFinancials(type as "commissions" | "marketing")
 
     // Admin/Broker: See all financials
     if (permissionsService.isAdminOrBroker(ctx.role)) {

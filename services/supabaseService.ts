@@ -112,10 +112,10 @@ export const supabaseService = {
 
       // Normalize status and persona using AI mapping
       if (contactData.status) {
-        contactData.status = await aiMappingService.normalizeStatus(contactData.status)
+        contactData.status = await aiMappingService.mapStatus(contactData.status)
       }
-      if (contactData.persona) {
-        contactData.persona = await aiMappingService.normalizePersona(contactData.persona)
+      if (contactData.contact_persona) {
+        contactData.contact_persona = await aiMappingService.mapPersona(contactData.contact_persona)
       }
 
       const { data, error } = await supabase.from("contacts").insert(contactData).select().single()

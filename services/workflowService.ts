@@ -49,17 +49,17 @@ export const workflowService = {
   },
 
   async triggerCMAPackage(
-    leadId: string | null,
+    _leadId: string | null,
     address: string,
     beds: string,
     baths: string,
     sqft: string,
     upgrades: any[],
   ) {
-    return triggerCMAPackage(leadId, address, beds, baths, sqft, upgrades)
+    return triggerCMAPackage(address, beds, baths, sqft, upgrades)
   },
 
-  async triggerPropertyEnrichment(leadId: string | null, propertyAddress: string) {
+  async triggerPropertyEnrichment(_leadId: string | null, _propertyAddress: string) {
     // Simplified property enrichment using AI
     return {
       success: true,
@@ -230,7 +230,7 @@ export const workflowService = {
   async approveAndSendTour(id: string) {
     return { success: true }
   },
-  confirmAndRetrainAI(id: string) {
+  async confirmAndRetrainAI(id: string) {
     return { success: true }
   },
   async triggerWeeklyAIReview() {
