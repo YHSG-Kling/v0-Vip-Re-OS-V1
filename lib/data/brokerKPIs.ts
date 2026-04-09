@@ -1,4 +1,4 @@
-import { getSupabaseServerClient } from "../supabaseServer"
+import { createClient } from "@/lib/supabase/server"
 
 export interface BrokerKPIData {
   newLeads7Days: number
@@ -22,7 +22,7 @@ export interface AgentPerformance {
 }
 
 export async function getBrokerKPIs(brokerageId: string, timeRange = "7d"): Promise<BrokerKPIData> {
-  const supabase = getSupabaseServerClient()
+  const supabase = await createClient()
 
   // Calculate date range
   const now = new Date()
@@ -72,7 +72,7 @@ export async function getBrokerKPIs(brokerageId: string, timeRange = "7d"): Prom
 
   // Calculate GCI from closings
   const gci =
-    closings?.reduce((sum, listing) => {
+    closings?.reduce((sum: number, listing: any) => {
       return sum + listing.price * (listing.commission_rate || 0.03)
     }, 0) || 0
 
@@ -92,7 +92,7 @@ export async function getBrokerKPIs(brokerageId: string, timeRange = "7d"): Prom
 }
 
 export async function getAgentPerformance(brokerageId: string, timeRange = "30d"): Promise<AgentPerformance[]> {
-  const supabase = getSupabaseServerClient()
+  const supabase = await createClient()
 
   // Calculate date range
   const now = new Date()
@@ -146,7 +146,7 @@ export async function getAgentPerformance(brokerageId: string, timeRange = "30d"
 
     // Calculate speed-to-lead (average time from lead created to first contact)
     const speedToLead = leads?.length
-      ? leads.reduce((sum, lead) => sum + 15, 0) / leads.length
+      ? leads.reduce((sum: number, _lead: any) => sum + 15, 0) / leads.length
       : // Mock: 15 min average
         0
 
@@ -155,7 +155,7 @@ export async function getAgentPerformance(brokerageId: string, timeRange = "30d"
 
     // Calculate GCI
     const gci =
-      closedDeals?.reduce((sum, listing) => {
+      closedDeals?.reduce((sum: number, listing: any) => {
         return sum + listing.price * (listing.commission_rate || 0.03)
       }, 0) || 0
 
