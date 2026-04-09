@@ -1,6 +1,7 @@
 "use server"
 
 import { isValidUUID } from "@/lib/validations"
+import * as TransactionKernel from "@/lib/kernel/transactions"
 import * as TransactionService from "@/lib/application/transactions"
 
 // ============================================
@@ -18,6 +19,8 @@ export async function getTransactions(filters?: {
     console.warn("[transactions.ts] getTransactions called with invalid UUID:", agentIdValue)
     return []
   }
+  // Use application service for now - kernel doesn't have direct list function
+  // TODO: Migrate to kernel when loadTransactionWorkspace is refactored for listing
   return TransactionService.getTransactions(filters)
 }
 

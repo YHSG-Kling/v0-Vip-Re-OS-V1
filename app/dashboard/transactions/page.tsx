@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
+import { getTransactions } from "@/app/actions/transactions"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -44,28 +45,11 @@ export default async function TransactionsPage() {
 
   const agentId = agentRecord?.id ?? user.id
 
-  // Fetch transactions — use live schema column names (deal_type, purchase_price, not transaction_type/contract_price)
-  const { data: transactions } = await supabase
-    .from("transactions")
-    .select(`
-      id,
-      property_address,
-      deal_name,
-      deal_type,
-      status,
-      purchase_price,
-      close_date,
-      created_at,
-      health_score,
-      stage
-    `)
-    .eq("agent_id", agentId)
-    .is("deleted_at", null)
-    .order("created_at", { ascending: false })
-    .limit(50)
+  // Fetch transactions using server action (proper architecture pattern)
+  const transactions = await getTransactions({ agent_id: agentId })
 
   // Fetch deal_health_scores separately — no FK join supported from transactions
-  const txIds = (transactions ?? []).map(t => t.id)
+  const txIds = (transactions ?? []).map((t: any) => t.id)
   const { data: healthScores } = txIds.length > 0
     ? await supabase
         .from("deal_health_scores")
