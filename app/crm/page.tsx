@@ -248,9 +248,7 @@ export default function CRMPage() {
   // Portal invite status for selected contact
   const [portalInviteStatus, setPortalInviteStatus] = useState<string | null>(null)
 
-  // AI Copilot Plan state
-  const [copilotPlan, setCopilotPlan] = useState<any>(null)
-  const [loadingPlan, setLoadingPlan] = useState(false)
+  // AI Copilot Plan state (copilotPlan and loadingPlan already declared above)
   const [generatingPlan, setGeneratingPlan] = useState(false)
   const [isaHandoffContext, setIsaHandoffContext] = useState<{
     qualificationScore?: number
