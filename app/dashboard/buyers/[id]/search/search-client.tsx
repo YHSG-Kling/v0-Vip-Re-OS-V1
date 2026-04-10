@@ -9,6 +9,7 @@ import { Badge }     from "@/components/ui/badge"
 import { cn }        from "@/lib/utils"
 import { searchProperties, smartSearch } from "@/app/actions/idx-search"
 import { isTourAllowed }                 from "@/lib/buyer-lifecycle/gating-helpers"
+import { requestShowing }                from "@/app/actions/showings"
 import { createClient }                  from "@/lib/supabase/client"
 import { useToast }                      from "@/hooks/use-toast"
 
@@ -84,7 +85,7 @@ function GateModal({ persona, onPrimary, onClose }: { persona: string | null; on
 
 function PropertyCard({
   property, buyerId, brokerageId, agentUserId, buyerPersona,
-  saved, onSave, onDismiss, onShowingGated,
+  saved, onSave, onDismiss, onSchedule,
 }: {
   property:       Property
   buyerId:        string
@@ -94,7 +95,7 @@ function PropertyCard({
   saved:          boolean
   onSave:         (p: Property) => void
   onDismiss:      (p: Property) => void
-  onShowingGated: () => void
+  onSchedule:     (p: Property) => void
 }) {
   const cardRef  = useRef<HTMLDivElement>(null)
   const viewedRef = useRef(false)
@@ -201,7 +202,7 @@ function PropertyCard({
             size="sm"
             variant="outline"
             className="flex-1 h-7 text-xs"
-            onClick={onShowingGated}
+            onClick={() => onSchedule(property)}
           >
             Schedule
           </Button>
@@ -235,8 +236,18 @@ export function SearchClient({
   const [searched, setSearched]     = useState(false)
   const [savedTab, setSavedTab]     = useState(false)
   const [savedIds, setSavedIds]     = useState<Set<string>>(new Set())
-  const [showGate, setShowGate]     = useState(false)
+  const [showGate, setShowGate]           = useState(false)
   const [savingCriteria, setSavingCriteria] = useState(false)
+
+  // Showing scheduler dialog state
+  const [showingDialogOpen, setShowingDialogOpen]     = useState(false)
+  const [showingProperty, setShowingProperty]         = useState<Property | null>(null)
+  const [showingDate1, setShowingDate1]               = useState("")
+  const [showingTime1, setShowingTime1]               = useState("")
+  const [showingDate2, setShowingDate2]               = useState("")
+  const [showingTime2, setShowingTime2]               = useState("")
+  const [showingNotes, setShowingNotes]               = useState("")
+  const [showingSubmitting, setShowingSubmitting]     = useState(false)
 
   const [filters, setFilters] = useState<Filters>({
     minPrice:      initialInterests?.min_price?.toString() ?? "",
@@ -351,13 +362,45 @@ export function SearchClient({
     setProperties(prev => prev.filter(p => (p.mls_number ?? p.id) !== (property.mls_number ?? property.id)))
   }
 
-  async function handleScheduleShowing() {
+  async function handleScheduleShowing(property: Property) {
     const gateResult = await isTourAllowed(buyerId)
     if (!gateResult.allowed) {
       setShowGate(true)
       return
     }
-    toast({ title: "Showing scheduler coming soon" })
+    setShowingProperty(property)
+    setShowingDate1("")
+    setShowingTime1("")
+    setShowingDate2("")
+    setShowingTime2("")
+    setShowingNotes("")
+    setShowingDialogOpen(true)
+  }
+
+  async function handleSubmitShowing() {
+    if (!showingProperty || !showingDate1 || !showingTime1) {
+      toast({ title: "Please fill in at least one preferred date and time" })
+      return
+    }
+    setShowingSubmitting(true)
+    const preferredDates: { date: string; time: string }[] = [{ date: showingDate1, time: showingTime1 }]
+    if (showingDate2 && showingTime2) preferredDates.push({ date: showingDate2, time: showingTime2 })
+
+    const result = await requestShowing({
+      contactId:       buyerId,
+      propertyId:      showingProperty.mls_number ?? showingProperty.id ?? "",
+      propertyAddress: showingProperty.address ?? "",
+      propertyData:    showingProperty,
+      preferredDates,
+      clientNotes:     showingNotes || undefined,
+    })
+    setShowingSubmitting(false)
+    if (result.success) {
+      setShowingDialogOpen(false)
+      toast({ title: "Showing requested", description: `Request sent for ${showingProperty.address}` })
+    } else {
+      toast({ title: "Failed to request showing", description: result.error ?? "Please try again" })
+    }
   }
 
   async function handleSaveCriteria() {
@@ -416,6 +459,80 @@ export function SearchClient({
           onPrimary={() => { window.history.back(); setShowGate(false) }}
           onClose={() => setShowGate(false)}
         />
+      )}
+
+      {/* Showing scheduler dialog */}
+      {showingDialogOpen && showingProperty && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowingDialogOpen(false)} />
+          <div className="relative z-10 w-full max-w-md rounded-xl border border-border bg-card shadow-xl p-6 space-y-4">
+            <h2 className="text-base font-semibold">Request a Showing</h2>
+            <p className="text-sm text-muted-foreground">{showingProperty.address}{showingProperty.city ? `, ${showingProperty.city}` : ""}</p>
+
+            <div className="space-y-3">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Preferred Date &amp; Time #1</p>
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  value={showingDate1}
+                  onChange={e => setShowingDate1(e.target.value)}
+                  min={new Date().toISOString().split("T")[0]}
+                  className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <input
+                  type="time"
+                  value={showingTime1}
+                  onChange={e => setShowingTime1(e.target.value)}
+                  className="w-28 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Alternate Date &amp; Time (optional)</p>
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  value={showingDate2}
+                  onChange={e => setShowingDate2(e.target.value)}
+                  min={new Date().toISOString().split("T")[0]}
+                  className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                <input
+                  type="time"
+                  value={showingTime2}
+                  onChange={e => setShowingTime2(e.target.value)}
+                  className="w-28 rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Notes for agent (optional)</p>
+                <textarea
+                  rows={2}
+                  value={showingNotes}
+                  onChange={e => setShowingNotes(e.target.value)}
+                  placeholder="Any specific questions, accessibility needs, etc."
+                  className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={handleSubmitShowing}
+                disabled={showingSubmitting}
+                className="flex-1 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {showingSubmitting ? "Submitting..." : "Request Showing"}
+              </button>
+              <button
+                onClick={() => setShowingDialogOpen(false)}
+                className="flex-1 rounded-md border border-border px-4 py-2 text-sm text-muted-foreground hover:bg-muted/50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="flex flex-1 min-h-0 h-full">
@@ -616,10 +733,10 @@ export function SearchClient({
                       agentUserId={agentUserId}
                       buyerPersona={buyerPersona}
                       saved={savedIds.has(p.mls_number ?? p.id ?? p.address ?? "")}
-                      onSave={handleSaveProperty}
-                      onDismiss={handleDismissProperty}
-                      onShowingGated={handleScheduleShowing}
-                    />
+                onSave={handleSaveProperty}
+                onDismiss={handleDismissProperty}
+                onSchedule={handleScheduleShowing}
+              />
                   ))}
                 </div>
               )
@@ -629,10 +746,10 @@ export function SearchClient({
                 brokerageId={brokerageId}
                 agentUserId={agentUserId}
                 buyerPersona={buyerPersona}
-                onShowingGated={handleScheduleShowing}
-              />
-            )}
-          </div>
+  onShowingGated={(p: any) => handleScheduleShowing(p)}
+  />
+  )}
+  </div>
         </div>
       </div>
     </>
@@ -641,11 +758,11 @@ export function SearchClient({
 
 // ─── SAVED PROPERTIES TAB ─────────────────────────────────────────────────────
 
-function SavedPropertiesTab({
+  function SavedPropertiesTab({
   buyerId, brokerageId, agentUserId, buyerPersona, onShowingGated,
-}: {
-  buyerId: string; brokerageId: string; agentUserId: string; buyerPersona: string | null; onShowingGated: () => void
-}) {
+  }: {
+  buyerId: string; brokerageId: string; agentUserId: string; buyerPersona: string | null; onShowingGated: (p: any) => void
+  }) {
   const [saved, setSaved]     = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const { toast }             = useToast()
@@ -738,7 +855,7 @@ function SavedPropertiesTab({
                 >
                   Make Offer
                 </Button>
-                <Button size="sm" variant="outline" className="flex-1 h-7 text-xs" onClick={onShowingGated}>Schedule</Button>
+                <Button size="sm" variant="outline" className="flex-1 h-7 text-xs" onClick={() => onShowingGated({ id: s.id, mls_number: s.mls_number ?? undefined, address: s.property_address ?? undefined, city: s.city ?? undefined, state: s.state ?? undefined, list_price: s.list_price ?? undefined, bedrooms: s.bedrooms ?? undefined, bathrooms: s.bathrooms ?? undefined, sqft: s.sqft ?? undefined, primary_photo_url: s.primary_photo_url ?? undefined })}>Schedule</Button>
                 <Button
                   size="sm"
                   variant="outline"

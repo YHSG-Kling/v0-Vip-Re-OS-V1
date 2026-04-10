@@ -384,16 +384,130 @@ export default function AnalyticsDashboard() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="performance">
+          <TabsContent value="performance" className="space-y-6">
+            {/* Key performance metrics grid */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              {[
+                { label: "Monthly GCI", value: dashboardData ? `$${((dashboardData.traditionalMetrics?.monthly_gci || 0) / 1000).toFixed(1)}K` : "—", sub: "Gross commission income" },
+                { label: "Units Closed", value: dashboardData?.traditionalMetrics?.units_closed ?? "—", sub: "Transactions closed" },
+                { label: "Active Leads", value: dashboardData?.traditionalMetrics?.active_leads ?? "—", sub: "In pipeline" },
+                { label: "Conversion Rate", value: dashboardData ? `${dashboardData.traditionalMetrics?.conversion_rate ?? 0}%` : "—", sub: "Lead → closed" },
+              ].map(({ label, value, sub }) => (
+                <Card key={label}>
+                  <CardContent className="pt-5 pb-5">
+                    <p className="text-xs text-muted-foreground uppercase tracking-wide mb-1">{label}</p>
+                    <p className="text-2xl font-bold">{value}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{sub}</p>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+
+            {/* Value over time bar chart */}
             <Card>
               <CardHeader>
-                <CardTitle>Performance Trends</CardTitle>
-                <CardDescription>Coming soon: Historical performance charts and trends</CardDescription>
+                <CardTitle className="text-base">Value Delivered Over Time</CardTitle>
+                <CardDescription>Daily value delivered to leads and clients during the selected period</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="text-center py-12 text-muted-foreground">
-                  <Activity className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>Performance trend charts will be available soon</p>
+                {!dashboardData || (dashboardData.valueOverTime?.length ?? 0) === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2">
+                    <Activity className="h-8 w-8 opacity-40" />
+                    <p className="text-sm">No value data recorded for this period yet.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {/* Bar chart */}
+                    <div className="flex items-end gap-1 h-32">
+                      {(dashboardData.valueOverTime as { date: string; value: number }[]).map((point, i) => {
+                        const max = Math.max(...(dashboardData.valueOverTime as any[]).map((p: any) => p.value), 1)
+                        const pct = Math.max((point.value / max) * 100, point.value > 0 ? 4 : 0)
+                        return (
+                          <div key={i} className="flex flex-col items-center flex-1 gap-0.5 group" title={`${point.date}: $${point.value.toFixed(0)}`}>
+                            <div
+                              className="w-full bg-primary/80 rounded-t transition-all group-hover:bg-primary"
+                              style={{ height: `${pct}%` }}
+                            />
+                          </div>
+                        )
+                      })}
+                    </div>
+                    {/* X-axis labels — show first, middle, last */}
+                    {(() => {
+                      const pts = dashboardData.valueOverTime as { date: string; value: number }[]
+                      return (
+                        <div className="flex justify-between text-[10px] text-muted-foreground px-0.5">
+                          <span>{pts[0]?.date?.slice(5)}</span>
+                          <span>{pts[Math.floor(pts.length / 2)]?.date?.slice(5)}</span>
+                          <span>{pts[pts.length - 1]?.date?.slice(5)}</span>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Trust capital + generosity gauges */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {[
+                { label: "Trust Capital Score", value: dashboardData?.trust_capital_score ?? 0, desc: "Relationship strength with your network" },
+                { label: "Generosity Score", value: dashboardData?.generosity_score ?? 0, desc: "Value given vs. revenue received" },
+              ].map(({ label, value, desc }) => (
+                <Card key={label}>
+                  <CardContent className="pt-5 pb-5">
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <p className="text-sm font-medium">{label}</p>
+                        <p className="text-xs text-muted-foreground">{desc}</p>
+                      </div>
+                      <span className="text-2xl font-bold">{value}<span className="text-base text-muted-foreground">/100</span></span>
+                    </div>
+                    <div className="h-2 w-full bg-muted rounded-full">
+                      <div
+                        className="h-2 bg-primary rounded-full transition-all"
+                        style={{ width: `${Math.min(value, 100)}%` }}
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+
+            {/* Activity metrics */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Value Activity Breakdown</CardTitle>
+                <CardDescription>What actions generated value during this period</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  {[
+                    { label: "Tools Used", value: dashboardData?.valueMetrics?.free_tools_used ?? 0 },
+                    { label: "Guides Shared", value: dashboardData?.valueMetrics?.guides_shared ?? 0 },
+                    { label: "People Helped", value: dashboardData?.valueMetrics?.people_helped ?? 0 },
+                    { label: "Reciprocity Rate", value: `${dashboardData?.valueMetrics?.reciprocity_rate ?? 0}%`, raw: true },
+                  ].map(({ label, value, raw }) => {
+                    const maxVal = raw ? 100 : Math.max(
+                      dashboardData?.valueMetrics?.free_tools_used ?? 0,
+                      dashboardData?.valueMetrics?.guides_shared ?? 0,
+                      dashboardData?.valueMetrics?.people_helped ?? 0,
+                      1,
+                    )
+                    const numVal = raw ? parseFloat(String(value)) : Number(value)
+                    return (
+                      <div key={label} className="flex items-center gap-3">
+                        <div className="w-32 shrink-0 text-sm">{label}</div>
+                        <div className="flex-1 bg-muted rounded-full h-2">
+                          <div
+                            className="bg-primary h-2 rounded-full transition-all"
+                            style={{ width: `${Math.min((numVal / maxVal) * 100, 100)}%` }}
+                          />
+                        </div>
+                        <span className="text-sm font-medium w-12 text-right">{value}</span>
+                      </div>
+                    )
+                  })}
                 </div>
               </CardContent>
             </Card>
