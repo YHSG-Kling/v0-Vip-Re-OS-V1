@@ -100,6 +100,15 @@ interface StateRequirement {
   timeline_days: number | null
 }
 
+interface PendingSignature {
+  id: string
+  contract_type: string | null
+  provider_name: string | null
+  document_url: string | null
+  sent_at: string | null
+  esign_status: string
+}
+
 interface DocumentsClientProps {
   contactId: string
   clientDocs: ClientDocument[]
@@ -108,9 +117,7 @@ interface DocumentsClientProps {
   checklist: DocumentChecklist[]
   classifications: DocumentClassification[]
   stateRequirements: StateRequirement[]
-  brokerageId?: string
-  formsProviderName?: string
-  formsProviderConfigured?: boolean
+  pendingSignatures?: PendingSignature[]
 }
 
 // ─── HELPER FUNCTIONS ────────────────────────────────────────────────────────
@@ -196,9 +203,7 @@ export function DocumentsClient({
   checklist,
   classifications,
   stateRequirements,
-  brokerageId,
-  formsProviderName,
-  formsProviderConfigured,
+  pendingSignatures = [],
 }: DocumentsClientProps) {
   const [isPending, startTransition] = useTransition()
   const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null)
@@ -318,19 +323,48 @@ export function DocumentsClient({
         </Card>
       </div>
 
-      {/* Action Required — docs pending buyer/seller signature */}
-      {txDocs.filter(d => d.status === "pending_signature").length > 0 && (
+      {/* Action Required — docs pending buyer/seller signature (txDocs + contract_signatures) */}
+      {(txDocs.filter(d => d.status === "pending_signature").length > 0 || pendingSignatures.length > 0) && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-3">
           <div className="flex items-center gap-2">
             <AlertCircle className="h-5 w-5 text-amber-600 shrink-0" />
             <div>
               <p className="font-semibold text-sm text-amber-900">Action Required — Signature Needed</p>
               <p className="text-xs text-amber-700">
-                {txDocs.filter(d => d.status === "pending_signature").length} document(s) are waiting for your signature.
+                {txDocs.filter(d => d.status === "pending_signature").length + pendingSignatures.length} document(s) are waiting for your signature.
               </p>
             </div>
           </div>
           <div className="space-y-2">
+            {/* E-sign envelopes from contract_signatures */}
+            {pendingSignatures.map(sig => (
+              <div key={sig.id} className="flex items-center justify-between bg-white rounded-md border border-amber-200 px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium capitalize">
+                    {(sig.contract_type ?? "Document").replace(/_/g, " ")}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {sig.provider_name ? `via ${sig.provider_name.charAt(0).toUpperCase() + sig.provider_name.slice(1)}` : "E-sign"}
+                    {sig.sent_at && (
+                      <> &middot; sent {formatDistanceToNow(new Date(sig.sent_at), { addSuffix: true })}</>
+                    )}
+                  </p>
+                </div>
+                {sig.document_url ? (
+                  <a href={sig.document_url} target="_blank" rel="noreferrer">
+                    <Button size="sm" className="text-xs bg-amber-600 hover:bg-amber-700 text-white">
+                      <Send className="h-3.5 w-3.5 mr-1.5" />
+                      Sign Now
+                    </Button>
+                  </a>
+                ) : (
+                  <Badge variant="secondary" className="text-xs bg-amber-100 text-amber-700 border-amber-200">
+                    Link pending
+                  </Badge>
+                )}
+              </div>
+            ))}
+            {/* txDocs pending signature */}
             {txDocs
               .filter(d => d.status === "pending_signature")
               .map(d => (
@@ -377,14 +411,6 @@ export function DocumentsClient({
           </TabsTrigger>
           {stateRequirements.length > 0 && (
             <TabsTrigger value="compliance">State Compliance</TabsTrigger>
-          )}
-          {formsProviderName && (
-            <TabsTrigger value="brokerage-forms">
-              Brokerage Forms
-              {formsProviderConfigured && (
-                <span className="ml-1.5 flex h-1.5 w-1.5 rounded-full bg-green-500" />
-              )}
-            </TabsTrigger>
           )}
         </TabsList>
 
@@ -921,63 +947,6 @@ export function DocumentsClient({
           </TabsContent>
         )}
 
-        {/* BROKERAGE FORMS: provider portal access */}
-        {formsProviderName && (
-          <TabsContent value="brokerage-forms" className="space-y-4">
-            <Card className={formsProviderConfigured ? "border-green-200 bg-green-50/30" : "border-amber-200 bg-amber-50/30"}>
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <FileText className="h-4 w-4" />
-                  {formsProviderName.charAt(0).toUpperCase() + formsProviderName.slice(1)} Forms Portal
-                  <Badge
-                    variant={formsProviderConfigured ? "default" : "secondary"}
-                    className="ml-auto text-xs capitalize"
-                  >
-                    {formsProviderConfigured ? "Connected" : "Contact Your Agent"}
-                  </Badge>
-                </CardTitle>
-                <CardDescription>
-                  {formsProviderConfigured
-                    ? `Your brokerage uses ${formsProviderName.charAt(0).toUpperCase() + formsProviderName.slice(1)} for transaction forms and e-signatures. Click below to access your forms.`
-                    : "Your brokerage's forms provider is not yet connected. Contact your agent to set up access."}
-                </CardDescription>
-              </CardHeader>
-              {formsProviderConfigured && (
-                <CardContent className="space-y-3">
-                  <p className="text-sm text-muted-foreground">
-                    Transaction forms including purchase agreements, addenda, disclosures, and other required documents are managed through your brokerage{"'"}s forms portal. Your agent will share specific forms with you directly through this portal.
-                  </p>
-                  <div className="flex flex-wrap gap-2 pt-1">
-                    {(() => {
-                      const providerUrls: Record<string, string> = {
-                        dotloop:        "https://www.dotloop.com/",
-                        skyslope:       "https://app.skyslope.com/",
-                        formsimplicity: "https://www.formsimplicity.com/",
-                        brokermint:     "https://brokermint.com/",
-                        authentisign:   "https://authentisign.com/",
-                        docusign:       "https://www.docusign.com/",
-                      }
-                      const url = providerUrls[formsProviderName] ?? "https://www.dotloop.com/"
-                      return (
-                        <a href={url} target="_blank" rel="noopener noreferrer">
-                          <Button size="sm" className="gap-1.5 text-xs">
-                            <Send className="h-3 w-3" />
-                            Open {formsProviderName.charAt(0).toUpperCase() + formsProviderName.slice(1)}
-                          </Button>
-                        </a>
-                      )
-                    })()}
-                  </div>
-                  {brokerageId && (
-                    <p className="text-[10px] text-muted-foreground pt-2">
-                      Brokerage ID: {brokerageId}
-                    </p>
-                  )}
-                </CardContent>
-              )}
-            </Card>
-          </TabsContent>
-        )}
       </Tabs>
     </div>
   )

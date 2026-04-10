@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useTransition, useRef } from "react"
+import { useState, useCallback, useTransition, useRef, useEffect } from "react"
 import { cn } from "@/lib/utils"
 import {
   searchListingsByAddress,
@@ -23,10 +23,15 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Loader2, Check, AlertTriangle, ExternalLink, Sparkles, Building2 } from "lucide-react"
+import { Loader2, Check, AlertTriangle, ExternalLink, Sparkles, Building2, FileText } from "lucide-react"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
 import { createClient } from "@/lib/supabase/client"
 import { getOfferContext, type OfferContext } from "@/lib/contacts/ownership-model"
+import { loadAvailableFormsAction } from "@/app/actions/forms-kernel"
+import {
+  TransactionFormEsignFlow,
+  type FormTemplate,
+} from "../../../../transactions/[id]/components/transaction-form-esign-flow"
 
 type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard"
 
@@ -111,6 +116,34 @@ export function OfferInitiationFlow({
   // Forms / provider state (loaded after form_source is resolved)
   const [availableForms, setAvailableForms] = useState<{ required: string[]; addenda: string[]; aiRecommended: string[] } | null>(null)
   const [formsLoading, setFormsLoading] = useState(false)
+
+  // Kernel-loaded offer forms for the in_app path
+  const [offerKernelForms, setOfferKernelForms] = useState<FormTemplate[]>([])
+  const [offerKernelFormsLoading, setOfferKernelFormsLoading] = useState(false)
+  const [offerKernelFormsLoaded, setOfferKernelFormsLoaded] = useState(false)
+  const [selectedOfferForm, setSelectedOfferForm] = useState<FormTemplate | null>(null)
+
+  // Load kernel offer forms when in_app path is active
+  useEffect(() => {
+    if (
+      formSrc?.source !== "in_app" ||
+      offerKernelFormsLoaded ||
+      offerKernelFormsLoading
+    ) return
+    setOfferKernelFormsLoading(true)
+    loadAvailableFormsAction({
+      context_type: "offer",
+      state: property?.state ?? undefined,
+    })
+      .then(res => {
+        if (res.success && (res as any).data?.forms) {
+          setOfferKernelForms((res as any).data.forms as FormTemplate[])
+        }
+        setOfferKernelFormsLoaded(true)
+      })
+      .catch(() => setOfferKernelFormsLoaded(true))
+      .finally(() => setOfferKernelFormsLoading(false))
+  }, [formSrc?.source, offerKernelFormsLoaded, offerKernelFormsLoading, property?.state])
 
   // ── Step 1: Address search ──────────────────────────────────────────────────
 
@@ -907,28 +940,65 @@ export function OfferInitiationFlow({
                   </div>
                 )}
 
-                {/* No provider connected — info state, allow in-app fallback */}
+                {/* No provider connected — show kernel forms + connect banner */}
                 {formSrc.source === "in_app" && (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 space-y-2">
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                      <div>
-                        <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
-                        <p className="text-xs text-amber-700 mt-0.5">
-                          Connect your transaction/forms provider in Settings to pull official state-approved forms.
-                          You can continue with the in-app form in the meantime.
-                        </p>
+                  <div className="space-y-3">
+                    <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 space-y-2">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
+                          <p className="text-xs text-amber-700 mt-0.5">
+                            Connect your transaction/forms provider in Settings to pull official state-approved forms.
+                          </p>
+                        </div>
                       </div>
+                      <a
+                        href="/dashboard/settings/integrations"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 hover:underline"
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        Connect a provider in Settings
+                      </a>
                     </div>
-                    <a
-                      href="/dashboard/settings/integrations"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-700 hover:underline"
-                    >
-                      <ExternalLink className="h-3 w-3" />
-                      Connect a provider in Settings
-                    </a>
+
+                    {/* Kernel offer forms for this state */}
+                    {offerKernelFormsLoading ? (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Loading state forms...
+                      </div>
+                    ) : offerKernelForms.length > 0 ? (
+                      <div className="rounded-md border border-border overflow-hidden">
+                        <p className="px-3 py-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide bg-muted/40 border-b">
+                          Available Offer Forms{property?.state ? ` · ${property.state}` : ""}
+                        </p>
+                        <div className="divide-y divide-border">
+                          {offerKernelForms.map(form => (
+                            <div key={form.id} className="flex items-center justify-between px-3 py-2.5 bg-background hover:bg-muted/20 transition-colors">
+                              <div className="flex items-start gap-2 min-w-0">
+                                <FileText className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
+                                <div className="min-w-0">
+                                  <p className="text-xs font-medium truncate">{form.name}</p>
+                                  <p className="text-[10px] text-muted-foreground capitalize">
+                                    {form.category.replace(/_/g, " ")}
+                                  </p>
+                                </div>
+                              </div>
+                              <Button
+                                size="sm"
+                                className="text-xs h-6 gap-1 ml-2 shrink-0"
+                                onClick={() => setSelectedOfferForm(form)}
+                              >
+                                Use
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 )}
               </>
@@ -936,6 +1006,23 @@ export function OfferInitiationFlow({
           </div>
         )}
       </div>
+
+      {/* Offer Form E-Sign Flow Sheet */}
+      {selectedOfferForm && (
+        <TransactionFormEsignFlow
+          open={!!selectedOfferForm}
+          onOpenChange={open => { if (!open) setSelectedOfferForm(null) }}
+          formTemplate={selectedOfferForm}
+          contextType="offer"
+          contextId="pending"
+          defaultSigners={[
+            contactName || contactEmail
+              ? { name: contactName, email: contactEmail, role: "buyer" }
+              : null,
+          ].filter(Boolean) as { name: string; email: string; role: string }[]}
+          onSuccess={() => setSelectedOfferForm(null)}
+        />
+      )}
 
       {/* Footer */}
       <div className="border-t border-border px-5 py-4 flex items-center gap-3">

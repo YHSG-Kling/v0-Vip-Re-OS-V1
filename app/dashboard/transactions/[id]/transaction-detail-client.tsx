@@ -91,6 +91,10 @@ import {
   resolveFormsProviderAction,
   loadAvailableFormsAction,
 } from "@/app/actions/forms-kernel"
+import {
+  TransactionFormEsignFlow,
+  type FormTemplate,
+} from "./components/transaction-form-esign-flow"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -474,6 +478,9 @@ export function TransactionDetailClient({
   const [formsLoading, setFormsLoading] = useState(false)
   const [formsLoaded, setFormsLoaded] = useState(false)
   const [activeTab, setActiveTab] = useState("milestones")
+
+  // E-sign flow sheet state
+  const [esignFlowForm, setEsignFlowForm] = useState<FormTemplate | null>(null)
 
   // Deal Health Prediction — loaded once on mount, no blocking
   const [dealPrediction, setDealPrediction] = useState<any>(null)
@@ -2613,6 +2620,14 @@ export function TransactionDetailClient({
               {/* Transaction-level AI actions */}
               <div className="flex flex-wrap gap-2">
                 <Button
+                  size="sm"
+                  onClick={() => setActiveTab("forms")}
+                  className="text-xs gap-1.5"
+                >
+                  <ClipboardList className="h-3.5 w-3.5" />
+                  Add Form
+                </Button>
+                <Button
                   variant="outline"
                   size="sm"
                   onClick={handleCheckDisclosures}
@@ -3503,24 +3518,41 @@ export function TransactionDetailClient({
                             <div className="flex items-center gap-2 ml-3 shrink-0">
                               <Button
                                 size="sm"
-                                variant="outline"
                                 className="text-xs h-7 gap-1"
-                                onClick={() => {
-                                  const provider = formsProvider?.provider_name ?? "dotloop"
-                                  const providerUrls: Record<string, string> = {
-                                    dotloop:        "https://www.dotloop.com/",
-                                    skyslope:       "https://app.skyslope.com/",
-                                    formsimplicity: "https://www.formsimplicity.com/",
-                                    brokermint:     "https://brokermint.com/",
-                                    authentisign:   "https://authentisign.com/",
-                                    docusign:       "https://www.docusign.com/",
-                                  }
-                                  window.open(providerUrls[provider] ?? "https://www.dotloop.com/", "_blank")
-                                }}
+                                onClick={() => setEsignFlowForm({
+                                  id: form.id,
+                                  name: form.name,
+                                  category: form.category,
+                                  form_type: form.form_type,
+                                  is_required: form.is_required,
+                                  description: form.description,
+                                })}
                               >
-                                <ExternalLink className="h-3 w-3" />
-                                Open in {formsProvider?.provider_name ? formsProvider.provider_name.charAt(0).toUpperCase() + formsProvider.provider_name.slice(1) : "Portal"}
+                                <FileText className="h-3 w-3" />
+                                Use This Form
                               </Button>
+                              {formsProvider?.is_configured && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="text-xs h-7 gap-1 text-muted-foreground"
+                                  onClick={() => {
+                                    const provider = formsProvider.provider_name
+                                    const providerUrls: Record<string, string> = {
+                                      dotloop:        "https://www.dotloop.com/",
+                                      skyslope:       "https://app.skyslope.com/",
+                                      formsimplicity: "https://www.formsimplicity.com/",
+                                      brokermint:     "https://brokermint.com/",
+                                      authentisign:   "https://authentisign.com/",
+                                      docusign:       "https://www.docusign.com/",
+                                    }
+                                    window.open(providerUrls[provider] ?? "https://www.dotloop.com/", "_blank")
+                                  }}
+                                >
+                                  <ExternalLink className="h-3 w-3" />
+                                  Portal
+                                </Button>
+                              )}
                             </div>
                           </div>
                         ))}
@@ -3540,6 +3572,25 @@ export function TransactionDetailClient({
           </Tabs>
         </div>
       </div>
+
+      {/* Transaction Form E-Sign Flow */}
+      {esignFlowForm && (
+        <TransactionFormEsignFlow
+          open={!!esignFlowForm}
+          onOpenChange={open => { if (!open) setEsignFlowForm(null) }}
+          formTemplate={esignFlowForm}
+          contextType="transaction"
+          contextId={transaction.id}
+          providerName={formsProvider?.provider_name}
+          defaultSigners={[
+            ...(transaction.contact_id ? [{ name: transaction.client_name ?? "", email: "", role: "buyer" }] : []),
+          ].filter(s => s.name)}
+          onSuccess={() => {
+            setEsignFlowForm(null)
+            setActiveTab("documents")
+          }}
+        />
+      )}
 
       {/* Blockers Modal */}
       <Dialog open={showBlockersModal} onOpenChange={setShowBlockersModal}>

@@ -25,6 +25,7 @@ import { VendorBookingButton } from "./components/vendor-booking-button"
 import { DecisionHistoryPanel } from "./components/decision-history-panel"
 import { ComingSoonCommandCard } from "./components/coming-soon-command-card"
 import { ListingPacketPanel } from "./components/listing-packet-panel"
+import { ListingFormsPanel } from "./components/listing-forms-panel"
 import { CheckCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
@@ -62,11 +63,11 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const { data: listing } = await listingQuery.single()
   if (!listing) notFound()
 
-  // Fetch seller contact (needed for closed celebration card)
+  // Fetch seller contact (needed for closed celebration card + forms pre-fill)
   const sellerContact = listing.seller_contact_id
     ? await supabase
         .from("contacts")
-        .select("id, first_name, last_name, contact_type")
+        .select("id, first_name, last_name, contact_type, email")
         .eq("id", listing.seller_contact_id)
         .maybeSingle()
         .then(r => r.data)
@@ -339,6 +340,18 @@ const { data: listingVendorBookings } = await supabase
           <ListingAgreementStatusCard
             listingId={listingId}
             agreement={listingAgreement ?? null}
+          />
+        </div>
+
+        {/* Listing Forms Panel — loads listing-context forms for e-sign flow */}
+        <div className="mb-6">
+          <ListingFormsPanel
+            listingId={listingId}
+            state={listing.state ?? undefined}
+            sellerName={sellerContact
+              ? `${sellerContact.first_name ?? ""} ${sellerContact.last_name ?? ""}`.trim()
+              : undefined}
+            sellerEmail={(sellerContact as any)?.email ?? undefined}
           />
         </div>
 
