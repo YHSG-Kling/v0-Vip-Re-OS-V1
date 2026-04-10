@@ -5,6 +5,8 @@ import { revalidatePath } from "next/cache"
 
 export async function requestShowing(data: {
   contactId: string
+  // For agent-created seller listings this is a UUID; for MLS buyer properties it is an MLS number string.
+  // We store it as listing_id when it is a valid UUID, otherwise it goes in the message field only.
   propertyId: string
   propertyAddress: string
   propertyData?: any
@@ -14,39 +16,67 @@ export async function requestShowing(data: {
   try {
     const supabase = await createClient()
 
+    // Resolve the agent's brokerage_id (for portal calls the user is the buyer contact, so we skip this gracefully)
+    const { data: { user } } = await supabase.auth.getUser()
+    let brokerageId: string | null = null
+    if (user) {
+      const { data: u } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+      brokerageId = u?.brokerage_id ?? null
+    }
+
+    // Determine if propertyId is a valid UUID (agent listing) vs MLS string (buyer MLS search)
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const isUuid = uuidRe.test(data.propertyId)
+
+    // Build a readable message from preferred dates and notes
+    const datesText = data.preferredDates
+      .map((d, i) => `Option ${i + 1}: ${d.date} at ${d.time}`)
+      .join(", ")
+    const msgParts = [
+      `Showing request for ${data.propertyAddress}.`,
+      datesText ? `Preferred dates: ${datesText}.` : "",
+      data.clientNotes ? `Notes: ${data.clientNotes}` : "",
+    ].filter(Boolean).join(" ")
+
+    // Use first preferred date/time for the structured date fields
+    const firstDate = data.preferredDates[0]
+
     const { data: showing, error } = await supabase
       .from("showing_requests")
       .insert({
-        contact_id: data.contactId,
-        property_id: data.propertyId,
-        property_address: data.propertyAddress,
-        property_data: data.propertyData || {},
-        preferred_dates: data.preferredDates,
-        client_notes: data.clientNotes,
-        status: "pending",
+        listing_id:           isUuid ? data.propertyId : null,
+        contact_id:           data.contactId,
+        brokerage_id:         brokerageId,
+        requested_date:       firstDate?.date ?? null,
+        requested_start_time: firstDate?.time ? `${firstDate.time}:00` : null,
+        message:              msgParts,
+        status:               "pending",
       })
       .select()
       .single()
 
     if (error) {
-      console.error("[v0] Error creating showing request:", error)
       return { success: false, error: error.message }
     }
 
-    // Track activity
-    await supabase.from("client_portal_activity").insert({
-      contact_id: data.contactId,
-      activity_type: "request_showing",
-      activity_data: { property_id: data.propertyId, property_address: data.propertyAddress },
-      property_id: data.propertyId,
-    })
+    // Log portal activity (best-effort — table may not exist for all envs)
+    try {
+      await supabase.from("client_portal_activity").insert({
+        contact_id:    data.contactId,
+        activity_type: "request_showing",
+        activity_data: {
+          property_address: data.propertyAddress,
+          mls_number:       !isUuid ? data.propertyId : undefined,
+          listing_id:       isUuid  ? data.propertyId : undefined,
+        },
+      })
+    } catch { /* non-critical */ }
 
     revalidatePath(`/portal/${data.contactId}/properties`)
     revalidatePath(`/portal/${data.contactId}/showings`)
 
     return { success: true, data: showing }
   } catch (error: any) {
-    console.error("[v0] Error in requestShowing:", error)
     return { success: false, error: error.message }
   }
 }

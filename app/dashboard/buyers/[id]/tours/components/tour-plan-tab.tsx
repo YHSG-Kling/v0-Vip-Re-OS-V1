@@ -83,7 +83,11 @@ export function TourPlanTab({
       const next = new Set(prev)
       if (next.has(key)) {
         next.delete(key)
-        setOrderedStops(os => os.filter(s => s.listingId !== prop.listing_id && s.propertyAddress !== prop.listings?.address))
+        // Remove by matching either listingId or the MLS property address directly on the row
+        setOrderedStops(os => os.filter(s =>
+          !(s.listingId && s.listingId === prop.listing_id) &&
+          !(s.propertyAddress === prop.property_address)
+        ))
       } else {
         if (orderedStops.length >= 10) {
           toast({ title: 'Maximum 10 stops per tour', variant: 'destructive' })

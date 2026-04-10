@@ -183,61 +183,54 @@ export async function aiScheduleShowing(params: ShowingRequest) {
   const supabase = await createClient()
 
   try {
-    // Get property and contact details
-    const [propertyResult, contactResult, agentResult] = await Promise.all([
-      supabase.from("listings").select("*").eq("id", params.propertyId).single(),
-      supabase.from("contacts").select("*").eq("id", params.contactId).single(),
-      supabase.from("users").select("*").eq("id", params.agentId).single(),
+    // Determine if propertyId is a UUID (agent seller listing) or an MLS number (buyer MLS search).
+    // For MLS properties, skip the listings table lookup — it will not match.
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const propertyIsUuid = uuidRe.test(params.propertyId)
+
+    const [listingResult, contactResult] = await Promise.all([
+      propertyIsUuid
+        ? supabase.from("listings").select("address, city, state, list_price, bedrooms, bathrooms").eq("id", params.propertyId).maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      supabase.from("contacts").select("first_name, last_name, contact_persona, city, state").eq("id", params.contactId).maybeSingle(),
     ])
 
-    const property = propertyResult.data
+    const listing = listingResult.data
     const contact = contactResult.data
-    const agent = agentResult.data
 
-    if (!property || !contact) {
-      return { success: false, error: "Property or contact not found" }
+    // For MLS buyer properties the address comes in via showing_instructions / external source —
+    // we just need the contact to exist.
+    if (!contact) {
+      return { success: false, error: "Contact not found" }
     }
 
-    // Check for conflicts
+    // Check for scheduling conflicts on the same date
     const { data: existingShowings } = await supabase
       .from("showings")
-      .select("*")
-      .eq("property_id", params.propertyId)
-      .eq("showing_date", params.requestedDate)
+      .select("scheduled_date, status")
+      .eq("agent_id", params.agentId)
+      .eq("scheduled_date", params.requestedDate)
       .neq("status", "cancelled")
 
     // AI Analysis for optimal scheduling
     const { text: aiAnalysis } = await generateText({
-      model: "openai/gpt-4o",
-      prompt: `You are a real estate showing scheduling assistant. Analyze and recommend:
+      model: "openai/gpt-4o-mini",
+      prompt: `You are a real estate showing scheduling assistant. Analyze and recommend.
 
-PROPERTY DETAILS:
-- Address: ${property.address}, ${property.city}, ${property.state}
-- Price: $${property.price?.toLocaleString()}
-- Type: ${property.property_type}
-- Bedrooms: ${property.bedrooms}, Bathrooms: ${property.bathrooms}
-
-BUYER DETAILS:
-- Name: ${contact.first_name} ${contact.last_name}
-- Pre-Qualified: ${params.buyerPreQualified ? "Yes" : "No/Unknown"}
-- Budget: $${contact.budget_min?.toLocaleString() || "Unknown"} - $${contact.budget_max?.toLocaleString() || "Unknown"}
-- Persona: ${contact.contact_persona || "Unknown"}
-
+PROPERTY: ${listing ? `${listing.address}, ${listing.city} — $${listing.list_price?.toLocaleString() ?? "N/A"}, ${listing.bedrooms}bd/${listing.bathrooms}ba` : `MLS # ${params.propertyId}`}
+BUYER: ${contact.first_name} ${contact.last_name} (${contact.contact_persona ?? "buyer"})
 REQUESTED TIME: ${params.requestedDate} at ${params.requestedTime}
+PRE-QUALIFIED: ${params.buyerPreQualified ? "Yes" : "No/Unknown"}
+AGENT SHOWINGS THAT DAY: ${existingShowings?.length ?? 0}
 
-EXISTING SHOWINGS ON THIS DATE: ${existingShowings?.length || 0}
-${existingShowings?.map((s: any) => `- ${s.showing_time}: ${s.status}`).join("\n") || "None"}
-
-Provide JSON response:
+Return JSON only:
 {
   "recommendedTime": "HH:MM",
-  "alternativeTimes": ["HH:MM", "HH:MM"],
+  "alternativeTimes": ["HH:MM"],
   "conflictRisk": "low|medium|high",
-  "preparationTips": ["tip1", "tip2"],
-  "buyerMatchScore": 0-100,
-  "talkingPoints": ["point1", "point2", "point3"],
-  "potentialConcerns": ["concern1"],
-  "followUpStrategy": "strategy description"
+  "preparationTips": ["tip1"],
+  "talkingPoints": ["point1"],
+  "followUpStrategy": "string"
 }`,
     })
 
@@ -282,15 +275,17 @@ Provide JSON response:
 
     if (error) throw error
 
-    // Schedule confirmation reminder
-    await supabase.from("scheduled_tasks").insert({
-      task_type: "showing_confirmation",
-      scheduled_for: new Date(
-        new Date(`${params.requestedDate}T${params.requestedTime}`).getTime() - 24 * 60 * 60 * 1000
-      ).toISOString(),
-      payload: { showingId: showing.id },
-      agent_id: params.agentId,
-    })
+    // Log a calendar_event for the showing (best-effort)
+    try {
+      await supabase.from("calendar_events").insert({
+        brokerage_id:       agentUser?.brokerage_id ?? null,
+        entity_type:        "showing",
+        entity_id:          showing.id,
+        event_type:         "showing",
+        start_at:           scheduledAt ?? new Date(`${params.requestedDate}T${resolvedTime}:00`).toISOString(),
+        is_system_generated: true,
+      })
+    } catch { /* non-critical */ }
 
     revalidatePath("/showings")
     revalidatePath("/dashboard")
