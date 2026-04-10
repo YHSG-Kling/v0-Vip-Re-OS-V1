@@ -133,6 +133,9 @@ export async function createContact(contactData: {
   last_name: string
   email?: string
   phone?: string
+  city?: string
+  state?: string
+  zip_code?: string
   contact_type?: "buyer" | "seller" | "both" | "investor"
   status?: string
   contact_persona?: string
@@ -143,29 +146,32 @@ export async function createContact(contactData: {
   source_family?: string
   source_channel?: string
   source_subtype?: string
-}) {
+  }) {
   try {
     const { agentId, brokerageId, isAuthenticated, userId } = await getAgentContext()
-
+    
     if (!isAuthenticated || !userId) {
       return { success: false, error: "Not authenticated" }
     }
     if (!brokerageId) {
       return { success: false, error: "No brokerage configured" }
     }
-
+    
     // agentId from getAgentContext() is already agents.id (not users.id)
     // but verify it exists; if the context returned users.id as fallback, resolve it
     if (!agentId) {
       return { success: false, error: "No agent record found for this user" }
     }
-
+    
     // Delegate to kernel — handles dedup, enrichment queue, activity, notification
     const result = await createContactManually({
       first_name:      contactData.first_name,
       last_name:       contactData.last_name,
       email:           contactData.email ?? null,
       phone:           contactData.phone ?? null,
+      city:            contactData.city ?? null,
+      state:           contactData.state ?? null,
+      zip_code:        contactData.zip_code ?? null,
       contact_type:    contactData.contact_type ?? "buyer",
       status:          contactData.status ?? "new",
       contact_persona: contactData.contact_persona ?? null,

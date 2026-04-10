@@ -55,6 +55,9 @@ export interface CreateContactParams {
   last_name: string
   email?: string | null
   phone?: string | null
+  city?: string | null
+  state?: string | null
+  zip_code?: string | null
   contact_type?: "buyer" | "seller" | "both" | "investor" | "vendor" | "lender"
   status?: string
   contact_persona?: string
@@ -294,6 +297,9 @@ export async function createOrUpdateContactFromDirectIntake(
       email:                   email_normalized,
       phone:                   params.phone ?? null,
       phone_digits:            phone_digits,
+      city:                    params.city ?? null,
+      state:                   params.state ?? null,
+      zip_code:                params.zip_code ?? null,
       contact_type:            params.contact_type ?? "buyer",
       status:                  params.status ?? "new",
       contact_persona:         params.contact_persona ?? null,

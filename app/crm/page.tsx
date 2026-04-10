@@ -76,6 +76,9 @@ interface Contact {
   contact_persona?: string
   buyer_stage?: string
   status?: string
+  city?: string
+  state?: string
+  zip_code?: string
   lead_source?: string
   created_at?: string
   engagement_score?: number
@@ -458,6 +461,8 @@ export default function CRMPage() {
           `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
           (c.email ?? "").toLowerCase().includes(q) ||
           (c.phone ?? "").includes(q) ||
+          (c.city ?? "").toLowerCase().includes(q) ||
+          (c.state ?? "").toLowerCase().includes(q) ||
           (c.status ?? "").toLowerCase().includes(q) ||
           (c.contact_type ?? "").toLowerCase().includes(q)
       )
@@ -471,6 +476,9 @@ export default function CRMPage() {
     last_name: "",
     email: "",
     phone: "",
+    city: "",
+    state: "",
+    zip_code: "",
     contact_type: "buyer" as "buyer" | "seller" | "both" | "investor",
     status: "new",
   })
@@ -478,7 +486,7 @@ export default function CRMPage() {
   const [addFormSubmitting, setAddFormSubmitting] = useState(false)
 
   const handleOpenAddDialog = () => {
-    setAddForm({ first_name: "", last_name: "", email: "", phone: "", contact_type: "buyer", status: "new" })
+    setAddForm({ first_name: "", last_name: "", email: "", phone: "", city: "", state: "", zip_code: "", contact_type: "buyer", status: "new" })
     setAddFormError(null)
     setAddDialogOpen(true)
   }
@@ -494,6 +502,9 @@ export default function CRMPage() {
         last_name: addForm.last_name.trim(),
         email: addForm.email.trim() || undefined,
         phone: addForm.phone.trim() || undefined,
+        city: addForm.city.trim() || undefined,
+        state: addForm.state.trim() || undefined,
+        zip_code: addForm.zip_code.trim() || undefined,
         contact_type: addForm.contact_type,
         status: addForm.status,
       })
@@ -1350,6 +1361,40 @@ export default function CRMPage() {
                 placeholder="(555) 000-0000"
                 disabled={addFormSubmitting}
               />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="add-city">City</Label>
+                <Input
+                  id="add-city"
+                  value={addForm.city}
+                  onChange={(e) => setAddForm((f) => ({ ...f, city: e.target.value }))}
+                  placeholder="Miami"
+                  disabled={addFormSubmitting}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="add-state">State</Label>
+                <Input
+                  id="add-state"
+                  value={addForm.state}
+                  onChange={(e) => setAddForm((f) => ({ ...f, state: e.target.value }))}
+                  placeholder="FL"
+                  maxLength={2}
+                  disabled={addFormSubmitting}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="add-zip">ZIP</Label>
+                <Input
+                  id="add-zip"
+                  value={addForm.zip_code}
+                  onChange={(e) => setAddForm((f) => ({ ...f, zip_code: e.target.value }))}
+                  placeholder="33101"
+                  maxLength={10}
+                  disabled={addFormSubmitting}
+                />
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
