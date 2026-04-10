@@ -1,7 +1,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { generateText } from "ai"
-import { openai } from "@ai-sdk/openai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { NextRequest, NextResponse } from "next/server"
 
 // ─── Intent types the voice assistant understands ────────────────────────────
@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
 
   // ── Classify intent using AI ──────────────────────────────────────────────
   const classifyResult = await generateText({
-    model: openai("gpt-4o-mini"),
+      model: resolveModel("openai/gpt-4o-mini"),
     system: `Classify the real estate assistant voice command into one of these intents:
 - query_showings: asking about today's or upcoming showings
 - query_hot_contacts: asking about hot leads, top contacts, who to call

@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient } from '@/lib/supabase/service'
 import { streamText, convertToModelMessages } from 'ai'
-import { openai } from '@ai-sdk/openai'
+import { resolveModel } from '@/lib/ai/resolve-model'
 import type { UIMessage } from 'ai'
 import { NextResponse } from 'next/server'
 
@@ -312,7 +312,7 @@ export async function POST(request: Request) {
 
     // ── Stream response ────────────────────────────────────────────────────────
     const result = streamText({
-      model:    openai('gpt-4o-mini'),
+      model:    resolveModel('openai/gpt-4o-mini'),
       system:   systemPrompt,
       messages: await convertToModelMessages(messages),
       onFinish: async ({ text }) => {

@@ -20,7 +20,7 @@ import { evaluateKernelOutbound } from "@/lib/kernel/adapters/compliance"
 import { NextRequest, NextResponse } from "next/server"
 import { generateText } from "ai"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
-import { openai } from "@ai-sdk/openai"
+import { resolveModel } from "@/lib/ai/resolve-model"
 import { createServiceClient } from "@/lib/supabase/service"
 import { dispatchSms } from "@/lib/providers/dispatch"
 import { dispatchEmail } from "@/lib/providers/dispatch"
@@ -646,7 +646,7 @@ async function schedulePostCallFollowUp(params: {
 
   // Generate follow-up message using AI SDK
   const { text: followUpMessage } = await generateText({
-    model: openai('gpt-4o-mini'),
+      model: resolveModel('openai/gpt-4o-mini'),
     system: [
       "You are a real estate ISA (Inside Sales Agent) AI assistant.",
       "Write a short, warm, personalized follow-up message to send after a voice call.",

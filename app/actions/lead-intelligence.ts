@@ -216,7 +216,7 @@ export async function getMotivatedSellers(filters?: {
     .order("motivation_confidence", { ascending: false })
 
     if (filters?.min_score) {
-      query = query.gte("readiness_to_sell_score", filters.min_score)
+      query = query.gte("motivation_confidence", filters.min_score / 100)
     }
     if (filters?.timeframe) {
       query = query.eq("predicted_timeframe", filters.timeframe)
