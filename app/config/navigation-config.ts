@@ -60,7 +60,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Communications',
         icon: 'MessageCircle',
         children: [
-          { id: 'inbox', label: 'Inbox', href: '/dashboard/communications/inbox' },
+          { id: 'inbox', label: 'Inbox', href: '/dashboard/inbox', badgeKey: 'unread_notifications' },
           { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach' },
           { id: 'sequences-comm', label: 'Drip Sequences', href: '/dashboard/communications/sequences' },
           { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence' },
@@ -210,6 +210,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Communications',
         icon: 'MessageCircle',
         children: [
+          { id: 'broker-inbox', label: 'Inbox', href: '/dashboard/inbox' },
           { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence' },
           { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach' },
           { id: 'sequences', label: 'Drip Sequences', href: '/dashboard/communications/sequences' },

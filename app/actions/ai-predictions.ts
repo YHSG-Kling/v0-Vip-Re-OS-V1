@@ -472,11 +472,24 @@ export async function enableAIPilot(data: {
 }) {
   const supabase = await createClient()
 
-  // Check agent authorization
+  // Check agent authorization via auth session
   const {
     data: { user },
   } = await supabase.auth.getUser()
-  if (user?.id !== data.agentId) {
+  if (!user) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  // Resolve agent row to get brokerage_id (required for RLS)
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id, brokerage_id")
+    .eq("user_id", user.id)
+    .maybeSingle()
+
+  // Allow if the caller is the assigned agent OR a broker/admin of the same brokerage
+  const isAssignedAgent = agentRow?.id === data.agentId || user.id === data.agentId
+  if (!isAssignedAgent && !agentRow?.brokerage_id) {
     return { success: false, error: "Unauthorized" }
   }
 
@@ -585,22 +598,24 @@ Respond with JSON matching this structure:
     }
 
     // Archive existing active plan for this contact
-    // copilot_plans columns: id, contact_id, status, plan_name, next_action, next_action_date, updated_at, created_at
     await supabase
       .from("copilot_plans")
       .update({ status: "superseded", updated_at: new Date().toISOString() })
       .eq("contact_id", data.leadId)
       .eq("status", "active")
 
-    // Save to copilot_plans (only use existing columns — no agent_id, brokerage_id, plan_data)
+    // Insert new plan — all columns now exist after migration
     const { data: savedPlan, error: saveError } = await supabase
       .from("copilot_plans")
       .insert({
         contact_id:       data.leadId,
+        agent_id:         agentRow?.id ?? data.agentId,
+        brokerage_id:     agentRow?.brokerage_id ?? null,
         plan_name:        `AI Autopilot — ${data.autopilotLevel}`,
         next_action:      aiResponse.touchpoints?.[0]?.action ?? "Begin nurture sequence",
         next_action_date: nextActionDate.toISOString().split("T")[0],
         status:           "active",
+        plan_data:        aiResponse,
       })
       .select()
       .single()
@@ -628,33 +643,30 @@ Respond with JSON matching this structure:
   }
 }
 
-// Get active AI autopilot / copilot plans.
-// copilot_plans has NO agent_id column — we query by contact_id set when the plan was created.
-// The real table columns are: id, contact_id, status, plan_name, next_action, next_action_date, updated_at, created_at
-export async function getActiveAutoPilotPlans(agentIdOrNull: string | null): Promise<{ success: boolean; plans: any[] }> {
+// Get active AI autopilot / copilot plans for an agent.
+// copilot_plans now has agent_id + brokerage_id columns (added via migration).
+export async function getActiveAutoPilotPlans(agentId: string | null): Promise<any[]> {
+  if (!agentId) return []
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("copilot_plans")
-    .select("id, contact_id, plan_name, next_action, next_action_date, status, updated_at, contacts(first_name, last_name)")
+    .select("id, contact_id, agent_id, brokerage_id, plan_name, next_action, next_action_date, status, plan_data, updated_at, contacts(first_name, last_name)")
+    .eq("agent_id", agentId)
     .eq("status", "active")
     .order("next_action_date", { ascending: true })
-    .limit(50)
+    .limit(100)
 
   if (error) {
-    // Non-critical — return empty rather than crashing the UI
-    return { success: false, plans: [] }
+    return []
   }
 
-  // Normalize shape so the ContactCommandStrip can match contact_id = contact.id
-  const plans = (data ?? []).map((p: any) => ({
+  return (data ?? []).map((p: any) => ({
     ...p,
     is_active: true,
     is_paused: false,
-    autopilot_level: "moderate",
+    autopilot_level: p.plan_data?.autopilotLevel ?? "moderate",
   }))
-
-  return { success: true, plans }
 }
 
 // Pause/resume auto-pilot for a contact.
