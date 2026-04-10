@@ -75,13 +75,13 @@ export function ContactCommandStrip({
           </Badge>
         )}
 
-        {/* Autopilot status */}
-        {activePlan ? (
+        {/* Autopilot status — reads both the persisted column and runtime plan */}
+        {(contact?.ai_isa_enabled || activePlan) && (
           <Badge className="text-xs bg-indigo-100 text-indigo-700 border-0">
             <Zap className="h-3 w-3 mr-1" />
             AI-ISA Active
           </Badge>
-        ) : null}
+        )}
       </div>
 
       <div className="ml-auto flex items-center gap-2 flex-wrap">
@@ -98,7 +98,7 @@ export function ContactCommandStrip({
           </Button>
         )}
         
-        {!activePlan ? (
+        {!(contact?.ai_isa_enabled || activePlan) ? (
           <Button
             size="sm"
             variant="outline"
@@ -782,17 +782,12 @@ export function RelationshipAiChatPanel({
 
   const handleAsk = async () => {
     if (!question.trim()) return
-    console.log("[v0] Relationship AI - Sending question:", question)
     setLoading(true)
     setAnswer(null)
     try {
       const result = await askRelationshipAI({ question, contactName, contactPersona })
-      console.log("[v0] Relationship AI - Received result:", result)
-      const answerText = result.success ? (result.answer ?? "No response.") : (result.error ?? "Failed to generate advice.")
-      console.log("[v0] Relationship AI - Setting answer:", answerText)
-      setAnswer(answerText)
+      setAnswer(result.success ? (result.answer ?? "No response.") : (result.error ?? "Failed to generate advice."))
     } catch (error) {
-      console.error("[v0] Relationship AI - Error:", error)
       setAnswer("An error occurred. Please try again.")
     } finally {
       setLoading(false)
@@ -831,7 +826,6 @@ export function RelationshipAiChatPanel({
 
         {answer && (
           <div className="rounded-md bg-violet-50 border border-violet-100 p-2.5 text-xs text-violet-900">
-            {console.log("[v0] Relationship AI - Rendering answer:", answer)}
             {answer}
           </div>
         )}
@@ -964,7 +958,7 @@ export function SmartNoteComposer({
   )
 }
 
-// ─── 10. BUYER MATCH PANEL ─────────────────────────────────────���──────────────
+// ─── 10. BUYER MATCH PANEL ─────────────��───────────────────────���──────────────
 
 interface BuyerMatchPanelProps {
   contactId: string

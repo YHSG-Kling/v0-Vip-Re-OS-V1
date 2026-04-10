@@ -1,7 +1,7 @@
 "use server"
 
 import { generateText } from "ai"
-import { anthropic } from "@ai-sdk/anthropic"
+import { resolveModel } from "@/lib/ai/resolve-model"
 
 export async function askRelationshipAI(params: {
   question: string
@@ -16,10 +16,10 @@ export async function askRelationshipAI(params: {
     }
 
     const { text } = await generateText({
-      model: anthropic("claude-sonnet-4-20250514"),
+      model: resolveModel("openai/gpt-4o-mini"),
       system: `You are a real estate relationship advisor. The agent is asking about their client named ${contactName}${contactPersona ? ` (persona: ${contactPersona})` : ""}. Give concise, actionable advice in 2-3 sentences. Be specific and practical.`,
       prompt: question.trim(),
-      maxOutputTokens: 400,
+      maxTokens: 400,
     })
 
     return { success: true, answer: text.trim() }

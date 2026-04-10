@@ -20,6 +20,7 @@ import { Button }                             from "@/components/ui/button"
 import { Badge }                              from "@/components/ui/badge"
 import { Users, Calendar, AlertTriangle, Zap, Loader2 } from "lucide-react"
 import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot } from "@/app/actions/ai-predictions"
+import { upsertFinancialProfile }             from "@/app/actions/buyer-financial"
 import { toast }                              from "sonner"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
@@ -131,6 +132,10 @@ export function BuyerOverviewClient({
   const [refreshKey, setRefreshKey] = useState(0)
   const [autopilotPlans, setAutopilotPlans] = useState<any[]>([])
   const [isLoadingAI, setIsLoadingAI] = useState(false)
+  const [financeType, setFinanceType] = useState<string>(
+    profile?.is_cash_buyer ? "cash" : (profile?.finance_type ?? "")
+  )
+  const [savingFinance, setSavingFinance] = useState(false)
 
   const currentStage = contact.buyer_stage ?? "BUYER_CONTACT_CREATED"
   const persona      = contact.contact_persona ?? null
@@ -194,9 +199,33 @@ export function BuyerOverviewClient({
     }
   }
 
+  async function handleFinanceTypeChange(newType: string) {
+    if (!profile || !newType) return
+    setSavingFinance(true)
+    try {
+      const result = await upsertFinancialProfile({
+        contactId:   buyerId,
+        brokerageId,
+        agentUserId,
+        financeType:  newType as "conventional" | "fha" | "va" | "cash" | "other",
+        isCashBuyer: newType === "cash",
+      })
+      if (result.success) {
+        setFinanceType(newType)
+        toast.success("Finance type updated")
+      } else {
+        toast.error(result.error ?? "Failed to update finance type")
+      }
+    } catch (err: any) {
+      toast.error(err.message ?? "Failed to update finance type")
+    } finally {
+      setSavingFinance(false)
+    }
+  }
+
   function handleVerified() {
-    setVerified(true)
-    setRefreshKey(k => k + 1)
+  setVerified(true)
+  setRefreshKey(k => k + 1)
   }
 
   function scrollToVerification() {
@@ -733,8 +762,20 @@ export function BuyerOverviewClient({
                 {profile && (
                   <>
                     <div>
-                      <p className="text-xs text-muted-foreground">Finance type</p>
-                      <p className="font-medium capitalize">{profile.is_cash_buyer ? "Cash" : profile.finance_type ?? "—"}</p>
+                      <p className="text-xs text-muted-foreground mb-1">Finance type</p>
+                      <select
+                        value={financeType}
+                        disabled={savingFinance}
+                        onChange={(e) => handleFinanceTypeChange(e.target.value)}
+                        className="text-sm font-medium border border-border rounded px-2 py-1 bg-background text-foreground w-full disabled:opacity-50"
+                      >
+                        <option value="">— select —</option>
+                        <option value="conventional">Conventional</option>
+                        <option value="cash">Cash</option>
+                        <option value="fha">FHA</option>
+                        <option value="va">VA</option>
+                        <option value="other">Other</option>
+                      </select>
                     </div>
                     <div>
                       <p className="text-xs text-muted-foreground">Pre-approval</p>

@@ -606,6 +606,12 @@ Respond with JSON matching this structure:
       return { success: false, error: "Failed to save nurture plan" }
     }
 
+    // Flip contacts.ai_isa_enabled so the badge reflects immediately
+    await supabase
+      .from("contacts")
+      .update({ ai_isa_enabled: true })
+      .eq("id", data.leadId)
+
     return {
       success: true,
       plan: aiResponse,
@@ -641,6 +647,13 @@ export async function getActiveAutoPilotPlans(agentId: string) {
 export async function toggleAutoPilot(planId: string, pause: boolean) {
   const supabase = await createClient()
 
+  // First fetch the plan so we know the contact/lead id for the contacts update
+  const { data: plan } = await supabase
+    .from("ai_autopilot_plans")
+    .select("lead_id, contact_id")
+    .eq("id", planId)
+    .maybeSingle()
+
   const { error } = await supabase
     .from("ai_autopilot_plans")
     .update({
@@ -652,6 +665,15 @@ export async function toggleAutoPilot(planId: string, pause: boolean) {
   if (error) {
     console.error("[v0] Error toggling autopilot:", error)
     return { success: false }
+  }
+
+  // Sync contacts.ai_isa_enabled to match active state
+  const contactId = plan?.contact_id ?? plan?.lead_id
+  if (contactId) {
+    await supabase
+      .from("contacts")
+      .update({ ai_isa_enabled: !pause })
+      .eq("id", contactId)
   }
 
   return { success: true }
