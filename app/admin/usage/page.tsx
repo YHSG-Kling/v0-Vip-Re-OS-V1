@@ -203,17 +203,30 @@ export default async function UsageMeteringDashboard() {
     teamUsageMap.get(teamId)!.cost += t.allocated_cost_cents || 0
   })
 
-  // Feature usage aggregation
+  // AI Tool Usage aggregation by tool and model
   const aiToolSummary = new Map<string, { count: number; cost: number; tokens: number }>()
+  const aiModelSummary = new Map<string, { count: number; cost: number; tokens: number }>()
+  
   aiToolUsage.forEach((t: any) => {
+    // By tool name
     const tool = t.tool_name || "unknown"
     if (!aiToolSummary.has(tool)) {
       aiToolSummary.set(tool, { count: 0, cost: 0, tokens: 0 })
     }
-    const entry = aiToolSummary.get(tool)!
-    entry.count++
-    entry.cost += t.cost_cents || 0
-    entry.tokens += t.tokens_used || 0
+    const toolEntry = aiToolSummary.get(tool)!
+    toolEntry.count++
+    toolEntry.cost += t.cost_cents || 0
+    toolEntry.tokens += t.tokens_used || 0
+    
+    // By model used (AI Gateway tracking)
+    const model = t.model_used || "unknown"
+    if (!aiModelSummary.has(model)) {
+      aiModelSummary.set(model, { count: 0, cost: 0, tokens: 0 })
+    }
+    const modelEntry = aiModelSummary.get(model)!
+    modelEntry.count++
+    modelEntry.cost += t.cost_cents || 0
+    modelEntry.tokens += t.tokens_used || 0
   })
 
   // Check threshold alerts
@@ -453,6 +466,41 @@ export default async function UsageMeteringDashboard() {
 
             <TabsContent value="by-feature">
               <div className="grid md:grid-cols-2 gap-6">
+                {/* AI Gateway Model Usage */}
+                <div>
+                  <h4 className="font-medium mb-3">AI Gateway - By Model</h4>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Model</TableHead>
+                        <TableHead className="text-right">Calls</TableHead>
+                        <TableHead className="text-right">Tokens</TableHead>
+                        <TableHead className="text-right">Cost</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {Array.from(aiModelSummary.entries())
+                        .sort((a, b) => b[1].cost - a[1].cost)
+                        .slice(0, 10)
+                        .map(([model, data]) => (
+                          <TableRow key={model}>
+                            <TableCell className="font-medium text-xs">{model}</TableCell>
+                            <TableCell className="text-right">{data.count.toLocaleString()}</TableCell>
+                            <TableCell className="text-right">{(data.tokens / 1000).toFixed(1)}K</TableCell>
+                            <TableCell className="text-right">{formatCurrency(data.cost)}</TableCell>
+                          </TableRow>
+                        ))}
+                      {aiModelSummary.size === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                            No AI Gateway usage this period
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+                
                 {/* AI Tool Usage */}
                 <div>
                   <h4 className="font-medium mb-3">AI Tool Usage</h4>
@@ -478,6 +526,16 @@ export default async function UsageMeteringDashboard() {
                     </TableBody>
                   </Table>
                 </div>
+              </div>
+              
+              <div className="mt-6 p-4 bg-muted/50 rounded-lg border">
+                <h4 className="font-medium mb-2 text-sm">AI Gateway Tracking</h4>
+                <p className="text-xs text-muted-foreground">
+                  All AI generation calls are automatically tracked through the Vercel AI Gateway. 
+                  Costs are calculated based on token usage and model pricing. Model breakdowns show which AI models are being used most frequently across your organization.
+                </p>
+              </div>
+            </TabsContent>
 
                 {/* Feature Usage Tracking */}
                 <div>
