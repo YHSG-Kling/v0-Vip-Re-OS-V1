@@ -17,7 +17,10 @@ import { TourPipelineStepper }                from "@/app/components/shared/Tour
 import { createTourPlan }                     from "@/app/actions/tour-planner"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button }                             from "@/components/ui/button"
-import { Users, Calendar, AlertTriangle }      from "lucide-react"
+import { Badge }                              from "@/components/ui/badge"
+import { Users, Calendar, AlertTriangle, Zap, Loader2 } from "lucide-react"
+import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot } from "@/app/actions/ai-predictions"
+import { toast }                              from "sonner"
 
 // ─── GATE MODAL ───────────────────────────────────────────────────────────────
 
@@ -126,6 +129,8 @@ export function BuyerOverviewClient({
   const [gateModal, setGateModal]   = useState<GateModalProps | null>(null)
   const [verified, setVerified]     = useState(profile?.verified === true)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [autopilotPlans, setAutopilotPlans] = useState<any[]>([])
+  const [isLoadingAI, setIsLoadingAI] = useState(false)
 
   const currentStage = contact.buyer_stage ?? "BUYER_CONTACT_CREATED"
   const persona      = contact.contact_persona ?? null
@@ -134,6 +139,59 @@ export function BuyerOverviewClient({
   const blockers: string[] = []
   if (!verified) {
     blockers.push("Financial verification required before scheduling")
+  }
+
+  // Load autopilot plans
+  const loadAutopilotPlans = useCallback(async () => {
+    try {
+      const result = await getActiveAutoPilotPlans(agentUserId)
+      if (result.success && result.plans) {
+        setAutopilotPlans(result.plans)
+      }
+    } catch (err) {
+      console.error("[v0] Failed to load autopilot plans:", err)
+    }
+  }, [agentUserId])
+
+  useState(() => {
+    loadAutopilotPlans()
+  })
+
+  const activePlan = autopilotPlans.find((p: any) => p.contact_id === buyerId || p.lead_id === buyerId)
+
+  async function handleEnableAI() {
+    setIsLoadingAI(true)
+    try {
+      const result = await enableAIPilot(buyerId, agentUserId, "moderate")
+      if (result.success) {
+        toast.success("AI-ISA enabled for " + buyerName)
+        await loadAutopilotPlans()
+      } else {
+        toast.error(result.error || "Failed to enable AI-ISA")
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to enable AI-ISA")
+    } finally {
+      setIsLoadingAI(false)
+    }
+  }
+
+  async function handleToggleAI() {
+    if (!activePlan) return
+    setIsLoadingAI(true)
+    try {
+      const result = await toggleAutoPilot(activePlan.id, !activePlan.is_paused)
+      if (result.success) {
+        toast.success(activePlan.is_paused ? "AI-ISA resumed" : "AI-ISA paused")
+        await loadAutopilotPlans()
+      } else {
+        toast.error(result.error || "Failed to toggle AI-ISA")
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to toggle AI-ISA")
+    } finally {
+      setIsLoadingAI(false)
+    }
   }
 
   function handleVerified() {
@@ -181,8 +239,16 @@ export function BuyerOverviewClient({
       {/* Page header */}
       <div className="border-b border-border bg-card px-6 py-4">
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold">{buyerName}</h1>
+          <div className="flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl font-semibold">{buyerName}</h1>
+              {activePlan && (
+                <Badge className="text-xs bg-indigo-100 text-indigo-700 border-0">
+                  <Zap className="h-3 w-3 mr-1" />
+                  AI-ISA Active
+                </Badge>
+              )}
+            </div>
             <div className="flex items-center gap-3 mt-1 flex-wrap text-sm text-muted-foreground">
               {contact.email && <span>{contact.email}</span>}
               {contact.phone && <span>{contact.phone}</span>}
@@ -190,12 +256,34 @@ export function BuyerOverviewClient({
               {contact.timeline && <span>{contact.timeline}</span>}
             </div>
           </div>
-          <Link
-            href={`/dashboard/buyers/${buyerId}/search`}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors flex-shrink-0"
-          >
-            Search Properties
-          </Link>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {!activePlan ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isLoadingAI}
+                onClick={handleEnableAI}
+              >
+                {isLoadingAI ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Zap className="h-3 w-3 mr-1" />}
+                Enable AI-ISA
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isLoadingAI}
+                onClick={handleToggleAI}
+              >
+                {activePlan.is_paused ? "Resume AI-ISA" : "Pause AI-ISA"}
+              </Button>
+            )}
+            <Link
+              href={`/dashboard/buyers/${buyerId}/search`}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+            >
+              Search Properties
+            </Link>
+          </div>
         </div>
       </div>
 
