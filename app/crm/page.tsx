@@ -76,8 +76,6 @@ interface Contact {
   contact_persona?: string
   buyer_stage?: string
   status?: string
-  city?: string
-  state?: string
   lead_source?: string
   created_at?: string
   engagement_score?: number
@@ -460,7 +458,6 @@ export default function CRMPage() {
           `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
           (c.email ?? "").toLowerCase().includes(q) ||
           (c.phone ?? "").includes(q) ||
-          (c.city ?? "").toLowerCase().includes(q) ||
           (c.status ?? "").toLowerCase().includes(q) ||
           (c.contact_type ?? "").toLowerCase().includes(q)
       )
