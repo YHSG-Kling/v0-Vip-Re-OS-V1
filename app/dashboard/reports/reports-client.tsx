@@ -76,7 +76,7 @@ export function ReportsClient({
             brokerageId,
             dateFrom: monthStart,
           })
-          if (!result.success) throw new Error(result.error)
+          if (!result.success || !result.data) throw new Error(result.error ?? "Export failed")
           const blob = new Blob([result.data], { type: "text/csv" })
           const url = window.URL.createObjectURL(blob)
           const a = document.createElement("a")
@@ -93,15 +93,16 @@ export function ReportsClient({
             brokerageId,
             dateFrom: monthStart,
           })
-          if (!result.success) throw new Error(result.error)
+          if (!result.success || !result.pdfUrl) throw new Error(result.error ?? "Export failed")
           const a = document.createElement("a")
           a.href = result.pdfUrl
-          a.download = `report-${reportType}-${new Date().toISOString().split("T")[0]}.pdf`
+          a.target = "_blank"
+          a.download = `report-${reportType}-${new Date().toISOString().split("T")[0]}.html`
           document.body.appendChild(a)
           a.click()
           document.body.removeChild(a)
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error("[v0] Export error:", error)
       }
     })
@@ -117,13 +118,13 @@ export function ReportsClient({
     startTransition(async () => {
       try {
         const result = await emailReportAction({
-          reportType: emailReportType,
-          recipients: emailRecipients.split(",").map((e) => e.trim()),
-          subject: emailSubject,
-          message: emailMessage || undefined,
+          reportType:  emailReportType,
+          recipients:  emailRecipients.split(",").map((e) => e.trim()).filter(Boolean),
+          subject:     emailSubject,
+          message:     emailMessage || undefined,
           agentId,
           brokerageId,
-          dateFrom: monthStart,
+          dateFrom:    monthStart,
         })
         if (!result.success) {
           setEmailError(result.error ?? "Failed to send report.")
@@ -216,10 +217,10 @@ export function ReportsClient({
                   </CardHeader>
                   <CardContent>
                     <div className="text-2xl font-bold">
-                      ${(initialFinancialData.totalCommission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                      ${(initialFinancialData.ytdGrossCommission ?? initialFinancialData.totalCommission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {initialFinancialData.commission_count ?? 0} transactions
+                      {(initialFinancialData.recentCommissions?.length ?? initialFinancialData.commission_count ?? 0)} commissions
                     </p>
                   </CardContent>
                 </Card>
@@ -230,10 +231,10 @@ export function ReportsClient({
                   </CardHeader>
                   <CardContent>
                     <div className="text-2xl font-bold">
-                      ${(initialFinancialData.totalExpenses ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                      ${(initialFinancialData.ytdExpenses ?? initialFinancialData.totalExpenses ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
-                      {initialFinancialData.expense_count ?? 0} entries
+                      {(initialFinancialData.recentExpenses?.length ?? initialFinancialData.expense_count ?? 0)} entries
                     </p>
                   </CardContent>
                 </Card>
@@ -245,22 +246,24 @@ export function ReportsClient({
                   <CardContent>
                     <div className="text-2xl font-bold text-green-600">
                       ${(
-                        (initialFinancialData.totalCommission ?? 0) - (initialFinancialData.totalExpenses ?? 0)
+                        initialFinancialData.ytdNetIncome ??
+                        ((initialFinancialData.ytdGrossCommission ?? initialFinancialData.totalCommission ?? 0) -
+                         (initialFinancialData.ytdExpenses ?? initialFinancialData.totalExpenses ?? 0))
                       ).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">YTD margin</p>
+                    <p className="text-xs text-muted-foreground mt-1">YTD net income</p>
                   </CardContent>
                 </Card>
 
                 <Card>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-medium text-muted-foreground">Profit Margin</CardTitle>
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Agent Commission</CardTitle>
                   </CardHeader>
                   <CardContent>
                     <div className="text-2xl font-bold">
-                      {initialFinancialData.profitMarginPercent?.toFixed(1) ?? "0"}%
+                      ${(initialFinancialData.ytdAgentCommission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">of gross revenue</p>
+                    <p className="text-xs text-muted-foreground mt-1">after splits</p>
                   </CardContent>
                 </Card>
               </>
@@ -327,17 +330,17 @@ export function ReportsClient({
                   {initialSourceData.sources.map((source: any) => (
                     <div key={source.source} className="flex items-center justify-between p-4 border rounded-lg">
                       <div>
-                        <div className="font-medium capitalize">{source.source}</div>
+                        <div className="font-medium capitalize">{source.source ?? source.source_family ?? "Unknown"}</div>
                         <div className="text-sm text-muted-foreground">
-                          {source.leadCount} leads • {source.conversionRate}% conversion
+                          {source.contact_count ?? source.leadCount ?? 0} contacts &bull; {source.close_rate ?? source.conversionRate ?? 0}% close rate
                         </div>
                       </div>
                       <div className="text-right">
                         <div className="font-medium">
-                          ${source.totalRevenue.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                          ${(source.revenue ?? source.totalRevenue ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                         </div>
                         <div className="text-sm text-muted-foreground">
-                          ${source.avgDeal.toLocaleString("en-US", { maximumFractionDigits: 0 })} avg deal
+                          {source.roi_multiple ? `${source.roi_multiple}x ROI` : (source.transaction_count ?? 0) + " transactions"}
                         </div>
                       </div>
                     </div>
@@ -373,26 +376,34 @@ export function ReportsClient({
             <CardContent>
               {initialCampaignData?.campaigns && initialCampaignData.campaigns.length > 0 ? (
                 <div className="space-y-3">
-                  {initialCampaignData.campaigns.map((campaign: any) => (
-                    <div key={campaign.id} className="flex items-center justify-between p-4 border rounded-lg">
-                      <div className="flex-1">
-                        <div className="font-medium">{campaign.name}</div>
-                        <div className="text-sm text-muted-foreground flex items-center gap-4 mt-1">
-                          <span>Budget: ${campaign.budget?.toLocaleString("en-US", { maximumFractionDigits: 0 })}</span>
-                          <span>Spent: ${campaign.budgetSpent?.toLocaleString("en-US", { maximumFractionDigits: 0 })}</span>
-                          <span>{campaign.leadsGenerated} leads</span>
+                  {initialCampaignData.campaigns.map((campaign: any) => {
+                    const name        = campaign.campaign_name ?? campaign.name ?? "Unnamed"
+                    const budget      = campaign.budget_total  ?? campaign.budget ?? 0
+                    const spent       = campaign.budget_spent  ?? campaign.budgetSpent ?? campaign.total_spend ?? 0
+                    const leads       = campaign.total_leads   ?? campaign.leadsGenerated ?? 0
+                    const roi         = campaign.roi_percentage ?? campaign.roi ?? 0
+                    const revenue     = campaign.total_revenue ?? campaign.revenueGenerated ?? 0
+                    return (
+                      <div key={campaign.id} className="flex items-center justify-between p-4 border rounded-lg">
+                        <div className="flex-1">
+                          <div className="font-medium">{name}</div>
+                          <div className="text-sm text-muted-foreground flex items-center gap-4 mt-1">
+                            {budget > 0 && <span>Budget: ${budget.toLocaleString("en-US", { maximumFractionDigits: 0 })}</span>}
+                            <span>Spent: ${spent.toLocaleString("en-US", { maximumFractionDigits: 0 })}</span>
+                            <span>{leads} leads</span>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className={`font-bold ${roi >= 0 ? "text-green-600" : "text-red-600"}`}>
+                            {typeof roi === "number" ? roi.toFixed(1) : roi}% ROI
+                          </div>
+                          <div className="text-sm text-muted-foreground">
+                            ${revenue.toLocaleString("en-US", { maximumFractionDigits: 0 })} revenue
+                          </div>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className={`font-bold ${campaign.roi >= 0 ? "text-green-600" : "text-red-600"}`}>
-                          {campaign.roi?.toFixed(1)}% ROI
-                        </div>
-                        <div className="text-sm text-muted-foreground">
-                          ${campaign.revenueGenerated?.toLocaleString("en-US", { maximumFractionDigits: 0 })} revenue
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               ) : (
                 <p className="text-muted-foreground">No campaign data available</p>
