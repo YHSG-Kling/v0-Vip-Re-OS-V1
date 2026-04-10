@@ -5,6 +5,7 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { handleError } from "@/lib/errors"
+import { format } from "date-fns"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -236,6 +237,82 @@ export async function getPortalMessages(contactId: string): Promise<{
     return { success: true, messages: messages || [] }
   } catch (error) {
     return handleError(error, "getPortalMessages")
+  }
+}
+
+/**
+ * Share the latest social post for a seller's listing via portal message.
+ * Finds the seller's active listing, gets the most recent social post, and sends it.
+ */
+export async function shareSocialPostWithSeller(contactId: string): Promise<{
+  success: boolean
+  message?: PortalMessage
+  error?: string
+}> {
+  try {
+    const supabase = await createClient()
+
+    // Validate auth
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return { success: false, error: "Unauthorized" }
+    }
+
+    // Get seller's listing
+    const { data: listing, error: listingError } = await supabase
+      .from("listings")
+      .select("id, address")
+      .eq("seller_contact_id", contactId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (listingError || !listing) {
+      return { success: false, error: "No active listing found for this seller" }
+    }
+
+    // Get latest social post for this listing
+    const { data: post, error: postError } = await supabase
+      .from("social_posts")
+      .select("id, content, media_urls, platform, scheduled_for, published_at")
+      .eq("listing_id", listing.id)
+      .in("status", ["published", "scheduled"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (postError || !post) {
+      return { success: false, error: "No social posts found for this listing" }
+    }
+
+    // Format the message with social post details
+    const postDate = post.published_at || post.scheduled_for
+    const dateStr = postDate ? format(new Date(postDate), "MMM d, yyyy") : "recently"
+    
+    let messageBody = `📱 Social Media Update\n\nHere's the latest ${post.platform} post for ${listing.address}:\n\n${post.content}`
+    
+    if (post.media_urls && post.media_urls.length > 0) {
+      messageBody += `\n\n📸 Includes ${post.media_urls.length} ${post.media_urls.length === 1 ? 'photo' : 'photos'}`
+    }
+    
+    messageBody += `\n\n${post.published_at ? 'Published' : 'Scheduled for'}: ${dateStr}`
+
+    // Send the message via portal
+    const result = await sendPortalMessage({
+      contactId,
+      messageBody,
+      direction: "agent_to_client",
+      channel: "portal",
+    })
+
+    return result
+  } catch (error) {
+    console.error("[v0] Share social post error:", error)
+    return handleError(error, "shareSocialPostWithSeller")
   }
 }
 

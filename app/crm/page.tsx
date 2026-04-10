@@ -9,7 +9,7 @@ import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insig
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
-import { generateAIDraft } from "@/app/actions/portal-messages"
+import { generateAIDraft, shareSocialPostWithSeller } from "@/app/actions/portal-messages"
 import { generateCopilotPlan } from "@/app/actions/workflows"
 import { getBuyerInsights } from "@/app/actions/buyer-insights"
 import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
@@ -543,6 +543,21 @@ export default function CRMPage() {
     })
   }
 
+  const handleShareSocialPost = async () => {
+    if (!selectedContactId) return
+    
+    try {
+      const result = await shareSocialPostWithSeller(selectedContactId)
+      if (result.success) {
+        toast.success("Social post shared with seller via portal")
+      } else {
+        toast.error(result.error || "Failed to share social post")
+      }
+    } catch (err: any) {
+      toast.error(err.message || "Failed to share social post")
+    }
+  }
+
   const handleLoadDraft = async (conversationId?: string) => {
     if (!selectedContactId || !agentId) return
     const result = await generateAIDraft({
@@ -645,16 +660,17 @@ export default function CRMPage() {
         ) : (
           <>
             {/* Contact Command Strip */}
-            <ContactCommandStrip
-              contact={selectedContact}
-              churnRisk={churnRisk}
-              autopilotPlans={autopilotPlans}
-              agentId={agentId || ""}
-              brokerageId={brokerageId || ""}
-              onEnableAutopilot={handleEnableAutopilot}
-              onToggleAutopilot={handleToggleAutopilot}
-              loading={isPending}
-            />
+                <ContactCommandStrip
+                  contact={selectedContact}
+                  churnRisk={churnRisk}
+                  autopilotPlans={autopilotPlans}
+                  agentId={agentId || ""}
+                  brokerageId={brokerageId || ""}
+                  onEnableAutopilot={handleEnableAutopilot}
+                  onToggleAutopilot={handleToggleAutopilot}
+                  onShareSocialPost={handleShareSocialPost}
+                  loading={isPending}
+                />
 
             {/* Contact OS Summary Strip */}
             <ContactOSSummary
@@ -1157,7 +1173,7 @@ export default function CRMPage() {
                             status: "pending",
                             trigger_event: "ai_priority_insight",
                           })
-                          toast.success(`Draft created for ${displayName} — review in Communications`)
+                          toast.success(`Draft created for ${displayName} ��� review in Communications`)
                         } catch {
                           toast.error("Failed to create draft")
                         } finally {

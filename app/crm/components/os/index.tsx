@@ -34,6 +34,7 @@ interface ContactCommandStripProps {
   agentId: string
   onEnableAutopilot: (level: "conservative" | "moderate" | "aggressive") => void
   onToggleAutopilot: (planId: string, pause: boolean) => void
+  onShareSocialPost?: () => void
   loading: boolean
 }
 
@@ -44,11 +45,15 @@ export function ContactCommandStrip({
   agentId,
   onEnableAutopilot,
   onToggleAutopilot,
+  onShareSocialPost,
   loading,
 }: ContactCommandStripProps) {
   const activePlan = autopilotPlans.find(
     (p: any) => p.contact_id === contact?.id || p.lead_id === contact?.id
   )
+
+  // Check if this is a seller contact (has contact_persona = 'Listing Seller')
+  const isSeller = contact?.contact_persona === "Listing Seller"
 
   return (
     <div className="flex items-center gap-3 p-3 rounded-lg border bg-card flex-wrap">
@@ -80,6 +85,19 @@ export function ContactCommandStrip({
       </div>
 
       <div className="ml-auto flex items-center gap-2 flex-wrap">
+        {/* Share Social Post button - only for sellers */}
+        {isSeller && onShareSocialPost && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            onClick={onShareSocialPost}
+          >
+            <MessageSquare className="h-3 w-3 mr-1" />
+            Share Social Post
+          </Button>
+        )}
+        
         {!activePlan ? (
           <Button
             size="sm"
@@ -480,7 +498,7 @@ export function NextBestActionPanel({
   )
 }
 
-// ─── 5. VALUE DELIVERED PANEL ─────────────────────────────────────────────────
+// ─── 5. VALUE DELIVERED PANEL ─────────────────────────────��───────────────────
 
 interface ValueDeliveredPanelProps {
   contactId: string
