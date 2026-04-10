@@ -257,11 +257,208 @@ export function BuyerOverviewClient({
             userRole="agent"
           />
         </div>
-      ) : activeTab !== "Overview" ? (
-        <div className="flex items-center justify-center h-64">
-          <div className="text-center space-y-2">
-            <p className="text-sm font-medium text-muted-foreground">{activeTab}</p>
-            <p className="text-xs text-muted-foreground">Coming soon</p>
+      ) : activeTab === "Search" ? (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Property Search</h2>
+                <p className="text-sm text-muted-foreground">Search and save properties for {buyerName}</p>
+              </div>
+              <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                <Button>Advanced Search</Button>
+              </Link>
+            </div>
+            
+            {/* Saved Properties */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Saved Properties</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {propertyInterests ? (
+                  <div className="space-y-3">
+                    <p className="text-sm">
+                      {buyerName} has saved properties matching their criteria.
+                    </p>
+                    <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                      <Button variant="outline" className="w-full">View All Saved Properties</Button>
+                    </Link>
+                  </div>
+                ) : (
+                  <div className="text-center py-8 space-y-3">
+                    <p className="text-sm text-muted-foreground">No saved properties yet</p>
+                    <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                      <Button>Start Property Search</Button>
+                    </Link>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Active Alerts */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Property Alerts</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Set up automated property alerts to notify {buyerName} of new listings
+                  </p>
+                  <div className="flex gap-2">
+                    <Link href={`/dashboard/buyers/${buyerId}/search`} className="flex-1">
+                      <Button variant="outline" className="w-full">Manage Alerts</Button>
+                    </Link>
+                    <Button onClick={() => setActiveTab("Alerts")}>Create Alert</Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      ) : activeTab === "Tours" ? (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Tour Planning</h2>
+                <p className="text-sm text-muted-foreground">Schedule and manage property tours for {buyerName}</p>
+              </div>
+              <Link href={`/dashboard/buyers/${buyerId}/tours`}>
+                <Button>Open Tour Planner</Button>
+              </Link>
+            </div>
+
+            {/* Tour Stats */}
+            <div className="grid gap-4 md:grid-cols-3">
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold">{tours.length}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Total Tours</p>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold">{propertyInterests ? 1 : 0}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Saved Properties</p>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold">{nextTour ? '1' : '0'}</p>
+                    <p className="text-xs text-muted-foreground mt-1">Upcoming Tours</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Next Scheduled Tour */}
+            {nextTour ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Next Scheduled Tour</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium">
+                        {new Date(nextTour.tour_date).toLocaleDateString('en-US', {
+                          weekday: 'long',
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric'
+                        })}
+                      </p>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        View full tour details in the Tour Planner
+                      </p>
+                    </div>
+                    <Link href={`/dashboard/buyers/${buyerId}/tours`}>
+                      <Button variant="outline">View Details</Button>
+                    </Link>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <CardContent className="py-8 text-center space-y-3">
+                  <Calendar className="h-12 w-12 mx-auto text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">No upcoming tours scheduled</p>
+                  <Link href={`/dashboard/buyers/${buyerId}/tours`}>
+                    <Button>Schedule a Tour</Button>
+                  </Link>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </div>
+      ) : activeTab === "Alerts" ? (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Property Alerts</h2>
+                <p className="text-sm text-muted-foreground">Automated notifications for {buyerName}</p>
+              </div>
+            </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Alert Management</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Property alerts automatically notify buyers when new listings match their criteria. Set up price drops, new listings, and open house alerts.
+                </p>
+                
+                <div className="space-y-3">
+                  <div className="flex items-start gap-3 p-3 border rounded-lg">
+                    <AlertTriangle className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">New Listing Alerts</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Get notified when properties matching saved criteria hit the market
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 p-3 border rounded-lg">
+                    <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">Price Drop Alerts</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Be the first to know when saved properties reduce their price
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 p-3 border rounded-lg">
+                    <Calendar className="h-5 w-5 text-green-600 mt-0.5 shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium">Open House Alerts</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Receive notifications about upcoming open houses
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t">
+                  <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                    <Button className="w-full">Configure Alerts in Search</Button>
+                  </Link>
+                  <p className="text-xs text-muted-foreground text-center mt-2">
+                    Alerts are managed within the property search interface
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </div>
       ) : (
