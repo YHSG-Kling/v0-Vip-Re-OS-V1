@@ -23,7 +23,13 @@ export async function askRelationshipAI(params: {
     })
 
     return { success: true, answer: text.trim() }
-  } catch {
-    return { success: false, error: "Failed to generate advice" }
+  } catch (err: any) {
+    console.error("[v0] Relationship AI error:", err)
+    return { 
+      success: false, 
+      error: err?.message?.includes("API key") 
+        ? "AI provider not configured. Please contact support."
+        : "Failed to generate advice. Please try again." 
+    }
   }
 }
