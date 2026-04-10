@@ -1088,7 +1088,7 @@ export async function getConversationIntelligence(leadId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("conversation_intelligence")
+    .from("conversation_insights")
     .select("*")
     .eq("lead_id", leadId)
     .order("analyzed_at", { ascending: false })
@@ -1107,7 +1107,7 @@ export async function getAgentCoachingInsights(agentId: string, limit = 10) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("conversation_intelligence")
+    .from("conversation_insights")
     .select("them_first_score, coaching_suggestions, conversation_type, analyzed_at")
     .eq("agent_id", agentId)
     .order("analyzed_at", { ascending: false })
@@ -2204,7 +2204,18 @@ export async function detectClientChurn(leadId: string) {
       .maybeSingle()
 
     if (!contact) {
-      throw new Error("Lead not found")
+      // Contact/lead not found — return a safe low-risk default so the UI doesn't crash
+      return {
+        churnRisk: "unknown",
+        churnProbability: 0,
+        timeToChurn: "N/A",
+        warningSignals: [],
+        likelyReasons: [],
+        saveStrategy: { immediate: [], themFirstApproach: "", longTerm: [] },
+        priorityScore: 0,
+        reEngagementScript: "",
+        predictedOutcome: "unknown",
+      }
     }
     resolvedLead = contact
   }
