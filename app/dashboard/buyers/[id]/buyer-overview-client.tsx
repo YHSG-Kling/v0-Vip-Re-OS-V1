@@ -167,7 +167,7 @@ export function BuyerOverviewClient({
   async function handleEnableAI() {
     setIsLoadingAI(true)
     try {
-      const result = await enableAIPilot(buyerId, agentUserId, "moderate")
+      const result = await enableAIPilot({ agentId: agentUserId, leadId: buyerId, autopilotLevel: "moderate" })
       if (result.success) {
         toast.success("AI-ISA enabled for " + buyerName)
         await loadAutopilotPlans()

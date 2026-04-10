@@ -390,7 +390,9 @@ export default function CRMPage() {
           .catch(() => {/* non-blocking */})
 
         setChurnRisk(churnResult)
-        setAutopilotPlans(autopilotResult || [])
+        // getActiveAutoPilotPlans now returns { success, plans } — normalize to array
+        const plansArr = Array.isArray(autopilotResult) ? autopilotResult : (autopilotResult as any)?.plans ?? []
+        setAutopilotPlans(plansArr)
         setSuggestedActions(followUpResult?.suggestions || [])
         setConversationIntelligence(convIntelResult && !convIntelResult.error ? convIntelResult : null)
       } catch (err) {
@@ -575,8 +577,8 @@ export default function CRMPage() {
     if (!selectedContactId || !agentId) return
     startTransition(async () => {
       await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
-      const plans = await getActiveAutoPilotPlans(agentId)
-      setAutopilotPlans(plans || [])
+      const result = await getActiveAutoPilotPlans(agentId)
+      setAutopilotPlans(result.plans ?? [])
     })
   }
 
@@ -584,8 +586,8 @@ export default function CRMPage() {
     startTransition(async () => {
       await toggleAutoPilot({ planId, pause })
       if (agentId) {
-        const plans = await getActiveAutoPilotPlans(agentId)
-        setAutopilotPlans(plans || [])
+        const result = await getActiveAutoPilotPlans(agentId)
+        setAutopilotPlans(result.plans ?? [])
       }
     })
   }

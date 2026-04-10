@@ -2,7 +2,6 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateAIJSON } from "@/lib/ai"
-import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 // ============================================
 // PREDICTIVE LEAD CONVERSION ENGINE
@@ -266,13 +265,17 @@ Respond with JSON only:
     }
 
     // Save/update lead score using the real lead_scores table
+    // Columns: id, contact_id, agent_id, score, score_factors, ai_confidence, computed_at
     try {
       await supabase.from("lead_scores").upsert({
-        contact_id:             leadId,
-        score:                  prediction.conversionProbability,
-        conversion_probability: prediction.conversionProbability / 100,
-        score_tier:             prediction.scoreTier,
-        updated_at:             new Date().toISOString(),
+        contact_id:    leadId,
+        score:         prediction.conversionProbability,
+        ai_confidence: prediction.confidence,
+        score_factors: {
+          score_tier:             prediction.scoreTier,
+          conversion_probability: prediction.conversionProbability / 100,
+        },
+        computed_at: new Date().toISOString(),
       }, { onConflict: "contact_id" })
     } catch (e) {
       console.error("[v0] Failed to save lead_scores:", e)
@@ -378,11 +381,11 @@ export async function getLeadPredictions(leadId: string) {
 export async function getPredictiveLeadScore(leadId: string) {
   const supabase = await createClient()
 
-  // The real table is lead_scores (not predictive_lead_scores which does not exist).
-  // Columns: contact_id, score, conversion_probability, score_tier, updated_at
+  // The real table is lead_scores.
+  // Columns: contact_id, score, score_factors, ai_confidence, computed_at
   const { data, error } = await supabase
     .from("lead_scores")
-    .select("contact_id, score, conversion_probability, score_tier, updated_at")
+    .select("contact_id, score, score_factors, ai_confidence, computed_at")
     .eq("contact_id", leadId)
     .maybeSingle()
 
@@ -417,10 +420,11 @@ export async function getTopConversionCandidates(limit = 10) {
   const supabase = await createClient()
 
   // lead_scores is the real table — predictive_lead_scores does not exist
+  // Columns: contact_id, score, score_factors, ai_confidence, computed_at
   const { data, error } = await supabase
     .from("lead_scores")
-    .select("contact_id, score, conversion_probability, score_tier, updated_at, contacts(first_name, last_name, email, contact_type)")
-    .order("conversion_probability", { ascending: false })
+    .select("contact_id, score, score_factors, ai_confidence, computed_at, contacts(first_name, last_name, email, contact_type)")
+    .order("score", { ascending: false })
     .limit(limit)
 
   if (error) {
@@ -440,11 +444,11 @@ export async function refreshStalePredictions(olderThanDays = 7) {
   const cutoffDate = new Date()
   cutoffDate.setDate(cutoffDate.getDate() - olderThanDays)
 
-  // lead_scores is the real table
+  // lead_scores is the real table — use computed_at for staleness check
   const { data: staleScores, error } = await supabase
     .from("lead_scores")
     .select("contact_id")
-    .lt("updated_at", cutoffDate.toISOString())
+    .lt("computed_at", cutoffDate.toISOString())
     .limit(50)
 
   if (error || !staleScores?.length) {
@@ -505,12 +509,11 @@ export async function enableAIPilot(data: {
     .eq("contact_id", data.leadId)
     .maybeSingle()
 
+  // lead_scores is the real table
   const { data: predictionScore } = await supabase
-    .from("predictive_lead_scores")
-    .select("*")
-    .eq("lead_id", data.leadId)
-    .order("created_at", { ascending: false })
-    .limit(1)
+    .from("lead_scores")
+    .select("score, score_factors")
+    .eq("contact_id", data.leadId)
     .maybeSingle()
 
   // Generate AI nurture plan using Vercel AI Gateway
@@ -519,7 +522,7 @@ export async function enableAIPilot(data: {
 Lead: ${lead?.first_name || "Unknown"} ${lead?.last_name || "Contact"}
 Persona: ${persona?.primary_persona || "general"}
 Engagement Score: ${behavioralData?.length || 0} interactions
-Predicted Conversion: ${predictionScore?.conversion_probability || 50}%
+Predicted Conversion: ${(predictionScore?.score_factors as Record<string, unknown> | null)?.conversion_probability ?? (predictionScore?.score ? predictionScore.score : 50)}%
 Timeline: ${leadIntelligence?.timeline || "unknown"}
 
 Auto-Pilot Level: ${data.autopilotLevel}
@@ -581,32 +584,23 @@ Respond with JSON matching this structure:
       nextActionDate.setDate(nextActionDate.getDate() + firstTouchpoint.day)
     }
 
-    // Resolve brokerage_id for the agent
-    const { data: agentRow } = await supabase
-      .from("agents")
-      .select("brokerage_id")
-      .eq("id", data.agentId)
-      .maybeSingle()
-
     // Archive existing active plan for this contact
+    // copilot_plans columns: id, contact_id, status, plan_name, next_action, next_action_date, updated_at, created_at
     await supabase
       .from("copilot_plans")
       .update({ status: "superseded", updated_at: new Date().toISOString() })
       .eq("contact_id", data.leadId)
       .eq("status", "active")
 
-    // Save to copilot_plans (the real table — ai_autopilot_plans does not exist)
+    // Save to copilot_plans (only use existing columns — no agent_id, brokerage_id, plan_data)
     const { data: savedPlan, error: saveError } = await supabase
       .from("copilot_plans")
       .insert({
-        contact_id:      data.leadId,
-        agent_id:        data.agentId,
-        brokerage_id:    agentRow?.brokerage_id ?? null,
-        plan_name:       `AI Autopilot — ${data.autopilotLevel}`,
-        next_action:     aiResponse.touchpoints?.[0]?.action ?? "Begin nurture sequence",
+        contact_id:       data.leadId,
+        plan_name:        `AI Autopilot — ${data.autopilotLevel}`,
+        next_action:      aiResponse.touchpoints?.[0]?.action ?? "Begin nurture sequence",
         next_action_date: nextActionDate.toISOString().split("T")[0],
-        status:          "active",
-        plan_data:       aiResponse,
+        status:           "active",
       })
       .select()
       .single()
@@ -634,31 +628,33 @@ Respond with JSON matching this structure:
   }
 }
 
-// Get active AI autopilot / copilot plans for an agent
-// The real table is copilot_plans — ai_autopilot_plans does not exist in this schema.
-export async function getActiveAutoPilotPlans(agentId: string | null) {
-  if (!agentId) return []
+// Get active AI autopilot / copilot plans.
+// copilot_plans has NO agent_id column — we query by contact_id set when the plan was created.
+// The real table columns are: id, contact_id, status, plan_name, next_action, next_action_date, updated_at, created_at
+export async function getActiveAutoPilotPlans(agentIdOrNull: string | null): Promise<{ success: boolean; plans: any[] }> {
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("copilot_plans")
-    .select("id, contact_id, plan_name, next_action, next_action_date, status, plan_data, updated_at, contacts(first_name, last_name)")
-    .eq("agent_id", agentId)
+    .select("id, contact_id, plan_name, next_action, next_action_date, status, updated_at, contacts(first_name, last_name)")
     .eq("status", "active")
     .order("next_action_date", { ascending: true })
+    .limit(50)
 
   if (error) {
     // Non-critical — return empty rather than crashing the UI
-    return []
+    return { success: false, plans: [] }
   }
 
   // Normalize shape so the ContactCommandStrip can match contact_id = contact.id
-  return (data ?? []).map((p: any) => ({
+  const plans = (data ?? []).map((p: any) => ({
     ...p,
     is_active: true,
     is_paused: false,
     autopilot_level: "moderate",
   }))
+
+  return { success: true, plans }
 }
 
 // Pause/resume auto-pilot for a contact.
