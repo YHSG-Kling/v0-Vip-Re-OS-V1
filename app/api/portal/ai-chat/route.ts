@@ -58,18 +58,35 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Contact not found' }, { status: 404 })
     }
 
-    // Accept if: contact's own email, or agent/admin of the brokerage
+    // Accept if any of:
+    //   1. The contact's own email (client self-service)
+    //   2. The assigned agent (agents table — agents.user_id = auth user.id AND agents.id = contact.agent_id)
+    //   3. Admin/broker of same brokerage (users table)
     const isOwnContact = user.email?.toLowerCase() === contact.email?.toLowerCase()
     let hasAccess = isOwnContact
 
+    if (!hasAccess && contact.agent_id) {
+      // Rule 2: assigned agent via agents table (kernel identity pattern)
+      const { data: ag } = await supabase
+        .from('agents')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('id', contact.agent_id)
+        .maybeSingle()
+      if (ag) hasAccess = true
+    }
+
     if (!hasAccess) {
+      // Rule 3: brokerage admin/broker
       const { data: ur } = await supabase
         .from('users')
         .select('user_type, brokerage_id')
         .eq('id', user.id)
         .maybeSingle()
-      if (ur?.brokerage_id === contact.brokerage_id &&
-        ['admin', 'broker', 'superadmin', 'agent'].includes(ur.user_type ?? '')) {
+      if (
+        ur?.brokerage_id === contact.brokerage_id &&
+        ['admin', 'broker', 'superadmin', 'agent'].includes(ur?.user_type ?? '')
+      ) {
         hasAccess = true
       }
     }

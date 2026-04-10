@@ -107,13 +107,14 @@ export async function generateCopilotPlan(
 
     if (!contact) return { success: false, error: "Contact not found" }
 
-    // Generate plan via AI
+    // Generate plan via AI — use resolveModel so the Vercel AI Gateway handles routing.
+    // Never import provider SDKs directly; they require separate API keys.
     const { generateObject } = await import("ai")
-    const { anthropic } = await import("@ai-sdk/anthropic")
+    const { resolveModel } = await import("@/lib/ai/resolve-model")
     const { z } = await import("zod")
 
     const { object: plan } = await generateObject({
-      model: anthropic("claude-sonnet-4-20250514"),
+      model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
         plan_name: z.string(),
         next_action: z.string(),

@@ -265,24 +265,17 @@ Respond with JSON only:
       console.error("[v0] Failed to save ai_predictions:", e)
     }
 
-    // Save/update predictive lead score
+    // Save/update lead score using the real lead_scores table
     try {
-      await supabase.from("predictive_lead_scores").upsert({
-        lead_id: leadId,
-        conversion_probability: prediction.conversionProbability,
-        predicted_conversion_date: prediction.predictedConversionDate,
-        predicted_deal_size: prediction.predictedDealSize,
-        predicted_timeline_days: prediction.predictedTimelineDays,
-        overall_ai_score: prediction.conversionProbability,
-        score_tier: prediction.scoreTier,
-        recommended_actions: prediction.optimalStrategy,
-        optimal_contact_time: calculateOptimalContactTime(behavioralData),
-        best_communication_channel: prediction.optimalStrategy.channelPreference,
-        personalized_approach: prediction.optimalStrategy.approach,
-        model_version: "v1.0",
-      })
+      await supabase.from("lead_scores").upsert({
+        contact_id:             leadId,
+        score:                  prediction.conversionProbability,
+        conversion_probability: prediction.conversionProbability / 100,
+        score_tier:             prediction.scoreTier,
+        updated_at:             new Date().toISOString(),
+      }, { onConflict: "contact_id" })
     } catch (e) {
-      console.error("[v0] Failed to save predictive_lead_scores:", e)
+      console.error("[v0] Failed to save lead_scores:", e)
     }
 
     return prediction
@@ -423,14 +416,14 @@ export async function batchPredictLeadConversions(leadIds: string[]) {
 export async function getTopConversionCandidates(limit = 10) {
   const supabase = await createClient()
 
+  // lead_scores is the real table — predictive_lead_scores does not exist
   const { data, error } = await supabase
-    .from("predictive_lead_scores")
-    .select("*, leads(*), contacts(*)")
+    .from("lead_scores")
+    .select("contact_id, score, conversion_probability, score_tier, updated_at, contacts(first_name, last_name, email, contact_type)")
     .order("conversion_probability", { ascending: false })
     .limit(limit)
 
   if (error) {
-    console.error("[v0] Error fetching top candidates:", error)
     return []
   }
 
@@ -447,9 +440,10 @@ export async function refreshStalePredictions(olderThanDays = 7) {
   const cutoffDate = new Date()
   cutoffDate.setDate(cutoffDate.getDate() - olderThanDays)
 
+  // lead_scores is the real table
   const { data: staleScores, error } = await supabase
-    .from("predictive_lead_scores")
-    .select("lead_id")
+    .from("lead_scores")
+    .select("contact_id")
     .lt("updated_at", cutoffDate.toISOString())
     .limit(50)
 
@@ -457,7 +451,7 @@ export async function refreshStalePredictions(olderThanDays = 7) {
     return { refreshed: 0 }
   }
 
-  const leadIds = staleScores.map((s) => s.lead_id)
+  const leadIds = staleScores.map((s: any) => s.contact_id)
   await batchPredictLeadConversions(leadIds)
 
   return { refreshed: leadIds.length }
@@ -587,18 +581,32 @@ Respond with JSON matching this structure:
       nextActionDate.setDate(nextActionDate.getDate() + firstTouchpoint.day)
     }
 
-    // Save auto-pilot plan to database
+    // Resolve brokerage_id for the agent
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("id", data.agentId)
+      .maybeSingle()
+
+    // Archive existing active plan for this contact
+    await supabase
+      .from("copilot_plans")
+      .update({ status: "superseded", updated_at: new Date().toISOString() })
+      .eq("contact_id", data.leadId)
+      .eq("status", "active")
+
+    // Save to copilot_plans (the real table — ai_autopilot_plans does not exist)
     const { data: savedPlan, error: saveError } = await supabase
-      .from("ai_autopilot_plans")
+      .from("copilot_plans")
       .insert({
-        lead_id: data.leadId,
-        agent_id: data.agentId,
-        autopilot_level: data.autopilotLevel,
-        nurture_plan: aiResponse,
-        is_active: true,
-        started_at: new Date().toISOString(),
-        next_action_at: nextActionDate.toISOString(),
-        total_touchpoints: aiResponse.touchpoints?.length || 0,
+        contact_id:      data.leadId,
+        agent_id:        data.agentId,
+        brokerage_id:    agentRow?.brokerage_id ?? null,
+        plan_name:       `AI Autopilot — ${data.autopilotLevel}`,
+        next_action:     aiResponse.touchpoints?.[0]?.action ?? "Begin nurture sequence",
+        next_action_date: nextActionDate.toISOString().split("T")[0],
+        status:          "active",
+        plan_data:       aiResponse,
       })
       .select()
       .single()
@@ -626,56 +634,71 @@ Respond with JSON matching this structure:
   }
 }
 
-// Get active auto-pilot plans for an agent
-export async function getActiveAutoPilotPlans(agentId: string) {
+// Get active AI autopilot / copilot plans for an agent
+// The real table is copilot_plans — ai_autopilot_plans does not exist in this schema.
+export async function getActiveAutoPilotPlans(agentId: string | null) {
+  if (!agentId) return []
   const supabase = await createClient()
 
   const { data, error } = await supabase
-    .from("ai_autopilot_plans")
-    .select("*, leads(*), contacts(*)")
+    .from("copilot_plans")
+    .select("id, contact_id, plan_name, next_action, next_action_date, status, plan_data, updated_at, contacts(first_name, last_name)")
     .eq("agent_id", agentId)
-    .eq("is_active", true)
-    .order("next_action_at", { ascending: true })
+    .eq("status", "active")
+    .order("next_action_date", { ascending: true })
 
   if (error) {
-    console.error("[v0] Error fetching autopilot plans:", error)
+    // Non-critical — return empty rather than crashing the UI
     return []
   }
 
-  return data || []
+  // Normalize shape so the ContactCommandStrip can match contact_id = contact.id
+  return (data ?? []).map((p: any) => ({
+    ...p,
+    is_active: true,
+    is_paused: false,
+    autopilot_level: "moderate",
+  }))
 }
 
-// Pause/resume auto-pilot for a lead
-export async function toggleAutoPilot(planId: string, pause: boolean) {
+// Pause/resume auto-pilot for a contact.
+// Accepts either (planId, pause) positional args OR a single { planId, pause } object
+// to handle the mismatch between the two call sites in the codebase.
+export async function toggleAutoPilot(
+  planIdOrObj: string | { planId: string; pause: boolean },
+  pauseArg?: boolean
+) {
+  const planId = typeof planIdOrObj === "string" ? planIdOrObj : planIdOrObj.planId
+  const pause  = typeof planIdOrObj === "string" ? (pauseArg ?? true) : planIdOrObj.pause
+
   const supabase = await createClient()
 
-  // First fetch the plan so we know the contact/lead id for the contacts update
+  // Fetch plan to get contact_id
   const { data: plan } = await supabase
-    .from("ai_autopilot_plans")
-    .select("lead_id, contact_id")
+    .from("copilot_plans")
+    .select("contact_id")
     .eq("id", planId)
     .maybeSingle()
 
+  // Archive the plan (pause = mark superseded; resume = re-activate)
   const { error } = await supabase
-    .from("ai_autopilot_plans")
+    .from("copilot_plans")
     .update({
-      is_active: !pause,
-      paused_at: pause ? new Date().toISOString() : null,
+      status: pause ? "superseded" : "active",
+      updated_at: new Date().toISOString(),
     })
     .eq("id", planId)
 
   if (error) {
-    console.error("[v0] Error toggling autopilot:", error)
-    return { success: false }
+    return { success: false, error: error.message }
   }
 
-  // Sync contacts.ai_isa_enabled to match active state
-  const contactId = plan?.contact_id ?? plan?.lead_id
-  if (contactId) {
+  // Sync contacts.ai_isa_enabled
+  if (plan?.contact_id) {
     await supabase
       .from("contacts")
       .update({ ai_isa_enabled: !pause })
-      .eq("id", contactId)
+      .eq("id", plan.contact_id)
   }
 
   return { success: true }
