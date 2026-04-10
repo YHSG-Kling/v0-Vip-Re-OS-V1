@@ -1,10 +1,12 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { toast } from "sonner"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import {
   Dialog,
   DialogContent,
@@ -20,26 +22,22 @@ import {
   Send,
   Copy,
   Loader2,
-  ExternalLink,
   Sparkles,
-  CheckCircle2,
-  Clock,
+  Check,
 } from "lucide-react"
 import {
-  aiDetermineReviewTiming,
   aiGenerateReviewRequest,
   aiExtractTestimonials,
 } from "@/app/actions/ai-review-automation"
+import { aiRecommendGift, aiGenerateThankYouNote } from "@/app/actions/ai-client-gifting"
 import {
-  aiRecommendGift,
-  aiGenerateThankYouNote,
-  aiPlanBulkGifting,
-} from "@/app/actions/ai-client-gifting"
+  sendThankYouNoteAction,
+  assignGiftAction,
+} from "@/app/actions/reputation-kernel"
 
 interface ReputationPanelProps {
   agentId: string
   brokerageId?: string
-  userId?: string
   clients?: any[]
   reviews?: any[]
   recentClosings?: any[]
@@ -47,115 +45,183 @@ interface ReputationPanelProps {
 
 export function ReputationPanel({
   agentId,
-  brokerageId,
-  userId,
   clients = [],
   reviews = [],
   recentClosings = [],
 }: ReputationPanelProps) {
   const [isPending, startTransition] = useTransition()
 
-  // Review request state
-  const [reviewDraft, setReviewDraft] = useState<string | null>(null)
+  // Shared copy feedback
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  // Review request
+  const [reviewDraft, setReviewDraft]           = useState<string>("")
+  const [reviewPlatform, setReviewPlatform]     = useState<string>("google")
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false)
-  const [selectedClientForReview, setSelectedClientForReview] = useState<any>(null)
+  const [reviewClient, setReviewClient]         = useState<any>(null)
 
-  // Thank you note state
-  const [thankYouDraft, setThankYouDraft] = useState<string | null>(null)
+  // Thank you note
+  const [thankYouDraft, setThankYouDraft]           = useState<string>("")
   const [thankYouDialogOpen, setThankYouDialogOpen] = useState(false)
-  const [selectedClientForThankYou, setSelectedClientForThankYou] = useState<any>(null)
+  const [thankYouClient, setThankYouClient]         = useState<any>(null)
+  const [sendingNote, setSendingNote]               = useState(false)
 
-  // Gift recommendation state
-  const [giftRecommendation, setGiftRecommendation] = useState<any>(null)
+  // Gift
+  const [giftRec, setGiftRec]             = useState<any>(null)
   const [giftDialogOpen, setGiftDialogOpen] = useState(false)
-  const [selectedClientForGift, setSelectedClientForGift] = useState<any>(null)
+  const [giftClient, setGiftClient]       = useState<any>(null)
+  const [assigningGift, setAssigningGift] = useState(false)
 
-  // Testimonial extraction state
-  const [extractedTestimonials, setExtractedTestimonials] = useState<any[]>([])
+  // Testimonials
+  const [testimonials, setTestimonials]               = useState<string[]>([])
   const [testimonialDialogOpen, setTestimonialDialogOpen] = useState(false)
-
-  // Bulk gifting state
-  const [bulkGiftPlan, setBulkGiftPlan] = useState<any>(null)
-  const [bulkGiftDialogOpen, setBulkGiftDialogOpen] = useState(false)
 
   // Stats
   const totalReviews = reviews.length
-  const avgRating = reviews.length > 0
-    ? (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) / reviews.length).toFixed(1)
-    : "N/A"
+  const avgRating =
+    reviews.length > 0
+      ? (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) / reviews.length).toFixed(1)
+      : "N/A"
   const reviewReadyClients = recentClosings.filter((c: any) => {
     const closeDate = new Date(c.actual_close_date || c.close_date)
     const daysSince = Math.floor((Date.now() - closeDate.getTime()) / (1000 * 60 * 60 * 24))
     return daysSince >= 7 && daysSince <= 30
   })
 
-  // Handlers
-  async function handleGenerateReviewRequest(client: any) {
-    setSelectedClientForReview(client)
+  // ─── HANDLERS ──────────────────────────────────────────────────────────────
+
+  function copyToClipboard(text: string, id: string) {
+    navigator.clipboard.writeText(text)
+    setCopiedId(id)
+    setTimeout(() => setCopiedId(null), 2000)
+  }
+
+  function handleGenerateReviewRequest(client: any) {
+    const transactionId = client.transaction_id || client.transactionId || client.id
+    if (!transactionId) {
+      toast.error("No transaction found for this client")
+      return
+    }
+    setReviewClient(client)
     startTransition(async () => {
       const result = await aiGenerateReviewRequest({
+        transactionId,
         agentId,
-        contactId: client.id || client.contact_id,
-        platform: "google",
+        platform: reviewPlatform as "google" | "zillow" | "realtor" | "facebook" | "yelp",
+        channel:  "email",
       })
       if (result.success && result.message) {
         setReviewDraft(result.message)
         setReviewDialogOpen(true)
+      } else {
+        toast.error(result.error ?? "Failed to generate review request")
       }
     })
   }
 
-  async function handleGenerateThankYouNote(client: any) {
-    setSelectedClientForThankYou(client)
+  function handleGenerateThankYouNote(client: any) {
+    const contactId = client.contact_id || client.id
+    if (!contactId) {
+      toast.error("No contact found")
+      return
+    }
+    setThankYouClient(client)
     startTransition(async () => {
       const result = await aiGenerateThankYouNote({
         agentId,
-        contactId: client.id || client.contact_id,
+        contactId,
+        occasion:  "closing",
+        handwritten: false,
       })
-      if (result.success && result.note) {
-        setThankYouDraft(result.note)
+      if (result.success && result.data?.note) {
+        setThankYouDraft(result.data.note)
         setThankYouDialogOpen(true)
+      } else {
+        toast.error(result.error ?? "Failed to generate note")
       }
     })
   }
 
-  async function handleRecommendGift(client: any) {
-    setSelectedClientForGift(client)
+  async function handleSendThankYou() {
+    if (!thankYouDraft || !thankYouClient) return
+    setSendingNote(true)
+    try {
+      const result = await sendThankYouNoteAction({
+        contactId:    thankYouClient.contact_id || thankYouClient.id,
+        contactEmail: thankYouClient.contacts?.email || thankYouClient.email || "",
+        contactName:  `${thankYouClient.contacts?.first_name || thankYouClient.first_name || ""} ${thankYouClient.contacts?.last_name || thankYouClient.last_name || ""}`.trim(),
+        noteText:     thankYouDraft,
+      })
+      if (result.success) {
+        toast.success("Thank you note sent")
+        setThankYouDialogOpen(false)
+      } else {
+        toast.error(result.error ?? "Failed to send note")
+      }
+    } finally {
+      setSendingNote(false)
+    }
+  }
+
+  function handleRecommendGift(client: any) {
+    const contactId = client.id || client.contact_id
+    if (!contactId) {
+      toast.error("No contact found")
+      return
+    }
+    setGiftClient(client)
     startTransition(async () => {
       const result = await aiRecommendGift({
         agentId,
-        contactId: client.id || client.contact_id,
+        contactId,
+        occasion: "closing",
+      })
+      if (result.success && result.data) {
+        setGiftRec(result.data)
+        setGiftDialogOpen(true)
+      } else {
+        toast.error(result.error ?? "Failed to generate gift recommendation")
+      }
+    })
+  }
+
+  async function handleAssignGift() {
+    if (!giftRec || !giftClient) return
+    setAssigningGift(true)
+    try {
+      const top = giftRec.topRecommendation
+      const result = await assignGiftAction({
+        contactId:       giftClient.id || giftClient.contact_id,
+        contactName:     `${giftClient.first_name || ""} ${giftClient.last_name || ""}`.trim(),
+        giftName:        top.name,
+        giftDescription: top.description,
+        budget:          top.estimatedCost,
+        occasion:        "closing",
       })
       if (result.success) {
-        setGiftRecommendation(result)
-        setGiftDialogOpen(true)
+        toast.success("Gift assigned")
+        setGiftDialogOpen(false)
+      } else {
+        toast.error(result.error ?? "Failed to assign gift")
       }
-    })
+    } finally {
+      setAssigningGift(false)
+    }
   }
 
-  async function handleExtractTestimonials() {
+  function handleExtractTestimonials() {
     startTransition(async () => {
-      const result = await aiExtractTestimonials({ agentId })
+      const result = await aiExtractTestimonials({ agentId, source: "reviews" })
       if (result.success && result.testimonials) {
-        setExtractedTestimonials(result.testimonials)
+        setTestimonials(result.testimonials)
         setTestimonialDialogOpen(true)
+      } else {
+        toast.error(result.error ?? "Failed to extract testimonials")
       }
     })
   }
 
-  async function handlePlanBulkGifting() {
-    startTransition(async () => {
-      const result = await aiPlanBulkGifting({ agentId })
-      if (result.success) {
-        setBulkGiftPlan(result)
-        setBulkGiftDialogOpen(true)
-      }
-    })
-  }
-
-  function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text)
-  }
+  // ─── RENDER ────────────────────────────────────────────────────────────────
 
   return (
     <div className="space-y-6">
@@ -197,158 +263,156 @@ export function ReputationPanel({
         <Card>
           <CardContent className="p-4 flex items-center justify-between">
             <div>
-              <p className="text-sm text-muted-foreground">Gifts Sent</p>
-              <p className="text-2xl font-bold">--</p>
+              <p className="text-sm text-muted-foreground">Past Clients</p>
+              <p className="text-2xl font-bold">{clients.length}</p>
             </div>
-            <div className="p-3 bg-purple-50 rounded-full">
-              <Gift className="w-6 h-6 text-purple-500" />
+            <div className="p-3 bg-indigo-50 rounded-full">
+              <Gift className="w-6 h-6 text-indigo-500" />
             </div>
           </CardContent>
         </Card>
       </div>
 
-      {/* Section 1: Review Requests */}
+      {/* Review Requests */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <Star className="w-5 h-5 text-yellow-500" />
             Review Requests
           </CardTitle>
-          <CardDescription>
-            Request reviews from recent closings at the optimal time
-          </CardDescription>
+          <CardDescription>Request reviews from recent closings at the optimal time</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Select value={reviewPlatform} onValueChange={setReviewPlatform}>
+              <SelectTrigger className="w-[130px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="google">Google</SelectItem>
+                <SelectItem value="zillow">Zillow</SelectItem>
+                <SelectItem value="realtor">Realtor.com</SelectItem>
+                <SelectItem value="facebook">Facebook</SelectItem>
+                <SelectItem value="yelp">Yelp</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           {reviewReadyClients.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-4">
               No clients ready for review requests right now
             </p>
           ) : (
             reviewReadyClients.slice(0, 5).map((client: any) => (
-              <div
-                key={client.id}
-                className="flex items-center justify-between p-3 rounded-lg border"
-              >
+              <div key={client.id} className="flex items-center justify-between p-3 rounded-lg border">
                 <div>
                   <p className="font-medium text-sm">
-                    {client.contacts?.first_name || client.first_name} {client.contacts?.last_name || client.last_name}
+                    {client.contacts?.first_name || client.first_name}{" "}
+                    {client.contacts?.last_name || client.last_name}
                   </p>
-                  <p className="text-xs text-muted-foreground">
-                    {client.property_address} - Closed {new Date(client.actual_close_date || client.close_date).toLocaleDateString()}
-                  </p>
+                  <p className="text-xs text-muted-foreground">{client.property_address}</p>
                 </div>
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => handleGenerateReviewRequest(client)}
                   disabled={isPending}
+                  onClick={() => handleGenerateReviewRequest(client)}
                 >
-                  {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 mr-1" />}
-                  Request
+                  {isPending ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <><Sparkles className="w-4 h-4 mr-1" />Request</>
+                  )}
                 </Button>
               </div>
             ))
           )}
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={handleExtractTestimonials}
-            disabled={isPending}
-          >
+          <Button variant="outline" className="w-full" disabled={isPending} onClick={handleExtractTestimonials}>
             <Sparkles className="w-4 h-4 mr-2" />
             Extract Testimonials from Reviews
           </Button>
         </CardContent>
       </Card>
 
-      {/* Section 2: Thank You Notes */}
+      {/* Thank You Notes */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <MessageSquare className="w-5 h-5 text-blue-500" />
             Thank You Notes
           </CardTitle>
-          <CardDescription>
-            Send personalized thank you notes to recent clients
-          </CardDescription>
+          <CardDescription>Send personalized thank you notes to recent clients</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {recentClosings.slice(0, 5).map((client: any) => (
-            <div
-              key={client.id}
-              className="flex items-center justify-between p-3 rounded-lg border"
-            >
-              <div>
-                <p className="font-medium text-sm">
-                  {client.contacts?.first_name || client.first_name} {client.contacts?.last_name || client.last_name}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {client.property_address}
-                </p>
+          {recentClosings.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No recent closings</p>
+          ) : (
+            recentClosings.slice(0, 5).map((client: any) => (
+              <div key={client.id} className="flex items-center justify-between p-3 rounded-lg border">
+                <div>
+                  <p className="font-medium text-sm">
+                    {client.contacts?.first_name || client.first_name}{" "}
+                    {client.contacts?.last_name || client.last_name}
+                  </p>
+                  <p className="text-xs text-muted-foreground">{client.property_address}</p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isPending}
+                  onClick={() => handleGenerateThankYouNote(client)}
+                >
+                  {isPending ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <><Send className="w-4 h-4 mr-1" />Generate</>
+                  )}
+                </Button>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => handleGenerateThankYouNote(client)}
-                disabled={isPending}
-              >
-                {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4 mr-1" />}
-                Generate
-              </Button>
-            </div>
-          ))}
+            ))
+          )}
         </CardContent>
       </Card>
 
-      {/* Section 3: Client Gifting */}
+      {/* Client Gifting */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
-            <Gift className="w-5 h-5 text-purple-500" />
+            <Gift className="w-5 h-5 text-indigo-500" />
             Client Gifting
           </CardTitle>
-          <CardDescription>
-            AI-recommended gifts for your clients
-          </CardDescription>
+          <CardDescription>AI-recommended gifts for your clients</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {clients.slice(0, 5).map((client: any) => (
-            <div
-              key={client.id}
-              className="flex items-center justify-between p-3 rounded-lg border"
-            >
-              <div>
-                <p className="font-medium text-sm">
-                  {client.first_name} {client.last_name}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {client.transactions?.[0]?.property_address || "Past Client"}
-                </p>
+          {clients.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">No clients found</p>
+          ) : (
+            clients.slice(0, 5).map((client: any) => (
+              <div key={client.id} className="flex items-center justify-between p-3 rounded-lg border">
+                <div>
+                  <p className="font-medium text-sm">{client.first_name} {client.last_name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {client.transactions?.[0]?.property_address || "Past Client"}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isPending}
+                  onClick={() => handleRecommendGift(client)}
+                >
+                  {isPending ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <><Gift className="w-4 h-4 mr-1" />Recommend</>
+                  )}
+                </Button>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => handleRecommendGift(client)}
-                disabled={isPending}
-              >
-                {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Gift className="w-4 h-4 mr-1" />}
-                Recommend
-              </Button>
-            </div>
-          ))}
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={handlePlanBulkGifting}
-            disabled={isPending}
-          >
-            <Sparkles className="w-4 h-4 mr-2" />
-            Plan Bulk Gifting Campaign
-          </Button>
+            ))
+          )}
         </CardContent>
       </Card>
 
-      {/* Section 4: Recent Reviews */}
+      {/* Recent Reviews */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
@@ -358,9 +422,7 @@ export function ReputationPanel({
         </CardHeader>
         <CardContent>
           {reviews.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-4">
-              No reviews yet
-            </p>
+            <p className="text-sm text-muted-foreground text-center py-4">No reviews yet</p>
           ) : (
             <div className="space-y-3">
               {reviews.slice(0, 5).map((review: any) => (
@@ -374,10 +436,10 @@ export function ReputationPanel({
                     </div>
                   </div>
                   <p className="text-sm text-muted-foreground line-clamp-2">
-                    {review.review_text || review.content}
+                    {review.review_text}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {review.platform} - {new Date(review.created_at).toLocaleDateString()}
+                    {review.platform} &mdash; {new Date(review.created_at).toLocaleDateString()}
                   </p>
                 </div>
               ))}
@@ -392,22 +454,22 @@ export function ReputationPanel({
           <DialogHeader>
             <DialogTitle>Review Request</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Generated for {selectedClientForReview?.contacts?.first_name || selectedClientForReview?.first_name}
-            </p>
-            <Textarea
-              value={reviewDraft || ""}
-              onChange={(e) => setReviewDraft(e.target.value)}
-              rows={6}
-            />
-          </div>
+          <p className="text-sm text-muted-foreground">
+            For {reviewClient?.contacts?.first_name || reviewClient?.first_name}
+          </p>
+          <Textarea value={reviewDraft} onChange={(e) => setReviewDraft(e.target.value)} rows={6} />
           <DialogFooter>
-            <Button variant="outline" onClick={() => copyToClipboard(reviewDraft || "")}>
-              <Copy className="w-4 h-4 mr-2" />
-              Copy
+            <Button
+              variant="outline"
+              onClick={() => copyToClipboard(reviewDraft, "review")}
+            >
+              {copiedId === "review" ? (
+                <><Check className="w-4 h-4 mr-2" />Copied</>
+              ) : (
+                <><Copy className="w-4 h-4 mr-2" />Copy</>
+              )}
             </Button>
-            <Button onClick={() => setReviewDialogOpen(false)}>Close</Button>
+            <Button onClick={() => setReviewDialogOpen(false)}>Done</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -418,22 +480,25 @@ export function ReputationPanel({
           <DialogHeader>
             <DialogTitle>Thank You Note</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Generated for {selectedClientForThankYou?.contacts?.first_name || selectedClientForThankYou?.first_name}
-            </p>
-            <Textarea
-              value={thankYouDraft || ""}
-              onChange={(e) => setThankYouDraft(e.target.value)}
-              rows={6}
-            />
-          </div>
+          <p className="text-sm text-muted-foreground">
+            For {thankYouClient?.contacts?.first_name || thankYouClient?.first_name}
+          </p>
+          <Textarea value={thankYouDraft} onChange={(e) => setThankYouDraft(e.target.value)} rows={6} />
           <DialogFooter>
-            <Button variant="outline" onClick={() => copyToClipboard(thankYouDraft || "")}>
-              <Copy className="w-4 h-4 mr-2" />
-              Copy
+            <Button
+              variant="outline"
+              onClick={() => copyToClipboard(thankYouDraft, "thankyou")}
+            >
+              {copiedId === "thankyou" ? (
+                <><Check className="w-4 h-4 mr-2" />Copied</>
+              ) : (
+                <><Copy className="w-4 h-4 mr-2" />Copy</>
+              )}
             </Button>
-            <Button onClick={() => setThankYouDialogOpen(false)}>Close</Button>
+            <Button onClick={handleSendThankYou} disabled={sendingNote}>
+              {sendingNote ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
+              Send
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -444,28 +509,34 @@ export function ReputationPanel({
           <DialogHeader>
             <DialogTitle>Gift Recommendation</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              For {selectedClientForGift?.first_name} {selectedClientForGift?.last_name}
-            </p>
-            {giftRecommendation && (
-              <div className="space-y-3">
-                <div className="p-4 rounded-lg bg-purple-50 border border-purple-200">
-                  <p className="font-medium">{giftRecommendation.recommendation}</p>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {giftRecommendation.reason}
-                  </p>
-                  {giftRecommendation.budget && (
-                    <Badge variant="secondary" className="mt-2">
-                      Budget: ${giftRecommendation.budget}
-                    </Badge>
-                  )}
+          <p className="text-sm text-muted-foreground">
+            For {giftClient?.first_name} {giftClient?.last_name}
+          </p>
+          {giftRec?.topRecommendation && (
+            <div className="p-4 rounded-lg bg-indigo-50 border border-indigo-200 space-y-2">
+              <p className="font-medium">{giftRec.topRecommendation.name}</p>
+              <p className="text-sm text-muted-foreground">{giftRec.topRecommendation.description}</p>
+              <p className="text-sm text-muted-foreground italic">{giftRec.topRecommendation.whyThisGift}</p>
+              <Badge variant="secondary">~${giftRec.topRecommendation.estimatedCost}</Badge>
+            </div>
+          )}
+          {giftRec?.alternatives && giftRec.alternatives.length > 0 && (
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">Alternatives</p>
+              {giftRec.alternatives.slice(0, 2).map((alt: any, i: number) => (
+                <div key={i} className="flex items-center justify-between text-sm border rounded px-3 py-2">
+                  <span>{alt.name}</span>
+                  <Badge variant="outline">~${alt.estimatedCost}</Badge>
                 </div>
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
+          )}
           <DialogFooter>
-            <Button onClick={() => setGiftDialogOpen(false)}>Close</Button>
+            <Button variant="outline" onClick={() => setGiftDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleAssignGift} disabled={assigningGift}>
+              {assigningGift ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Gift className="w-4 h-4 mr-2" />}
+              Assign Gift
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -476,64 +547,26 @@ export function ReputationPanel({
           <DialogHeader>
             <DialogTitle>Extracted Testimonials</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 max-h-96 overflow-y-auto">
-            {extractedTestimonials.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">
-                No testimonials extracted
-              </p>
+          <div className="space-y-3 max-h-96 overflow-y-auto">
+            {testimonials.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">No testimonials extracted</p>
             ) : (
-              extractedTestimonials.map((t: any, i: number) => (
-                <div key={i} className="p-4 rounded-lg border space-y-2">
-                  <p className="text-sm italic">"{t.quote}"</p>
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground">— {t.author}</p>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => copyToClipboard(t.quote)}
-                    >
-                      <Copy className="w-4 h-4" />
-                    </Button>
-                  </div>
+              testimonials.map((t, i) => (
+                <div key={i} className="p-4 rounded-lg border flex items-start justify-between gap-3">
+                  <p className="text-sm italic flex-1">"{t}"</p>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => copyToClipboard(t, `t-${i}`)}
+                  >
+                    {copiedId === `t-${i}` ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  </Button>
                 </div>
               ))
             )}
           </div>
           <DialogFooter>
-            <Button onClick={() => setTestimonialDialogOpen(false)}>Close</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Bulk Gifting Dialog */}
-      <Dialog open={bulkGiftDialogOpen} onOpenChange={setBulkGiftDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Bulk Gifting Plan</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 max-h-96 overflow-y-auto">
-            {bulkGiftPlan && (
-              <div className="space-y-4">
-                <div className="p-4 rounded-lg bg-purple-50 border border-purple-200">
-                  <p className="font-medium">Campaign: {bulkGiftPlan.campaignName || "Holiday Gifting"}</p>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    {bulkGiftPlan.description || "Personalized gifts for your sphere"}
-                  </p>
-                </div>
-                {bulkGiftPlan.recipients?.map((r: any, i: number) => (
-                  <div key={i} className="p-3 rounded-lg border flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-sm">{r.name}</p>
-                      <p className="text-xs text-muted-foreground">{r.gift}</p>
-                    </div>
-                    <Badge variant="secondary">${r.budget}</Badge>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button onClick={() => setBulkGiftDialogOpen(false)}>Close</Button>
+            <Button onClick={() => setTestimonialDialogOpen(false)}>Done</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

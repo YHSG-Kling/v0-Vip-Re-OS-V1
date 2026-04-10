@@ -41,7 +41,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 import { aiGenerateReviewRequest, aiGenerateReviewResponse } from "@/app/actions/ai-review-automation"
 import { ReviewRequestPanel, GratitudeGiftingPanel } from "@/app/dashboard/referrals/components/os"
 import {
@@ -727,13 +726,6 @@ export function ReputationClient({
               occasion="closing"
             />
           )}
-          <ReputationPanel
-            agentId={agentId}
-            brokerageId={brokerageId}
-            userId={userId}
-            reviews={reviews}
-            recentClosings={recentClosings}
-          />
         </TabsContent>
       </Tabs>
     </div>

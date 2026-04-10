@@ -174,33 +174,50 @@ Generate:
 4. 3-touch follow-up sequence if no response`,
     })
 
-    // Save to review_requests using live schema columns only.
-    // Non-existent columns (transaction_id, channel, content) are omitted.
-    // AI-generated content is saved to ai_assistant_notes for reference.
+    // Resolve brokerage_id for the agent
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("id", params.agentId)
+      .maybeSingle()
+
+    const brokerageId = agentRow?.brokerage_id ?? null
+
+    // Save to review_requests using verified live schema columns only.
     const { data: rrInsert } = await supabase
       .from("review_requests")
       .insert({
         agent_id:     params.agentId,
-        contact_id:   transaction.contact_id ?? null,
+        brokerage_id: brokerageId,
+        contact_id:   transaction.contacts?.id ?? transaction.contact_id ?? null,
         contact_name: `${transaction.contacts?.first_name ?? ""} ${transaction.contacts?.last_name ?? ""}`.trim() || null,
         platform:     params.platform,
+        review_url:   platformUrls[params.platform] ?? null,
         status:       "pending",
         created_at:   new Date().toISOString(),
       })
       .select("id")
       .single()
 
+    // Persist AI-generated draft to ai_assistant_notes (note_text is the correct column).
     if (rrInsert?.id) {
       await supabase.from("ai_assistant_notes").insert({
-        agent_id:    params.agentId,
-        entity_type: "review_request",
-        entity_id:   rrInsert.id,
-        note:        JSON.stringify(request),
-        created_at:  new Date().toISOString(),
-      }).select()
+        brokerage_id: brokerageId,
+        created_by:   params.agentId,
+        role:         "agent",
+        note_text:    JSON.stringify(request),
+        note_type:    "review_request_draft",
+        source:       "ai_review_automation",
+        created_at:   new Date().toISOString(),
+      })
     }
 
-    return { success: true, data: request }
+    // Return both the structured data AND a flat `message` string the UI can use directly.
+    const messageText = request.message
+      ?? (params.channel === "text" ? request.callScript : null)
+      ?? `Hi ${transaction.contacts?.first_name ?? "there"}, ${request.personalizedOpener ?? ""} ${request.softAsk ?? ""}`.trim()
+
+    return { success: true, data: request, message: messageText }
   } catch (error) {
     return handleError(error, "aiGenerateReviewRequest")
   }
@@ -475,7 +492,13 @@ Also provide:
 - Unique differentiators to highlight`,
     })
 
-    return { success: true, data: extraction }
+    // Expose testimonials at the top level so callers can read result.testimonials
+    // without drilling into result.data.testimonials.
+    return {
+      success: true,
+      data: extraction,
+      testimonials: extraction.testimonials.map((t) => t.extractedQuote),
+    }
   } catch (error) {
     return handleError(error, "aiExtractTestimonials")
   }
@@ -497,27 +520,32 @@ export async function aiSetupReviewMonitoring(params: {
   const supabase = await createClient()
 
   try {
-    // Save monitoring configuration
-    const { data: config } = await supabase
-      .from("review_monitoring_config")
-      .upsert({
-        agent_id: params.agentId,
-        platforms: params.platforms,
-        alert_threshold: params.alertThreshold,
-        notification_email: true,
-        notification_sms: true,
-        auto_respond_positive: false,
-        escalate_negative: true,
-        updated_at: new Date().toISOString(),
-      })
-      .select()
-      .single()
+    // review_monitoring_config does not exist in the live schema.
+    // Persist settings as an agent ai_assistant_notes entry so config survives.
+    const config = {
+      agent_id:            params.agentId,
+      platforms:           params.platforms,
+      alert_threshold:     params.alertThreshold,
+      notification_email:  true,
+      notification_sms:    true,
+      auto_respond_positive: false,
+      escalate_negative:   true,
+      updated_at:          new Date().toISOString(),
+    }
+
+    await supabase.from("ai_assistant_notes").insert({
+      created_by: params.agentId,
+      role:       "agent",
+      note_text:  JSON.stringify(config),
+      note_type:  "review_monitoring_config",
+      source:     "ai_review_automation",
+      created_at: new Date().toISOString(),
+    })
 
     return {
       success: true,
       data: {
-        configId: config?.id,
-        message: `Review monitoring configured for ${params.platforms.join(", ")}. You'll be alerted for reviews ${params.alertThreshold} stars or below.`,
+        message: `Review monitoring configured for ${params.platforms.join(", ")}. You will be alerted for reviews ${params.alertThreshold} stars or below.`,
       },
     }
   } catch (error) {

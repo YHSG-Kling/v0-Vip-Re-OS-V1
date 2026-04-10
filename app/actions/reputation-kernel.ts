@@ -115,3 +115,82 @@ export async function loadReviewPerformanceAction() {
   if (!actor) return { success: false, error: "Not authenticated." }
   return loadReviewPerformance(actor)
 }
+
+// ─── THANK YOU NOTE SEND ──────────────────────────────────────────────────────
+// Inserts a row into email_queue so the note is delivered via the existing
+// email delivery pipeline. No new table required.
+
+export async function sendThankYouNoteAction(input: {
+  contactId: string
+  contactEmail: string
+  contactName: string
+  noteText: string
+}): Promise<{ success: boolean; error?: string }> {
+  const actor = await resolveActor()
+  if (!actor) return { success: false, error: "Not authenticated." }
+
+  const { isValidUUID } = await import("@/lib/validations")
+  if (!isValidUUID(input.contactId)) return { success: false, error: "Invalid contact ID." }
+  if (!input.contactEmail) return { success: false, error: "Contact has no email address." }
+
+  const service = createServiceClient()
+
+  const { error } = await service.from("email_queue").insert({
+    brokerage_id: actor.brokerageId,
+    to_email:     input.contactEmail,
+    to_name:      input.contactName,
+    subject:      "A personal note from your agent",
+    body:         input.noteText,
+    template:     "thank_you_note",
+    metadata:     { contact_id: input.contactId, agent_id: actor.agentId, source: "reputation_panel" },
+    status:       "pending",
+    attempts:     0,
+    created_at:   new Date().toISOString(),
+  })
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}
+
+// ─── GIFT ORDER ASSIGN ────────────────────────────────────────────────────────
+// Creates a gift order for a contact using the ai_assistant_notes table
+// (client_gifts does not exist in the live schema). The gift details are
+// persisted so the agent can action them externally.
+
+export async function assignGiftAction(input: {
+  contactId: string
+  contactName: string
+  giftName: string
+  giftDescription: string
+  budget: number
+  occasion: string
+}): Promise<{ success: boolean; error?: string }> {
+  const actor = await resolveActor()
+  if (!actor) return { success: false, error: "Not authenticated." }
+
+  const { isValidUUID } = await import("@/lib/validations")
+  if (!isValidUUID(input.contactId)) return { success: false, error: "Invalid contact ID." }
+
+  const service = createServiceClient()
+
+  const { error } = await service.from("ai_assistant_notes").insert({
+    brokerage_id: actor.brokerageId,
+    created_by:   actor.agentId,
+    contact_id:   input.contactId,
+    role:         "agent",
+    note_type:    "gift_order",
+    note_text:    JSON.stringify({
+      contact_name:     input.contactName,
+      gift_name:        input.giftName,
+      gift_description: input.giftDescription,
+      budget:           input.budget,
+      occasion:         input.occasion,
+      status:           "pending",
+    }),
+    source:     "reputation_panel",
+    created_at: new Date().toISOString(),
+  })
+
+  if (error) return { success: false, error: error.message }
+  return { success: true }
+}

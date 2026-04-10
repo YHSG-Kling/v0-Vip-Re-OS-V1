@@ -22,6 +22,8 @@ import {
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
 import { ContextualAiAssistBar } from "@/app/components/ai-copilot"
 import { awardPointsForAction } from "@/app/lib/gamification/award-on-action"
+import { sendThankYouNoteAction } from "@/app/actions/reputation-kernel"
+import { toast } from "sonner"
 
 interface RecentClosing {
   id: string
@@ -60,6 +62,7 @@ export function ReviewRequestPanel({
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [responseId, setResponseId] = useState<string | null>(null)
   const [responseText, setResponseText] = useState<string>("")
+  const [sendingDraft, setSendingDraft] = useState(false)
 
   const handleRequestReview = async (closing: RecentClosing) => {
     setSelectedContact(closing.id)
@@ -119,6 +122,30 @@ export function ReviewRequestPanel({
     navigator.clipboard.writeText(text)
     setCopiedId(id)
     setTimeout(() => setCopiedId(null), 2000)
+  }
+
+  const handleSendDraft = async () => {
+    if (!draft || !selectedContact) return
+    const closing = recentClosings.find(c => c.id === selectedContact)
+    if (!closing) return
+    setSendingDraft(true)
+    try {
+      const result = await sendThankYouNoteAction({
+        contactId:    closing.contact_id,
+        contactEmail: closing.contactEmail || "",
+        contactName:  closing.contactName,
+        noteText:     draft,
+      })
+      if (result.success) {
+        toast.success("Review request sent")
+        setDraft("")
+        setSelectedContact(null)
+      } else {
+        toast.error(result.error ?? "Failed to send")
+      }
+    } finally {
+      setSendingDraft(false)
+    }
   }
 
   return (
@@ -219,8 +246,12 @@ export function ReviewRequestPanel({
                 {copiedId === "draft" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                 <span className="ml-1">Copy</span>
               </Button>
-              <Button size="sm">
-                <Send className="h-4 w-4 mr-1" />
+              <Button size="sm" onClick={handleSendDraft} disabled={sendingDraft}>
+                {sendingDraft ? (
+                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4 mr-1" />
+                )}
                 Send
               </Button>
             </div>
