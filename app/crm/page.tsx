@@ -240,6 +240,16 @@ export default function CRMPage() {
   /** Lifted AI draft text — passed to CommunicationHealthPanel to pre-fill compose */
   const [pendingDraftText, setPendingDraftText] = useState<string | null>(null)
 
+  // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
+  const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
+
+  // Suggested follow-up actions for the selected contact
+  const [suggestedActions, setSuggestedActions] = useState<any[]>([])
+
+  // Conversation threads for the selected contact (loaded by CommunicationHealthPanel internally;
+  // we hold a local copy here so RelationshipRadar can count open threads)
+  const [conversations, setConversations] = useState<any[]>([])
+
   // AI Priority Insights state
   const [contactInsights, setContactInsights] = useState<ContactInsight[]>([])
   const [loadingInsights, setLoadingInsights] = useState(false)
@@ -301,12 +311,13 @@ export default function CRMPage() {
         Promise.allSettled(slice.map((c: Contact) => getPredictiveLeadScore(c.id))).then((results) => {
           const scores: Record<string, { label: "High" | "Medium"; score: number }> = {}
           results.forEach((r, i) => {
-            if (r.status === "fulfilled" && r.value && !r.value.error) {
-              const val = r.value
-              const pct: number = val.conversion_probability ?? val.score ?? 0
+            if (r.status === "fulfilled" && r.value) {
+              const val = r.value as any
+              // lead_scores table uses conversion_probability (0-1 float) or score (0-100 int)
+              const raw: number = val.conversion_probability ?? val.score ?? 0
+              const pct = raw <= 1 ? Math.round(raw * 100) : raw
               if (pct >= 70) scores[slice[i].id] = { label: "High", score: pct }
               else if (pct >= 40) scores[slice[i].id] = { label: "Medium", score: pct }
-              // Low is intentionally omitted per acceptance criteria
             }
           })
           setLeadScores(scores)

@@ -385,14 +385,16 @@ export async function getLeadPredictions(leadId: string) {
 export async function getPredictiveLeadScore(leadId: string) {
   const supabase = await createClient()
 
+  // The real table is lead_scores (not predictive_lead_scores which does not exist).
+  // Columns: contact_id, score, conversion_probability, score_tier, updated_at
   const { data, error } = await supabase
-    .from("predictive_lead_scores")
-    .select("*")
-    .eq("lead_id", leadId)
+    .from("lead_scores")
+    .select("contact_id, score, conversion_probability, score_tier, updated_at")
+    .eq("contact_id", leadId)
     .maybeSingle()
 
   if (error) {
-    console.error("[v0] Error fetching predictive score:", error)
+    // Non-critical — silently return null so the CRM list still renders
     return null
   }
 
