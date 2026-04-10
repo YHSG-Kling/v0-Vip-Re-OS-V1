@@ -15,7 +15,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { Phone, MessageSquare, ExternalLink, FileText, AlertTriangle, Zap, Pause, ChevronDown, Loader2, ShieldOff } from "lucide-react"
+import { Phone, MessageSquare, ExternalLink, FileText, AlertTriangle, Zap, Pause, ChevronDown, Loader2, ShieldOff, Share2 } from "lucide-react"
 import Link from "next/link"
 import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 import { createClient } from "@/lib/supabase/client"
@@ -44,6 +44,7 @@ interface ContactCommandStripProps {
   brokerageId: string
   onEnableAutopilot: (level: "conservative" | "moderate" | "aggressive") => Promise<void>
   onToggleAutopilot: (planId: string, pause: boolean) => Promise<void>
+  onShareSocialPost?: () => void | Promise<void>
   onChannelToggled?: () => void
   loading?: boolean
 }
@@ -74,6 +75,7 @@ export function ContactCommandStrip({
   brokerageId,
   onEnableAutopilot,
   onToggleAutopilot,
+  onShareSocialPost,
   onChannelToggled,
   loading = false,
 }: ContactCommandStripProps) {
@@ -183,6 +185,23 @@ export function ContactCommandStrip({
               <TooltipContent>Add Note</TooltipContent>
             </Tooltip>
           </TooltipProvider>
+          {onShareSocialPost && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-white hover:bg-white/20"
+                    onClick={() => onShareSocialPost()}
+                  >
+                    <Share2 className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Share Social Post</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
         </div>
 
         {/* RIGHT: Autopilot section */}

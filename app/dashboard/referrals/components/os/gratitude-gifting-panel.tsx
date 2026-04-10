@@ -63,8 +63,14 @@ export function GratitudeGiftingPanel({
         occasion,
         budget: { min, max },
       })
-      if (result.success && result.recommendation) {
-        setGiftRec(result.recommendation)
+      // Server action returns result.data.topRecommendation
+      const rec = (result as any).data?.topRecommendation
+      if (result.success && rec) {
+        setGiftRec({
+          item: rec.name ?? rec.item ?? "",
+          rationale: rec.whyThisGift ?? rec.description ?? rec.rationale ?? "",
+          link: rec.vendor ?? rec.link ?? undefined,
+        })
       }
     })
   }
@@ -77,11 +83,13 @@ export function GratitudeGiftingPanel({
         occasion,
         handwritten: true,
       })
-      if (result.success && result.note) {
-        setThankYouNote(result.note)
-        // Check compliance
-        const compliance = await checkThemFirstCompliance(result.note)
-        setComplianceOk(compliance.isCompliant)
+      // Server action returns result.data.note
+      const noteText = (result as any).data?.note ?? (result as any).note
+      if (result.success && noteText) {
+        setThankYouNote(noteText)
+        // Check compliance — analyzeThemFirstLanguage returns { score, feedback }
+        const compliance = await checkThemFirstCompliance(noteText)
+        setComplianceOk((compliance as any).score >= 50)
       }
     })
   }

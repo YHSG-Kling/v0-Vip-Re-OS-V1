@@ -11,6 +11,7 @@ import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
 import { aiOptimizeReferralAsk } from "@/app/actions/ai-sphere-management"
 import { generateAIDraft, shareSocialPostWithSeller } from "@/app/actions/portal-messages"
 import { generateCopilotPlan } from "@/app/actions/workflows"
+import { GratitudeGiftingPanel } from "@/app/dashboard/referrals/components/os/gratitude-gifting-panel"
 import { getBuyerInsights } from "@/app/actions/buyer-insights"
 import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
 import { createClient } from "@/lib/supabase/client"
@@ -832,8 +833,12 @@ export default function CRMPage() {
                   contactId={selectedContactId}
                   contactPhone={selectedContact.phone}
                   contactEmail={selectedContact.email}
-                  onSendMessage={(_channel) => {}}
-                  onLogActivity={() => {}}
+                  onSendMessage={(channel) =>
+                    router.push(`/dashboard/inbox?contact=${selectedContactId}&channel=${channel}`)
+                  }
+                  onLogActivity={() =>
+                    router.push(`/dashboard/inbox?contact=${selectedContactId}&action=note`)
+                  }
                   onOpenPortal={() => router.push(`/portal/${selectedContactId}`)}
                 />
 
@@ -989,6 +994,15 @@ export default function CRMPage() {
                   createdAt={selectedContact.created_at}
                   isaHandoffContext={isaHandoffContext}
                 />
+
+                {/* Gift Campaign — only for past clients, sphere, or referral partners */}
+                {agentId && (
+                  <GratitudeGiftingPanel
+                    agentId={agentId}
+                    contactId={selectedContactId}
+                    contactName={`${selectedContact.first_name} ${selectedContact.last_name}`}
+                  />
+                )}
 
                 {/* AI Copilot Plan */}
                 <Card className="border-indigo-200">
