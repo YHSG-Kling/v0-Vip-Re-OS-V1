@@ -14,6 +14,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'contacts', label: 'My Contacts', href: '/crm', icon: 'Users' },
       { id: 'listings', label: 'My Listings', href: '/dashboard/listings', icon: 'Home' },
       { id: 'transactions', label: 'Transactions', href: '/dashboard/transactions', icon: 'FileText' },
+      { id: 'forms-library', label: 'Forms Library', href: '/dashboard/forms', icon: 'ClipboardList' },
       { id: 'divider1', divider: true },
       {
         id: 'video-tools',
@@ -163,6 +164,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
       { id: 'acquisition', label: 'Lead Acquisition', href: '/dashboard/acquisition', icon: 'Zap' },
       { id: 'analytics', label: 'Analytics', href: '/analytics', icon: 'BarChart3' },
       { id: 'transactions', label: 'All Transactions', href: '/dashboard/transactions', icon: 'FileText' },
+      { id: 'forms-library', label: 'Forms Library', href: '/dashboard/forms', icon: 'ClipboardList' },
       { id: 'approvals', label: 'Approvals', href: '/approvals', icon: 'CheckSquare', badgeKey: 'pending_approvals' },
       { id: 'divider1', divider: true },
       {
