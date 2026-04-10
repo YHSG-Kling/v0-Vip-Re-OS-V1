@@ -424,18 +424,29 @@ export async function generateSocialContent(params: {
     params.customPrompt ||
     `Generate a social media post for ${params.contentType}. ${listingContext} Target persona: ${params.personaTarget || "general"}. Use the "Them First" approach: 40% feelings/empathy, 25% trust-building, 25% value, 10% solution. Include relevant hashtags.`
 
-  const { text } = await generateText({
-    model: resolveModel("openai/gpt-4o-mini"),
-    prompt,
-  })
+  try {
+    const { text } = await generateText({
+      model: resolveModel("openai/gpt-4o-mini"),
+      prompt,
+    })
 
-  // Extract hashtags from generated content
-  const hashtagRegex = /#\w+/g
-  const hashtags = text.match(hashtagRegex) || []
+    // Extract hashtags from generated content
+    const hashtagRegex = /#\w+/g
+    const hashtags = text.match(hashtagRegex) || []
 
-  return {
-    content: text,
-    hashtags,
-    aiPrompt: prompt,
+    return {
+      content: text,
+      hashtags,
+      aiPrompt: prompt,
+    }
+  } catch (error: any) {
+    console.error("[v0] AI generation error:", error)
+    // Return a helpful fallback message instead of throwing
+    return {
+      content: "AI generation is currently unavailable. Please configure your AI API keys in Settings or use the full Marketing Studio to create content.",
+      hashtags: [],
+      aiPrompt: prompt,
+      error: error.message,
+    }
   }
 }
