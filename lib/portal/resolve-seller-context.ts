@@ -9,7 +9,7 @@ import { determinePortalView } from "@/lib/kernel/portal"
 
 export interface ListingData {
   id: string
-  contact_id: string
+  seller_contact_id: string
   address: string | null
   property_address: string | null
   list_price: number | null
@@ -151,8 +151,8 @@ export async function resolveSellerContext(
   // Get active or most recent listing for this seller
   const { data: listings } = await supabase
     .from("listings")
-    .select("id, contact_id, address, property_address, list_price, status, listing_status, listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url")
-    .eq("contact_id", contactId)
+    .select("id, seller_contact_id, address, property_address, list_price, status, listing_status, listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url")
+    .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 

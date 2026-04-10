@@ -156,19 +156,26 @@ export default function InboxClient({
           setLastInboundBody(msgText)
         }
         if (msgText) {
-          analyzeMessageSentiment({
-            message: msgText,
-            contactId: contact?.id,
-            agentId,
-          }).then(r => {
-            if (r.success) setSentiment(r.analysis ?? null)
+          // Resolve contactId directly from the conversation being loaded, not from
+          // the stale `contact` closure (which still points at the previous conversation
+          // because React state hasn't flushed yet at this point in the call).
+          setConversations(prev => {
+            const convoContact = prev.find(c => c.id === convoId)?.contacts ?? null
+            analyzeMessageSentiment({
+              message: msgText,
+              contactId: convoContact?.id,
+              agentId,
+            }).then(r => {
+              if (r.success) setSentiment(r.analysis ?? null)
+            })
+            return prev
           })
         }
       }
     } finally {
       setMessagesLoading(false)
     }
-  }, [agentId, contact?.id])
+  }, [agentId])
 
   const handleSelect = useCallback((id: string) => {
     setSelectedId(id)
@@ -244,12 +251,13 @@ export default function InboxClient({
       incomingMessage: lastInbound?.body ?? lastInbound?.content ?? lastInbound?.message_content ?? currentText,
       contactId:  contact.id,
       agentId,
+      brokerageId,
       channel: draftChannel,
       tone: "professional",
       includeNextSteps: true,
     })
     return result.success ? (result as any).draft ?? currentText : currentText
-  }, [contact, messages, agentId, selectedConvo?.type, composePrefill])
+  }, [contact, messages, agentId, brokerageId, selectedConvo?.type, composePrefill])
 
   const contactName = `${contact?.first_name ?? ""} ${contact?.last_name ?? ""}`.trim() || "Contact"
 

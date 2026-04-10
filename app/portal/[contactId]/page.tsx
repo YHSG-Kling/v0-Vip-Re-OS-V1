@@ -75,7 +75,7 @@ export default async function PortalHomePage({
   const { data: transactions } = await supabase
     .from("transactions")
     .select("id, property_address, status, close_date, under_contract_date, list_price, purchase_price")
-    .or(`buyer_contact_id.eq.${contactId}`)
+    .or(`buyer_contact_id.eq.${contactId},contact_id.eq.${contactId}`)
     .not("status", "in", "(cancelled)")
     .order("created_at", { ascending: false })
     .limit(1)

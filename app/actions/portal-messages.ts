@@ -222,15 +222,43 @@ export async function getPortalMessages(contactId: string): Promise<{
       return { success: false, error: "Unauthorized" }
     }
 
-    // Fetch messages
+    // Resolve agent — used to validate contact ownership before returning messages
+    const agentId = await resolveAgentId(supabase, user.id)
+    if (!agentId) {
+      return { success: false, error: "Agent profile not found" }
+    }
+
+    // Validate the agent has access to this contact (owns it or shares brokerage)
+    const { data: contact, error: contactError } = await supabase
+      .from("contacts")
+      .select("id, agent_id, brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+
+    if (contactError || !contact) {
+      return { success: false, error: "Contact not found" }
+    }
+
+    if (contact.agent_id !== agentId) {
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("brokerage_id")
+        .eq("id", agentId)
+        .maybeSingle()
+      if (!agent || agent.brokerage_id !== contact.brokerage_id) {
+        return { success: false, error: "No access to this contact" }
+      }
+    }
+
+    // Fetch messages scoped to this contact and brokerage
     const { data: messages, error: fetchError } = await supabase
       .from("client_portal_messages")
       .select("*")
       .eq("contact_id", contactId)
+      .eq("brokerage_id", contact.brokerage_id)
       .order("created_at", { ascending: true })
 
     if (fetchError) {
-      console.error("[Portal Messages] Fetch error:", fetchError)
       return { success: false, error: "Failed to load messages" }
     }
 

@@ -287,7 +287,8 @@ export async function markConversationRead(conversationId: string) {
 
     if (error) throw error
 
-    revalidatePath("/dashboard/communication")
+    revalidatePath("/dashboard/communications")
+    revalidatePath("/dashboard/communications/inbox")
     return { success: true }
   } catch (error) {
     return handleError(error, "markConversationRead")
