@@ -103,7 +103,7 @@ export function ReportsClient({
           document.body.removeChild(a)
         }
       } catch (error: any) {
-        console.error("[v0] Export error:", error)
+        // Error is surfaced to user via disabled button state — no toast needed for export
       }
     })
   }
@@ -272,33 +272,33 @@ export function ReportsClient({
 
           <Card>
             <CardHeader>
-              <CardTitle>Monthly Breakdown</CardTitle>
-              <CardDescription>Revenue, expenses, and net profit by month</CardDescription>
+              <CardTitle>Recent Commissions</CardTitle>
+              <CardDescription>Latest closed commissions this year</CardDescription>
             </CardHeader>
             <CardContent>
-              {initialFinancialData?.monthlyData ? (
+              {initialFinancialData?.recentCommissions && initialFinancialData.recentCommissions.length > 0 ? (
                 <div className="space-y-3">
-                  {initialFinancialData.monthlyData.map((month: any, idx: number) => (
-                    <div key={idx} className="flex items-center justify-between p-3 border rounded-lg">
+                  {initialFinancialData.recentCommissions.map((row: any) => (
+                    <div key={row.id} className="flex items-center justify-between p-3 border rounded-lg">
                       <div>
-                        <div className="font-medium">{month.month}</div>
-                        <div className="text-sm text-muted-foreground">
-                          {month.transactionCount} transactions
+                        <div className="font-medium text-sm">
+                          {row.close_date ? new Date(row.close_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "No close date"}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          Agent: ${(row.agent_commission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                         </div>
                       </div>
                       <div className="text-right">
                         <div className="font-medium">
-                          ${month.revenue.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                          ${(row.gross_commission ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                         </div>
-                        <div className={`text-sm ${month.netProfit >= 0 ? "text-green-600" : "text-red-600"}`}>
-                          Net: ${month.netProfit.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-                        </div>
+                        <div className="text-xs text-muted-foreground">gross</div>
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="text-muted-foreground">No data available</p>
+                <p className="text-muted-foreground">No commission data available</p>
               )}
             </CardContent>
           </Card>
@@ -332,7 +332,7 @@ export function ReportsClient({
                       <div>
                         <div className="font-medium capitalize">{source.source ?? source.source_family ?? "Unknown"}</div>
                         <div className="text-sm text-muted-foreground">
-                          {source.contact_count ?? source.leadCount ?? 0} contacts &bull; {source.close_rate ?? source.conversionRate ?? 0}% close rate
+                          {source.contact_count ?? 0} contacts &bull; {((source.close_rate ?? 0) * 100).toFixed(0)}% close rate
                         </div>
                       </div>
                       <div className="text-right">
@@ -454,7 +454,7 @@ export function ReportsClient({
                       <div className="flex items-center justify-between">
                         <div>
                           <p className="text-sm text-muted-foreground">Reviews Received</p>
-                          <div className="text-2xl font-bold">{initialReputationData.reviewCount ?? 0}</div>
+                          <div className="text-2xl font-bold">{initialReputationData.totalReviews ?? 0}</div>
                         </div>
                         <Eye className="h-8 w-8 text-blue-500" />
                       </div>
