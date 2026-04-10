@@ -46,6 +46,8 @@ import {
   TrendingUp,
   AlertTriangle,
   Sparkles,
+  Building2,
+  ExternalLink,
 } from "lucide-react"
 import Link from "next/link"
 import { format } from "date-fns"
@@ -226,13 +228,13 @@ export default function CRMPage() {
   // Contact OS data
   const [churnRisk, setChurnRisk] = useState<any>(null)
   const [autopilotPlans, setAutopilotPlans] = useState<any[]>([])
-  const [suggestedActions, setSuggestedActions] = useState<any[]>([])
-  const [conversations, setConversations] = useState<any[]>([])
+  const [copilotPlan, setCopilotPlan] = useState<any>(null)
+  const [loadingPlan, setLoadingPlan] = useState(false)
   const [conversationIntelligence, setConversationIntelligence] = useState<any>(null)
-  // Lead conversion probability — keyed by contact.id, High/Medium only per acceptance criteria
-  const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
   const [buyerInsights, setBuyerInsights] = useState<any>(null)
   const [fatigueData, setFatigueData] = useState<any>(null)
+  const [relatedListing, setRelatedListing] = useState<any>(null)
+  const [relatedTransaction, setRelatedTransaction] = useState<any>(null)
   const [referralGenerating, setReferralGenerating] = useState(false)
   const [noteSaving, setNoteSaving] = useState(false)
   /** Lifted AI draft text — passed to CommunicationHealthPanel to pre-fill compose */
@@ -452,6 +454,41 @@ export default function CRMPage() {
       })
       .catch(() => setLoadingPlan(false))
   }, [selectedContactId])
+
+  // Load seller's listing or buyer's transaction
+  useEffect(() => {
+    if (!selectedContactId || !selectedContact) {
+      setRelatedListing(null)
+      setRelatedTransaction(null)
+      return
+    }
+
+    const supabase = createClient()
+
+    // For sellers, load their listing
+    if (selectedContact.contact_persona === "Listing Seller") {
+      supabase
+        .from("listings")
+        .select("id, address, city, state, zipcode, status, list_price")
+        .eq("seller_contact_id", selectedContactId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+        .then(({ data }) => setRelatedListing(data ?? null))
+        .catch(() => setRelatedListing(null))
+    }
+
+    // For all contacts, check for transactions
+    supabase
+      .from("transactions")
+      .select("id, property_address, stage, total_value, expected_close_date")
+      .or(`buyer_contact_id.eq.${selectedContactId},seller_contact_id.eq.${selectedContactId}`)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+      .then(({ data }) => setRelatedTransaction(data ?? null))
+      .catch(() => setRelatedTransaction(null))
+  }, [selectedContactId, selectedContact])
 
   useEffect(() => {
     const q = search.toLowerCase()
@@ -682,6 +719,74 @@ export default function CRMPage() {
                 router.push(`/dashboard/inbox?contact=${selectedContactId}`)
               }
             />
+
+            {/* Listing & Transaction Links */}
+            {(relatedListing || relatedTransaction) && (
+              <Card className="border-indigo-200 bg-indigo-50/30">
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Building2 className="h-4 w-4 text-indigo-600" />
+                    {relatedListing ? "Active Listing" : "Transaction"}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {relatedListing && (
+                    <div className="space-y-2">
+                      <div>
+                        <p className="text-sm font-medium">{relatedListing.address}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {relatedListing.city}, {relatedListing.state} {relatedListing.zipcode}
+                        </p>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs">
+                          <p className="text-muted-foreground">Status</p>
+                          <p className="font-medium capitalize">{relatedListing.status}</p>
+                        </div>
+                        {relatedListing.list_price && (
+                          <div className="text-xs text-right">
+                            <p className="text-muted-foreground">List Price</p>
+                            <p className="font-medium">${relatedListing.list_price.toLocaleString()}</p>
+                          </div>
+                        )}
+                      </div>
+                      <Link href={`/dashboard/listings/${relatedListing.id}`}>
+                        <Button size="sm" className="w-full" variant="outline">
+                          <ExternalLink className="h-3 w-3 mr-1" />
+                          View Listing Details
+                        </Button>
+                      </Link>
+                    </div>
+                  )}
+
+                  {relatedTransaction && (
+                    <div className="space-y-2">
+                      <div>
+                        <p className="text-sm font-medium">{relatedTransaction.property_address}</p>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs">
+                          <p className="text-muted-foreground">Stage</p>
+                          <p className="font-medium capitalize">{relatedTransaction.stage?.replace(/_/g, " ")}</p>
+                        </div>
+                        {relatedTransaction.total_value && (
+                          <div className="text-xs text-right">
+                            <p className="text-muted-foreground">Value</p>
+                            <p className="font-medium">${relatedTransaction.total_value.toLocaleString()}</p>
+                          </div>
+                        )}
+                      </div>
+                      <Link href={`/dashboard/transactions/${relatedTransaction.id}`}>
+                        <Button size="sm" className="w-full" variant="outline">
+                          <ExternalLink className="h-3 w-3 mr-1" />
+                          View Transaction Details
+                        </Button>
+                      </Link>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Main content grid */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
