@@ -782,11 +782,18 @@ export function RelationshipAiChatPanel({
 
   const handleAsk = async () => {
     if (!question.trim()) return
+    console.log("[v0] Relationship AI - Sending question:", question)
     setLoading(true)
     setAnswer(null)
     try {
       const result = await askRelationshipAI({ question, contactName, contactPersona })
-      setAnswer(result.success ? (result.answer ?? "No response.") : (result.error ?? "Failed to generate advice."))
+      console.log("[v0] Relationship AI - Received result:", result)
+      const answerText = result.success ? (result.answer ?? "No response.") : (result.error ?? "Failed to generate advice.")
+      console.log("[v0] Relationship AI - Setting answer:", answerText)
+      setAnswer(answerText)
+    } catch (error) {
+      console.error("[v0] Relationship AI - Error:", error)
+      setAnswer("An error occurred. Please try again.")
     } finally {
       setLoading(false)
     }
@@ -824,6 +831,7 @@ export function RelationshipAiChatPanel({
 
         {answer && (
           <div className="rounded-md bg-violet-50 border border-violet-100 p-2.5 text-xs text-violet-900">
+            {console.log("[v0] Relationship AI - Rendering answer:", answer)}
             {answer}
           </div>
         )}
@@ -956,7 +964,7 @@ export function SmartNoteComposer({
   )
 }
 
-// ─── 10. BUYER MATCH PANEL ────────────────────────────────────────────────────
+// ─── 10. BUYER MATCH PANEL ─────────────────────────────────────���──────────────
 
 interface BuyerMatchPanelProps {
   contactId: string
