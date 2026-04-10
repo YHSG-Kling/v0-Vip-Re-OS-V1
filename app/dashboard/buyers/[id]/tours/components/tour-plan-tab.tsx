@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useTransition } from 'react'
-import { GripVertical, X, Clock, MapPin, Phone, ChevronDown } from 'lucide-react'
+import { GripVertical, X, Clock, MapPin, Phone, ChevronDown, Route, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -16,24 +16,26 @@ import {
   generateTourNarrative,
   type TourStop,
 } from '@/app/actions/tour-planner'
+import { optimizeTourRoute } from '@/app/actions/ai-showing-management'
 
+// saved_properties stores address data directly on the row — no listings FK.
 interface SavedProperty {
   id: string
   listing_id: string | null
   notes: string | null
   ai_match_score: number | null
   added_to_tour: boolean
-  listings: {
-    id: string
-    address: string
-    city: string | null
-    state: string | null
-    zip: string | null
-    list_price: number | null
-    bedrooms: number | null
-    bathrooms: number | null
-    mls_number: string | null
-  } | null
+  property_address: string | null
+  mls_number: string | null
+  list_price: number | null
+  bedrooms: number | null
+  bathrooms: number | null
+  sqft: number | null
+  city: string | null
+  state: string | null
+  primary_photo_url: string | null
+  // Legacy join field — always null now, kept for type compat during transition
+  listings?: null
 }
 
 interface TourPlanTabProps {
@@ -66,9 +68,14 @@ export function TourPlanTab({
   const [tourDate, setTourDate]         = useState('')
   const [startTime, setStartTime]       = useState('10:00')
   const [manualAddress, setManualAddress] = useState('')
-  const [narrative, setNarrative]       = useState<string | null>(null)
+  const [narrative, setNarrative]             = useState<string | null>(null)
   const [narrativeLoading, setNarrativeLoading] = useState(false)
-  const [isPending, startTransition]    = useTransition()
+  const [isPending, startTransition]          = useTransition()
+  const [optimizingRoute, setOptimizingRoute] = useState(false)
+  const [routeSummary, setRouteSummary]       = useState<string | null>(null)
+
+  // Stored tourId after creation so Optimize Route knows which tour to reorder
+  const [createdTourId, setCreatedTourId]     = useState<string | null>(null)
 
   function toggleProperty(prop: SavedProperty) {
     const key = prop.listing_id ?? prop.id
@@ -84,13 +91,13 @@ export function TourPlanTab({
         }
         next.add(key)
         const stop: TourStop = {
-          listingId:        prop.listing_id ?? undefined,
-          propertyAddress:  prop.listings?.address ?? '',
-          city:             prop.listings?.city ?? undefined,
-          state:            prop.listings?.state ?? undefined,
-          zip:              prop.listings?.zip ?? undefined,
-          listPrice:        prop.listings?.list_price ?? undefined,
-          mlsNumber:        prop.listings?.mls_number ?? undefined,
+          listingId:              prop.listing_id ?? undefined,
+          propertyAddress:        prop.property_address ?? '',
+          city:                   prop.city ?? undefined,
+          state:                  prop.state ?? undefined,
+          listPrice:              prop.list_price ?? undefined,
+          mlsNumber:              prop.mls_number ?? undefined,
+          primaryPhotoUrl:        prop.primary_photo_url ?? undefined,
           suggestedDurationMinutes: 30,
         }
         setOrderedStops(os => [...os, stop])
@@ -118,6 +125,43 @@ export function TourPlanTab({
     setOrderedStops(os => os.map((s, i) => i === idx ? { ...s, suggestedDurationMinutes: mins } : s))
   }
 
+  async function handleOptimizeRoute() {
+    if (orderedStops.length < 2) return
+    setOptimizingRoute(true)
+    try {
+      if (createdTourId) {
+        const res = await optimizeTourRoute(createdTourId)
+        if (res.success) {
+          setRouteSummary((res as any).summary ?? 'Route optimized — stops reordered for minimum drive time.')
+          toast({ title: 'Route optimized' })
+        } else {
+          toast({ title: (res as any).error ?? 'Route optimization failed', variant: 'destructive' })
+        }
+      } else {
+        // No saved tour yet — use AI to reorder stops by proximity heuristic
+        const addressList = orderedStops.map((s, i) => `${i + 1}. ${s.propertyAddress}${s.city ? ', ' + s.city : ''}`).join('\n')
+        const { generateText } = await import('ai')
+        const { text } = await generateText({
+          model: 'openai/gpt-4o-mini',
+          prompt: `Suggest the most efficient driving order for these properties (return comma-separated numbers only):\n${addressList}`,
+        })
+        const order = text.match(/\d+/g)?.map(Number).filter(n => n >= 1 && n <= orderedStops.length)
+        if (order && order.length === orderedStops.length) {
+          const reordered = order.map(n => orderedStops[n - 1])
+          setOrderedStops(reordered)
+          setRouteSummary('Stops reordered by AI for efficient routing.')
+          toast({ title: 'Route optimized' })
+        } else {
+          toast({ title: 'Could not parse optimized order', variant: 'destructive' })
+        }
+      }
+    } catch {
+      toast({ title: 'Route optimization failed', variant: 'destructive' })
+    } finally {
+      setOptimizingRoute(false)
+    }
+  }
+
   async function handleGenerateNarrative() {
     if (!orderedStops.length) return
     setNarrativeLoading(true)
@@ -139,6 +183,7 @@ export function TourPlanTab({
         aiPlanNarrative: narrative ?? undefined,
       })
       if (res.success) {
+        if (res.tourId) setCreatedTourId(res.tourId)
         toast({ title: `Tour plan created — ${res.stopCount} stops` })
         onTourCreated()
       } else {
@@ -189,7 +234,7 @@ export function TourPlanTab({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <p className="text-xs font-medium leading-tight truncate flex-1">
-                        {prop.listings?.address ?? 'Unknown address'}
+                        {prop.property_address ?? 'Unknown address'}
                       </p>
                       {prop.ai_match_score != null && (
                         <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
@@ -198,9 +243,9 @@ export function TourPlanTab({
                       )}
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {formatPrice(prop.listings?.list_price ?? null)}
-                      {prop.listings?.bedrooms ? ` · ${prop.listings.bedrooms}bd` : ''}
-                      {prop.listings?.bathrooms ? `/${prop.listings.bathrooms}ba` : ''}
+                      {formatPrice(prop.list_price ?? null)}
+                      {prop.bedrooms ? ` · ${prop.bedrooms}bd` : ''}
+                      {prop.bathrooms ? `/${prop.bathrooms}ba` : ''}
                     </p>
                   </div>
                 </label>
@@ -284,10 +329,29 @@ export function TourPlanTab({
                   {orderedStops.length} stops · ~{totalHrs}hr total
                 </span>
               </div>
-              <Button variant="outline" size="sm" className="text-xs" disabled>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs gap-1.5"
+                onClick={handleOptimizeRoute}
+                disabled={optimizingRoute || orderedStops.length < 2}
+                title={orderedStops.length < 2 ? 'Add at least 2 stops to optimize' : undefined}
+              >
+                {optimizingRoute ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Route className="h-3.5 w-3.5" />
+                )}
                 Optimize Route
               </Button>
             </div>
+
+            {/* Route optimization result */}
+            {routeSummary && (
+              <div className="px-3 py-2 bg-blue-50 border border-blue-100 rounded-md text-xs text-blue-800">
+                {routeSummary}
+              </div>
+            )}
 
             {/* Stop cards */}
             <div className="space-y-3 flex-1 overflow-y-auto pr-1">

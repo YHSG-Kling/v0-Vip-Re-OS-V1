@@ -112,6 +112,8 @@ export async function getSavedPropertiesForTour(contactId: string) {
 
   const supabase = createServiceClient()
 
+  // saved_properties stores address data directly on the row — no FK to listings.
+  // The listings join always returns null, so we select only real columns.
   const { data, error } = await supabase
     .from('saved_properties')
     .select(`
@@ -122,11 +124,15 @@ export async function getSavedPropertiesForTour(contactId: string) {
       match_reasons,
       added_to_tour,
       saved_at,
-      listings (
-        id, address, city, state, zip, list_price,
-        bedrooms, bathrooms, sqft, mls_number,
-        agent_id, showing_instructions
-      )
+      property_address,
+      mls_number,
+      list_price,
+      bedrooms,
+      bathrooms,
+      sqft,
+      city,
+      state,
+      primary_photo_url
     `)
     .eq('contact_id', contactId)
     .eq('dismissed', false)

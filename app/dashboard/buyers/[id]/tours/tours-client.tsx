@@ -15,23 +15,22 @@ interface Contact {
   buyer_stage: string | null
 }
 
+// saved_properties stores address data directly on the row
 interface SavedProperty {
   id: string
   listing_id: string | null
   notes: string | null
   ai_match_score: number | null
   added_to_tour: boolean
-  listings: {
-    id: string
-    address: string
-    city: string | null
-    state: string | null
-    zip: string | null
-    list_price: number | null
-    bedrooms: number | null
-    bathrooms: number | null
-    mls_number: string | null
-  } | null
+  property_address: string | null
+  mls_number: string | null
+  list_price: number | null
+  bedrooms: number | null
+  bathrooms: number | null
+  sqft: number | null
+  city: string | null
+  state: string | null
+  primary_photo_url: string | null
 }
 
 interface Tour {
