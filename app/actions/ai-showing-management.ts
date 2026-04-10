@@ -254,18 +254,25 @@ Return JSON only:
       ? `${params.requestedDate}T${recommendedTime}:00`
       : null
 
+    // listing_id is a UUID FK — only set it when the propertyId is actually a UUID.
+    // For MLS buyer properties, propertyId is an MLS number string; store it in notes instead.
+    const notesText = [
+      params.notes,
+      !propertyIsUuid ? `MLS: ${params.propertyId}` : null,
+    ].filter(Boolean).join(' | ') || null
+
     // Create the showing using verified live schema columns
     const { data: showing, error } = await supabase
       .from("showings")
       .insert({
-        listing_id:     params.propertyId,
+        listing_id:     propertyIsUuid ? params.propertyId : null,
         contact_id:     params.contactId,
         agent_id:       params.agentId,
         brokerage_id:   agentUser?.brokerage_id ?? null,
         scheduled_date: params.requestedDate,
         scheduled_at:   scheduledAt,
         status:         "scheduled",
-        notes:          params.notes ?? null,
+        notes:          notesText,
         sync_source:    "ai_scheduler",
         is_confirmed:   false,
         created_at:     new Date().toISOString(),
@@ -275,15 +282,19 @@ Return JSON only:
 
     if (error) throw error
 
-    // Log a calendar_event for the showing (best-effort)
+    // Write an activities row so the showing appears on the agent's activity feed as pending.
+    // No calendar_event yet — that is written only when the agent confirms the showing time.
     try {
-      await supabase.from("calendar_events").insert({
-        brokerage_id:       agentUser?.brokerage_id ?? null,
-        entity_type:        "showing",
-        entity_id:          showing.id,
-        event_type:         "showing",
-        start_at:           scheduledAt ?? new Date(`${params.requestedDate}T${resolvedTime}:00`).toISOString(),
-        is_system_generated: true,
+      await supabase.from("activities").insert({
+        brokerage_id:  agentUser?.brokerage_id ?? null,
+        agent_id:      params.agentId,
+        contact_id:    params.contactId,
+        activity_type: "showing",
+        title:         `Showing scheduled — ${params.requestedDate} at ${resolvedTime}`,
+        description:   notesText ?? undefined,
+        scheduled_at:  scheduledAt,
+        status:        "pending",
+        priority:      "high",
       })
     } catch { /* non-critical */ }
 

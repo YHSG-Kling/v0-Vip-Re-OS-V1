@@ -363,6 +363,20 @@ export async function confirmTourStop(params: ConfirmStopParams) {
 
   if (stopError) return { success: false, error: stopError.message }
 
+  // Write a calendar_event for the agent — this stop is now confirmed.
+  // Only the agent's calendar gets the event here; the contact's calendar is written
+  // when the full tour is confirmed and sent (confirmTour below).
+  try {
+    await supabase.from('calendar_events').insert({
+      brokerage_id:        brokerageId,
+      entity_type:         'tour_stop',
+      entity_id:           tourStopId,
+      event_type:          'showing',
+      start_at:            confirmedTime,
+      is_system_generated: true,
+    })
+  } catch { /* non-critical */ }
+
   // Update linked showing
   if (showingId && isValidUUID(showingId)) {
     await supabase
@@ -425,6 +439,13 @@ export async function confirmTour(params: {
   const { tourId, brokerageId, contactId, agentUserId, departureTime, agentNotes } = params
   const supabase = createServiceClient()
 
+  // Load the tour date and stops so we can create accurate calendar events
+  const { data: tour } = await supabase
+    .from('tours')
+    .select('tour_date, tour_stops(id, confirmed_time, suggested_time, order_index)')
+    .eq('id', tourId)
+    .single()
+
   const { error } = await supabase
     .from('tours')
     .update({
@@ -435,6 +456,52 @@ export async function confirmTour(params: {
     .eq('id', tourId)
 
   if (error) return { success: false, error: error.message }
+
+  // Write a tour-level calendar_event for the agent — the full tour day is now confirmed.
+  // Write a separate calendar_event for the contact so it appears on their calendar too.
+  // Both are written only now (on confirmation), not when the plan is first created.
+  if (tour?.tour_date) {
+    const tourStartAt = `${tour.tour_date}T${departureTime ?? '09:00'}:00`
+
+    const agentEvent = {
+      brokerage_id:        brokerageId,
+      entity_type:         'tour',
+      entity_id:           tourId,
+      event_type:          'tour',
+      start_at:            tourStartAt,
+      is_system_generated: true,
+    }
+
+    // Contact calendar event — same tour, tagged so the contact's portal can surface it
+    const contactEvent = {
+      brokerage_id:        brokerageId,
+      entity_type:         'tour_contact',
+      entity_id:           contactId,
+      event_type:          'tour',
+      start_at:            tourStartAt,
+      metadata:            { tour_id: tourId, contact_id: contactId },
+      is_system_generated: true,
+    }
+
+    try {
+      await supabase.from('calendar_events').insert([agentEvent, contactEvent])
+    } catch { /* non-critical */ }
+  }
+
+  // Notify the contact that their tour plan is confirmed
+  try {
+    await supabase.from('notifications').insert({
+      user_id:      agentUserId,
+      brokerage_id: brokerageId,
+      type:         'tour.confirmed',
+      title:        'Tour confirmed',
+      body:         `The tour plan for ${tour?.tour_date ?? 'your buyer'} is confirmed and calendar events have been created.`,
+      entity_type:  'tour',
+      entity_id:    tourId,
+      priority:     'high',
+      channel:      'in_app',
+    })
+  } catch { /* non-critical */ }
 
   await supabase.from('lifecycle_events').insert({
     brokerage_id:  brokerageId,

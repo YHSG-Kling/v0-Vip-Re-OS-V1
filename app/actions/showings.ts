@@ -59,7 +59,37 @@ export async function requestShowing(data: {
       return { success: false, error: error.message }
     }
 
-    // Log portal activity (best-effort — table may not exist for all envs)
+    // Create an activities row on the assigned agent's feed so they can confirm or change the time.
+    // This is the entry point for the agent to action the request — no calendar_events yet,
+    // those are written only when the agent confirms.
+    try {
+      // Resolve the contact's assigned agent to surface the activity on the right agent's feed
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("agent_id")
+        .eq("id", data.contactId)
+        .maybeSingle()
+
+      const assignedAgentId = contact?.agent_id ?? (user?.id ?? null)
+
+      if (assignedAgentId) {
+        await supabase.from("activities").insert({
+          brokerage_id:  brokerageId,
+          agent_id:      assignedAgentId,
+          contact_id:    data.contactId,
+          activity_type: "showing_request",
+          title:         `Showing request — ${data.propertyAddress}`,
+          description:   msgParts,
+          scheduled_at:  firstDate?.date
+            ? `${firstDate.date}T${firstDate?.time ?? "10:00"}:00`
+            : null,
+          status:        "pending",
+          priority:      "high",
+        })
+      }
+    } catch { /* non-critical */ }
+
+    // Log portal activity (best-effort)
     try {
       await supabase.from("client_portal_activity").insert({
         contact_id:    data.contactId,
@@ -68,12 +98,36 @@ export async function requestShowing(data: {
           property_address: data.propertyAddress,
           mls_number:       !isUuid ? data.propertyId : undefined,
           listing_id:       isUuid  ? data.propertyId : undefined,
+          showing_request_id: showing.id,
         },
       })
     } catch { /* non-critical */ }
 
+    // Notify the assigned agent in-app
+    try {
+      const { data: contact } = await supabase
+        .from("contacts")
+        .select("agent_id, first_name, last_name, brokerage_id")
+        .eq("id", data.contactId)
+        .maybeSingle()
+      if (contact?.agent_id) {
+        await supabase.from("notifications").insert({
+          user_id:      contact.agent_id,
+          brokerage_id: brokerageId,
+          type:         "showing.request",
+          title:        "New showing request",
+          body:         `${contact.first_name} ${contact.last_name} wants to see ${data.propertyAddress}. Confirm or reschedule.`,
+          entity_type:  "showing_request",
+          entity_id:    showing.id,
+          priority:     "high",
+          channel:      "in_app",
+        })
+      }
+    } catch { /* non-critical */ }
+
     revalidatePath(`/portal/${data.contactId}/properties`)
     revalidatePath(`/portal/${data.contactId}/showings`)
+    revalidatePath(`/dashboard/buyers/${data.contactId}`)
 
     return { success: true, data: showing }
   } catch (error: any) {
@@ -256,21 +310,47 @@ export async function confirmShowing(showingId: string, confirmedDate: string) {
     const { data, error } = await supabase
       .from("showing_requests")
       .update({
-        status: "confirmed",
+        status:         "confirmed",
         confirmed_date: confirmedDate,
-        updated_at: new Date().toISOString(),
+        updated_at:     new Date().toISOString(),
       })
       .eq("id", showingId)
-      .select()
+      .select("id, contact_id, brokerage_id, listing_id, requested_date")
       .single()
 
     if (error) throw error
 
+    // Write the agent's calendar_event — only appears now that it is confirmed.
+    // The contact's calendar event is written separately when the tour is sent/confirmed.
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: u } = await supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle()
+        await supabase.from("calendar_events").insert({
+          brokerage_id:        u?.brokerage_id ?? data.brokerage_id,
+          entity_type:         "showing_request",
+          entity_id:           data.id,
+          event_type:          "showing",
+          start_at:            confirmedDate,
+          is_system_generated: true,
+        })
+      }
+    } catch { /* non-critical */ }
+
+    // Update activities row status to completed
+    try {
+      await supabase
+        .from("activities")
+        .update({ status: "completed", completed_at: new Date().toISOString() })
+        .eq("entity_type", "showing_request")
+        .eq("entity_id", showingId)
+    } catch { /* non-critical */ }
+
     revalidatePath("/dashboard")
+    revalidatePath(`/dashboard/buyers/${data.contact_id}`)
 
     return { success: true, showing: data }
   } catch (error: any) {
-    console.error("Error in confirmShowing:", error)
     return { success: false, error: error.message }
   }
 }

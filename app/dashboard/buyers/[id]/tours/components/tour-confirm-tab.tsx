@@ -21,6 +21,8 @@ interface TourStop {
   city: string | null
   state: string | null
   zip: string | null
+  mls_number: string | null
+  listing_id: string | null
   listing_agent_name: string | null
   listing_agent_phone: string | null
   listing_agent_company: string | null
@@ -247,18 +249,21 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
   }
 
   async function handleAIScheduleStop(stop: TourStop, tourDate: string) {
-    if (!stop.listing_id) {
-      toast({ title: 'No listing attached to this stop', variant: 'destructive' })
+    // For agent seller listings, listing_id is a UUID.
+    // For MLS buyer properties, listing_id is null — use mls_number or property_address as the identifier.
+    const propertyIdentifier = stop.listing_id ?? stop.mls_number ?? stop.property_address
+    if (!propertyIdentifier) {
+      toast({ title: 'Cannot identify property for scheduling', variant: 'destructive' })
       return
     }
     setSchedulingStopId(stop.id)
     try {
       const res = await aiScheduleShowing({
-        agentId: agentUserId,
-        propertyId: stop.listing_id,
+        agentId:        agentUserId,
+        propertyId:     propertyIdentifier,
         contactId,
         preferredDates: [tourDate],
-        notes: `Tour stop ${stop.order_index + 1}: ${stop.property_address}`,
+        notes:          `Tour stop ${stop.order_index + 1}: ${stop.property_address}${stop.city ? ', ' + stop.city : ''}`,
       })
       if (res.success) {
         setScheduleResults(prev => ({ ...prev, [stop.id]: res }))
@@ -399,8 +404,8 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
 
                       {isExpanded && (
                         <div className="px-4 pb-4 border-t space-y-3">
-                          {/* AI Schedule Showing for this stop */}
-                          {!stop.is_confirmed && stop.listing_id && (
+                          {/* AI Schedule Showing — works for both agent listings (listing_id) and MLS properties (mls_number/address) */}
+                          {!stop.is_confirmed && (
                             <div className="pt-3 flex items-center gap-2">
                               <Button
                                 size="sm"
