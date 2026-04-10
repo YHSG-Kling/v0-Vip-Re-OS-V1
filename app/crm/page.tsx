@@ -49,6 +49,7 @@ import {
   Sparkles,
   Building2,
   ExternalLink,
+  Home,
 } from "lucide-react"
 import Link from "next/link"
 import { format } from "date-fns"
@@ -342,7 +343,7 @@ export default function CRMPage() {
       setBuyerInsights(null)
       setFatigueData(null)
       try {
-        // Parallel data loads
+        // Core data loads — contact + churn + autopilot + followup + conv intel in parallel
         const [contactResult, churnResult, autopilotResult, followUpResult, convIntelResult] =
           await Promise.all([
             getContactById(contactId),
@@ -355,16 +356,18 @@ export default function CRMPage() {
         if (contactResult?.success && contactResult.contact) {
           setSelectedContact(contactResult.contact)
 
-          // Non-blocking buyer intelligence load — only for buyer/renter contacts
+          // Non-blocking buyer intelligence load — fires after UI is already shown
           const ct = contactResult.contact.contact_type?.toLowerCase() ?? ""
           if (ct === "buyer" || ct === "renter" || !!contactResult.contact.buyer_stage) {
-            Promise.all([
-              getBuyerInsights(contactId).catch(() => null),
-              getBuyerFatigueScore(contactId).catch(() => null),
-            ]).then(([insights, fatigue]) => {
-              setBuyerInsights(insights ?? null)
-              setFatigueData(fatigue ?? null)
-            })
+            setTimeout(() => {
+              Promise.all([
+                getBuyerInsights(contactId).catch(() => null),
+                getBuyerFatigueScore(contactId).catch(() => null),
+              ]).then(([insights, fatigue]) => {
+                setBuyerInsights(insights ?? null)
+                setFatigueData(fatigue ?? null)
+              })
+            }, 0)
           }
         }
 
@@ -623,7 +626,14 @@ export default function CRMPage() {
     if (!selectedContactId || !agentId) return
     setReferralGenerating(true)
     try {
-      await aiOptimizeReferralAsk({ contactId: selectedContactId, agentId })
+      const result = await aiOptimizeReferralAsk({ contactId: selectedContactId, agentId })
+      if (result?.success) {
+        toast.success("Referral ask strategy generated")
+      } else {
+        toast.error((result as any)?.error ?? "Failed to generate referral ask")
+      }
+    } catch {
+      toast.error("Failed to generate referral ask")
     } finally {
       setReferralGenerating(false)
     }
@@ -729,6 +739,43 @@ export default function CRMPage() {
                 router.push(`/dashboard/inbox?contact=${selectedContactId}`)
               }
             />
+
+            {/* Quick Actions — always visible */}
+            <div className="flex flex-wrap gap-2">
+              <Link href={`/dashboard/listings?action=new&contact=${selectedContactId}`}>
+                <Button size="sm" variant="outline" className="gap-1.5 text-xs">
+                  <Home className="h-3.5 w-3.5" />
+                  Create Listing
+                </Button>
+              </Link>
+              <Link href={`/dashboard/buyers/${selectedContactId}/offers`}>
+                <Button size="sm" variant="outline" className="gap-1.5 text-xs">
+                  <TrendingUp className="h-3.5 w-3.5" />
+                  Create Offer
+                </Button>
+              </Link>
+              {relatedTransaction ? (
+                <Link href={`/dashboard/transactions/${relatedTransaction.id}`}>
+                  <Button size="sm" variant="outline" className="gap-1.5 text-xs">
+                    <ExternalLink className="h-3.5 w-3.5" />
+                    View Transaction
+                  </Button>
+                </Link>
+              ) : (
+                <Link href={`/dashboard/transactions?contact=${selectedContactId}`}>
+                  <Button size="sm" variant="outline" className="gap-1.5 text-xs">
+                    <Building2 className="h-3.5 w-3.5" />
+                    Start Transaction
+                  </Button>
+                </Link>
+              )}
+              <Link href={`/dashboard/inbox?contact=${selectedContactId}`}>
+                <Button size="sm" variant="outline" className="gap-1.5 text-xs">
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  Open Inbox
+                </Button>
+              </Link>
+            </div>
 
             {/* Listing & Transaction Links */}
             {(relatedListing || relatedTransaction) && (

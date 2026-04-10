@@ -103,7 +103,7 @@ export default async function ListingsPage({
     <div className="space-y-6">
       {/* Command Strip — wraps cleanly on mobile */}
       <div className="flex flex-wrap items-center gap-2 px-4 sm:px-6 py-3 border-b border-border bg-muted/30">
-        <Link href="/listings/new">
+        <Link href="/dashboard/listings?action=new">
           <Button size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <Plus className="h-4 w-4" />
             New Listing
@@ -112,20 +112,20 @@ export default async function ListingsPage({
         <Link href="/dashboard/listings/analytics">
           <Button variant="outline" size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <BarChart3 className="h-4 w-4" />
-            <span className="hidden sm:inline">Analytics</span>
+            Analytics
           </Button>
         </Link>
         <Link href="/dashboard/listings/marketing">
           <Button variant="outline" size="sm" className="gap-2 min-h-[44px] sm:min-h-0">
             <Share2 className="h-4 w-4" />
-            <span className="hidden sm:inline">Marketing Hub</span>
+            Marketing Hub
           </Button>
         </Link>
         <div className="flex-1 hidden sm:block" />
         <Link href="/dashboard/listings/ai-pricing">
           <Button variant="ghost" size="sm" className="gap-2 text-primary min-h-[44px] sm:min-h-0">
             <Sparkles className="h-4 w-4" />
-            <span className="hidden sm:inline">AI Price Analysis</span>
+            AI Price Analysis
           </Button>
         </Link>
       </div>
@@ -304,7 +304,7 @@ export default async function ListingsPage({
               <div className="p-8 text-center">
                 <Home className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />
                 <p className="text-muted-foreground mb-4">No listings found. Create your first listing to get started.</p>
-<Link href="/dashboard/listings?action=new">
+                <Link href="/dashboard/listings?action=new">
                   <Button>
                     <Plus className="h-4 w-4 mr-2" />
                     Create Listing

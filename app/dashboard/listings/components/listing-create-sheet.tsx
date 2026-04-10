@@ -69,22 +69,24 @@ export function ListingCreateSheet({ open }: ListingCreateSheetProps) {
     <Sheet open={open} onOpenChange={isOpen => { if (!isOpen) handleClose() }}>
       <SheetContent
         side="right"
-        className="w-full sm:max-w-lg overflow-y-auto"
+        className="w-full sm:max-w-xl md:max-w-2xl flex flex-col p-0"
       >
-        <SheetHeader className="mb-6">
+        <SheetHeader className="px-6 pt-6 pb-4 border-b shrink-0">
           <SheetTitle>New Listing</SheetTitle>
           <SheetDescription>
             Enter the seller and property details to create a new listing record at the LEAD stage.
           </SheetDescription>
         </SheetHeader>
 
-        <ListingEditForm
-          showSellerFields
-          submitLabel="Create Listing"
-          onSubmit={handleSubmit}
-          onCancel={handleClose}
-          error={error}
-        />
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          <ListingEditForm
+            showSellerFields
+            submitLabel="Create Listing"
+            onSubmit={handleSubmit}
+            onCancel={handleClose}
+            error={error}
+          />
+        </div>
       </SheetContent>
     </Sheet>
   )

@@ -47,8 +47,18 @@ async function resolveActorContext() {
     .eq("id", user.id)
     .maybeSingle()
 
-  const brokerageId = userData?.brokerage_id ?? ""
+  // Fall back to agents table if users row has no brokerage_id
+  let brokerageId = userData?.brokerage_id ?? ""
   const role = userData?.user_type ?? "agent"
+
+  if (!brokerageId) {
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("user_id", user.id)
+      .maybeSingle()
+    brokerageId = agentRow?.brokerage_id ?? ""
+  }
 
   return buildActorContext({ userId: user.id, brokerageId, role })
 }

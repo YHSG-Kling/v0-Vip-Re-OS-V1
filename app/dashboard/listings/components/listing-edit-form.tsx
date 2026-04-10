@@ -256,7 +256,7 @@ export function ListingEditForm({
             onChange={e => set("listPrice", e.target.value)}
             placeholder="450000"
             min={0}
-            step={1000}
+            step="any"
           />
         </div>
 
@@ -270,7 +270,7 @@ export function ListingEditForm({
               onChange={e => set("bedrooms", e.target.value)}
               placeholder="3"
               min={0}
-              max={99}
+              step="any"
             />
           </div>
           <div className="space-y-1">
@@ -282,8 +282,7 @@ export function ListingEditForm({
               onChange={e => set("bathrooms", e.target.value)}
               placeholder="2"
               min={0}
-              max={99}
-              step={0.5}
+              step="any"
             />
           </div>
           <div className="space-y-1">
@@ -295,7 +294,7 @@ export function ListingEditForm({
               onChange={e => set("sqft", e.target.value)}
               placeholder="1800"
               min={0}
-              step={50}
+              step="any"
             />
           </div>
         </div>

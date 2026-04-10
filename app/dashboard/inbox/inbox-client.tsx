@@ -294,7 +294,7 @@ export function InboxClient({
   ]
 
   return (
-    <div className="flex h-[calc(100vh-80px)] overflow-hidden border rounded-lg bg-background">
+    <div className="flex h-full min-h-[500px] overflow-hidden border rounded-lg bg-background">
       {/* ── LEFT: Thread List ─────────────────────────────────────────────── */}
       <div
         className={cn(

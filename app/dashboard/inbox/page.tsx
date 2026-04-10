@@ -73,14 +73,14 @@ export default async function InboxPage({ searchParams }: PageProps) {
   const { contact: contactId, channel } = await searchParams
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="px-6 py-4 border-b shrink-0">
+    <div className="flex flex-col" style={{ height: "calc(100dvh - 64px)" }}>
+      <div className="px-6 py-3 border-b shrink-0">
         <h1 className="text-xl font-semibold text-foreground">Universal Inbox</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
           All client conversations — portal, SMS, email, and voice — in one place.
         </p>
       </div>
-      <div className="flex-1 overflow-hidden px-6 py-4">
+      <div className="flex-1 overflow-hidden px-4 pb-4 pt-3">
         <Suspense fallback={<InboxSkeleton />}>
           <InboxClient initialContactId={contactId ?? null} initialChannel={channel ?? null} />
         </Suspense>
