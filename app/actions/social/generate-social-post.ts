@@ -15,7 +15,7 @@
  * Database: Supabase — uses maybeSingle(), never single().
  */
 
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { createClient } from "@/lib/supabase/server"

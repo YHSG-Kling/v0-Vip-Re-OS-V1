@@ -10,7 +10,7 @@ import {
   getMarketTrends,
   getMarketDataSources,
 } from "@/lib/intelligence/market-insight-generator"
-import { generateObject } from "ai"
+import { generateObject } from "@/lib/ai/generate"
 import { z } from "zod"
 
 // ─── Get Market Sources ──────────────────────────────────────────────────────

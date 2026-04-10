@@ -109,7 +109,7 @@ export async function generateCopilotPlan(
 
     // Generate plan via AI — use resolveModel so the Vercel AI Gateway handles routing.
     // Never import provider SDKs directly; they require separate API keys.
-    const { generateObject } = await import("ai")
+    const { generateObject } = await import("@/lib/ai/generate")
     const { resolveModel } = await import("@/lib/ai/resolve-model")
     const { z } = await import("zod")
 

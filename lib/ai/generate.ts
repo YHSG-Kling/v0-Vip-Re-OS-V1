@@ -91,6 +91,47 @@ If they ask a question, answer it from THEIR perspective, focusing on what they 
   return generateAIText(prompt)
 }
 
+// ─── generateObject COMPATIBILITY SHIM ───────────────────────────────────────
+// AI SDK 6 deprecates generateObject — this shim keeps existing action files
+// working without touching each one. All action files should import generateObject
+// from "@/lib/ai/generate" instead of "ai".
+//
+// Usage (same API as the old SDK):
+//   import { generateObject } from "@/lib/ai/generate"
+//   const { object } = await generateObject({ model, schema, prompt })
+
+export async function generateObject<T extends z.ZodType>({
+  model,
+  schema,
+  prompt,
+  temperature,
+  system,
+}: {
+  model: string | any
+  schema: T
+  prompt?: string
+  temperature?: number
+  system?: string
+}): Promise<{ object: z.infer<T> }> {
+  // If model is already a resolved provider instance (any non-string truthy value),
+  // use it directly. If it's a string, resolve it via the gateway helper.
+  const resolvedModel =
+    typeof model === "string"
+      ? resolveModel(model as Parameters<typeof resolveModel>[0])
+      : model
+
+  const promptParts = [system, prompt].filter(Boolean).join("\n\n")
+
+  const { experimental_output } = await generateText({
+    model: resolvedModel,
+    prompt: promptParts,
+    temperature: temperature ?? 0.5,
+    experimental_output: Output.object({ schema }),
+  })
+
+  return { object: experimental_output as z.infer<T> }
+}
+
 // ─── STRUCTURED OBJECT GENERATION ────────────────────────────────────────────
 // Note: generateObject is deprecated in AI SDK 6 — use generateText + Output.object()
 
