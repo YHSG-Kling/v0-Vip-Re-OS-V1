@@ -1,9 +1,15 @@
 "use client"
 
-import { useState, useEffect, useCallback, useTransition } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
-import { createClient } from "@/lib/supabase/client"
-import { sendPortalMessage } from "@/app/actions/portal-messages"
+import {
+  getInboxMessages,
+  sendInboxMessage,
+  markInboxRead,
+  type InboxThread,
+  type InboxMessageRow,
+  type InboxChannel,
+} from "@/app/actions/inbox"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
@@ -27,31 +33,12 @@ import { format, formatDistanceToNowStrict } from "date-fns"
 import { toast } from "sonner"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+// InboxThread, InboxMessageRow, InboxChannel imported from @/app/actions/inbox
 
-interface InboxThread {
-  contact_id: string
-  contact_name: string
-  contact_type?: string | null
-  last_message_at: string
-  last_message_body: string
-  unread_count: number
-  channel: string
-}
+// Local alias for message display (InboxMessageRow has source_table; treat uniformly)
+type InboxMessage = InboxMessageRow
 
-interface InboxMessage {
-  id: string
-  contact_id: string
-  channel: string
-  direction: "inbound" | "outbound"
-  body: string
-  created_at: string
-  read: boolean
-  type: string
-  sentiment?: string | null
-  summary?: string | null
-}
-
-type ChannelFilter = "all" | "sms" | "email" | "voice" | "portal" | "chat"
+type ChannelFilter = InboxChannel
 
 // ─── Channel icon helper ───────────────────────────────────────────────────────
 
@@ -150,7 +137,7 @@ function MessageBubble({ msg }: { msg: InboxMessage }) {
             : "bg-indigo-600 text-white rounded-tr-sm"
         )}
       >
-        {msg.type === "voice" ? (
+        {msg.source_table === "voice_calls" || msg.channel === "voice" ? (
           <div className="flex items-start gap-2">
             <Volume2 className="w-4 h-4 mt-0.5 shrink-0 opacity-70" />
             <span>{msg.body || "Voice call"}</span>
@@ -202,15 +189,13 @@ export function InboxClient({
   const [messagesLoading, setMessagesLoading] = useState(false)
   const [composing, setComposing] = useState("")
   const [sending, setSending] = useState(false)
-  const [isPending, startTransition] = useTransition()
 
-  // Load threads
+  // Load threads (uses server action — kernel-scoped, RLS-enforced)
   const loadThreads = useCallback(async () => {
     setThreadsLoading(true)
     try {
-      const res = await fetch("/api/inbox/messages", { method: "POST" })
-      const json = await res.json()
-      setThreads(json.threads ?? [])
+      const result = await getInboxMessages({ channel: "all", limit: 100 })
+      setThreads(result.threads ?? [])
     } catch {
       // silent
     } finally {
@@ -218,17 +203,22 @@ export function InboxClient({
     }
   }, [])
 
-  // Load messages for selected contact
+  // Load messages for selected contact (uses server action)
   const loadMessages = useCallback(
     async (contactId: string) => {
       setMessagesLoading(true)
       try {
-        const params = new URLSearchParams({ contactId, limit: "100" })
-        if (channelFilter !== "all") params.set("channel", channelFilter)
-        if (unreadOnly) params.set("unreadOnly", "true")
-        const res = await fetch(`/api/inbox/messages?${params}`)
-        const json = await res.json()
-        setMessages(json.messages ?? [])
+        const result = await getInboxMessages({
+          contactId,
+          channel: channelFilter === "all" ? "all" : channelFilter,
+          unreadOnly,
+          limit: 100,
+        })
+        setMessages(result.messages ?? [])
+        // Mark as read when opening thread
+        if ((result.messages ?? []).some((m) => !m.read)) {
+          markInboxRead({ contactId }).catch(() => {})
+        }
       } catch {
         // silent
       } finally {
@@ -257,22 +247,21 @@ export function InboxClient({
     if (cid && cid !== selectedContactId) setSelectedContactId(cid)
   }, [searchParams, selectedContactId])
 
-  // Send message
+  // Send message via kernel inbox command (compliance-gated)
   const handleSend = async () => {
     if (!composing.trim() || !selectedContactId) return
     setSending(true)
     try {
-      const result = await sendPortalMessage({
+      const channel = (initialChannel ?? "portal") as "sms" | "email" | "portal" | "chat"
+      const result = await sendInboxMessage({
         contactId: selectedContactId,
-        messageBody: composing.trim(),
-        direction: "agent_to_client",
-        channel: initialChannel ?? "portal",
+        body: composing.trim(),
+        channel,
       })
       if (result.success) {
         setComposing("")
         toast.success("Message sent")
         await loadMessages(selectedContactId)
-        // Refresh thread list unread counts
         loadThreads()
       } else {
         toast.error(result.error ?? "Failed to send")

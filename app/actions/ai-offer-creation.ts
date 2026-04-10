@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import { generateObject } from "ai"
+import { generateText as generateTextBase, Output } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
@@ -86,9 +86,9 @@ export async function aiOfferStrategyAdvisor(params: {
       return { success: false, error: "Invalid agent ID" }
     }
 
-    const { object: strategy } = await generateObject({
+    const { experimental_output: strategy } = await generateTextBase({
       model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
+      experimental_output: Output.object({ schema: z.object({
         recommendedOfferPrice: z.number(),
         priceRangeLow: z.number(),
         priceRangeHigh: z.number(),
@@ -97,8 +97,8 @@ export async function aiOfferStrategyAdvisor(params: {
         reasoning: z.string(),
         escalationRecommendation: z.object({
           recommended: z.boolean(),
-          suggestedMax: z.number().optional(),
-          suggestedIncrement: z.number().optional(),
+          suggestedMax: z.number().nullable(),
+          suggestedIncrement: z.number().nullable(),
           reasoning: z.string(),
         }),
         contingencyStrategy: z.object({
@@ -115,7 +115,7 @@ export async function aiOfferStrategyAdvisor(params: {
         closeDateStrategy: z.string(),
         personalLetterRecommendation: z.boolean(),
         additionalSuggestions: z.array(z.string()),
-      }),
+      }) }),
       prompt: `You are a buyer's agent strategist. Help craft a winning offer strategy.
 
 Listing Details:
@@ -155,9 +155,9 @@ export async function aiCalculateEscalation(params: {
   marketTrend: "appreciating" | "stable" | "declining"
 }) {
   try {
-    const { object: escalation } = await generateObject({
+    const { experimental_output: escalation } = await generateTextBase({
       model: resolveModel("openai/gpt-4o-mini"),
-      schema: z.object({
+      experimental_output: Output.object({ schema: z.object({
         recommended: z.boolean(),
         startingOffer: z.number(),
         escalationIncrement: z.number(),
@@ -167,7 +167,7 @@ export async function aiCalculateEscalation(params: {
         reasoning: z.string(),
         riskAssessment: z.string(),
         sampleClauseText: z.string(),
-      }),
+      }) }),
       prompt: `Calculate optimal escalation clause parameters:
 
 List Price: $${params.listPrice.toLocaleString()}
@@ -202,9 +202,9 @@ export async function aiRecommendContingencies(params: {
   buyerRiskTolerance: "conservative" | "moderate" | "aggressive"
 }) {
   try {
-    const { object: contingencies } = await generateObject({
+    const { experimental_output: contingencies } = await generateText({
       model: resolveModel("openai/gpt-4o-mini"),
-      schema: z.object({
+      experimental_output: Output.object({ schema: z.object({
         recommended: z.array(
           z.object({
             type: z.string(),
@@ -225,7 +225,7 @@ export async function aiRecommendContingencies(params: {
           competitiveness: z.number().min(0).max(100),
         }),
         suggestions: z.array(z.string()),
-      }),
+      }) }),
       prompt: `Recommend contingencies for this buyer:
 
 Financing: ${params.buyerFinancingType}
@@ -457,18 +457,18 @@ export async function aiCounterOfferStrategy(params: {
   negotiationRound: number
 }) {
   try {
-    const { object: strategy } = await generateObject({
+    const { experimental_output: strategy } = await generateText({
       model: resolveModel("openai/gpt-4o"),
-      schema: z.object({
+      experimental_output: Output.object({ schema: z.object({
         recommendedResponse: z.enum(["accept", "counter", "walk_away"]),
-        suggestedCounterPrice: z.number().optional(),
+        suggestedCounterPrice: z.number().nullable(),
         suggestedTerms: z.array(z.string()),
         reasoning: z.string(),
         negotiationTactics: z.array(z.string()),
         riskOfLosingDeal: z.number().min(0).max(100),
         estimatedFinalPrice: z.number(),
         nextMoveTimeline: z.string(),
-      }),
+      }) }),
       prompt: `Help strategize response to seller's counter offer.
 
 Negotiation History:

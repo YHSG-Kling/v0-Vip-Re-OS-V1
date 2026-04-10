@@ -4,7 +4,7 @@
  * app/actions/ai-generate.ts re-exports from here for Server Action consumers.
  */
 
-import { generateObject } from "ai"
+import { generateText, Output } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { runPipelineSimple } from "@/lib/ai/pipeline"
 import { z } from "zod"
@@ -92,6 +92,7 @@ If they ask a question, answer it from THEIR perspective, focusing on what they 
 }
 
 // ─── STRUCTURED OBJECT GENERATION ────────────────────────────────────────────
+// Note: generateObject is deprecated in AI SDK 6 — use generateText + Output.object()
 
 export async function generateAIObject<T extends z.ZodType>(
   prompt: string,
@@ -102,11 +103,11 @@ export async function generateAIObject<T extends z.ZodType>(
   }
 ): Promise<{ success: boolean; object?: z.infer<T>; error?: string }> {
   try {
-    const { object } = await generateObject({
+    const { experimental_output: object } = await generateText({
       model: resolveModel((options?.model ?? "openai/gpt-4o") as Parameters<typeof resolveModel>[0]),
       prompt,
-      schema,
       temperature: options?.temperature ?? 0.7,
+      experimental_output: Output.object({ schema }),
     })
     return { success: true, object }
   } catch (error: any) {

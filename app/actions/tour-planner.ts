@@ -642,16 +642,16 @@ export async function generateTourNarrative(params: {
   const { contactId, brokerageId, stops, buyerName } = params
 
   try {
-    const { generateObject } = await import('ai')
+    const { generateText, Output } = await import('ai')
     const { z } = await import('zod')
 
     const stopsText = stops.map((s, i) =>
       `Stop ${i + 1}: ${s.propertyAddress}${s.city ? ', ' + s.city : ''} — $${s.listPrice?.toLocaleString() ?? 'N/A'}`
     ).join('\n')
 
-    const { object } = await generateObject({
+    const { experimental_output: object } = await generateText({
       model: 'anthropic/claude-opus-4-5',
-      schema: z.object({ narrative: z.string() }),
+      experimental_output: Output.object({ schema: z.object({ narrative: z.string() }) }),
       prompt: `You are a real estate tour planning assistant. Write a brief, practical tour narrative (2-3 sentences) for agent ${buyerName}'s buyer.
 Tour stops:
 ${stopsText}
@@ -659,7 +659,7 @@ ${stopsText}
 Focus on geography flow, any standout properties, and pacing. Be specific and helpful. No fluff.`,
     })
 
-    return { success: true, narrative: object.narrative }
+    return { success: true, narrative: object?.narrative ?? `This tour covers ${stops.length} properties for ${buyerName}. Properties are ordered for efficient routing. Review access instructions for each stop before departure.` }
   } catch {
     return {
       success:   true,
