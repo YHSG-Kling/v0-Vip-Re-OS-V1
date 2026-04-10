@@ -108,6 +108,9 @@ interface DocumentsClientProps {
   checklist: DocumentChecklist[]
   classifications: DocumentClassification[]
   stateRequirements: StateRequirement[]
+  brokerageId?: string
+  formsProviderName?: string
+  formsProviderConfigured?: boolean
 }
 
 // ─── HELPER FUNCTIONS ────────────────────────────────────────────────────────
@@ -193,6 +196,9 @@ export function DocumentsClient({
   checklist,
   classifications,
   stateRequirements,
+  brokerageId,
+  formsProviderName,
+  formsProviderConfigured,
 }: DocumentsClientProps) {
   const [isPending, startTransition] = useTransition()
   const [analyzingDocId, setAnalyzingDocId] = useState<string | null>(null)
@@ -371,6 +377,14 @@ export function DocumentsClient({
           </TabsTrigger>
           {stateRequirements.length > 0 && (
             <TabsTrigger value="compliance">State Compliance</TabsTrigger>
+          )}
+          {formsProviderName && (
+            <TabsTrigger value="brokerage-forms">
+              Brokerage Forms
+              {formsProviderConfigured && (
+                <span className="ml-1.5 flex h-1.5 w-1.5 rounded-full bg-green-500" />
+              )}
+            </TabsTrigger>
           )}
         </TabsList>
 
@@ -904,6 +918,64 @@ export function DocumentsClient({
                 </CardContent>
               </Card>
             ))}
+          </TabsContent>
+        )}
+
+        {/* BROKERAGE FORMS: provider portal access */}
+        {formsProviderName && (
+          <TabsContent value="brokerage-forms" className="space-y-4">
+            <Card className={formsProviderConfigured ? "border-green-200 bg-green-50/30" : "border-amber-200 bg-amber-50/30"}>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <FileText className="h-4 w-4" />
+                  {formsProviderName.charAt(0).toUpperCase() + formsProviderName.slice(1)} Forms Portal
+                  <Badge
+                    variant={formsProviderConfigured ? "default" : "secondary"}
+                    className="ml-auto text-xs capitalize"
+                  >
+                    {formsProviderConfigured ? "Connected" : "Contact Your Agent"}
+                  </Badge>
+                </CardTitle>
+                <CardDescription>
+                  {formsProviderConfigured
+                    ? `Your brokerage uses ${formsProviderName.charAt(0).toUpperCase() + formsProviderName.slice(1)} for transaction forms and e-signatures. Click below to access your forms.`
+                    : "Your brokerage's forms provider is not yet connected. Contact your agent to set up access."}
+                </CardDescription>
+              </CardHeader>
+              {formsProviderConfigured && (
+                <CardContent className="space-y-3">
+                  <p className="text-sm text-muted-foreground">
+                    Transaction forms including purchase agreements, addenda, disclosures, and other required documents are managed through your brokerage{"'"}s forms portal. Your agent will share specific forms with you directly through this portal.
+                  </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {(() => {
+                      const providerUrls: Record<string, string> = {
+                        dotloop:        "https://www.dotloop.com/",
+                        skyslope:       "https://app.skyslope.com/",
+                        formsimplicity: "https://www.formsimplicity.com/",
+                        brokermint:     "https://brokermint.com/",
+                        authentisign:   "https://authentisign.com/",
+                        docusign:       "https://www.docusign.com/",
+                      }
+                      const url = providerUrls[formsProviderName] ?? "https://www.dotloop.com/"
+                      return (
+                        <a href={url} target="_blank" rel="noopener noreferrer">
+                          <Button size="sm" className="gap-1.5 text-xs">
+                            <Send className="h-3 w-3" />
+                            Open {formsProviderName.charAt(0).toUpperCase() + formsProviderName.slice(1)}
+                          </Button>
+                        </a>
+                      )
+                    })()}
+                  </div>
+                  {brokerageId && (
+                    <p className="text-[10px] text-muted-foreground pt-2">
+                      Brokerage ID: {brokerageId}
+                    </p>
+                  )}
+                </CardContent>
+              )}
+            </Card>
           </TabsContent>
         )}
       </Tabs>

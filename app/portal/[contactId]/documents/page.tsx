@@ -72,6 +72,20 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
     .select("doc_type, filing_folder, requires_review, auto_route")
     .eq("brokerage_id", contact.brokerage_id)
 
+  // STEP 6b — Resolve brokerage forms provider (which platform they use: dotloop, skyslope, etc.)
+  const { data: providerCredential } = await supabase
+    .from("platform_credentials")
+    .select("platform, account_id, is_active")
+    .eq("brokerage_id", contact.brokerage_id)
+    .in("platform", ["dotloop", "skyslope", "formsimplicity", "brokermint", "authentisign", "docusign"])
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  const formsProviderName = providerCredential?.platform ?? "dotloop"
+  const formsProviderConfigured = !!providerCredential?.account_id
+
   // STEP 7 — Fetch state compliance requirements for doc types present
   const uniqueDocTypes = [...new Set([
     ...(txDocs?.map(d => d.doc_type).filter(Boolean) ?? []),
@@ -94,6 +108,9 @@ export default async function DocumentsPage({ params }: { params: Promise<{ cont
       checklist={checklist ?? []}
       classifications={classifications ?? []}
       stateRequirements={stateRequirements ?? []}
+      brokerageId={contact.brokerage_id}
+      formsProviderName={formsProviderName}
+      formsProviderConfigured={formsProviderConfigured}
     />
   )
 }

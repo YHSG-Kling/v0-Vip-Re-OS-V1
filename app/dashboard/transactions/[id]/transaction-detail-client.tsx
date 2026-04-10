@@ -87,6 +87,10 @@ import {
   checkTransactionDisclosures,
   shareDocumentAnalysisWithClient,
 } from "@/app/actions/ai-transaction-documents"
+import {
+  resolveFormsProviderAction,
+  loadAvailableFormsAction,
+} from "@/app/actions/forms-kernel"
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────────
 
@@ -464,6 +468,13 @@ export function TransactionDetailClient({
   const [emHeldBy, setEmHeldBy] = useState(titleEscrow?.earnest_money_held_by ?? "")
   const [emReceivedDate, setEmReceivedDate] = useState(titleEscrow?.earnest_money_received_date ?? "")
 
+  // Forms tab state — lazy loaded when tab is first opened
+  const [formsProvider, setFormsProvider] = useState<{ provider_name: string; is_configured: boolean } | null>(null)
+  const [availableForms, setAvailableForms] = useState<Array<{ id: string; name: string; category: string; form_type: string; is_required: boolean; description?: string }>>([])
+  const [formsLoading, setFormsLoading] = useState(false)
+  const [formsLoaded, setFormsLoaded] = useState(false)
+  const [activeTab, setActiveTab] = useState("milestones")
+
   // Deal Health Prediction — loaded once on mount, no blocking
   const [dealPrediction, setDealPrediction] = useState<any>(null)
   const [dealPredLoading, setDealPredLoading] = useState(false)
@@ -499,6 +510,28 @@ export function TransactionDetailClient({
       setTransparencyUpdates(u)
     })
   }, [transaction.id])
+
+  // Lazy-load transaction forms when the Forms tab is first opened
+  useEffect(() => {
+    if (activeTab !== "forms" || formsLoaded || formsLoading) return
+    setFormsLoading(true)
+    Promise.all([
+      resolveFormsProviderAction(),
+      loadAvailableFormsAction({
+        context_type: "transaction",
+        state: transaction.property_state ?? undefined,
+      }),
+    ]).then(([providerRes, formsRes]) => {
+      if (providerRes.success && providerRes.data) {
+        setFormsProvider(providerRes.data)
+      }
+      if (formsRes.success && formsRes.data) {
+        setAvailableForms(formsRes.data.forms)
+      }
+      setFormsLoaded(true)
+      setFormsLoading(false)
+    }).catch(() => setFormsLoading(false))
+  }, [activeTab, formsLoaded, formsLoading, transaction.property_state])
 
   // Deposits state
   const [deposits, setDeposits] = useState<Array<{
@@ -1142,6 +1175,10 @@ export function TransactionDetailClient({
                     <p className="text-muted-foreground">Deal Type</p>
                     <p className="font-medium">{transaction.deal_type ?? "Purchase"}</p>
                   </div>
+                  <div className="col-span-2">
+                    <p className="text-muted-foreground">Brokerage ID</p>
+                    <p className="font-mono text-xs font-medium text-muted-foreground select-all">{brokerageId}</p>
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -1576,7 +1613,7 @@ export function TransactionDetailClient({
 
         {/* Tabs Section */}
         <div className="mt-6">
-          <Tabs defaultValue="milestones">
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="flex-wrap h-auto gap-1">
               <TabsTrigger value="milestones" className="text-xs">
                 <Calendar className="h-3 w-3 mr-1" />
@@ -1639,6 +1676,13 @@ export function TransactionDetailClient({
               <TabsTrigger value="partners" className="text-xs">
                 <Landmark className="h-3 w-3 mr-1" />
                 Partners
+              </TabsTrigger>
+              <TabsTrigger value="forms" className="text-xs">
+                <ClipboardList className="h-3 w-3 mr-1" />
+                Forms
+                {formsProvider?.is_configured && (
+                  <span className="ml-1 flex h-1.5 w-1.5 rounded-full bg-green-500" />
+                )}
               </TabsTrigger>
             </TabsList>
 
@@ -3327,6 +3371,170 @@ export function TransactionDetailClient({
               <VendorBookingsPanel bookings={vendorBookings} />
 
             </div>
+          </TabsContent>
+
+          {/* Forms Tab — brokerage provider forms (Dotloop, SkySlope, etc.) */}
+          <TabsContent value="forms" className="mt-4 space-y-4">
+            {formsLoading ? (
+              <Card>
+                <CardContent className="pt-6 flex items-center justify-center py-12">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </CardContent>
+              </Card>
+            ) : (
+              <>
+                {/* Provider Connection Banner */}
+                <Card className={formsProvider?.is_configured ? "border-green-200 bg-green-50/30" : "border-amber-200 bg-amber-50/30"}>
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-sm flex items-center gap-2">
+                      <Building2 className="h-4 w-4" />
+                      Transaction Forms Provider
+                      {formsProvider && (
+                        <Badge
+                          variant={formsProvider.is_configured ? "default" : "secondary"}
+                          className="ml-auto capitalize text-xs"
+                        >
+                          {formsProvider.is_configured ? "Connected" : "Not Configured"}
+                        </Badge>
+                      )}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium capitalize">
+                          {formsProvider?.provider_name ?? "Dotloop"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {formsProvider?.is_configured
+                            ? "Your brokerage has this provider connected. Use the button below to open forms directly in the portal."
+                            : "No forms provider is configured for your brokerage. Connect one under Settings → Integrations."}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      {formsProvider?.is_configured ? (
+                        <>
+                          <Button
+                            size="sm"
+                            variant="default"
+                            className="gap-1.5 text-xs"
+                            onClick={() => {
+                              const provider = formsProvider.provider_name
+                              const providerUrls: Record<string, string> = {
+                                dotloop:        "https://www.dotloop.com/",
+                                skyslope:       "https://app.skyslope.com/",
+                                formsimplicity: "https://www.formsimplicity.com/",
+                                brokermint:     "https://brokermint.com/",
+                                authentisign:   "https://authentisign.com/",
+                                docusign:       "https://www.docusign.com/",
+                              }
+                              window.open(providerUrls[provider] ?? "https://www.dotloop.com/", "_blank")
+                            }}
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            Open {formsProvider.provider_name.charAt(0).toUpperCase() + formsProvider.provider_name.slice(1)} Portal
+                          </Button>
+                          <Link href="/dashboard/settings?tab=integrations">
+                            <Button size="sm" variant="outline" className="gap-1.5 text-xs">
+                              <PenLine className="h-3 w-3" />
+                              Manage Connection
+                            </Button>
+                          </Link>
+                        </>
+                      ) : (
+                        <Link href="/dashboard/settings?tab=integrations">
+                          <Button size="sm" variant="default" className="gap-1.5 text-xs">
+                            <Plus className="h-3 w-3" />
+                            Connect Forms Provider
+                          </Button>
+                        </Link>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Available Transaction Forms */}
+                <Card>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-sm">
+                        Available Transaction Forms
+                      </CardTitle>
+                      <Badge variant="secondary" className="text-xs">
+                        {availableForms.length} form{availableForms.length !== 1 ? "s" : ""}
+                        {transaction.property_state ? ` · ${transaction.property_state}` : ""}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      State-required and brokerage forms for this transaction. Open the provider portal above to complete them.
+                    </p>
+                  </CardHeader>
+                  <CardContent className="p-0">
+                    {availableForms.length === 0 ? (
+                      <div className="px-4 py-8 text-center">
+                        <FileText className="h-8 w-8 mx-auto text-muted-foreground/40 mb-2" />
+                        <p className="text-sm text-muted-foreground">No forms found for this state.</p>
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {availableForms.map((form) => (
+                          <div key={form.id} className="flex items-center justify-between px-4 py-3 hover:bg-muted/30 transition-colors">
+                            <div className="flex items-start gap-3 min-w-0">
+                              <FileText className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <p className="text-sm font-medium text-foreground">{form.name}</p>
+                                  {form.is_required && (
+                                    <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-4">
+                                      Required
+                                    </Badge>
+                                  )}
+                                </div>
+                                {form.description && (
+                                  <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{form.description}</p>
+                                )}
+                                <p className="text-[10px] text-muted-foreground capitalize mt-0.5">
+                                  {form.category.replace(/_/g, " ")}
+                                  {form.form_type !== form.category && ` · ${form.form_type}`}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 ml-3 shrink-0">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-7 gap-1"
+                                onClick={() => {
+                                  const provider = formsProvider?.provider_name ?? "dotloop"
+                                  const providerUrls: Record<string, string> = {
+                                    dotloop:        "https://www.dotloop.com/",
+                                    skyslope:       "https://app.skyslope.com/",
+                                    formsimplicity: "https://www.formsimplicity.com/",
+                                    brokermint:     "https://brokermint.com/",
+                                    authentisign:   "https://authentisign.com/",
+                                    docusign:       "https://www.docusign.com/",
+                                  }
+                                  window.open(providerUrls[provider] ?? "https://www.dotloop.com/", "_blank")
+                                }}
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                                Open in {formsProvider?.provider_name ? formsProvider.provider_name.charAt(0).toUpperCase() + formsProvider.provider_name.slice(1) : "Portal"}
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Brokerage Info footer for RLS context */}
+                <p className="text-[10px] text-muted-foreground text-right">
+                  Brokerage ID: {brokerageId} · Transaction: {transaction.id}
+                </p>
+              </>
+            )}
           </TabsContent>
 
           </Tabs>

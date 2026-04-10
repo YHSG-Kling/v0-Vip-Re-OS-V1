@@ -39,14 +39,18 @@ export default async function TransactionsPage() {
   // Look up agent record — transactions.agent_id = agents.id, not users.id
   const { data: agentRecord } = await supabase
     .from("agents")
-    .select("id")
+    .select("id, brokerage_id")
     .eq("user_id", user.id)
     .maybeSingle()
 
   const agentId = agentRecord?.id ?? user.id
+  const brokerageId = agentRecord?.brokerage_id ?? null
 
   // Fetch transactions using server action (proper architecture pattern)
-  const transactions = await getTransactions({ agent_id: agentId })
+  const transactions = await getTransactions({
+    agent_id: agentId,
+    ...(brokerageId ? { brokerage_id: brokerageId } : {}),
+  })
 
   // Fetch deal_health_scores separately — no FK join supported from transactions
   const txIds = (transactions ?? []).map((t: any) => t.id)
@@ -92,9 +96,17 @@ export default async function TransactionsPage() {
 
       <div className="px-4 sm:px-6 space-y-6">
         {/* Page Header */}
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold text-foreground text-balance">Transaction Command Center</h1>
-          <p className="text-muted-foreground text-sm">Monitor deal progress and pipeline health</p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold text-foreground text-balance">Transaction Command Center</h1>
+            <p className="text-muted-foreground text-sm">Monitor deal progress and pipeline health</p>
+          </div>
+          {brokerageId && (
+            <div className="text-right shrink-0">
+              <p className="text-[10px] text-muted-foreground">Brokerage ID</p>
+              <p className="font-mono text-xs text-muted-foreground select-all">{brokerageId}</p>
+            </div>
+          )}
         </div>
 
         {/* Status Radar */}
