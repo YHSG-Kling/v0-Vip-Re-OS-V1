@@ -32,8 +32,9 @@ import {
   TransactionFormEsignFlow,
   type FormTemplate,
 } from "../../../../transactions/[id]/components/transaction-form-esign-flow"
+import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 
-type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard"
+type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard" | "send_for_signatures"
 
 interface ResolvedProperty {
   address:         string
@@ -53,24 +54,31 @@ interface ResolvedFormSource {
 }
 
 interface OfferInitiationFlowProps {
-  contactId:    string
-  brokerageId:  string
-  agentUserId:  string
-  contactName:  string
-  contactEmail: string
-  onSuccess:    () => void
-  onCancel:     () => void
+  contactId:          string
+  brokerageId:        string
+  agentUserId:        string
+  contactName:        string
+  contactEmail:       string
+  onSuccess:          () => void
+  onCancel:           () => void
+  // Prefill from CRM — when provided, address step is auto-resolved
+  initialAddress?:    string
+  initialBuyerPhone?: string
+  initialBuyerEmail?: string
 }
 
 export function OfferInitiationFlow({
   contactId, brokerageId, agentUserId,
   contactName, contactEmail, onSuccess, onCancel,
+  initialAddress, initialBuyerPhone, initialBuyerEmail,
 }: OfferInitiationFlowProps) {
-  const [flowStep, setFlowStep]   = useState<FlowStep>("address")
-  const [addressInput, setAddressInput] = useState("")
+  // If address was pre-filled from CRM, skip directly to form_source step
+  const [flowStep, setFlowStep]   = useState<FlowStep>(initialAddress ? "form_source" : "address")
+  const [addressInput, setAddressInput] = useState(initialAddress ?? "")
+  // Track newly created offer id for the send_for_signatures step
+  const [createdOfferId, setCreatedOfferId] = useState<string | null>(null)
   const [suggestions, setSuggestions]   = useState<{ id: string; address: string; city: string; state: string; zip: string; list_price: number }[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
-  const [property, setProperty]   = useState<ResolvedProperty | null>(null)
   const [formSrc, setFormSrc]     = useState<ResolvedFormSource | null>(null)
   const [recommendation, setRecommendation] = useState<StrategyRecommendation | null>(null)
   const [isLoadingAddress, startAddressLoad] = useTransition()
@@ -79,6 +87,19 @@ export function OfferInitiationFlow({
 
   // Cross-side routing context — derived from listing DB check; null = no property selected yet
   const [offerCtx, setOfferCtx] = useState<OfferContext | null>(null)
+
+  // If initialAddress was passed, bootstrap the property state immediately
+  const [property, setProperty] = useState<ResolvedProperty | null>(
+    initialAddress ? {
+      address:         initialAddress,
+      city:            "",
+      state:           "",
+      zip:             "",
+      listingId:       null,
+      listPrice:       null,
+      aiFilledAddress: true,
+    } : null
+  )
 
   // AI Strategy Briefing state
   const [mktConditions, setMktConditions] = useState("balanced")
@@ -781,11 +802,48 @@ export function OfferInitiationFlow({
         buyerMaxBudget={Number(escalationForm.maxBudget) || undefined}
         buyerRiskTolerance={contingencyForm.riskTolerance}
         onBack={() => setFlowStep("contingencies")}
-        onSuccess={() => {
+        onSuccess={(newOfferId?: string) => {
           awardPointsForAction(agentUserId, "offer_submitted").catch(() => {})
-          onSuccess()
+          if (newOfferId) {
+            setCreatedOfferId(newOfferId)
+            setFlowStep("send_for_signatures")
+          } else {
+            onSuccess()
+          }
         }}
       />
+    )
+  }
+
+  // Step: Send for Signatures
+  if (flowStep === "send_for_signatures") {
+    return (
+      <div className="flex flex-col h-full">
+        <div className="px-5 py-4 border-b border-border">
+          <p className="text-sm font-semibold">Send for Signatures</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Route to your connected e-sign provider or skip for now.</p>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-5 space-y-4">
+          {createdOfferId ? (
+            <SendForSignaturesPanel
+              offerId={createdOfferId}
+              userId={agentUserId}
+              connectedProvider={null}
+              buyerName={contactName}
+              buyerEmail={contactEmail}
+              onSent={onSuccess}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">Offer created. Signature routing not available at this time.</p>
+          )}
+          <button
+            onClick={onSuccess}
+            className="text-xs text-muted-foreground hover:underline w-full text-center pt-2"
+          >
+            Skip for now — I will send for signatures later
+          </button>
+        </div>
+      </div>
     )
   }
 

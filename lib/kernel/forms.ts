@@ -169,25 +169,34 @@ export async function loadAvailableTransactionForms(input: {
   try {
     const supabase = createServiceClient()
 
-    // Kernel rule: use tables that exist in the schema.
-    // state_required_forms does not exist — load brokerage forms from
-    // client_documents where doc_category = 'brokerage_form' or matches context.
-    // These are documents uploaded to the dashboard forms library.
-    const contextDocCategories: Record<FormContextType, string[]> = {
-      listing:     ["listing_agreement", "disclosure", "seller_disclosure", "brokerage_form", "listing"],
-      offer:       ["purchase_contract", "addendum", "offer", "buyer_form", "brokerage_form"],
-      transaction: ["inspection", "title", "lender", "closing", "amendment", "brokerage_form"],
+    // Source: brokerage_forms table — the canonical home for reusable form templates.
+    // client_documents is reserved for contact-owned signed documents ONLY.
+    // form_category maps to context_type:
+    //   listing     → 'listing', 'disclosure', 'listing_agreement'
+    //   offer       → 'offer', 'purchase_contract', 'addendum'
+    //   transaction → 'transaction', 'closing', 'title', 'inspection'
+    const contextCategories: Record<FormContextType, string[]> = {
+      listing:     ["listing", "listing_agreement", "disclosure", "seller_disclosure"],
+      offer:       ["offer", "purchase_contract", "addendum", "buyer_form"],
+      transaction: ["transaction", "inspection", "title", "closing", "amendment"],
     }
-    const categories = contextDocCategories[input.context_type]
 
-    const { data: brokerageForms } = await supabase
-      .from("client_documents")
-      .select("id, document_name, doc_category, document_type, document_url")
+    let query = supabase
+      .from("brokerage_forms")
+      .select("id, form_name, form_category, form_type, is_required, document_url, state")
       .eq("brokerage_id", input.brokerage_id)
-      .in("doc_category", categories)
-      .is("contact_id", null)       // library-level forms have no contact attached
-      .order("document_name")
+      .eq("is_active", true)
+      .in("form_category", contextCategories[input.context_type])
+      .order("is_required", { ascending: false })
+      .order("form_name")
       .limit(50)
+
+    // Filter by state if provided — also include forms with no state (apply everywhere)
+    if (input.state) {
+      query = query.or(`state.eq.${input.state.toUpperCase()},state.is.null`)
+    }
+
+    const { data: brokerageForms } = await query
 
     if (brokerageForms && brokerageForms.length > 0) {
       return {
@@ -195,11 +204,12 @@ export async function loadAvailableTransactionForms(input: {
         data: {
           forms: brokerageForms.map((f: any) => ({
             id:          f.id,
-            name:        f.document_name,
-            category:    f.doc_category ?? input.context_type,
-            form_type:   f.document_type ?? f.doc_category ?? input.context_type,
-            is_required: false,
-            description: f.document_url ? "Brokerage uploaded form" : undefined,
+            name:        f.form_name,
+            category:    f.form_category,
+            form_type:   f.form_type ?? f.form_category,
+            is_required: f.is_required ?? false,
+            description: f.document_url ? "Brokerage library form" : undefined,
+            state:       f.state ?? undefined,
           })),
         },
       }
