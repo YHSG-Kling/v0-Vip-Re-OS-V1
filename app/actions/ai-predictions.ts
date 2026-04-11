@@ -988,30 +988,27 @@ Provide ACTIONABLE coaching. Respond with JSON:
     const result = analysis.data
 
     // Save conversation intelligence to database
+    // Maps to actual conversation_insights columns (no lead_id — use contact_id)
     const { data: intelligence, error: saveError } = await supabase
       .from("conversation_insights")
       .insert({
-        lead_id: data.leadId,
-        agent_id: data.agentId,
-        conversation_type: data.conversationType,
-        conversation_id: data.conversationId,
-        transcript: data.transcript,
-        summary: result.summary,
-        key_points: [
-          ...(result.buyingSignals?.map((s: any) => s.signal) || []),
-          ...(result.objections?.map((o: any) => o.objection) || []),
+        contact_id: data.contactId ?? null,
+        agent_id: data.agentId ?? null,
+        conversation_id: data.conversationId ?? null,
+        overall_sentiment: result.sentiment?.label ?? "neutral",
+        sentiment_confidence: result.sentiment?.confidence ?? 0.5,
+        buying_signals: result.buyingSignals?.map((s: any) => s.signal) ?? [],
+        objections_raised: result.objections?.map((o: any) => o.objection) ?? [],
+        pain_points: result.painPoints ?? [],
+        key_topics: [
+          ...(result.buyingSignals?.map((s: any) => s.signal) ?? []),
+          ...(result.objections?.map((o: any) => o.objection) ?? []),
         ],
-        sentiment_score: result.sentiment?.confidence || 0.5,
-        intent_detected: [result.intent?.primary, ...(result.intent?.secondary || [])],
-        objections_raised: result.objections?.map((o: any) => o.objection) || [],
-        buying_signals: result.buyingSignals?.map((s: any) => s.signal) || [],
-        pain_points: result.painPoints || [],
-        them_first_score: result.themFirstScore || 50,
-        coaching_suggestions: result.themFirstAnalysis?.improve || [],
-        missed_opportunities: [],
-        ai_recommended_followup: result.recommendedFollowup?.themFirstApproach || "",
-        optimal_followup_time: result.recommendedFollowup?.when || "Within 24 hours",
-        analyzed_at: new Date().toISOString(),
+        context_summary: result.summary ?? null,
+        analysis_timestamp: new Date().toISOString(),
+        health_score: (result.dealProbability ?? 50) / 100,
+        escalation_recommended: (result.dealProbability ?? 50) < 30,
+        escalation_urgency: (result.dealProbability ?? 50) < 30 ? "medium" : null,
       })
       .select()
       .maybeSingle()
@@ -1083,15 +1080,15 @@ Provide ACTIONABLE coaching. Respond with JSON:
   }
 }
 
-// Get conversation intelligence history for a lead
-export async function getConversationIntelligence(leadId: string) {
+// Get conversation intelligence history for a contact (formerly "lead")
+export async function getConversationIntelligence(contactId: string) {
   const supabase = await createClient()
 
   const { data, error } = await supabase
     .from("conversation_insights")
-    .select("*")
-    .eq("lead_id", leadId)
-    .order("analyzed_at", { ascending: false })
+    .select("id, contact_id, agent_id, conversation_id, overall_sentiment, health_score, buying_signals, objections_raised, pain_points, key_topics, context_summary, escalation_recommended, analysis_timestamp, updated_at")
+    .eq("contact_id", contactId)
+    .order("analysis_timestamp", { ascending: false })
     .limit(20)
 
   if (error) {
@@ -1108,9 +1105,9 @@ export async function getAgentCoachingInsights(agentId: string, limit = 10) {
 
   const { data, error } = await supabase
     .from("conversation_insights")
-    .select("them_first_score, coaching_suggestions, conversation_type, analyzed_at")
+    .select("health_score, overall_sentiment, buying_signals, objections_raised, pain_points, analysis_timestamp, updated_at")
     .eq("agent_id", agentId)
-    .order("analyzed_at", { ascending: false })
+    .order("analysis_timestamp", { ascending: false })
     .limit(limit)
 
   if (error) {
@@ -1118,14 +1115,14 @@ export async function getAgentCoachingInsights(agentId: string, limit = 10) {
     return []
   }
 
-  // Calculate average them-first score
+  // Calculate average health score as proxy for conversation quality
   const avgScore =
-    data.reduce((sum, c) => sum + (c.them_first_score || 0), 0) / (data.length || 1)
+    data.reduce((sum, c) => sum + ((c.health_score ?? 0) * 100), 0) / (data.length || 1)
 
   return {
     conversations: data,
     averageThemFirstScore: Math.round(avgScore),
-    improvementAreas: data.flatMap((c) => c.coaching_suggestions || []).slice(0, 5),
+    improvementAreas: data.flatMap((c: any) => c.objections_raised || []).slice(0, 5),
   }
 }
 
