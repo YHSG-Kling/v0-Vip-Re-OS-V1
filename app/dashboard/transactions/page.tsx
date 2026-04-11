@@ -47,13 +47,15 @@ export default async function TransactionsPage() {
   const brokerageId = agentRecord?.brokerage_id ?? null
 
   // Fetch transactions using server action (proper architecture pattern)
-  const transactions = await getTransactions({
+  // getTransactions returns { success, data } or { success: false, error }
+  const txResult = await getTransactions({
     agent_id: agentId,
     ...(brokerageId ? { brokerage_id: brokerageId } : {}),
   })
+  const transactions = (txResult && "data" in txResult ? txResult.data : null) ?? []
 
   // Fetch deal_health_scores separately — no FK join supported from transactions
-  const txIds = (transactions ?? []).map((t: any) => t.id)
+  const txIds = transactions.map((t: any) => t.id)
   const { data: healthScores } = txIds.length > 0
     ? await supabase
         .from("deal_health_scores")
@@ -69,11 +71,11 @@ export default async function TransactionsPage() {
   }, {} as Record<string, { overall_score: number; risk_level: string }>)
 
   // Calculate stats
-  const activeDeals = transactions?.filter(t => t.status === "active" || t.status === "pending") || []
-  const closedThisYear = transactions?.filter(t => {
+  const activeDeals = transactions.filter(t => t.status === "active" || t.status === "pending")
+  const closedThisYear = transactions.filter(t => {
     if (t.status !== "closed" || !t.close_date) return false
     return new Date(t.close_date).getFullYear() === new Date().getFullYear()
-  }) || []
+  })
   const totalActiveVolume = activeDeals.reduce((sum, t) => sum + (t.purchase_price || 0), 0)
   const atRiskDeals = activeDeals.filter(t => {
     return t.health_score != null && t.health_score < 50
@@ -190,7 +192,7 @@ export default async function TransactionsPage() {
           <CardHeader className="border-b border-border">
             <div className="flex items-center justify-between">
               <CardTitle className="text-lg">All Transactions</CardTitle>
-              <Badge variant="secondary">{transactions?.length || 0} total</Badge>
+              <Badge variant="secondary">{transactions.length} total</Badge>
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -208,7 +210,7 @@ export default async function TransactionsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {transactions && transactions.length > 0 ? (
+                  {transactions.length > 0 ? (
                     transactions.map((tx) => {
                       const statusConfig = STATUS_CONFIG[tx.status] || STATUS_CONFIG.active
                       // Health scores fetched separately above and keyed by transaction_id
