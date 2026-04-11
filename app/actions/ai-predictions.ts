@@ -597,43 +597,54 @@ Respond with JSON matching this structure:
       nextActionDate.setDate(nextActionDate.getDate() + firstTouchpoint.day)
     }
 
-    // Resolve whether leadId refers to a lead record or a contact record.
-    // The lead may have already been converted — in that case contact_id comes from leads.contact_id.
+    // Kernel ISA routing rule:
+    //   1. Look up the lead record by data.leadId
+    //   2. If leads.contact_id is NULL  → lead not yet converted → ISA target = lead
+    //        copilot_plans: lead_id = leadRow.id, contact_id = null
+    //   3. If leads.contact_id is set   → lead is converted → ISA target = contact
+    //        copilot_plans: contact_id = leadRow.contact_id, lead_id = leadRow.id (backlink)
+    //   4. If no lead row found (caller passed a contact id directly) → ISA target = contact
+    //        copilot_plans: contact_id = data.leadId, lead_id = null
+
     const { data: leadRow } = await supabase
       .from("leads")
       .select("id, contact_id")
       .eq("id", data.leadId)
       .maybeSingle()
 
-    // resolvedLeadId = the leads.id (if it's a lead), null otherwise
-    // resolvedContactId = the contacts.id (either from lead.contact_id, or data.leadId is already a contact)
-    const resolvedLeadId: string | null = leadRow ? leadRow.id : null
-    const resolvedContactId: string | null = leadRow
+    // isaOnContact = true  → ISA works on the contact record
+    // isaOnContact = false → ISA works on the lead record (not yet converted)
+    const isaOnContact: boolean = leadRow
+      ? leadRow.contact_id != null
+      : true  // no lead row → caller passed a contact id
+
+    const targetLeadId: string | null     = leadRow ? leadRow.id : null
+    const targetContactId: string | null  = leadRow
       ? (leadRow.contact_id ?? null)
-      : data.leadId  // fallback: caller passed a contact id directly
+      : data.leadId
 
-    // Archive existing active plan for this contact/lead
-    if (resolvedContactId) {
+    // Archive the existing active plan for the target record only
+    if (isaOnContact && targetContactId) {
       await supabase
         .from("copilot_plans")
         .update({ status: "superseded", updated_at: new Date().toISOString() })
-        .eq("contact_id", resolvedContactId)
+        .eq("contact_id", targetContactId)
         .eq("status", "active")
-    }
-    if (resolvedLeadId) {
+    } else if (!isaOnContact && targetLeadId) {
       await supabase
         .from("copilot_plans")
         .update({ status: "superseded", updated_at: new Date().toISOString() })
-        .eq("lead_id", resolvedLeadId)
+        .eq("lead_id", targetLeadId)
         .eq("status", "active")
     }
 
-    // Insert new plan — lead_id and contact_id both stored for full traceability
+    // Insert new plan targeting the correct record.
+    // When targeting a contact, store lead_id as a backlink for history traceability.
     const { data: savedPlan, error: saveError } = await supabase
       .from("copilot_plans")
       .insert({
-        lead_id:          resolvedLeadId,
-        contact_id:       resolvedContactId,
+        lead_id:          isaOnContact ? targetLeadId : targetLeadId,   // always store lead backlink
+        contact_id:       isaOnContact ? targetContactId : null,         // null if still a lead
         agent_id:         agentRow?.id ?? data.agentId,
         brokerage_id:     agentRow?.brokerage_id ?? null,
         plan_name:        `AI Autopilot — ${data.autopilotLevel}`,
@@ -650,13 +661,13 @@ Respond with JSON matching this structure:
       return { success: false, error: "Failed to save nurture plan" }
     }
 
-    // Flip contacts.ai_isa_enabled so the badge reflects immediately
-    // Only update the contact if we have a resolved contact id (post-conversion)
-    if (resolvedContactId) {
+    // Flag ai_isa_enabled on the contacts record only when the ISA is operating on a contact.
+    // The leads table does not have an ai_isa_enabled column.
+    if (isaOnContact && targetContactId) {
       await supabase
         .from("contacts")
         .update({ ai_isa_enabled: true })
-        .eq("id", resolvedContactId)
+        .eq("id", targetContactId)
     }
 
     return {
