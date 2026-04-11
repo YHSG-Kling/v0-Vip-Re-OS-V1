@@ -643,8 +643,8 @@ Respond with JSON matching this structure:
     const { data: savedPlan, error: saveError } = await supabase
       .from("copilot_plans")
       .insert({
-        lead_id:          isaOnContact ? targetLeadId : targetLeadId,   // always store lead backlink
-        contact_id:       isaOnContact ? targetContactId : null,         // null if still a lead
+        lead_id:          targetLeadId,                                  // always store lead backlink (null only when caller passed a contact id with no lead)
+        contact_id:       isaOnContact ? targetContactId : null,         // null when ISA is still operating on the lead (not yet converted)
         agent_id:         agentRow?.id ?? data.agentId,
         brokerage_id:     agentRow?.brokerage_id ?? null,
         plan_name:        `AI Autopilot — ${data.autopilotLevel}`,
