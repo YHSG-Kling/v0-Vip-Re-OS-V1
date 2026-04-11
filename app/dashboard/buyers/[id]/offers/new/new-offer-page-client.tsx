@@ -10,6 +10,8 @@ interface NewOfferPageClientProps {
   contactName:      string
   contactEmail:     string
   prefillListingId: string | null
+  prefillAddress:   string | null
+  prefillPhone:     string | null
 }
 
 export function NewOfferPageClient({
@@ -19,6 +21,8 @@ export function NewOfferPageClient({
   contactName,
   contactEmail,
   prefillListingId,
+  prefillAddress,
+  prefillPhone,
 }: NewOfferPageClientProps) {
   const router = useRouter()
 
@@ -61,6 +65,9 @@ export function NewOfferPageClient({
           contactEmail={contactEmail}
           onSuccess={handleSuccess}
           onCancel={handleCancel}
+          initialAddress={prefillAddress ?? undefined}
+          initialBuyerPhone={prefillPhone ?? undefined}
+          initialBuyerEmail={contactEmail || undefined}
         />
       </div>
     </main>

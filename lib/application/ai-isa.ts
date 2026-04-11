@@ -69,6 +69,7 @@ export async function launchAIISACampaignService(params: {
       campaign_type:          campaignType,
       leads_targeted:         contacts.length,
       is_active:              true,
+      status:                 "active",
     })
     .select()
     .single()
@@ -329,10 +330,20 @@ export async function handleVapiCallCompleteService(payload: any) {
 export async function getAIISACampaignsService(loginId: string) {
   const supabase = await createClient()
 
+  // Resolve brokerage_id from the user then query by brokerage scope (ai_isa_campaigns has no login_id)
+  const { data: userRow } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", loginId)
+    .maybeSingle()
+
+  const brokerageId = userRow?.brokerage_id
+  if (!brokerageId) return []
+
   const { data: campaigns } = await supabase
     .from("ai_isa_campaigns")
-    .select("*")
-    .eq("login_id", loginId)
+    .select("id, name, campaign_type, is_active, status, leads_targeted, touches_sent, conversions, touch_interval_days, max_touches, created_at")
+    .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
 
   return campaigns || []

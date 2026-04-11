@@ -5,12 +5,26 @@ import { NewOfferPageClient } from "./new-offer-page-client"
 
 interface Props {
   params:      Promise<{ id: string }>
-  searchParams: Promise<{ listingId?: string }>
+  searchParams: Promise<{
+    listingId?:       string
+    firstName?:       string
+    lastName?:        string
+    email?:           string
+    phone?:           string
+    propertyAddress?: string
+  }>
 }
 
 export default async function NewOfferPage({ params, searchParams }: Props) {
   const { id: contactId }    = await params
-  const { listingId }        = await searchParams
+  const {
+    listingId,
+    firstName:       prefillFirstName,
+    lastName:        prefillLastName,
+    email:           prefillEmail,
+    phone:           prefillPhone,
+    propertyAddress: prefillAddress,
+  }                          = await searchParams
 
   const supabase = await createClient()
 
@@ -30,7 +44,7 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
   // Load contact for display name + email
   const { data: contact } = await supabase
     .from("contacts")
-    .select("id, first_name, last_name, email, brokerage_id")
+    .select("id, first_name, last_name, email, phone, brokerage_id")
     .eq("id", contactId)
     .eq("brokerage_id", profile.brokerage_id)
     .single()
@@ -55,6 +69,8 @@ export default async function NewOfferPage({ params, searchParams }: Props) {
       contactName={contactName}
       contactEmail={contact.email ?? ""}
       prefillListingId={listingId ?? null}
+      prefillAddress={prefillAddress ?? null}
+      prefillPhone={prefillPhone ?? contact.phone ?? null}
     />
   )
 }
