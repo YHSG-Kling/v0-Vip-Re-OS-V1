@@ -360,9 +360,9 @@ export default function CRMPage() {
         const supabase = createClient()
         supabase
           .from("ai_isa_qualifications")
-          .select("qualification_score, qualification_result, qualification_signals, assigned_at")
+          .select("qualification_score, qualification_result, qualification_signals, qualified_at, assigned_at")
           .eq("contact_id", contactId)
-          .order("assigned_at", { ascending: false })
+          .order("qualified_at", { ascending: false })
           .limit(1)
           .maybeSingle()
           .then(({ data }) => {
@@ -371,6 +371,7 @@ export default function CRMPage() {
                 qualificationScore: data.qualification_score ?? undefined,
                 qualificationResult: data.qualification_result ?? undefined,
                 qualificationSignals: data.qualification_signals ?? undefined,
+                // qualified_at = when ISA completed qualification; assigned_at = when agent was assigned
                 assignedAt: data.assigned_at ?? undefined,
               })
             }

@@ -597,18 +597,43 @@ Respond with JSON matching this structure:
       nextActionDate.setDate(nextActionDate.getDate() + firstTouchpoint.day)
     }
 
-    // Archive existing active plan for this contact
-    await supabase
-      .from("copilot_plans")
-      .update({ status: "superseded", updated_at: new Date().toISOString() })
-      .eq("contact_id", data.leadId)
-      .eq("status", "active")
+    // Resolve whether leadId refers to a lead record or a contact record.
+    // The lead may have already been converted — in that case contact_id comes from leads.contact_id.
+    const { data: leadRow } = await supabase
+      .from("leads")
+      .select("id, contact_id")
+      .eq("id", data.leadId)
+      .maybeSingle()
 
-    // Insert new plan — all columns now exist after migration
+    // resolvedLeadId = the leads.id (if it's a lead), null otherwise
+    // resolvedContactId = the contacts.id (either from lead.contact_id, or data.leadId is already a contact)
+    const resolvedLeadId: string | null = leadRow ? leadRow.id : null
+    const resolvedContactId: string | null = leadRow
+      ? (leadRow.contact_id ?? null)
+      : data.leadId  // fallback: caller passed a contact id directly
+
+    // Archive existing active plan for this contact/lead
+    if (resolvedContactId) {
+      await supabase
+        .from("copilot_plans")
+        .update({ status: "superseded", updated_at: new Date().toISOString() })
+        .eq("contact_id", resolvedContactId)
+        .eq("status", "active")
+    }
+    if (resolvedLeadId) {
+      await supabase
+        .from("copilot_plans")
+        .update({ status: "superseded", updated_at: new Date().toISOString() })
+        .eq("lead_id", resolvedLeadId)
+        .eq("status", "active")
+    }
+
+    // Insert new plan — lead_id and contact_id both stored for full traceability
     const { data: savedPlan, error: saveError } = await supabase
       .from("copilot_plans")
       .insert({
-        contact_id:       data.leadId,
+        lead_id:          resolvedLeadId,
+        contact_id:       resolvedContactId,
         agent_id:         agentRow?.id ?? data.agentId,
         brokerage_id:     agentRow?.brokerage_id ?? null,
         plan_name:        `AI Autopilot — ${data.autopilotLevel}`,
@@ -626,10 +651,13 @@ Respond with JSON matching this structure:
     }
 
     // Flip contacts.ai_isa_enabled so the badge reflects immediately
-    await supabase
-      .from("contacts")
-      .update({ ai_isa_enabled: true })
-      .eq("id", data.leadId)
+    // Only update the contact if we have a resolved contact id (post-conversion)
+    if (resolvedContactId) {
+      await supabase
+        .from("contacts")
+        .update({ ai_isa_enabled: true })
+        .eq("id", resolvedContactId)
+    }
 
     return {
       success: true,
