@@ -209,21 +209,23 @@ export async function aiOptimizeReferralAsk(params: {
   const supabase = await createClient()
 
   try {
+    // Load contact — load referrals separately to avoid FK name guessing
     const { data: contact } = await supabase
       .from("contacts")
-      .select(`
-        *,
-        transactions(close_date, sale_price),
-        referrals:referrals!referrer_contact_id(id, status)
-      `)
+      .select("*, transactions(close_date, sale_price)")
       .eq("id", params.contactId)
       .single()
+
+    const { data: referrals } = await supabase
+      .from("referrals")
+      .select("id, status")
+      .eq("referred_contact_id", params.contactId)
 
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }
 
-    const pastReferrals = contact.referrals?.length || 0
+    const pastReferrals = referrals?.length || 0
     const transactionValue = contact.transactions?.[0]?.sale_price || 0
 
     const { object: referralStrategy } = await generateObject({

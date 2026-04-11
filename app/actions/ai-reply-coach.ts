@@ -26,8 +26,8 @@ export interface GenerateAIReplyDraftParams {
   conversationId:  string
   contactId:       string
   listingId?:      string
-  /** The inbound message text that triggered the draft */
-  inboundMessageId: string
+  /** The inbound message id that triggered the draft — pass null for proactive/outbound drafts */
+  inboundMessageId: string | null
   inboundBody:     string
   channel:         "email" | "sms" | "in_app"
   /** Optional override — defaults to brand voice tone if omitted */
@@ -206,7 +206,7 @@ ${includeSubject ? "- Start your reply with SUBJECT: <subject line> on the first
       .insert({
         brokerage_id:      params.brokerageId,
         agent_user_id:     params.agentUserId,
-        source_message_id: params.inboundMessageId,
+        source_message_id: params.inboundMessageId ?? null,
         conversation_id:   params.conversationId,
         contact_id:        params.contactId,
         listing_id:        params.listingId ?? null,

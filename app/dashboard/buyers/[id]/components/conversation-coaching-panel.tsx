@@ -65,7 +65,7 @@ export function ConversationCoachingPanel({
       agentUserId,
       conversationId,
       contactId,
-      inboundMessageId: "proactive",
+      inboundMessageId: null,
       inboundBody:      "",
       channel:          "in_app",
     })

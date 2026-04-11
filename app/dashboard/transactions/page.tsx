@@ -297,13 +297,15 @@ export default async function TransactionsPage() {
                           Start tracking your deals by creating a transaction.
                         </p>
                         <div className="flex items-center justify-center gap-3">
-                          <Link href="/dashboard/transactions/new">
+                          {/* /dashboard/transactions/new does not exist — link to contacts to start a transaction */}
+                          <Link href="/crm">
                             <Button>
                               <Plus className="h-4 w-4 mr-2" />
-                              Create Manually
+                              Create from Contact
                             </Button>
                           </Link>
-                          <Link href="/dashboard/offers">
+                          {/* /dashboard/offers does not exist — offers live under buyers/[id]/offers */}
+                          <Link href="/dashboard/buyers">
                             <Button variant="outline">
                               Convert from Offer
                             </Button>

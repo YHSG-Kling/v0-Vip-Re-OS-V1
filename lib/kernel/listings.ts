@@ -214,17 +214,19 @@ export async function createOrAttachSellerContact(
     }
 
     if (input.phone) {
-      const digits = input.phone.replace(/\D/g, "").slice(-10)
+      // phone_digits is a generated column — query using the phone column directly
       const { data: existing } = await supabase
         .from("contacts")
         .select("id")
         .eq("brokerage_id", input.brokerageId)
-        .eq("phone_digits", digits)
+        .eq("phone", input.phone.trim())
         .maybeSingle()
       if (existing?.id) return { success: true, contactId: existing.id, created: false }
     }
 
     // Create new contact
+    // NOTE: phone_digits is a generated/computed column in the DB — do NOT include it in INSERT.
+    // The database calculates it automatically from the phone column.
     const { data: contact, error } = await supabase
       .from("contacts")
       .insert({
@@ -234,7 +236,6 @@ export async function createOrAttachSellerContact(
         last_name:     input.lastName?.trim() ?? "",
         email:         input.email?.toLowerCase().trim() ?? null,
         phone:         input.phone ?? null,
-        phone_digits:  input.phone ? input.phone.replace(/\D/g, "").slice(-10) : null,
         contact_type:  "seller",
         status:        "active",
         source:        "manual_entry",
