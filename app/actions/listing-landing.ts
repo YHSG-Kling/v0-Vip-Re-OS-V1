@@ -455,7 +455,6 @@ export async function submitShowingRequest(input: ShowingRequestInput) {
         last_name: input.lastName,
         email: input.email,
         phone: consentGiven ? input.phone : null,
-        phone_digits: consentGiven ? input.phone.replace(/\D/g, "") : null,
         preferred_channel: consentGiven ? "phone" : "email",
         source: "listing_landing_page",
         contact_type: "buyer",

@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useTransition } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote } from "@/app/actions/contacts"
-import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence, getPredictiveLeadScore } from "@/app/actions/ai-predictions"
+import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, detectClientChurn, getConversationIntelligence } from "@/app/actions/ai-predictions"
 import { generateContactInsights, draftSmartEmail } from "@/app/actions/ai-insights"
 import type { ContactInsight } from "@/app/actions/ai-insights"
 import { aiSuggestFollowUp } from "@/app/actions/ai-lead-nurturing"
@@ -307,23 +307,8 @@ export default function CRMPage() {
       if (result.success) {
         setContacts(result.contacts)
         setFiltered(result.contacts)
-
-        // Batch-fetch lead scores for first 20 contacts — silently, no blocking UI
-        const slice = result.contacts.slice(0, 20)
-        Promise.allSettled(slice.map((c: Contact) => getPredictiveLeadScore(c.id))).then((results) => {
-          const scores: Record<string, { label: "High" | "Medium"; score: number }> = {}
-          results.forEach((r, i) => {
-            if (r.status === "fulfilled" && r.value) {
-              const val = r.value as any
-              // lead_scores table uses conversion_probability (0-1 float) or score (0-100 int)
-              const raw: number = val.conversion_probability ?? val.score ?? 0
-              const pct = raw <= 1 ? Math.round(raw * 100) : raw
-              if (pct >= 70) scores[slice[i].id] = { label: "High", score: pct }
-              else if (pct >= 40) scores[slice[i].id] = { label: "Medium", score: pct }
-            }
-          })
-          setLeadScores(scores)
-        })
+        // Lead scores are loaded lazily per-contact when a contact is selected
+        // to avoid firing 20 simultaneous AI/DB server actions that crash the browser.
       } else {
         setError(result.error ?? "Failed to load contacts")
       }
@@ -377,7 +362,7 @@ export default function CRMPage() {
           .from("ai_isa_qualifications")
           .select("qualification_score, qualification_result, qualification_signals, assigned_at")
           .eq("contact_id", contactId)
-          .order("qualified_at", { ascending: false })
+          .order("assigned_at", { ascending: false })
           .limit(1)
           .maybeSingle()
           .then(({ data }) => {
@@ -577,9 +562,28 @@ export default function CRMPage() {
   const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive") => {
     if (!selectedContactId || !agentId) return
     startTransition(async () => {
-      await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
-      const plans = await getActiveAutoPilotPlans(agentId)
-      setAutopilotPlans(plans)
+      const result = await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
+      if (result?.success) {
+        toast.success(result.message ?? "AI Autopilot enabled")
+        // Re-fetch both the agent's plans list and the copilot plan for this contact
+        const [plans] = await Promise.all([
+          getActiveAutoPilotPlans(agentId).catch(() => []),
+        ])
+        setAutopilotPlans(Array.isArray(plans) ? plans : [])
+        // Re-fetch the copilot plan for this contact so the plan card appears
+        const supabase = createClient()
+        const { data: updatedPlan } = await supabase
+          .from("copilot_plans")
+          .select("id, plan_name, status, next_action, next_action_date, updated_at")
+          .eq("contact_id", selectedContactId)
+          .eq("status", "active")
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+        setCopilotPlan(updatedPlan ?? null)
+      } else {
+        toast.error((result as any)?.error ?? "Failed to enable AI Autopilot")
+      }
     })
   }
 
@@ -748,7 +752,7 @@ export default function CRMPage() {
                   Create Listing
                 </Button>
               </Link>
-              <Link href={`/dashboard/buyers/${selectedContactId}/offers`}>
+              <Link href={`/dashboard/buyers/${selectedContactId}/offers/new`}>
                 <Button size="sm" variant="outline" className="gap-1.5 text-xs">
                   <TrendingUp className="h-3.5 w-3.5" />
                   Create Offer
@@ -1138,9 +1142,29 @@ export default function CRMPage() {
                             const result = await generateCopilotPlan(selectedContactId, agentId ?? "")
                             if (result.success) {
                               setCopilotPlan(result.plan ?? null)
-                              toast.success("7-day plan created")
+                              // Also create a marketing_campaigns record so it appears in the Campaigns tab
+                              if (brokerageId) {
+                                const supabase = createClient()
+                                const startDate = new Date()
+                                const endDate = new Date()
+                                endDate.setDate(endDate.getDate() + 7)
+                                await supabase.from("marketing_campaigns").insert({
+                                  campaign_name: result.plan?.plan_name ?? `7-Day Follow-Up — ${selectedContact?.first_name ?? "Contact"}`,
+                                  campaign_type: "nurture",
+                                  status: "active",
+                                  brokerage_id: brokerageId,
+                                  agent_user_id: user?.id ?? null,
+                                  created_by: user?.id ?? null,
+                                  visibility_scope: "agent",
+                                  scheduled_start_at: startDate.toISOString(),
+                                  scheduled_end_at: endDate.toISOString(),
+                                  launched_at: startDate.toISOString(),
+                                  target_audience: { contact_id: selectedContactId },
+                                }).select().maybeSingle()
+                              }
+                              toast.success("7-day plan created — check Campaigns tab")
                             } else {
-                              toast.error("Failed to generate plan")
+                              toast.error(result.error ?? "Failed to generate plan")
                             }
                             setGeneratingPlan(false)
                           }}
@@ -1162,7 +1186,8 @@ export default function CRMPage() {
                     ? Math.floor((Date.now() - new Date(selectedContact.last_contacted_at).getTime()) / (1000 * 60 * 60 * 24))
                     : null
                   if (daysSince == null || daysSince <= 14) return null
-                  const currentPlan = autopilotPlans.find((p: any) => p.contact_id === selectedContactId || p.lead_id === selectedContactId)
+                  // copilot_plans has contact_id, not lead_id — use only contact_id
+                  const currentPlan = copilotPlan ?? autopilotPlans.find((p: any) => p.contact_id === selectedContactId)
                   return (
                     <Card className="border-orange-200 bg-orange-50">
                       <CardHeader className="pb-2">
