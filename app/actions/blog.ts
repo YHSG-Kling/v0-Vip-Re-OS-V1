@@ -384,7 +384,7 @@ export async function publishToWordPress(
   }
 }
 
-// ─── getBlogPosts ──────────��────────────────────────────�����─────────────────────
+// ─── getBlogPosts ──────────���────────────────────────────�����─────────────────────
 
 export async function getBlogPosts(
   brokerageId: string,
@@ -624,6 +624,134 @@ export async function getSeoKeywords(brokerageId: string): Promise<{
   }
 
   return { success: true, keywords: data || [] }
+}
+
+// ─── discoverKeywordsAI ───────────────────────────────────────────────────────
+//
+// Asks AI to surface the most popular SEO keywords for the brokerage's territory
+// and their top competitor brokerages. Returns keywords with a relative search
+// popularity percentage (0-100) so the agent can pick which ones to use for
+// content generation.
+//
+// DB write: zero — this is a discovery/preview action only. The caller saves
+// selected keywords via addSeoKeyword.
+
+export interface DiscoveredKeyword {
+  keyword:       string
+  keyword_type:  "primary" | "secondary" | "long_tail"
+  search_intent: "informational" | "transactional" | "navigational" | "commercial"
+  popularity_pct: number   // 0-100 relative popularity score from AI analysis
+  competitor_usage: boolean // true if a local competitor is ranking for this keyword
+  rationale:     string    // one-sentence explanation
+}
+
+export async function discoverKeywordsAI(
+  userId: string,
+  params: {
+    brokerageId: string
+    territory?: string   // e.g. "Austin, TX" — falls back to brokerage city/state
+    competitorNames?: string[] // optional list of known competitor brand names
+    focusArea?: string   // e.g. "luxury listings", "first-time buyers", "rentals"
+  }
+): Promise<{
+  success: boolean
+  keywords?: DiscoveredKeyword[]
+  error?: string
+}> {
+  const supabase = await createClient()
+
+  // ── 1. Feature gate ──────────────────────────────────────────────────────────
+  const accessCheck = await canAccessFeature(userId, "seo_blog_engine")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
+  }
+
+  // ── 2. Resolve territory from brokerage record if not supplied ──────────────
+  let territory = params.territory
+  if (!territory) {
+    const { data: brokerage } = await supabase
+      .from("brokerages")
+      .select("city, state, name")
+      .eq("id", params.brokerageId)
+      .maybeSingle()
+    if (brokerage?.city && brokerage?.state) {
+      territory = `${brokerage.city}, ${brokerage.state}`
+    }
+  }
+
+  // ── 3. Fetch existing keywords so AI knows what agent already has ────────────
+  const { data: existingKeywords } = await supabase
+    .from("seo_keywords")
+    .select("keyword")
+    .eq("brokerage_id", params.brokerageId)
+    .eq("is_active", true)
+    .limit(30)
+
+  const existingList = existingKeywords?.map(k => k.keyword) ?? []
+
+  // ── 4. Build AI prompt ───────────────────────────────────────────────────────
+  const competitorClause = params.competitorNames?.length
+    ? `Known local competitors: ${params.competitorNames.join(", ")}.`
+    : "Identify what keywords dominant local real estate brokerages in this market typically rank for."
+
+  const focusClause = params.focusArea
+    ? `Focus the keyword discovery on: ${params.focusArea}.`
+    : "Cover a balanced mix of buyer-intent, seller-intent, and informational keywords."
+
+  const existingClause = existingList.length
+    ? `The agent already has these keywords: ${existingList.join(", ")}. Avoid exact duplicates but related variants are fine.`
+    : ""
+
+  const systemPrompt = `You are an SEO strategist specializing in real estate digital marketing. 
+Your job is to surface the highest-impact keywords for a real estate brokerage based on their territory, 
+local competitor landscape, and market demand. You return structured JSON only.`
+
+  const userPrompt = `Discover the 12-15 most valuable SEO keywords for a real estate brokerage in ${territory || "a local real estate market"}.
+
+${competitorClause}
+${focusClause}
+${existingClause}
+
+For each keyword, estimate its relative popularity (0-100 where 100 = highest demand in this market) 
+and whether local competitors are actively targeting it.
+
+Return ONLY valid JSON (no markdown, no code blocks):
+{
+  "keywords": [
+    {
+      "keyword": "homes for sale in ${territory || "the area"}",
+      "keyword_type": "primary",
+      "search_intent": "transactional",
+      "popularity_pct": 92,
+      "competitor_usage": true,
+      "rationale": "Highest-volume buyer search term in this market"
+    }
+  ]
+}`
+
+  let discovered: DiscoveredKeyword[]
+  try {
+    const { text } = await generateText({
+      feature:      "blog_generation",
+      system:       systemPrompt,
+      prompt:       userPrompt,
+      temperature:  0.4,
+      brokerageId:  params.brokerageId,
+      userId,
+    })
+
+    const cleaned = text.replace(/```json\n?|\n?```/g, "").trim()
+    const parsed  = JSON.parse(cleaned) as { keywords: DiscoveredKeyword[] }
+    discovered     = parsed.keywords ?? []
+  } catch (err) {
+    console.error("[discoverKeywordsAI] AI generation failed:", err)
+    return { success: false, error: "Failed to generate keyword suggestions" }
+  }
+
+  // ── 5. Sort by popularity descending ─────────────────────────────────────────
+  discovered.sort((a, b) => b.popularity_pct - a.popularity_pct)
+
+  return { success: true, keywords: discovered }
 }
 
 // ─── toggleKeywordActive ──────────────────────────────────────────────────────
