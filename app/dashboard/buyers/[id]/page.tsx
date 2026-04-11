@@ -1,10 +1,10 @@
 import { redirect }             from "next/navigation"
 import { createClient }          from "@/lib/supabase/server"
-import { getBuyerJourney }       from "@/app/actions/buyer-execution"
-import { loadFinancialProfile, loadMortgageBrokers } from "@/app/actions/buyer-financial"
-import { getCollaborativeSearches, getConsensus } from "@/app/actions/collaborative-search"
-import { getBuyerTours } from "@/app/actions/tour-planner"
 import { BuyerOverviewClient }   from "./buyer-overview-client"
+
+// Heavy data (journey, financials, tours, collaborative search) is loaded
+// lazily from the client via SWR/server-actions to avoid cascading server
+// calls on every page render that were causing memory exhaustion.
 
 interface PageProps {
   params: Promise<{ id: string }>
@@ -18,12 +18,14 @@ export default async function BuyerDetailPage({ params }: PageProps) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
 
-  // Load contact — verify agent owns this contact OR is broker/admin in same brokerage
-  const { data: contact, error: contactError } = await supabase
-    .from("contacts")
-    .select("*")
-    .eq("id", buyerId)
-    .single()
+  // Load only the minimal data required for initial render
+  const [contactResult, profileResult, interestsResult] = await Promise.all([
+    supabase.from("contacts").select("*").eq("id", buyerId).single(),
+    supabase.from("users").select("first_name, last_name").eq("id", user.id).maybeSingle(),
+    supabase.from("property_interests").select("*").eq("contact_id", buyerId).maybeSingle(),
+  ])
+
+  const { data: contact, error: contactError } = contactResult
 
   if (contactError || !contact) {
     return (
@@ -34,85 +36,28 @@ export default async function BuyerDetailPage({ params }: PageProps) {
   }
 
   const brokerageId = contact.brokerage_id ?? ""
-
-  // Parallel loads
-  const [journeyResult, financialResult, partnersResult, draftsResult, interestsResult, profileResult, collaborativeSearchResult, toursResult, dualAgencyResult] =
-    await Promise.all([
-      getBuyerJourney({ contactId: buyerId, userId: user.id, source: "agent_dashboard" }),
-      loadFinancialProfile({ contactId: buyerId }),
-      loadMortgageBrokers({ agentUserId: user.id }),
-      supabase
-        .from("ai_message_drafts")
-        .select("id, draft_body, draft_subject, suggested_tone, confidence_score, channel, created_at, status")
-        .eq("contact_id", buyerId)
-        .eq("status", "pending")
-        .order("created_at", { ascending: false })
-        .limit(5),
-      supabase
-        .from("property_interests")
-        .select("*")
-        .eq("contact_id", buyerId)
-        .maybeSingle(),
-      // Load agent profile for agentName
-      supabase
-        .from("users")
-        .select("full_name, first_name, last_name")
-        .eq("id", user.id)
-        .maybeSingle(),
-      // Collaborative search
-      getCollaborativeSearches(buyerId),
-      // Tours
-      getBuyerTours(buyerId),
-      // Dual agency: saved properties that are brokerage listings owned by this agent
-      supabase
-        .from("saved_properties")
-        .select("listing_id, listings!inner(address, agent_id)")
-        .eq("contact_id", buyerId)
-        .not("listing_id", "is", null)
-        .limit(10),
-    ])
-
-  // Filter saved brokerage listings to only those owned by this agent
-  const dualAgencyListings = (dualAgencyResult.data ?? [])
-    .filter((sp: any) => sp.listings?.agent_id === user.id)
-    .map((sp: any) => ({ listing_id: sp.listing_id as string, address: sp.listings?.address as string }))
-
   const agentProfile = profileResult.data
-  const agentName = agentProfile?.full_name
-    ?? `${agentProfile?.first_name ?? ""} ${agentProfile?.last_name ?? ""}`.trim()
-    ?? "Agent"
-
-  // Collaborative search computed values
-  const collaborativeSearches = (collaborativeSearchResult as any)?.searches || []
-  const activeSearch = collaborativeSearches[0] || null
-  const tours = (toursResult as any)?.tours || []
-  const nextTour = tours.sort((a: any, b: any) =>
-    new Date(a.tour_date).getTime() - new Date(b.tour_date).getTime()
-  ).find((t: any) => new Date(t.tour_date) >= new Date())
-
-  // If activeSearch exists, fetch consensus
-  const consensusResult = activeSearch ? await getConsensus(activeSearch.id) : null
-  const consensus = (consensusResult as any)?.consensus || null
+  const agentName = `${agentProfile?.first_name ?? ""} ${agentProfile?.last_name ?? ""}`.trim() || "Agent"
 
   return (
     <div className="flex flex-col h-full min-h-screen bg-background">
       <BuyerOverviewClient
         buyerId={buyerId}
         contact={contact}
-        journey={journeyResult.journey ?? null}
-        profile={financialResult.profile ?? null}
-        partners={partnersResult.partners ?? []}
-        drafts={draftsResult.data ?? []}
+        journey={null}
+        profile={null}
+        partners={[]}
+        drafts={[]}
         propertyInterests={interestsResult.data ?? null}
         brokerageId={brokerageId}
         agentUserId={user.id}
         agentName={agentName}
-        collaborativeSearches={collaborativeSearches}
-        activeSearch={activeSearch}
-        consensus={consensus}
-        tours={tours}
-        nextTour={nextTour}
-        dualAgencyListings={dualAgencyListings}
+        collaborativeSearches={[]}
+        activeSearch={null}
+        consensus={null}
+        tours={[]}
+        nextTour={null}
+        dualAgencyListings={[]}
       />
     </div>
   )

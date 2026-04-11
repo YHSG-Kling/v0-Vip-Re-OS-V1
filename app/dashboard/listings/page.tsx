@@ -36,10 +36,26 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; bgColor: str
 export default async function ListingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ action?: string }>
+  searchParams: Promise<{
+    action?: string
+    firstName?: string
+    lastName?: string
+    email?: string
+    phone?: string
+    contactId?: string
+  }>
 }) {
   const resolvedSearchParams = await searchParams
   const showCreateSheet = resolvedSearchParams?.action === "new"
+
+  // Contact prefill values passed from CRM quick-action links
+  const prefillContact = showCreateSheet ? {
+    firstName:  resolvedSearchParams?.firstName  ?? "",
+    lastName:   resolvedSearchParams?.lastName   ?? "",
+    email:      resolvedSearchParams?.email      ?? "",
+    phone:      resolvedSearchParams?.phone      ?? "",
+    contactId:  resolvedSearchParams?.contactId  ?? "",
+  } : undefined
 
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -329,8 +345,8 @@ export default async function ListingsPage({
         })()}
       </div>
 
-      {/* Listing create sheet — opened by ?action=new */}
-      <ListingCreateSheet open={showCreateSheet} />
+      {/* Listing create sheet — opened by ?action=new, optionally prefilled from CRM */}
+      <ListingCreateSheet open={showCreateSheet} prefillContact={prefillContact} />
     </div>
   )
 }

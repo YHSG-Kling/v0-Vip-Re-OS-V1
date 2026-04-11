@@ -229,7 +229,7 @@ export function OperationsClient({ role, firstName }: Props) {
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {h.entity_type} ·{" "}
-                          {formatDistanceToNow(new Date(h.created_at), { addSuffix: true })}
+                          {h.created_at ? formatDistanceToNow(new Date(h.created_at), { addSuffix: true }) : ""}
                         </p>
                       </div>
                       <Link href="/dashboard/communications/handoffs">
@@ -263,7 +263,7 @@ export function OperationsClient({ role, firstName }: Props) {
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {d.channel ?? "email"} ·{" "}
-                          {formatDistanceToNow(new Date(d.created_at), { addSuffix: true })}
+                          {d.created_at ? formatDistanceToNow(new Date(d.created_at), { addSuffix: true }) : ""}
                         </p>
                       </div>
                       <Link href="/dashboard/communications/outreach">

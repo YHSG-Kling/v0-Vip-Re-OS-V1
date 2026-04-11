@@ -747,7 +747,14 @@ export default function CRMPage() {
 
             {/* Quick Actions — always visible */}
             <div className="flex flex-wrap gap-2">
-              <Link href={`/dashboard/listings?action=new&contact=${selectedContactId}`}>
+              <Link href={
+                `/dashboard/listings?action=new` +
+                `&contactId=${encodeURIComponent(selectedContactId ?? "")}` +
+                `&firstName=${encodeURIComponent(selectedContact?.first_name ?? "")}` +
+                `&lastName=${encodeURIComponent(selectedContact?.last_name ?? "")}` +
+                `&email=${encodeURIComponent(selectedContact?.email ?? "")}` +
+                `&phone=${encodeURIComponent(selectedContact?.phone ?? "")}`
+              }>
                 <Button size="sm" variant="outline" className="gap-1.5 text-xs">
                   <Home className="h-3.5 w-3.5" />
                   Create Listing

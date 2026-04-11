@@ -169,40 +169,37 @@ export async function loadAvailableTransactionForms(input: {
   try {
     const supabase = createServiceClient()
 
-    // Try state_required_forms table
-    const stateFilter = input.state ? input.state.toUpperCase() : null
-    const contextTypeMap: Record<FormContextType, string[]> = {
-      listing: ["listing_agreement", "disclosure", "seller", "listing"],
-      offer:   ["purchase_contract", "addendum", "buyer", "offer"],
-      transaction: ["inspection", "title", "lender", "closing", "amendment"],
+    // Kernel rule: use tables that exist in the schema.
+    // state_required_forms does not exist — load brokerage forms from
+    // client_documents where doc_category = 'brokerage_form' or matches context.
+    // These are documents uploaded to the dashboard forms library.
+    const contextDocCategories: Record<FormContextType, string[]> = {
+      listing:     ["listing_agreement", "disclosure", "seller_disclosure", "brokerage_form", "listing"],
+      offer:       ["purchase_contract", "addendum", "offer", "buyer_form", "brokerage_form"],
+      transaction: ["inspection", "title", "lender", "closing", "amendment", "brokerage_form"],
     }
-    const relevantCategories = contextTypeMap[input.context_type]
+    const categories = contextDocCategories[input.context_type]
 
-    let query = supabase
-      .from("state_required_forms")
-      .select("id, form_name, category, form_type, is_required, description, state")
-      .in("category", relevantCategories)
-      .order("is_required", { ascending: false })
-      .order("form_name")
+    const { data: brokerageForms } = await supabase
+      .from("client_documents")
+      .select("id, document_name, doc_category, document_type, document_url")
+      .eq("brokerage_id", input.brokerage_id)
+      .in("doc_category", categories)
+      .is("contact_id", null)       // library-level forms have no contact attached
+      .order("document_name")
+      .limit(50)
 
-    if (stateFilter) {
-      query = query.or(`state.eq.${stateFilter},state.is.null`)
-    }
-
-    const { data: stateForms, error: stateErr } = await query.limit(50)
-
-    if (!stateErr && stateForms && stateForms.length > 0) {
+    if (brokerageForms && brokerageForms.length > 0) {
       return {
         success: true,
         data: {
-          forms: stateForms.map((f: any) => ({
-            id: f.id,
-            name: f.form_name,
-            category: f.category,
-            form_type: f.form_type ?? f.category,
-            is_required: f.is_required ?? false,
-            description: f.description,
-            state: f.state,
+          forms: brokerageForms.map((f: any) => ({
+            id:          f.id,
+            name:        f.document_name,
+            category:    f.doc_category ?? input.context_type,
+            form_type:   f.document_type ?? f.doc_category ?? input.context_type,
+            is_required: false,
+            description: f.document_url ? "Brokerage uploaded form" : undefined,
           })),
         },
       }

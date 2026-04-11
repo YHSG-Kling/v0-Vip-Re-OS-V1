@@ -24,11 +24,20 @@ import {
 import { ListingEditForm, type ListingFormData } from "./listing-edit-form"
 import { createListingWithSellerContact } from "@/app/actions/listings-kernel"
 
-type ListingCreateSheetProps = {
-  open: boolean
+type PrefillContact = {
+  firstName: string
+  lastName: string
+  email: string
+  phone: string
+  contactId: string
 }
 
-export function ListingCreateSheet({ open }: ListingCreateSheetProps) {
+type ListingCreateSheetProps = {
+  open: boolean
+  prefillContact?: PrefillContact
+}
+
+export function ListingCreateSheet({ open, prefillContact }: ListingCreateSheetProps) {
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
 
@@ -85,6 +94,12 @@ export function ListingCreateSheet({ open }: ListingCreateSheetProps) {
             onSubmit={handleSubmit}
             onCancel={handleClose}
             error={error}
+            defaultValues={prefillContact ? {
+              sellerFirstName: prefillContact.firstName,
+              sellerLastName:  prefillContact.lastName,
+              sellerEmail:     prefillContact.email,
+              sellerPhone:     prefillContact.phone,
+            } : undefined}
           />
         </div>
       </SheetContent>
