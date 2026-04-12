@@ -28,14 +28,21 @@ function getDispatcher(): EventDispatcher | null {
 export async function logEventAndTrigger(eventInput: EventInput): Promise<Event> {
   const supabase = await createServerClient()
 
+  // Require brokerage_id — never insert without it (kernel RLS invariant)
+  if (!eventInput.brokerage_id) {
+    console.error("[v0] logEventAndTrigger: brokerage_id is required but missing", eventInput.event_type)
+    throw new Error("MISSING_BROKERAGE_ID")
+  }
+
   // Check for duplicate if dedupe_key provided
   if (eventInput.dedupe_key) {
     const { data: existingEvent } = await supabase
       .from("lifecycle_events")
       .select("id")
       .eq("dedupe_key", eventInput.dedupe_key)
+      .eq("brokerage_id", eventInput.brokerage_id)
       .gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
-      .single()
+      .maybeSingle()
 
     if (existingEvent) {
       console.log(`[v0] Duplicate event detected: ${eventInput.dedupe_key}`)
@@ -43,8 +50,28 @@ export async function logEventAndTrigger(eventInput: EventInput): Promise<Event>
     }
   }
 
+  // Map EventInput to the actual lifecycle_events schema columns
+  const row = {
+    brokerage_id:  eventInput.brokerage_id,
+    actor_user_id: eventInput.user_id ?? null,   // lifecycle_events uses actor_user_id
+    event_type:    eventInput.event_type,
+    metadata:      eventInput.payload,            // lifecycle_events uses metadata not payload
+    source:        eventInput.source,
+    dedupe_key:    eventInput.dedupe_key ?? null,
+    processed:     false,
+    // entity_id / entity_type may be derived from payload if available
+    entity_id:   (eventInput.payload as any)?.contact_id
+                  ?? (eventInput.payload as any)?.listing_id
+                  ?? (eventInput.payload as any)?.video_id
+                  ?? null,
+    entity_type: (eventInput.payload as any)?.contact_id   ? "contact"
+                : (eventInput.payload as any)?.listing_id  ? "listing"
+                : (eventInput.payload as any)?.video_id    ? "video"
+                : "system",
+  }
+
   // Insert event
-  const { data: event, error } = await supabase.from("lifecycle_events").insert([eventInput]).select().single()
+  const { data: event, error } = await supabase.from("lifecycle_events").insert([row]).select().single()
 
   if (error) {
     console.error("[v0] Error inserting event:", error)
