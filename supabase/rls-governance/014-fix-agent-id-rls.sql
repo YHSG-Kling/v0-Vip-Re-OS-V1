@@ -103,6 +103,9 @@ DROP POLICY IF EXISTS "team_leader_read_team_contacts"   ON contacts;
 DROP POLICY IF EXISTS "agent_read_own_contacts"          ON contacts;
 DROP POLICY IF EXISTS "agent_insert_own_contacts"        ON contacts;
 DROP POLICY IF EXISTS "agent_update_own_contacts"        ON contacts;
+-- interaction_history exists in live DB but has 0 RLS policies (RLS not enabled).
+-- Do NOT create policies on it here; managed at application layer only.
+-- DROP IF EXISTS is safe even if no policy exists.
 DROP POLICY IF EXISTS "agent_manage_interaction_history" ON interaction_history;
 
 -- Team Leader: join agents -> users for correct team resolution
@@ -145,13 +148,6 @@ CREATE POLICY "agent_update_own_contacts"
     AND agent_id = auth.agent_id()
   );
 
--- interaction_history: agent_id = auth.agent_id()
-CREATE POLICY "agent_manage_interaction_history"
-  ON interaction_history FOR ALL
-  USING (
-    auth.owns_contact(contact_id) OR agent_id = auth.agent_id()
-  );
-
 -- ─────────────────────────────────────────────────────────────────────────────
 -- STEP 3: TRANSACTIONS TABLE — drop & recreate broken agent policies
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -161,7 +157,8 @@ DROP POLICY IF EXISTS "team_leader_read_team_transactions"     ON transactions;
 DROP POLICY IF EXISTS "agent_insert_own_transactions"          ON transactions;
 DROP POLICY IF EXISTS "agent_update_own_transactions"          ON transactions;
 DROP POLICY IF EXISTS "agent_manage_offers"                    ON offers;
-DROP POLICY IF EXISTS "agent_read_own_commissions"             ON commissions;
+-- NOTE: Live DB uses "agent_commissions" table (not "commissions")
+-- The old "commissions" table doesn't exist — skip DROP to avoid error
 DROP POLICY IF EXISTS "agent_read_own_commission_calculations" ON commission_calculations;
 
 -- Agent SELECT: all agent_id columns use auth.agent_id()
@@ -230,9 +227,10 @@ CREATE POLICY "agent_manage_offers"
     )
   );
 
--- Commissions: commissions.agent_id stores agents.id
-CREATE POLICY "agent_read_own_commissions"
-  ON commissions FOR SELECT
+-- agent_commissions: live DB table name (not "commissions")
+-- agent_commissions.agent_id stores agents.id
+CREATE POLICY "agent_read_own_agent_commissions"
+  ON agent_commissions FOR SELECT
   USING (
     auth.is_agent()
     AND agent_id = auth.agent_id()

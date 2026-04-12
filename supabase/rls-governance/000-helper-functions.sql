@@ -3,6 +3,10 @@
 -- =====================================================
 -- These functions provide consistent access checks across all RLS policies.
 -- They reference user_type as the authoritative permission field.
+--
+-- IMPORTANT: These functions must be applied via the Supabase Dashboard
+-- SQL editor (superuser required). They cannot be applied via the project
+-- database URL (connection string) due to auth schema restrictions.
 -- =====================================================
 
 -- Get current user's user_type
@@ -24,7 +28,7 @@ $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 -- Check if user is admin
 CREATE OR REPLACE FUNCTION auth.is_admin()
 RETURNS BOOLEAN AS $$
-  SELECT user_type = 'admin'
+  SELECT user_type IN ('admin', 'super_admin')
   FROM users
   WHERE id = auth.uid();
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
@@ -32,7 +36,7 @@ $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 -- Check if user is broker
 CREATE OR REPLACE FUNCTION auth.is_broker()
 RETURNS BOOLEAN AS $$
-  SELECT user_type = 'broker'
+  SELECT user_type IN ('broker', 'broker_owner')
   FROM users
   WHERE id = auth.uid();
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
@@ -140,6 +144,8 @@ $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 -- Resolves the current user's agents.id from the agents table.
 -- Returns NULL if the user has no agent profile.
 -- This is the canonical way to resolve agents.id from auth.uid() (= users.id).
+-- ROOT FIX: contacts/transactions/listings.*agent_id stores agents.id, NOT users.id.
+-- Old code compared agent_id = auth.uid() which always returned false for agents.
 CREATE OR REPLACE FUNCTION auth.agent_id()
 RETURNS UUID AS $$
   SELECT id FROM agents WHERE user_id = auth.uid() LIMIT 1;
@@ -198,6 +204,7 @@ $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
 -- Check if user is the contact themselves (for self-visibility)
 -- FIX: use contact_user_id FK instead of email JOIN (email is case-sensitive and unreliable)
+-- contact_user_id was added in migration 111 (scripts/111-fix-agent-id-rls-policies.sql)
 CREATE OR REPLACE FUNCTION auth.is_self_contact(contact_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
