@@ -47,6 +47,7 @@ CREATE POLICY "compliance_read_brokerage_contacts"
   );
 
 -- Team Leader: Read contacts assigned to their team
+-- FIX: contacts.agent_id stores agents.id; must join agents -> users to resolve team membership
 CREATE POLICY "team_leader_read_team_contacts"
   ON contacts FOR SELECT
   USING (
@@ -54,20 +55,20 @@ CREATE POLICY "team_leader_read_team_contacts"
     AND (
       team_id = auth.user_team_id() OR
       agent_id IN (
-        SELECT id FROM users WHERE team_id = auth.user_team_id()
+        SELECT a.id FROM agents a
+        JOIN users u ON a.user_id = u.id
+        WHERE u.team_id = auth.user_team_id()
       )
     )
   );
 
--- Agent: Read own contacts + shared contacts
+-- Agent: Read own contacts
+-- FIX: contacts.agent_id stores agents.id (not users.id) — use auth.agent_id()
 CREATE POLICY "agent_read_own_contacts"
   ON contacts FOR SELECT
   USING (
     auth.is_agent()
-    AND (
-      agent_id = auth.uid() OR
-      auth.uid() = ANY(COALESCE(shared_with_user_ids, ARRAY[]::UUID[]))
-    )
+    AND agent_id = auth.agent_id()
   );
 
 -- TC: Read contacts related to their transactions
@@ -107,12 +108,13 @@ CREATE POLICY "broker_insert_contacts"
   );
 
 -- Agent: Insert contacts in their brokerage (assigned to themselves)
+-- FIX: agent_id stores agents.id — use auth.agent_id()
 CREATE POLICY "agent_insert_own_contacts"
   ON contacts FOR INSERT
   WITH CHECK (
     auth.is_agent()
     AND auth.has_brokerage_access(brokerage_id)
-    AND (agent_id = auth.uid() OR agent_id IS NULL)
+    AND (agent_id = auth.agent_id() OR agent_id IS NULL)
   );
 
 -- =====================================================
@@ -133,11 +135,12 @@ CREATE POLICY "broker_update_brokerage_contacts"
   );
 
 -- Agent: Update own contacts
+-- FIX: agent_id stores agents.id — use auth.agent_id()
 CREATE POLICY "agent_update_own_contacts"
   ON contacts FOR UPDATE
   USING (
     auth.is_agent()
-    AND agent_id = auth.uid()
+    AND agent_id = auth.agent_id()
   );
 
 -- TC: Update contact communication details for active transactions
@@ -256,10 +259,11 @@ CREATE POLICY "lender_read_credit_status_for_deals"
 -- =====================================================
 
 -- Agents can manage interaction history for their contacts
+-- FIX: interaction_history.agent_id stores agents.id — use auth.agent_id()
 CREATE POLICY "agent_manage_interaction_history"
   ON interaction_history FOR ALL
   USING (
-    auth.owns_contact(contact_id) OR agent_id = auth.uid()
+    auth.owns_contact(contact_id) OR agent_id = auth.agent_id()
   );
 
 -- Brokers can view interaction history in their brokerage

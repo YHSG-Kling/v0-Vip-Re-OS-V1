@@ -137,18 +137,39 @@ RETURNS BOOLEAN AS $$
   );
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
+-- Resolves the current user's agents.id from the agents table.
+-- Returns NULL if the user has no agent profile.
+-- This is the canonical way to resolve agents.id from auth.uid() (= users.id).
+CREATE OR REPLACE FUNCTION auth.agent_id()
+RETURNS UUID AS $$
+  SELECT id FROM agents WHERE user_id = auth.uid() LIMIT 1;
+$$ LANGUAGE SQL SECURITY DEFINER STABLE;
+
+-- Checks if the given agent_id belongs to the current authenticated user.
+-- Safe: returns false (not error) if no agent profile exists.
+CREATE OR REPLACE FUNCTION auth.is_own_agent_id(agent_id_to_check UUID)
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM agents
+    WHERE id = agent_id_to_check
+    AND user_id = auth.uid()
+  );
+$$ LANGUAGE SQL SECURITY DEFINER STABLE;
+
 -- Check if user is agent assigned to a contact
+-- FIX: contacts.agent_id stores agents.id (not users.id), so use auth.agent_id()
 CREATE OR REPLACE FUNCTION auth.owns_contact(contact_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
     SELECT 1
     FROM contacts
     WHERE id = $1
-    AND agent_id = auth.uid()
+    AND agent_id = auth.agent_id()
   );
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
 -- Check if user is agent assigned to a transaction
+-- FIX: transactions.agent_id stores agents.id (not users.id), so use auth.agent_id()
 CREATE OR REPLACE FUNCTION auth.owns_transaction(transaction_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
@@ -156,45 +177,42 @@ RETURNS BOOLEAN AS $$
     FROM transactions
     WHERE id = $1
     AND (
-      agent_id = auth.uid() OR
-      seller_agent_id = auth.uid() OR
-      buyer_agent_id = auth.uid()
+      agent_id = auth.agent_id() OR
+      seller_agent_id = auth.agent_id() OR
+      buyer_agent_id = auth.agent_id()
     )
   );
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
 -- Check if user is agent assigned to a listing
+-- FIX: listings.agent_id stores agents.id (not users.id), so use auth.agent_id()
 CREATE OR REPLACE FUNCTION auth.owns_listing(listing_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
     SELECT 1
     FROM listings
     WHERE id = $1
-    AND agent_id = auth.uid()
+    AND agent_id = auth.agent_id()
   );
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
 -- Check if user is the contact themselves (for self-visibility)
+-- FIX: use contact_user_id FK instead of email JOIN (email is case-sensitive and unreliable)
 CREATE OR REPLACE FUNCTION auth.is_self_contact(contact_id UUID)
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
-    SELECT 1
-    FROM contacts c
-    JOIN users u ON u.id = auth.uid()
-    WHERE c.id = $1
-    AND c.email = u.email
-    AND auth.is_contact()
+    SELECT 1 FROM contacts
+    WHERE id = $1
+    AND contact_user_id = auth.uid()
   );
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
 -- Get contact_id for current user (if they are a contact)
+-- FIX: use contact_user_id FK instead of email JOIN
 CREATE OR REPLACE FUNCTION auth.user_contact_id()
 RETURNS UUID AS $$
-  SELECT c.id
-  FROM contacts c
-  JOIN users u ON u.email = c.email
-  WHERE u.id = auth.uid()
-  AND auth.is_contact()
+  SELECT id FROM contacts
+  WHERE contact_user_id = auth.uid()
   LIMIT 1;
 $$ LANGUAGE SQL SECURITY DEFINER STABLE;
 
