@@ -16,6 +16,7 @@ import {
   aiOfferStrategyAdvisor,
   getOfferForms,
 } from "@/app/actions/ai-offer-creation"
+import { getConnectedEsignProvider } from "@/app/actions/buyer-offers"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -77,6 +78,14 @@ export function OfferInitiationFlow({
   const [addressInput, setAddressInput] = useState(initialAddress ?? "")
   // Track newly created offer id for the send_for_signatures step
   const [createdOfferId, setCreatedOfferId] = useState<string | null>(null)
+
+  // Resolved brokerage e-sign provider — loaded once on mount
+  const [connectedProvider, setConnectedProvider] = useState<{ platform: string; accountName: string | null } | null | undefined>(undefined)
+
+  useEffect(() => {
+    if (!brokerageId) { setConnectedProvider(null); return }
+    getConnectedEsignProvider(brokerageId).then(setConnectedProvider).catch(() => setConnectedProvider(null))
+  }, [brokerageId])
   const [suggestions, setSuggestions]   = useState<{ id: string; address: string; city: string; state: string; zip: string; list_price: number }[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
   const [formSrc, setFormSrc]     = useState<ResolvedFormSource | null>(null)
@@ -828,7 +837,7 @@ export function OfferInitiationFlow({
             <SendForSignaturesPanel
               offerId={createdOfferId}
               userId={agentUserId}
-              connectedProvider={null}
+              connectedProvider={connectedProvider ?? null}
               buyerName={contactName}
               buyerEmail={contactEmail}
               onSent={onSuccess}

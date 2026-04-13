@@ -4,6 +4,7 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { checkCompliancePassed, syncOfferStatus } from "@/lib/buyer-offer"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
+import { logEventAndTrigger } from "@/lib/events/event-helpers"
 
 interface SubmitForSignatureParams {
   offerId: string
@@ -116,6 +117,21 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
 
   // Sync status
   await syncOfferStatus(offerId)
+
+  // Fire notification to the buyer contact so they know to expect the signature request
+  if (offer.contact_id) {
+    await logEventAndTrigger({
+      event_type: "buyer.offer.signature.sent_to_contact",
+      user_id:    offer.contact_id,
+      payload: {
+        offerId,
+        signerCount: signers.length,
+        provider:    credential?.platform ?? null,
+      },
+      source:     "action",
+      dedupe_key: `offer-sig-sent-${offerId}-${Date.now()}`,
+    }).catch(() => {})
+  }
 
   return {
     success: true,

@@ -3,6 +3,7 @@
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { getTransactionProviderByName } from "@/lib/integrations/providers/provider-resolver"
+import { logEventAndTrigger } from "@/lib/events/event-helpers"
 
 interface SubmitListingForSignatureParams {
   listingId: string
@@ -23,11 +24,11 @@ export async function submitListingForSignature(params: SubmitListingForSignatur
 
   const supabase = createServiceClient()
 
-  // Get listing with brokerage_id for provider resolution
+  // Get listing with brokerage_id and seller_contact_id for provider resolution + notification
   // Note: esign columns live on listing_agreements, not listings
   const { data: listing, error: listingError } = await supabase
     .from("listings")
-    .select("id, brokerage_id, address, status")
+    .select("id, brokerage_id, address, status, seller_contact_id")
     .eq("id", listingId)
     .single()
 
@@ -101,6 +102,22 @@ export async function submitListingForSignature(params: SubmitListingForSignatur
         provider_name: credential?.platform ?? agreement.provider_name ?? null,
       })
       .eq("id", agreement.id)
+  }
+
+  // Fire notification to the seller contact so they know to expect the signature request
+  if (listing.seller_contact_id) {
+    await logEventAndTrigger({
+      event_type: "listing.signature.sent_to_contact",
+      user_id:    listing.seller_contact_id,
+      payload: {
+        listingId,
+        address:      listing.address,
+        signerCount:  signers.length,
+        provider:     credential?.platform ?? null,
+      },
+      source:     "action",
+      dedupe_key: `listing-sig-sent-${listingId}-${Date.now()}`,
+    }).catch(() => {})
   }
 
   return {

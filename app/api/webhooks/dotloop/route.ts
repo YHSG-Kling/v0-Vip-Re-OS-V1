@@ -50,13 +50,14 @@ export async function POST(request: NextRequest) {
 
     if (body.event === "document.signed") {
       const { document_id, loop_id } = body.data
+      const now = new Date().toISOString()
 
-      // Update document status
+      // Update document status on client_documents
       const { data: doc, error } = await supabase
         .from("client_documents")
         .update({
           status: "signed",
-          signed_at: new Date().toISOString(),
+          signed_at: now,
         })
         .eq("dotloop_document_id", document_id)
         .select()
@@ -95,6 +96,66 @@ export async function POST(request: NextRequest) {
             },
             source: "webhook",
             dedupe_key: `provider-sigs-complete-${doc.transaction_id}`,
+          })
+        }
+      }
+
+      // ── Esign completion: offers ──────────────────────────────────────────────
+      // If this loop_id matches an offer's esign_provider ref, mark it fully signed
+      if (loop_id) {
+        const { data: matchedOffer } = await supabase
+          .from("offers")
+          .select("id, contact_id")
+          .eq("esign_provider", loop_id)
+          .maybeSingle()
+
+        if (matchedOffer) {
+          await supabase
+            .from("offers")
+            .update({
+              esign_status:       "fully_signed",
+              esign_completed_at: now,
+            })
+            .eq("id", matchedOffer.id)
+
+          await logEventAndTrigger({
+            event_type: "buyer.offer.esign.completed",
+            user_id:    matchedOffer.contact_id,
+            payload:    { offerId: matchedOffer.id, loop_id, provider: "dotloop" },
+            source:     "webhook",
+            dedupe_key: `offer-esign-complete-${matchedOffer.id}`,
+          })
+        }
+
+        // ── Esign completion: listing_agreements ─────────────────────────────
+        const { data: matchedAgreement } = await supabase
+          .from("listing_agreements")
+          .select("id, listing_id")
+          .eq("provider_ref", loop_id)
+          .maybeSingle()
+
+        if (matchedAgreement) {
+          await supabase
+            .from("listing_agreements")
+            .update({
+              esign_status:      "fully_signed",
+              fully_executed_at: now,
+            })
+            .eq("id", matchedAgreement.id)
+
+          // Advance listing to active stage if still in prep
+          await supabase
+            .from("listings")
+            .update({ current_stage: "active", stage_entered_at: now })
+            .eq("id", matchedAgreement.listing_id)
+            .in("current_stage", ["prep", "pre_listing", "coming_soon"])
+
+          await logEventAndTrigger({
+            event_type: "listing.agreement.esign.completed",
+            user_id:    matchedAgreement.listing_id,
+            payload:    { listingId: matchedAgreement.listing_id, agreementId: matchedAgreement.id, loop_id, provider: "dotloop" },
+            source:     "webhook",
+            dedupe_key: `listing-agreement-esign-complete-${matchedAgreement.id}`,
           })
         }
       }
