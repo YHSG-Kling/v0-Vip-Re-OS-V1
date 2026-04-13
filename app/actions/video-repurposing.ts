@@ -203,7 +203,6 @@ export async function createVideoSnippet(data: {
       thumbnail_url: data.thumbnailUrl ?? null,
       approval_status: "pending",
       created_by: data.createdBy ?? null,
-      compliance_approved: false,
     })
     .select()
     .single()
@@ -616,7 +615,7 @@ export async function scheduleSnippetToSocial(params: {
       social_account_id: params.socialAccountId,
       status: "scheduled",
       approval_status: snippet.approval_status === "approved" ? "approved" : "pending",
-      compliance_approved: false,
+      brand_compliance_passed: false,
     })
     .select()
     .single()

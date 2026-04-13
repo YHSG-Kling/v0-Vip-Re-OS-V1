@@ -171,6 +171,8 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   const [voiceProfiles, setVoiceProfiles] = useState<any[]>([])
   const [brandingPresets, setBrandingPresets] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  // Resolved agents.id (FK) — distinct from auth users.id
+  const [resolvedAgentId, setResolvedAgentId] = useState<string | null>(null)
 
   // Word count helpers
   const activeScript = scriptSource === "library" 
@@ -207,6 +209,8 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           .maybeSingle()
 
         if (agentData?.id) {
+          setResolvedAgentId(agentData.id)
+
           const { data: voiceData } = await supabase
             .from("agent_voice_profiles")
             .select("*")
@@ -217,11 +221,11 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           setVoiceProfiles(voiceData || [])
         }
 
-        // Load branding presets
+        // Load branding presets — use agents.id (FK), not auth user id
         const { data: brandingData } = await supabase
           .from("video_branding_presets")
           .select("*")
-          .or(`agent_id.eq.${user?.id},is_default.eq.true`)
+          .or(`agent_id.eq.${agentData?.id ?? user?.id},is_default.eq.true`)
           .order("is_default", { ascending: false })
 
         setBrandingPresets(brandingData || [])
@@ -265,7 +269,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
       const { data: project, error: projectError } = await supabase
         .from("ai_video_projects")
         .insert({
-          agent_id: user.id,
+          agent_id: resolvedAgentId,
           brokerage_id: brokerage.id,
           title: scriptTitle || `Video — ${new Date().toLocaleDateString()}`,
           script_content: script,
