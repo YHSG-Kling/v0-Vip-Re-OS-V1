@@ -159,8 +159,13 @@ export async function getCurrentUserWithRole(): Promise<UserWithRole | null> {
 }
 
 /**
- * Get all brokerages the current user belongs to
- * @returns Array of BrokerageContext objects
+ * Get all brokerages the current user belongs to.
+ *
+ * Uses the canonical tables (users.brokerage_id + user_role_assignments.brokerage_id).
+ * The old implementation queried user_brokerage_roles which does not exist in the schema.
+ *
+ * Most users belong to exactly one brokerage. Multi-brokerage support is handled via
+ * user_role_assignments for users who have multiple role rows with different brokerage_ids.
  */
 export async function getUserBrokerages(): Promise<BrokerageContext[]> {
   const supabase = await getSupabaseServerClient()
@@ -170,33 +175,41 @@ export async function getUserBrokerages(): Promise<BrokerageContext[]> {
     error: authError,
   } = await supabase.auth.getUser()
 
-  if (authError || !user) {
-    return []
-  }
+  if (authError || !user) return []
 
-  const { data: userBrokerages, error } = await supabase
-    .from("user_brokerage_roles")
-    .select(`
-      brokerages (
-        id,
-        name,
-        code
-      )
-    `)
-    .eq("user_id", user.id)
+  // Collect all distinct brokerage_ids for this user from both sources
+  const [{ data: userData }, { data: rolesData }] = await Promise.all([
+    supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle(),
+    supabase
+      .from("user_role_assignments")
+      .select("brokerage_id")
+      .eq("user_id", user.id),
+  ])
 
-  if (error || !userBrokerages) {
-    return []
-  }
+  // Deduplicate brokerage IDs across both sources
+  const brokerageIdSet = new Set<string>()
+  if (userData?.brokerage_id) brokerageIdSet.add(userData.brokerage_id)
+  rolesData?.forEach((r: any) => r.brokerage_id && brokerageIdSet.add(r.brokerage_id))
 
-  return userBrokerages.map((ub: any) => {
-    const brokerage = Array.isArray(ub.brokerages) ? ub.brokerages[0] : ub.brokerages
-    return {
-      id: brokerage.id,
-      name: brokerage.name,
-      code: brokerage.code,
-    }
-  })
+  if (brokerageIdSet.size === 0) return []
+
+  const { data: brokerages, error } = await supabase
+    .from("brokerages")
+    .select("id, name, slug")
+    .in("id", Array.from(brokerageIdSet))
+
+  if (error || !brokerages) return []
+
+  return brokerages.map((b: any) => ({
+    id: b.id,
+    name: b.name,
+    // brokerages table has "slug" not "code" — map slug as code for backward compat
+    code: b.slug ?? b.id,
+  }))
 }
 
 /**
