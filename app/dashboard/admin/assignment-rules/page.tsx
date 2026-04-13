@@ -47,6 +47,7 @@ interface AssignmentRule {
 interface AgentOption {
   id: string
   full_name: string | null
+  users?: { first_name: string | null; last_name: string | null } | null
 }
 
 const RULE_TYPE_LABELS: Record<RuleType, string> = {
@@ -103,9 +104,9 @@ export default function AssignmentRulesPage() {
       if (!user) return
 
       const { data: profile } = await supabase
-        .from("user_profiles")
+        .from("users")
         .select("brokerage_id")
-        .eq("user_id", user.id)
+        .eq("id", user.id)
         .single()
 
       if (!profile?.brokerage_id) return
@@ -119,7 +120,7 @@ export default function AssignmentRulesPage() {
           .order("priority", { ascending: false }),
         supabase
           .from("agents")
-          .select("id, full_name")
+          .select("id, users!user_id ( first_name, last_name )")
           .eq("brokerage_id", profile.brokerage_id)
           .eq("is_active", true),
       ])
@@ -281,7 +282,7 @@ export default function AssignmentRulesPage() {
                         ) : (
                           ruleAgents.slice(0, 3).map((a) => (
                             <Badge key={a.id} variant="outline" className="text-xs">
-                              {a.full_name ?? a.id.slice(0, 8)}
+                              {a.full_name ?? [a.users?.first_name, a.users?.last_name].filter(Boolean).join(" ") || a.id.slice(0, 8)}
                             </Badge>
                           ))
                         )}
@@ -451,7 +452,7 @@ export default function AssignmentRulesPage() {
                       onChange={() => toggleAgentId(agent.id)}
                       className="rounded"
                     />
-                    {agent.full_name ?? agent.id.slice(0, 12)}
+                    {agent.full_name ?? [agent.users?.first_name, agent.users?.last_name].filter(Boolean).join(" ") || agent.id.slice(0, 12)}
                   </label>
                 ))}
               </div>

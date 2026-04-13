@@ -69,7 +69,7 @@ export default function FarmIntelligencePage() {
     if (!user) { setLoading(false); return }
 
     const { data: profile } = await supabase
-      .from("user_profiles")
+      .from("users")
       .select("brokerage_id")
       .eq("id", user.id)
       .maybeSingle()
