@@ -37,7 +37,7 @@ export async function generateAndStorePDF(options: PDFGenerationOptions): Promis
     // Get agent details for branding
     const { data: agent } = await supabase
       .from("users")
-      .select("first_name, last_name, email, phone, license_number, brokerage")
+      .select("first_name, last_name, email, phone, license_number, brokerage_id, brokerage:brokerages(name)")
       .eq("id", options.agentId)
       .single()
 
@@ -176,7 +176,7 @@ async function generateDocumentHTML(options: PDFGenerationOptions, agent: any): 
           <div class="header">
             <h1>Comparative Market Analysis</h1>
             <p>${data.address || "Property Address"}</p>
-            <p>Prepared by ${agent.first_name} ${agent.last_name} | ${agent.brokerage || ""}</p>
+            <p>Prepared by ${agent.first_name} ${agent.last_name} | ${(agent.brokerage as any)?.name || ""}</p>
             <p>${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}</p>
           </div>
 
