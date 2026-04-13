@@ -11,8 +11,7 @@
  *   - This file validates the actor context and delegates to kernel commands.
  *
  * Schema facts used here:
- *   - contacts.agent_id → users.id (FK to users table, NOT agents.id)
- *     Use userId (not agentId) when filtering the contacts table.
+ *   - contacts.agent_id → agents.id (FK corrected in migration 114)
  *   - contacts.phone_digits → normalized digits-only for dedup
  *   - contacts.source, source_family, source_channel, source_subtype — all exist
  *   - activities table (not activity_log) for notes/timeline
@@ -37,7 +36,7 @@ export async function getContacts(params?: {
   search?: string
 }) {
   try {
-    const { userId, agentId, brokerageId, userType } = await getAgentContext()
+    const { agentId, brokerageId, userType } = await getAgentContext()
     const supabase = await createClient()
 
     if (!brokerageId) {
@@ -53,10 +52,9 @@ export async function getContacts(params?: {
       .is("deleted_at", null)
       .order("last_contacted_at", { ascending: false, nullsFirst: false })
 
-    // Agents only see their own contacts.
-    // contacts.agent_id FKs to users.id — filter by userId, NOT agentId (agents.id).
-    if (userType === "agent" && userId) {
-      query = query.eq("agent_id", userId)
+    // Agents only see their own contacts — contacts.agent_id → agents.id
+    if (userType === "agent" && agentId) {
+      query = query.eq("agent_id", agentId)
     }
 
     if (params?.status) {

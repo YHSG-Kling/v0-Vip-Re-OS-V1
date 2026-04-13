@@ -19,9 +19,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       .is("deleted_at", null)
 
     // Agents can only see their own contacts; brokers/admins see all in the brokerage.
-    // contacts.agent_id FKs to users.id — filter by userId (not agentId / agents.id).
-    if (!["broker", "admin", "superadmin"].includes(auth.userType)) {
-      query = query.eq("agent_id", auth.userId)
+    // contacts.agent_id → agents.id (FK corrected in migration 114)
+    if (auth.agentId && !["broker", "admin", "superadmin"].includes(auth.userType)) {
+      query = query.eq("agent_id", auth.agentId)
     }
 
     const { data: contact, error } = await query.single()
@@ -54,9 +54,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       .eq("brokerage_id", auth.brokerageId)   // brokerage isolation
 
     // Agents can only delete their own contacts; brokers/admins can delete any in brokerage.
-    // contacts.agent_id FKs to users.id — filter by userId (not agentId / agents.id).
-    if (!["broker", "admin", "superadmin"].includes(auth.userType)) {
-      query = query.eq("agent_id", auth.userId)
+    // contacts.agent_id → agents.id (FK corrected in migration 114)
+    if (auth.agentId && !["broker", "admin", "superadmin"].includes(auth.userType)) {
+      query = query.eq("agent_id", auth.agentId)
     }
 
     const { error } = await query

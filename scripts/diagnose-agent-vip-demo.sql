@@ -1,4 +1,6 @@
--- Check: what does contacts_agent_id_fkey point to?
+-- Verify: contacts.agent_id now correctly resolves to agents.id for agent@vip.demo
+
+-- Step 1: Confirm FK now points to agents table
 SELECT
   tc.constraint_name,
   kcu.column_name,
@@ -15,13 +17,17 @@ WHERE tc.constraint_type = 'FOREIGN KEY'
   AND tc.table_name = 'contacts'
   AND kcu.column_name = 'agent_id';
 
--- Also check what the demo contact's agent_id resolves to
+-- Step 2: Confirm the agent@vip.demo contact rows resolve correctly
+-- agents.id should match contacts.agent_id (not users.id)
 SELECT
-  c.id,
+  c.id           AS contact_id,
+  c.first_name,
+  c.last_name,
   c.agent_id,
-  -- Check if it's in agents table
-  (SELECT id FROM agents WHERE id = c.agent_id LIMIT 1) AS resolves_to_agents,
-  -- Check if it's in users table
-  (SELECT id FROM users WHERE id = c.agent_id LIMIT 1) AS resolves_to_users
+  a.id           AS agents_id_matches,
+  au.email       AS agent_email
 FROM contacts c
-WHERE c.brokerage_id = 'b0000000-0000-0000-0000-000000000001';
+JOIN agents a     ON a.id = c.agent_id
+JOIN auth.users au ON au.id = a.user_id
+WHERE au.email = 'agent@vip.demo'
+ORDER BY c.first_name;

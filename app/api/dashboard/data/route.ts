@@ -64,11 +64,11 @@ export async function GET(request: NextRequest) {
       }
 
       case "contacts": {
-        // contacts.agent_id FKs to users.id (not agents.id) — use user.id here
+        // contacts.agent_id → agents.id (FK corrected + backfilled in migration 114)
         const { data: contacts } = await supabase
           .from("contacts")
           .select("*")
-          .eq("agent_id", user.id)
+          .eq("agent_id", agentId)
           .eq("brokerage_id", brokerageId)
           .is("deleted_at", null)
           .order("created_at", { ascending: false })

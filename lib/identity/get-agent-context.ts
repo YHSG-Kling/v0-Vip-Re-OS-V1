@@ -6,16 +6,10 @@ export interface AgentContext {
   userId: string
   /**
    * agents.id — the row PK in the agents table.
-   * Use for: transactions, listings, showings, offers, tasks, commissions, reviews, etc.
-   * DO NOT use for contacts — see contactAgentId.
+   * contacts.agent_id → agents.id (FK corrected in migration 114).
+   * Use agentId for all contacts, transactions, listings, showings, offers, tasks, etc.
    */
   agentId: string | null
-  /**
-   * users.id — contacts.agent_id is a FK to users.id (not agents.id).
-   * Always use this field when filtering the contacts table by agent.
-   * Equals userId.
-   */
-  contactAgentId: string
   brokerageId: string | null
   /** Source priority: users.user_type > user_role_assignments.role > auth metadata > 'agent' */
   userType: string
@@ -28,7 +22,6 @@ export interface AgentContext {
 const UNAUTHENTICATED_CONTEXT: AgentContext = {
   userId: "",
   agentId: null,
-  contactAgentId: "",
   brokerageId: null,
   userType: "agent",
   role: "agent",
@@ -98,8 +91,6 @@ export async function getAgentContext(): Promise<AgentContext> {
     return {
       userId: user.id,
       agentId,
-      // contacts.agent_id FKs to users.id — always use this for contacts queries
-      contactAgentId: user.id,
       brokerageId,
       userType,
       role: userType, // alias — same value, different key name

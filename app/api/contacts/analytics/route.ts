@@ -16,9 +16,9 @@ export async function GET(request: NextRequest) {
       .eq("brokerage_id", auth.brokerageId)
       .is("deleted_at", null)
 
-    // contacts.agent_id FKs to users.id — filter by userId (not agentId / agents.id)
-    if (!["broker", "admin", "superadmin"].includes(auth.userType)) {
-      query = query.eq("agent_id", auth.userId)
+    // contacts.agent_id → agents.id (FK corrected in migration 114)
+    if (auth.agentId && !["broker", "admin", "superadmin"].includes(auth.userType)) {
+      query = query.eq("agent_id", auth.agentId)
     }
 
     const { data: contacts, error } = await query

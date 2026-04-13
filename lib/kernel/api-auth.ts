@@ -18,8 +18,7 @@ export interface AuthResult {
   ok: true
   user: User
   userId: string
-  agentId: string | null  // agents.id — NOT users.id. Use for: transactions, listings, showings, offers, tasks, etc.
-  contactAgentId: string  // users.id — contacts.agent_id FK points to users.id (schema invariant). Use for ALL contacts queries.
+  agentId: string | null  // agents.id — contacts.agent_id → agents.id (FK corrected migration 114)
   brokerageId: string
   userType: string
 }
@@ -78,9 +77,6 @@ export async function requireAuth(
     user,
     userId: user.id,
     agentId,
-    // contacts.agent_id is a FK to users.id (not agents.id) per schema invariant.
-    // Always use contactAgentId when filtering the contacts table.
-    contactAgentId: user.id,
     brokerageId: userData.brokerage_id,
     userType: userData.user_type ?? "agent",
   }
