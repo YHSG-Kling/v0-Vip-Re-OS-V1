@@ -20,11 +20,11 @@ import {
 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { generateAIText } from "@/lib/ai"
-import { executeWorkflow } from "../../app/actions/workflows"
-import { queueVideoGeneration } from "../../app/actions/video-generation"
-import type { AgentVideo, Agent } from "../../types"
-import { supabaseService } from "../../services/supabaseService"
-import { analyzeContentQuality } from "../../lib/quality-checker"
+import { executeWorkflow } from "@/app/actions/workflows"
+import { queueVideoGeneration } from "@/app/actions/video-generation"
+import type { AgentVideo, Agent } from "@/types"
+import { supabaseService } from "@/services/supabaseService"
+import { analyzeContentQuality } from "@/lib/quality-checker"
 
 interface VideoGeneratorProps {
   agentId: string

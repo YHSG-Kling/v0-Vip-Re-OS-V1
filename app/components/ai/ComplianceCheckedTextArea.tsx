@@ -3,10 +3,10 @@
 import type React from "react"
 import { useState } from "react"
 import { AlertTriangle, CheckCircle2, Loader2, Sparkles, Wand2 } from "lucide-react"
-import { workflowService } from "../../services/workflowService"
-import { supabaseService } from "../../services/supabaseService"
+import { workflowService } from "@/services/workflowService"
+import { supabaseService } from "@/services/supabaseService"
 import { useAuth } from "@/lib/auth/client"
-import type { ComplianceContentType, FlaggedPhrase } from "../../types"
+import type { ComplianceContentType, FlaggedPhrase } from "@/types"
 
 interface ComplianceCheckedTextAreaProps {
   value: string
