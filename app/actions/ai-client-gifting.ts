@@ -225,21 +225,21 @@ export async function createGiftOrder(params: {
   const supabase = await createClient()
 
   try {
+    // Use live schema column names: vendor_name, gift_name, estimated_cost, personalization_note.
+    // delivery_address and scheduled_delivery do not exist on client_gifts — omit them.
     const { data: gift } = await supabase
       .from("client_gifts")
       .insert({
-        agent_id: params.agentId,
-        contact_id: params.contactId,
-        gift_type: params.giftDetails.name,
-        gift_description: params.giftDetails.description,
-        cost: params.giftDetails.cost,
-        vendor: params.giftDetails.vendor,
-        occasion: params.giftDetails.occasion,
-        personal_note: params.giftDetails.personalNote,
-        delivery_address: params.deliveryAddress,
-        scheduled_delivery: params.deliveryDate,
-        status: "pending",
-        created_at: new Date().toISOString(),
+        agent_id:           params.agentId,
+        contact_id:         params.contactId,
+        gift_type:          params.giftDetails.name,
+        gift_name:          params.giftDetails.name,
+        gift_description:   params.giftDetails.description,
+        estimated_cost:     params.giftDetails.cost,
+        vendor_name:        params.giftDetails.vendor,
+        occasion:           params.giftDetails.occasion,
+        personalization_note: params.giftDetails.personalNote ?? null,
+        status:             "pending",
       })
       .select()
       .single()

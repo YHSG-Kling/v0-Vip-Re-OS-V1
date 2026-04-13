@@ -173,16 +173,17 @@ Generate:
 5. 3-5 personalized details to reference`,
     })
 
-    // Save the touchpoint
+    // Save the touchpoint — use schema-correct columns only.
+    // scheduled_touchpoints uses message_template (text) not content (jsonb).
     const { data: savedTouchpoint } = await supabase
       .from("scheduled_touchpoints")
       .insert({
-        agent_id: params.agentId,
-        contact_id: params.contactId,
-        touchpoint_type: params.touchpointType,
-        content: touchpoint,
-        status: "pending",
-        ai_generated: true,
+        agent_id:         params.agentId,
+        contact_id:       params.contactId,
+        touchpoint_type:  params.touchpointType,
+        message_template: JSON.stringify(touchpoint),
+        status:           "pending",
+        ai_generated:     true,
       })
       .select()
       .single()
