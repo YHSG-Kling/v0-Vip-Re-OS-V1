@@ -46,12 +46,7 @@ export function BillingDashboard({ brokerageId }: BillingDashboardProps) {
       try {
         const response = await fetch(
           `/api/admin/billing/dashboard?brokerageId=${brokerageId}`,
-          {
-            method: "GET",
-            headers: {
-              "x-user-type": "superadmin",
-            },
-          }
+          { method: "GET" }
         )
 
         if (!response.ok) {

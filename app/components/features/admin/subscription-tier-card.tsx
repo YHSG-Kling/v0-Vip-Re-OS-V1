@@ -34,10 +34,7 @@ export function SubscriptionTierCard({
         `/api/admin/billing/subscriptions/${brokerageId}`,
         {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-user-type": "superadmin",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             newStatus,
             cancellationReason: newStatus === "cancelled" ? "admin_action" : undefined,
