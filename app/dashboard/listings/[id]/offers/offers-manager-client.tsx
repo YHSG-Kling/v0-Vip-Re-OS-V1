@@ -36,7 +36,7 @@ import {
 import { aiNegotiationAdvisor } from "@/app/actions/ai-predictions"
 import { aiCounterOfferStrategy } from "@/app/actions/ai-offer-creation"
 import { SellerDecisionReadinessCard } from "./components/seller-decision-readiness-card"
-import { DecisionHistoryPanel } from "./components/decision-history-panel"
+import { DecisionHistoryPanel } from "@/app/components/dashboard/listings/lifecycle/decision-history-panel"
 import { toast } from "@/hooks/use-toast"
 import { getOfferContext } from "@/lib/contacts/ownership-model"
 

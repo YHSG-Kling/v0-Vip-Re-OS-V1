@@ -3,12 +3,12 @@
 import { useState, useTransition } from "react"
 import { useToast } from "@/hooks/use-toast"
 import { handleVoiceCommand } from "@/app/actions/voice-assistant/handle-voice-command"
-import { WakeWordCard } from "./components/WakeWordCard"
-import { QuickCommandGrid } from "./components/QuickCommandGrid"
-import { RecentCommandsFeed, type VoiceCommandRow } from "./components/RecentCommandsFeed"
-import { VapiCallPanel } from "./components/VapiCallPanel"
-import { VoiceAnalytics } from "./components/VoiceAnalytics"
-import { VoiceCallHistoryTable, type VoiceCallRow } from "./components/VoiceCallHistoryTable"
+import { WakeWordCard } from "@/app/components/dashboard/voice/WakeWordCard"
+import { QuickCommandGrid } from "@/app/components/dashboard/voice/QuickCommandGrid"
+import { RecentCommandsFeed, type VoiceCommandRow } from "@/app/components/dashboard/voice/RecentCommandsFeed"
+import { VapiCallPanel } from "@/app/components/dashboard/voice/VapiCallPanel"
+import { VoiceAnalytics } from "@/app/components/dashboard/voice/VoiceAnalytics"
+import { VoiceCallHistoryTable, type VoiceCallRow } from "@/app/components/dashboard/voice/VoiceCallHistoryTable"
 import type {
   VoiceCommandRequest,
 } from "@/app/actions/voice-assistant/handle-voice-command"

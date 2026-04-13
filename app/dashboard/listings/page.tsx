@@ -4,9 +4,9 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { MarketIntelligencePanel } from "./components/market-intelligence-panel"
-import { CmaHistorySheet } from "./components/cma-history-sheet"
-import { ListingCreateSheet } from "./components/listing-create-sheet"
+import { MarketIntelligencePanel } from "@/app/components/dashboard/listings/market-intelligence-panel"
+import { CmaHistorySheet } from "@/app/components/dashboard/listings/cma-history-sheet"
+import { ListingCreateSheet } from "@/app/components/dashboard/listings/listing-create-sheet"
 import { 
   Plus, 
   Home, 
