@@ -399,15 +399,16 @@ Create a comprehensive recovery plan including:
     })
 
     // review_recovery_plans table does not exist in live schema.
-    // Persist recovery plan to ai_assistant_notes using schema-correct columns.
-    // ai_assistant_notes: created_by (not agent_id), note_text (not note), no entity_id/entity_type columns.
+    // Persist recovery plan to ai_assistant_notes.
+    // entity_type + entity_id columns were added to ai_assistant_notes via migration.
     await supabase.from("ai_assistant_notes").insert({
       created_by:  params.agentId,
       role:        "agent",
-      note_text:   JSON.stringify({ type: "recovery_plan", reviewId: params.reviewId, plan: recoveryPlan }),
+      note_text:   JSON.stringify({ type: "recovery_plan", plan: recoveryPlan }),
       note_type:   "review_recovery_plan",
       source:      "ai_review_automation",
-      created_at:  new Date().toISOString(),
+      entity_type: "agent_review",
+      entity_id:   params.reviewId,
     })
 
     // lifecycle_events: actor_user_id (not agent_id), entity_type + entity_id columns.
