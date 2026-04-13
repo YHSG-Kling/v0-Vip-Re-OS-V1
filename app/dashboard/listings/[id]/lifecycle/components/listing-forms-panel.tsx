@@ -27,7 +27,7 @@ import { loadAvailableFormsAction } from "@/app/actions/forms-kernel"
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
-} from "../../components/transaction-form-esign-flow"
+} from "@/app/dashboard/transactions/[id]/components/transaction-form-esign-flow"
 
 interface ListingFormsPanelProps {
   listingId: string

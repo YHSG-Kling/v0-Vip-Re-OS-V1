@@ -87,8 +87,11 @@ export class IDXBrokerClient {
     }
   }
 
-  async getProperties(filters: { city?: string; minPrice?: number; maxPrice?: number } = {}) {
-    if (!this.apiKey) throw new Error("IDXBroker API key not configured")
+  async getProperties(filters: { city?: string; minPrice?: number; maxPrice?: number; status?: string } = {}) {
+    if (!this.apiKey) {
+      console.error("[IDXBroker] API key not configured — returning empty property list")
+      return []
+    }
 
     try {
       const response = await fetch(`${this.baseUrl}/clients/featured`, {
@@ -108,7 +111,10 @@ export class IDXBrokerClient {
   }
 
   async searchProperties(query: string) {
-    if (!this.apiKey) throw new Error("IDXBroker API key not configured")
+    if (!this.apiKey) {
+      console.error("[IDXBroker] API key not configured — returning empty search results")
+      return []
+    }
 
     try {
       const response = await fetch(`${this.baseUrl}/clients/search?query=${encodeURIComponent(query)}`, {
