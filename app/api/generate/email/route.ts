@@ -6,14 +6,23 @@ import { handleError } from "@/lib/errors"
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { prospectId, emailType, agentId } = body
+    // agentId is intentionally NOT read from body — derived from session below.
+    const { prospectId, emailType } = body
 
-    if (!prospectId || !agentId) {
+    if (!prospectId) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
     }
 
-    // Fetch prospect context
+    // Resolve actor identity from session — never trust client-supplied agentId.
     const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
+    // generateContent service expects the agent's users.id (session-derived)
+    const agentId = user.id
+
+    // Fetch prospect context
     const { data: context, error: contextError } = await supabase
       .from("prospect_context")
       .select("*, prospects(*)")

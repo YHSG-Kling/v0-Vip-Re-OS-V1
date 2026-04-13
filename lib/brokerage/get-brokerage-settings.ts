@@ -95,6 +95,12 @@ export interface FinancialDefaults {
   pmi_rate: number
   /** LTV threshold below which PMI is not required (e.g. 0.80 = 80%) */
   pmi_threshold_percent: number
+  /**
+   * Default closing cost as a percentage of sale price (e.g. 0.02 = 2%).
+   * Used by the net sheet calculator when the caller does not supply a fixed dollar amount.
+   * Brokerage-configurable — defaults to 2%.
+   */
+  closing_cost_percent: number
 }
 
 export interface BrokerageSettings {
@@ -180,6 +186,7 @@ const DEFAULT_SETTINGS: BrokerageSettings = {
     default_moving_cost: 2000,
     pmi_rate: 0.005,
     pmi_threshold_percent: 0.80,
+    closing_cost_percent: 0.02,
   },
 }
 
