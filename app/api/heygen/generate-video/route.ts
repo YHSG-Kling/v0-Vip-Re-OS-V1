@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
@@ -82,20 +83,22 @@ async function writeLifecycleEvent(
 }
 
 export async function POST(request: NextRequest) {
+  // Auth guard — brokerage_id and user_id always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
-    const supabase = await createClient()
     const body = await request.json()
 
     const {
-      // Required fields
+      // Required fields (brokerage_id and user_id intentionally NOT taken from body)
       script,
       avatar_id,
       voice_id,
       video_project_id,
-      brokerage_id,
       // Optional configuration
       background,
-      user_id,
       script_id,
       branding_preset_id,
       quality_preset = "1080p",
@@ -103,10 +106,14 @@ export async function POST(request: NextRequest) {
       aspect_ratio = "16:9",
     } = body
 
+    // Always use session-resolved values — never trust body-supplied IDs
+    const brokerage_id = auth.brokerageId
+    const user_id = auth.userId
+
     // ─── VALIDATION ───────────────────────────────────────────────────────────
-    if (!script || !avatar_id || !voice_id || !video_project_id || !brokerage_id) {
+    if (!script || !avatar_id || !voice_id || !video_project_id) {
       return NextResponse.json(
-        { error: "Missing required fields: script, avatar_id, voice_id, video_project_id, brokerage_id" },
+        { error: "Missing required fields: script, avatar_id, voice_id, video_project_id" },
         { status: 400 }
       )
     }

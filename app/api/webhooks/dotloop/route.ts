@@ -1,17 +1,55 @@
 import { type NextRequest, NextResponse } from "next/server"
+import { createHmac, timingSafeEqual } from "crypto"
 import { createClient } from "@/lib/supabase/server"
 import { logEventAndTrigger } from "@/lib/events"
 
-export async function POST(request: NextRequest) {
+// ─────────────────────────────────────────────────────────────────────────────
+// DOTLOOP WEBHOOK HANDLER
+// HMAC-SHA256 signature verified against DOTLOOP_WEBHOOK_SECRET env var.
+// Dotloop sends: X-Dotloop-Signature: sha256=<hex>
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Verifies the Dotloop HMAC-SHA256 signature.
+ * Header format: X-Dotloop-Signature: sha256=<hex digest>
+ */
+function verifyDotloopSignature(rawBody: string, signatureHeader: string | null): boolean {
+  const secret = process.env.DOTLOOP_WEBHOOK_SECRET
+  if (!secret) {
+    console.warn("[dotloop-webhook] DOTLOOP_WEBHOOK_SECRET is not set — rejecting request")
+    return false
+  }
+
+  if (!signatureHeader) return false
+
+  const expectedPrefix = "sha256="
+  if (!signatureHeader.startsWith(expectedPrefix)) return false
+
+  const receivedHex = signatureHeader.slice(expectedPrefix.length)
+  const computed = createHmac("sha256", secret).update(rawBody, "utf-8").digest("hex")
+
   try {
-    const body = await request.json()
+    return timingSafeEqual(Buffer.from(computed, "hex"), Buffer.from(receivedHex, "hex"))
+  } catch {
+    return false
+  }
+}
 
-    console.log("[v0] Dotloop webhook received:", body.event)
+export async function POST(request: NextRequest) {
+  // Read raw body before parsing so the signature can be verified
+  const rawBody = await request.text()
 
+  const signatureHeader = request.headers.get("x-dotloop-signature")
+  if (!verifyDotloopSignature(rawBody, signatureHeader)) {
+    return NextResponse.json({ error: "Invalid or missing webhook signature" }, { status: 401 })
+  }
+
+  try {
+    const body = JSON.parse(rawBody)
     const supabase = await createClient()
 
     if (body.event === "document.signed") {
-      const { document_id, loop_id, signer } = body.data
+      const { document_id, loop_id } = body.data
 
       // Update document status
       const { data: doc, error } = await supabase
@@ -25,7 +63,7 @@ export async function POST(request: NextRequest) {
         .single()
 
       if (!error && doc) {
-        // Check if all documents are signed
+        // Check if all documents in the loop are signed
         const { data: allDocs } = await supabase
           .from("client_documents")
           .select("status")
@@ -34,7 +72,7 @@ export async function POST(request: NextRequest) {
         const allSigned = allDocs?.every((d) => d.status === "signed")
 
         if (allSigned && doc.transaction_id) {
-          // Emit BOTH legacy and normalized events
+          // Legacy event
           await logEventAndTrigger({
             event_type: "transaction.documents_complete",
             user_id: doc.contact_id,
@@ -46,7 +84,7 @@ export async function POST(request: NextRequest) {
             dedupe_key: `docs-complete-${doc.transaction_id}`,
           })
 
-          // Emit normalized provider event
+          // Normalized provider event
           await logEventAndTrigger({
             event_type: "provider.signatures.complete",
             user_id: doc.contact_id,
@@ -65,18 +103,15 @@ export async function POST(request: NextRequest) {
     if (body.event === "loop.status.updated") {
       const { loop_id, status } = body.data
 
-      // Update transaction status
       await supabase
         .from("transactions")
-        .update({
-          status: mapDotloopStatus(status),
-        })
+        .update({ status: mapDotloopStatus(status) })
         .eq("dotloop_loop_id", loop_id)
     }
 
     return NextResponse.json({ received: true })
   } catch (error: any) {
-    console.error("[v0] Dotloop webhook error:", error)
+    console.error("[dotloop-webhook] Error:", error)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 }

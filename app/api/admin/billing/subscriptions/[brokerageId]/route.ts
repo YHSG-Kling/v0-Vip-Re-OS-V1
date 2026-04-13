@@ -2,32 +2,22 @@
 // Subscription detail + override endpoint
 
 import { NextRequest, NextResponse } from "next/server"
+import { createClient } from "@/lib/supabase/server"
+import { requireSuperadminAuth } from "@/lib/kernel/api-auth"
 import { resolveSubscriptionTier, updateSubscriptionState } from "@/lib/kernel/billing"
-import { headers } from "next/headers"
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ brokerageId: string }> }
 ) {
+  const supabase = await createClient()
+  const auth = await requireSuperadminAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
-    const headersList = await headers()
-    const userType = headersList.get("x-user-type")
-
-    if (userType !== "superadmin") {
-      return NextResponse.json(
-        { error: "Only superadmins can access subscription details" },
-        { status: 403 }
-      )
-    }
-
     const { brokerageId } = await params
-
     const result = await resolveSubscriptionTier({ brokerageId })
-
-    if (!result.success) {
-      return NextResponse.json({ error: result.error }, { status: 500 })
-    }
-
+    if (!result.success) return NextResponse.json({ error: result.error }, { status: 500 })
     return NextResponse.json(result, { status: 200 })
   } catch (error) {
     console.error("[API] /admin/billing/subscriptions GET error:", error)
@@ -42,18 +32,11 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ brokerageId: string }> }
 ) {
+  const supabase = await createClient()
+  const auth = await requireSuperadminAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
-    const headersList = await headers()
-    const userId = headersList.get("x-user-id")
-    const userType = headersList.get("x-user-type")
-
-    if (userType !== "superadmin") {
-      return NextResponse.json(
-        { error: "Only superadmins can update subscriptions" },
-        { status: 403 }
-      )
-    }
-
     const { brokerageId } = await params
     const body = await req.json()
 
@@ -63,15 +46,12 @@ export async function POST(
       newStatus: body.newStatus,
       cancellationReason: body.cancellationReason,
       actorContext: {
-        userId: userId || "",
+        userId: auth.userId,   // always from session, never from body/headers
         userType: "superadmin",
       },
     })
 
-    if (!result.success) {
-      return NextResponse.json({ error: result.error }, { status: 500 })
-    }
-
+    if (!result.success) return NextResponse.json({ error: result.error }, { status: 500 })
     return NextResponse.json(result, { status: 200 })
   } catch (error) {
     console.error("[API] /admin/billing/subscriptions POST error:", error)

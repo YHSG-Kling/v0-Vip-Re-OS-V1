@@ -13,6 +13,7 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { requireAuth } from "@/lib/kernel/api-auth"
 import { generateAIResponse } from "@/lib/ai"
 import { KernelEvent } from "@/lib/kernel/events"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
@@ -67,8 +68,12 @@ const TONE_ADJUSTMENTS: Record<string, string> = {
 // ─── MAIN HANDLER ────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
+  // Auth guard — agent_id and brokerage_id always from session
+  const supabase = await createClient()
+  const auth = await requireAuth(supabase)
+  if (!auth.ok) return auth.response
+
   try {
-    const supabase = await createClient()
     const serviceSupabase = createServiceClient()
     const body = await request.json()
 
@@ -77,13 +82,15 @@ export async function POST(request: NextRequest) {
       listing_id,
       contact_id,
       template_id,
-      agent_id,
-      brokerage_id,
       custom_context,
       brand_voice_tone,
       duration_target_seconds,
       save_to_library,
     } = body
+
+    // Always use session-resolved values — never trust body-supplied IDs
+    const agent_id = auth.agentId
+    const brokerage_id = auth.brokerageId
 
     // Validate required fields
     if (!script_type || !SCRIPT_TYPES.includes(script_type)) {
@@ -91,10 +98,6 @@ export async function POST(request: NextRequest) {
         { error: `Invalid script_type. Must be one of: ${SCRIPT_TYPES.join(", ")}` },
         { status: 400 }
       )
-    }
-
-    if (!brokerage_id) {
-      return NextResponse.json({ error: "brokerage_id is required" }, { status: 400 })
     }
 
     // ── Fetch agent info ─────────────────────────────────────────────────────
