@@ -109,7 +109,7 @@ export function ContactCommandStrip({
             {loading ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Zap className="h-3 w-3 mr-1" />}
             Enable AI-ISA
           </Button>
-        ) : (
+        ) : activePlan ? (
           <Button
             size="sm"
             variant="outline"
@@ -119,6 +119,11 @@ export function ContactCommandStrip({
           >
             {activePlan.is_paused ? "Resume AI-ISA" : "Pause AI-ISA"}
           </Button>
+        ) : (
+          <Badge className="text-xs bg-indigo-100 text-indigo-700 border-0 h-7 px-2">
+            <Zap className="h-3 w-3 mr-1" />
+            AI-ISA Active
+          </Badge>
         )}
       </div>
     </div>

@@ -35,7 +35,7 @@ import {
 } from "../../../../transactions/[id]/components/transaction-form-esign-flow"
 import { SendForSignaturesPanel } from "@/app/components/shared/SendForSignaturesPanel"
 
-type FlowStep = "address" | "form_source" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard" | "send_for_signatures"
+type FlowStep = "address" | "form_source" | "forms" | "strategy" | "escalation" | "buyer_letter" | "contingencies" | "wizard" | "send_for_signatures"
 
 interface ResolvedProperty {
   address:         string
@@ -261,7 +261,7 @@ export function OfferInitiationFlow({
   // ── Step 2: Form source ─────────────────────────────────────────────────────
 
   function proceedFromFormSource() {
-    setFlowStep("strategy")
+    setFlowStep("forms")
   }
 
   // ── Step 3: Strategy ────────────────────────────────────────────────────────
@@ -283,11 +283,136 @@ export function OfferInitiationFlow({
 
   // ── RENDER ──────────────────────────────────────────────────────────────────
 
-  if (flowStep === "strategy") {
+  // ── Step 3: Forms selection ─────────────────────────────────────────────────
+
+  if (flowStep === "forms") {
     return (
       <div className="flex flex-col h-full overflow-y-auto">
         <div className="px-5 py-4 border-b border-border flex items-center gap-3">
           <button onClick={() => setFlowStep("form_source")} className="text-sm text-muted-foreground hover:underline">
+            Back
+          </button>
+          <p className="text-sm font-semibold">Step 3 — Offer Documents</p>
+        </div>
+
+        <div className="flex-1 px-5 py-4 space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold">Select Offer Forms</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Choose the purchase agreement and addenda to include in this offer.
+            </p>
+          </div>
+
+          {/* Platform provider forms */}
+          {formSrc?.source === "platform" && (
+            <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 flex items-center gap-2">
+              <Check className="h-4 w-4 text-green-600 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-green-800">Forms: {formSrc.providerName}</p>
+                <p className="text-xs text-green-700">
+                  Required forms will be pulled automatically from your connected provider when the offer wizard opens.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Kernel forms for in_app path */}
+          {formSrc?.source === "in_app" && (
+            <div className="space-y-3">
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-amber-800">No transaction provider connected</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    Connect your forms provider in Settings for state-approved forms. Using brokerage in-app forms below.
+                  </p>
+                </div>
+              </div>
+
+              {offerKernelFormsLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading available forms...
+                </div>
+              ) : offerKernelForms.length > 0 ? (
+                <div className="space-y-2">
+                  {offerKernelForms.map(form => (
+                    <button
+                      key={form.id}
+                      type="button"
+                      onClick={() =>
+                        setSelectedOfferForm(prev =>
+                          prev?.id === form.id ? null : form
+                        )
+                      }
+                      className={cn(
+                        "w-full flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
+                        selectedOfferForm?.id === form.id
+                          ? "border-primary bg-primary/5"
+                          : "border-border bg-background hover:bg-muted/40"
+                      )}
+                    >
+                      <FileText
+                        className={cn(
+                          "h-4 w-4 shrink-0",
+                          selectedOfferForm?.id === form.id ? "text-primary" : "text-muted-foreground"
+                        )}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{form.name}</p>
+                        <p className="text-xs text-muted-foreground capitalize">
+                          {form.category.replace(/_/g, " ")}
+                        </p>
+                      </div>
+                      {selectedOfferForm?.id === form.id && (
+                        <Check className="h-3.5 w-3.5 text-primary shrink-0" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
+                  No offer forms found for your brokerage. You can add forms in Settings and proceed with the default purchase agreement.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Uploaded doc path */}
+          {formSrc?.source === "uploaded_doc" && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 flex items-center gap-2">
+              <FileText className="h-4 w-4 text-blue-600 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-blue-800">Uploaded Document</p>
+                <p className="text-xs text-blue-700">{formSrc.label}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-border px-5 py-4 flex items-center gap-3">
+          <button
+            onClick={() => setFlowStep("form_source")}
+            className="rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-muted/50 transition-colors"
+          >
+            Back
+          </button>
+          <button
+            onClick={() => setFlowStep("strategy")}
+            className="ml-auto rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            Next: AI Strategy
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (flowStep === "strategy") {
+    return (
+      <div className="flex flex-col h-full overflow-y-auto">
+        <div className="px-5 py-4 border-b border-border flex items-center gap-3">
+          <button onClick={() => setFlowStep("forms")} className="text-sm text-muted-foreground hover:underline">
             Back
           </button>
           <p className="text-sm font-semibold">AI Strategy Recommendation</p>
@@ -861,7 +986,7 @@ export function OfferInitiationFlow({
     <div className="flex flex-col h-full">
       <div className="px-5 py-4 border-b border-border flex items-center justify-between">
         <p className="text-sm font-semibold">
-          {flowStep === "address" ? "Step 1 — Property Address" : "Step 2 — Form Source"}
+          {flowStep === "address" ? "Step 1 — Property Address" : "Step 2 — Provider & Form Source"}
         </p>
         <button onClick={onCancel} className="text-xs text-muted-foreground hover:underline">Cancel</button>
       </div>
@@ -1113,7 +1238,7 @@ export function OfferInitiationFlow({
             disabled={isLoadingFormSrc || !formSrc}
             className="ml-auto rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
           >
-            Get AI Strategy
+            Next: Select Forms
           </button>
         )}
       </div>
