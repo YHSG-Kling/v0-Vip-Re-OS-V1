@@ -735,10 +735,24 @@ export async function getApprovedContentLibraryService(filters?: {
 export async function getPendingApprovalsService() {
   const supabase = await createClient()
 
+  // Resolve brokerage_id from session — never trust caller-supplied value
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { data: userData } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  const brokerageId = userData?.brokerage_id
+  if (!brokerageId) return []
+
   const { data, error } = await supabase
     .from("activities")
     .select("*")
     .eq("activity_type", "content.approval")
+    .eq("brokerage_id", brokerageId)
     .in("status", ["pending", "needs_revision"])
     .order("created_at", { ascending: true })
 
@@ -753,9 +767,23 @@ export async function getPendingApprovalsService() {
 export async function getComplianceViolationsService(agentId?: string, userId?: string) {
   const supabase = await createClient()
 
+  // Resolve brokerage_id from session — never trust caller-supplied value
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { data: userData } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
+
+  const brokerageId = userData?.brokerage_id
+  if (!brokerageId) return []
+
   let query = supabase
     .from("compliance_flags")
     .select(`*, users (id, first_name, last_name, email)`)
+    .eq("brokerage_id", brokerageId)
     .order("detected_at", { ascending: false })
 
   if (agentId) {

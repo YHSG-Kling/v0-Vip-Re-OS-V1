@@ -57,8 +57,13 @@ async function getSupabaseServerClient() {
 }
 
 /**
- * Get user's primary brokerage context with role and capabilities
- * @returns UserWithRole object or null if not found
+ * Get user's primary brokerage context with role and capabilities.
+ *
+ * Uses the CANONICAL tables (same as getAgentContext / useAuth):
+ *   users.user_type  →  user_role_assignments.role  →  auth metadata  →  'agent'
+ *
+ * The previous implementation queried user_brokerage_roles which does NOT
+ * exist in the schema, causing all permission checks to silently return null.
  */
 export async function getCurrentUserContext(): Promise<UserWithRole | null> {
   const supabase = await getSupabaseServerClient()
@@ -68,63 +73,86 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
     error: authError,
   } = await supabase.auth.getUser()
 
-  if (authError || !user) {
-    console.error("[Auth] Error fetching current user:", authError)
-    return null
-  }
+  if (authError || !user) return null
 
-  // Get user's brokerage and role information
-  const { data: userBrokerageRole, error: roleError } = await supabase
-    .from("user_brokerage_roles")
-    .select(`
-      brokerage_id,
-      role_id,
-      is_primary,
-      brokerages (
-        id,
-        name,
-        code
-      ),
-      roles (
-        id,
-        name,
-        role_capabilities (
-          capability
-        )
-      )
-    `)
-    .eq("user_id", user.id)
-    .eq("is_primary", true)
-    .single()
+  // Canonical lookup — same tables used by getAgentContext() and useAuth()
+  const [{ data: userData }, { data: rolesData }] = await Promise.all([
+    supabase
+      .from("users")
+      .select("id, email, brokerage_id, user_type, team_id")
+      .eq("id", user.id)
+      .maybeSingle(),
+    supabase
+      .from("user_role_assignments")
+      .select("brokerage_id, role, agent_id, capabilities")
+      .eq("user_id", user.id)
+      .limit(1),
+  ])
 
-  if (roleError || !userBrokerageRole) {
-    console.error("[Auth] Error fetching user role:", roleError)
-    return null
-  }
+  if (!userData) return null
 
-  const brokerage = Array.isArray(userBrokerageRole.brokerages)
-    ? userBrokerageRole.brokerages[0]
-    : userBrokerageRole.brokerages
+  const firstRole = rolesData?.[0]
+  const brokerageId = userData.brokerage_id ?? firstRole?.brokerage_id ?? ""
+  if (!brokerageId) return null
 
-  const role = Array.isArray(userBrokerageRole.roles) ? userBrokerageRole.roles[0] : userBrokerageRole.roles
+  // Resolve brokerage name
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("name")
+    .eq("id", brokerageId)
+    .maybeSingle()
 
-  const capabilities = role?.role_capabilities?.map((rc: any) => rc.capability) || []
+  // Canonical role resolution: users.user_type > role_assignment.role > 'agent'
+  const canonicalRole = userData.user_type ?? firstRole?.role ?? "agent"
+  const roleName = mapCanonicalToLegacyRole(canonicalRole)
+  const capabilities: string[] =
+    firstRole?.capabilities ?? getDefaultCapabilities(canonicalRole)
 
   return {
-    id: user.id,
-    email: user.email!,
-    brokerageId: userBrokerageRole.brokerage_id,
-    brokerageName: brokerage?.name || "",
-    roleId: userBrokerageRole.role_id,
-    roleName: role?.name as Role,
+    id: userData.id,
+    email: userData.email ?? user.email ?? "",
+    brokerageId,
+    brokerageName: brokerage?.name ?? "",
+    roleId: firstRole?.agent_id ?? userData.id,
+    roleName,
     capabilities,
-    isPrimary: userBrokerageRole.is_primary,
+    isPrimary: true,
   }
 }
 
+/** Map canonical role strings to the legacy Role type for backward compatibility. */
+function mapCanonicalToLegacyRole(canonical: string): Role {
+  const map: Record<string, Role> = {
+    superadmin: "BrokerOwner",
+    admin: "BrokerOwner",
+    broker: "BrokerOwner",
+    team_lead: "ManagingBroker",
+    agent: "Agent",
+    isa: "Agent",
+    tc: "tc",
+    compliance_officer: "compliance_officer",
+  }
+  return map[canonical] ?? "Agent"
+}
+
+/** Default capability sets by canonical role. */
+function getDefaultCapabilities(role: string): string[] {
+  const caps: Record<string, string[]> = {
+    superadmin: ["*"],
+    admin: ["contacts:write", "transactions:write", "listings:write", "compliance:write", "admin:write"],
+    broker: ["contacts:write", "transactions:write", "listings:write", "compliance:read", "team:write"],
+    team_lead: ["contacts:write", "transactions:write", "listings:write", "team:read"],
+    agent: ["contacts:write", "transactions:write", "listings:write"],
+    isa: ["contacts:read", "leads:write"],
+    tc: ["transactions:write", "documents:write", "contacts:read"],
+    compliance_officer: ["compliance:write", "contacts:read", "transactions:read"],
+  }
+  return caps[role] ?? ["contacts:read"]
+}
+
 /**
- * Alias for getCurrentUserContext — provides UserWithRole shape for permission checks.
- * Used by hasCapability, hasRole, isAdmin, requireRole, etc.
+ * Alias for getCurrentUserContext.
+ * Kept for backward compatibility — many files call getCurrentUserWithRole.
  */
 export async function getCurrentUserWithRole(): Promise<UserWithRole | null> {
   return getCurrentUserContext()
