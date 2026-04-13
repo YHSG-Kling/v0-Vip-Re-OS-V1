@@ -24,9 +24,10 @@ export async function submitListingForSignature(params: SubmitListingForSignatur
   const supabase = createServiceClient()
 
   // Get listing with brokerage_id for provider resolution
+  // Note: esign columns live on listing_agreements, not listings
   const { data: listing, error: listingError } = await supabase
     .from("listings")
-    .select("id, brokerage_id, esign_provider, esign_status, address, status")
+    .select("id, brokerage_id, address, status")
     .eq("id", listingId)
     .single()
 
@@ -34,15 +35,13 @@ export async function submitListingForSignature(params: SubmitListingForSignatur
     return { success: false, error: "Listing not found" }
   }
 
-  // Emit signature request event
+  // Emit signature request event using schema-correct columns
   const { error: eventError } = await supabase.from("activities").insert({
     activity_type: "listing.signature.requested",
-    user_id: userId,
-    metadata: {
-      listing_id: listingId,
-      signers,
-      timestamp: new Date().toISOString(),
-    },
+    agent_id:      userId,
+    entity_type:   "listing",
+    title:         "Signature requested",
+    description:   `Signature requested for listing ${listingId} (${signers.length} signer(s))`,
   })
 
   if (eventError) {
@@ -60,12 +59,22 @@ export async function submitListingForSignature(params: SubmitListingForSignatur
     .limit(1)
     .maybeSingle()
 
+  // Resolve existing listing_agreement to get provider_ref for the sendForSignature call
+  const { data: agreement } = await supabase
+    .from("listing_agreements")
+    .select("id, provider_ref, provider_name, esign_status")
+    .eq("listing_id", listingId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
   if (credential) {
     try {
       const provider = getTransactionProviderByName(credential.platform)
-      if (listing.esign_provider) {
+      // Only call sendForSignature if a provider_ref exists on the listing agreement
+      if (agreement?.provider_ref) {
         await provider.sendForSignature({
-          externalTransactionId: listing.esign_provider,
+          externalTransactionId: agreement.provider_ref,
           documentId: listingId,
           signers: signers.map((s) => ({ email: s.email, name: s.name, role: s.role })),
         })
@@ -73,26 +82,26 @@ export async function submitListingForSignature(params: SubmitListingForSignatur
 
       await supabase.from("activities").insert({
         activity_type: "listing.provider.signature.requested",
-        user_id: userId,
-        metadata: {
-          listing_id: listingId,
-          provider: credential.platform,
-        },
+        agent_id:      userId,
+        entity_type:   "listing",
+        title:         `Provider signature requested via ${credential.platform}`,
+        description:   `Listing ${listingId} sent to ${credential.platform} for signature`,
       })
     } catch {
       // Provider call failed — in-app signature request still proceeds
     }
   }
 
-  // Update listing esign status
-  await supabase
-    .from("listings")
-    .update({
-      esign_status:   "sent",
-      esign_sent_at:  new Date().toISOString(),
-      esign_provider: credential?.platform ?? listing.esign_provider ?? null,
-    })
-    .eq("id", listingId)
+  // Update esign_status on listing_agreements (esign columns live there, not on listings)
+  if (agreement?.id) {
+    await supabase
+      .from("listing_agreements")
+      .update({
+        esign_status:  "sent",
+        provider_name: credential?.platform ?? agreement.provider_name ?? null,
+      })
+      .eq("id", agreement.id)
+  }
 
   return {
     success: true,

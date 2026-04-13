@@ -56,7 +56,7 @@ export default function ProviderIntelligencePage() {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return
       supabase
-        .from('user_profiles')
+        .from('users')
         .select('brokerage_id')
         .eq('id', user.id)
         .single()

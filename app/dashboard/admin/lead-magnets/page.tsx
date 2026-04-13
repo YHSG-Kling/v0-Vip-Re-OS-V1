@@ -41,9 +41,9 @@ export default function AdminLeadMagnetsPage() {
       if (error || !user) { setAuthError("Not authenticated"); return }
 
       const { data: profile } = await supabase
-        .from("user_profiles")
+        .from("users")
         .select("user_type, brokerage_id")
-        .eq("user_id", user.id)
+        .eq("id", user.id)
         .single()
 
       if (!profile || !["admin", "broker", "superadmin"].includes(profile.user_type)) {
