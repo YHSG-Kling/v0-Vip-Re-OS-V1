@@ -126,6 +126,8 @@ interface TransactionDetailClientProps {
     updated_at: string
   }
   brokerageId: string
+  brokerageName?: string
+  brokerageLogoUrl?: string
   userRole: string
   userId: string
   milestones: Array<{
@@ -397,6 +399,8 @@ function deriveLoanStatus(info: TransactionDetailClientProps["lenderInfo"]): Loa
 export function TransactionDetailClient({
   transaction,
   brokerageId,
+  brokerageName,
+  brokerageLogoUrl,
   userRole,
   userId,
   milestones,
@@ -1183,8 +1187,12 @@ export function TransactionDetailClient({
                     <p className="font-medium">{transaction.deal_type ?? "Purchase"}</p>
                   </div>
                   <div className="col-span-2">
-                    <p className="text-muted-foreground">Brokerage ID</p>
-                    <p className="font-mono text-xs font-medium text-muted-foreground select-all">{brokerageId}</p>
+                    <p className="text-muted-foreground">Brokerage</p>
+                    {brokerageLogoUrl ? (
+                      <img src={brokerageLogoUrl} alt={brokerageName ?? "Brokerage"} className="h-6 w-auto object-contain mt-1" />
+                    ) : (
+                      <p className="font-medium">{brokerageName ?? "—"}</p>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -3531,28 +3539,6 @@ export function TransactionDetailClient({
                                 <FileText className="h-3 w-3" />
                                 Use This Form
                               </Button>
-                              {formsProvider?.is_configured && (
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="text-xs h-7 gap-1 text-muted-foreground"
-                                  onClick={() => {
-                                    const provider = formsProvider.provider_name
-                                    const providerUrls: Record<string, string> = {
-                                      dotloop:        "https://www.dotloop.com/",
-                                      skyslope:       "https://app.skyslope.com/",
-                                      formsimplicity: "https://www.formsimplicity.com/",
-                                      brokermint:     "https://brokermint.com/",
-                                      authentisign:   "https://authentisign.com/",
-                                      docusign:       "https://www.docusign.com/",
-                                    }
-                                    window.open(providerUrls[provider] ?? "https://www.dotloop.com/", "_blank")
-                                  }}
-                                >
-                                  <ExternalLink className="h-3 w-3" />
-                                  Portal
-                                </Button>
-                              )}
                             </div>
                           </div>
                         ))}
@@ -3561,10 +3547,6 @@ export function TransactionDetailClient({
                   </CardContent>
                 </Card>
 
-                {/* Brokerage Info footer for RLS context */}
-                <p className="text-[10px] text-muted-foreground text-right">
-                  Brokerage ID: {brokerageId} · Transaction: {transaction.id}
-                </p>
               </>
             )}
           </TabsContent>

@@ -14,6 +14,7 @@ import { toast } from '@/hooks/use-toast'
 import {
   createTourPlan,
   generateTourNarrative,
+  updateTourStopOrder,
   type TourStop,
 } from '@/app/actions/tour-planner'
 import { optimizeTourRoute } from '@/app/actions/ai-showing-management'
@@ -76,6 +77,7 @@ export function TourPlanTab({
 
   // Stored tourId after creation so Optimize Route knows which tour to reorder
   const [createdTourId, setCreatedTourId]     = useState<string | null>(null)
+  const [dragIdx, setDragIdx]                 = useState<number | null>(null)
 
   function toggleProperty(prop: SavedProperty) {
     const key = prop.listing_id ?? prop.id
@@ -279,7 +281,26 @@ export function TourPlanTab({
               Tour Stops ({orderedStops.length})
             </p>
             {orderedStops.map((stop, idx) => (
-              <div key={idx} className="flex items-center gap-1 group">
+              <div
+                key={idx}
+                className="flex items-center gap-1 group"
+                draggable
+                onDragStart={() => setDragIdx(idx)}
+                onDragOver={(e) => { e.preventDefault() }}
+                onDrop={() => {
+                  if (dragIdx === null || dragIdx === idx) { setDragIdx(null); return }
+                  const next = [...orderedStops]
+                  const [moved] = next.splice(dragIdx, 1)
+                  next.splice(idx, 0, moved)
+                  setOrderedStops(next)
+                  setDragIdx(null)
+                  // Persist after creation if tour exists (stops need IDs — handled server-side via optimizeTourRoute)
+                  if (createdTourId) {
+                    void updateTourStopOrder(createdTourId, next.map((_, i) => String(i)))
+                  }
+                }}
+                onDragEnd={() => setDragIdx(null)}
+              >
                 <GripVertical className="h-3 w-3 text-muted-foreground cursor-grab" />
                 <span className="flex-1 text-xs truncate">{stop.propertyAddress}</span>
                 <Select

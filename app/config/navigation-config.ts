@@ -40,6 +40,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
           { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
+          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
         ],
       },
       {
@@ -204,7 +205,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
           { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },
           { id: 'repurpose', label: 'Repurpose Content', href: '/dashboard/campaigns/repurpose' },
-          { id: 'competitive', label: 'Competitive Intel', href: '/dashboard/campaigns/competitive' },
+          { id: 'competitors', label: 'Competitors', href: '/dashboard/marketing/competitors' },
         ],
       },
       {

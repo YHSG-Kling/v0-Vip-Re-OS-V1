@@ -153,7 +153,7 @@ export function TransactionFormEsignFlow({
     })
       .then(res => {
         if (res.success && res.data) {
-          setPrefillData(res.data.field_values ?? {})
+          setPrefillData(res.data.prefill?.fields ?? {})
         }
       })
       .catch(() => {/* prefill is best-effort */})
@@ -293,24 +293,35 @@ export function TransactionFormEsignFlow({
               ))}
             </>
           ) : (
-            <div className="rounded-lg border border-dashed p-6 text-center">
-              <Pencil className="h-8 w-8 mx-auto text-muted-foreground/50 mb-2" />
-              <p className="text-sm text-muted-foreground">
-                {contextId === "pending"
-                  ? "Form fields will be filled after the transaction/offer is created."
-                  : "No pre-fill data available. The form will be opened in your provider portal to fill manually."}
+            <div className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Enter the form details below. All fields are editable before sending for signatures.
               </p>
-              {providerName && contextId !== "pending" && (
-                <a
-                  href={providerUrls[providerName] ?? "#"}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-3 inline-flex items-center gap-1.5 text-xs text-primary underline-offset-2 hover:underline"
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  Open in {providerName.charAt(0).toUpperCase() + providerName.slice(1)} to fill manually
-                </a>
-              )}
+              {[
+                { key: "property_address", label: "Property Address" },
+                { key: "city", label: "City" },
+                { key: "state", label: "State" },
+                { key: "zip_code", label: "ZIP Code" },
+                { key: "purchase_price", label: "Purchase Price" },
+                { key: "closing_date", label: "Closing Date" },
+                { key: "mls_number", label: "MLS Number" },
+                { key: "commission_rate", label: "Commission Rate" },
+                { key: "seller_name", label: "Seller Name" },
+                { key: "seller_email", label: "Seller Email" },
+                { key: "buyer_name", label: "Buyer Name" },
+                { key: "buyer_email", label: "Buyer Email" },
+              ].map(({ key, label }) => (
+                <div key={key} className="space-y-1">
+                  <Label htmlFor={`field-${key}`} className="text-xs">{label}</Label>
+                  <Input
+                    id={`field-${key}`}
+                    value={String(prefillData[key] ?? "")}
+                    onChange={e => setPrefillData(prev => ({ ...prev, [key]: e.target.value }))}
+                    className="text-sm h-8"
+                    placeholder={label}
+                  />
+                </div>
+              ))}
             </div>
           )}
         </div>
