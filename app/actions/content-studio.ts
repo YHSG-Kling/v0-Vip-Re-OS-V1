@@ -73,47 +73,45 @@ export async function generateContentIdeas(persona?: string, userId?: string, us
 }
 
 // Research Keywords for SEO
+// Delegates to discoverKeywordsAI which resolves territory from brokerages table
+// and incorporates tracked competitors from the competitors table
 export async function researchKeywords(topic: string, userId?: string) {
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return { success: false, error: "No brokerage context" }
+
   const supabase = createServiceClient()
 
-  try {
-    const { text } = await generateText({
-      model: "openai/gpt-4o-mini",
-      prompt: `Research SEO keywords for real estate topic: "${topic}". 
-      
-      IMPORTANT: You must respond with ONLY valid JSON, no explanatory text before or after.
-      
-      Return exactly this format:
-      [
-        {"keyword": "example keyword", "searchVolume": 5000, "difficulty": 45, "competition": "medium"},
-        {"keyword": "another keyword", "searchVolume": 3200, "difficulty": 60, "competition": "high"}
-      ]
-      
-      Provide exactly 10 keywords with realistic search volumes for real estate.`,
-    })
+  // Pull tracked competitors so AI can surface competitor_usage flags
+  const { data: competitorRows } = await supabase
+    .from("competitors")
+    .select("competitor_name")
+    .eq("brokerage_id", brokerageId)
+  const competitorNames = competitorRows?.map((c) => c.competitor_name) ?? []
 
-    const keywords = parseAIJsonResponse(text)
+  // Delegate to the full keyword discovery engine (territory auto-resolved from brokerages table)
+  const { discoverKeywordsAI } = await import("@/app/actions/blog")
+  const result = await discoverKeywordsAI(userId ?? "", {
+    brokerageId,
+    competitorNames: competitorNames.length ? competitorNames : undefined,
+    focusArea: topic,
+  })
 
-    return { success: true, keywords }
-  } catch (error) {
-    console.error("Research keywords error:", error)
-    // Return mock data as fallback
-    return {
-      success: true,
-      keywords: [
-        { keyword: `${topic} near me`, searchVolume: 8500, difficulty: 42, competition: "medium" },
-        { keyword: `best ${topic} 2026`, searchVolume: 6200, difficulty: 55, competition: "high" },
-        { keyword: `${topic} tips`, searchVolume: 4800, difficulty: 38, competition: "low" },
-        { keyword: `${topic} guide`, searchVolume: 5400, difficulty: 45, competition: "medium" },
-        { keyword: `${topic} trends`, searchVolume: 3900, difficulty: 50, competition: "medium" },
-        { keyword: `${topic} advice`, searchVolume: 3200, difficulty: 35, competition: "low" },
-        { keyword: `${topic} market`, searchVolume: 7100, difficulty: 60, competition: "high" },
-        { keyword: `${topic} forecast`, searchVolume: 2800, difficulty: 48, competition: "medium" },
-        { keyword: `${topic} analysis`, searchVolume: 2400, difficulty: 52, competition: "medium" },
-        { keyword: `${topic} report`, searchVolume: 3600, difficulty: 40, competition: "low" },
-      ],
-    }
+  if (!result.success) {
+    return { success: false, error: result.error ?? "Keyword research is temporarily unavailable." }
   }
+
+  // Map DiscoveredKeyword to the format the content-studio UI expects
+  const keywords = (result.keywords ?? []).map((k) => ({
+    keyword: k.keyword,
+    searchVolume: Math.round(k.popularity_pct * 100), // relative score as proxy for volume
+    difficulty: 50, // AI doesn't provide difficulty; use neutral default
+    competition: k.popularity_pct > 70 ? "high" : k.popularity_pct > 40 ? "medium" : "low",
+    keywordType: k.keyword_type,
+    competitorUsage: k.competitor_usage,
+    rationale: k.rationale,
+  }))
+
+  return { success: true, keywords }
 }
 
 // Get Content Ideas
@@ -141,28 +139,37 @@ export async function getContentIdeas(userId?: string, userRole?: string) {
   }
 }
 
-// Get Competitor Content - using generated_content table as fallback
+// Get Competitor Content — uses tracked competitors from the competitors table
 export async function getCompetitorContent(userId?: string, userRole?: string) {
+  const { brokerageId } = await getAgentContext()
   const supabase = createServiceClient()
 
+  // Fetch the brokerage's tracked competitors for context-specific analysis
+  const { data: competitorRows } = await supabase
+    .from("competitors")
+    .select("competitor_name, competitor_url")
+    .eq("brokerage_id", brokerageId ?? "")
+    .limit(10)
+
+  const competitorList =
+    competitorRows?.map((c) => c.competitor_name).join(", ") ||
+    "top local real estate agents and brokerages"
+
   try {
-    // Generate AI-powered competitor insights
     const { text } = await generateText({
       model: "openai/gpt-4o-mini",
-      prompt: `Generate 5 trending real estate content examples from top performers. 
-      
+      prompt: `Analyze the high-performing content strategy for these local real estate competitors: ${competitorList}.
+
       IMPORTANT: You must respond with ONLY valid JSON, no explanatory text.
-      
-      Return exactly this format:
+
+      Return exactly this format (5 items, using the competitor names listed above):
       [
-        {"competitor_name": "Agent Name", "content_summary": "Summary text", "content_type": "video", "sentToCount": 1500, "openRate": 45.2, "clickRate": 12.8}
+        {"competitor_name": "Name from list", "content_summary": "What they post about and why it performs", "content_type": "video|blog|social", "sentToCount": 1500, "openRate": 45.2, "clickRate": 12.8}
       ]
-      
-      Use realistic metrics for openRate (30-60) and clickRate (5-20).`,
+
+      Use realistic metrics for openRate (30-60) and clickRate (5-20). Use the actual competitor names.`,
     })
 
-    console.log("[v0] Raw AI response for competitor content:", text.substring(0, 200))
-    
     const competitorData = parseAIJsonResponse(text)
     return competitorData
   } catch (error) {
@@ -231,7 +238,7 @@ export async function getContentCalendar(userId?: string, userRole?: string) {
   return data || []
 }
 
-// Schedule Content
+// Schedule Content — writes to campaign_calendar so platform/channel is preserved
 export async function scheduleContent(params: {
   title: string
   contentType: string
@@ -239,15 +246,20 @@ export async function scheduleContent(params: {
   platform?: string
   notes?: string
 }) {
+  const { brokerageId, agentId } = await getAgentContext()
   const supabase = createServiceClient()
 
   const { data, error } = await supabase
-    .from("content_ideas")
+    .from("campaign_calendar")
     .insert({
+      brokerage_id: brokerageId,
+      agent_user_id: agentId,
+      event_type: params.contentType,
+      channel: params.platform ?? null,
       title: params.title,
-      description: params.notes || "",
-      content_type: params.contentType,
-      status: "in_progress",
+      scheduled_at: params.scheduledDate,
+      notes: params.notes ?? "",
+      status: "scheduled",
     })
     .select()
     .maybeSingle()
@@ -257,7 +269,7 @@ export async function scheduleContent(params: {
     throw error
   }
 
-  revalidatePath("/content-studio")
+  revalidatePath("/dashboard/marketing/studio")
   return data
 }
 

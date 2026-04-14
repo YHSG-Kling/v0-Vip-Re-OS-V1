@@ -41,6 +41,8 @@ import {
   Send,
   Target,
   ExternalLink,
+  Link2,
+  Share2,
 } from "lucide-react"
 import {
   getIntegrationStatus,
@@ -484,6 +486,9 @@ export function TechStackClient({
           {renderGroup("optional", PROVIDER_GROUPS.optional, groupedProviders.optional || [])}
         </div>
 
+        {/* Social Media Accounts — uses dedicated /api/social/oauth route */}
+        <SocialAccountsSection />
+
         {/* Continue Button */}
         <div className="mt-8 flex justify-end">
           <Button
@@ -657,5 +662,59 @@ export function TechStackClient({
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+// ─── Social Accounts Section ───────────────────────────────────────────────────
+// Separate from the main provider groups — uses /api/social/oauth/[platform]
+
+const ONBOARDING_SOCIAL_PLATFORMS = [
+  { key: "meta", label: "Meta (Facebook & Instagram)", description: "Facebook Pages + Instagram publishing" },
+  { key: "linkedin", label: "LinkedIn", description: "Professional network posts" },
+  { key: "twitter", label: "Twitter / X", description: "Tweet scheduling" },
+  { key: "tiktok", label: "TikTok", description: "Short-form video publishing" },
+  { key: "youtube", label: "YouTube", description: "Video channel management" },
+  { key: "pinterest", label: "Pinterest", description: "Property image pins" },
+  { key: "google_business", label: "Google Business Profile", description: "Business listing posts" },
+] as const
+
+function SocialAccountsSection() {
+  return (
+    <Card className="mt-2">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm font-medium flex items-center gap-2">
+          <Share2 className="h-4 w-4" />
+          Social Media Accounts
+          <Badge variant="outline" className="text-xs ml-1">Optional</Badge>
+        </CardTitle>
+        <CardDescription className="text-xs">
+          Connect your social accounts now to publish content directly from the platform. You can also connect these later in Settings.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {ONBOARDING_SOCIAL_PLATFORMS.map((platform) => (
+            <div
+              key={platform.key}
+              className="border rounded-lg p-3 flex items-center justify-between gap-2"
+            >
+              <div className="min-w-0">
+                <p className="text-xs font-medium truncate">{platform.label}</p>
+                <p className="text-xs text-muted-foreground truncate">{platform.description}</p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="shrink-0 gap-1 text-xs h-7"
+                onClick={() => { window.location.href = `/api/social/oauth/${platform.key}` }}
+              >
+                <Link2 className="h-3 w-3" />
+                Connect
+              </Button>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   )
 }

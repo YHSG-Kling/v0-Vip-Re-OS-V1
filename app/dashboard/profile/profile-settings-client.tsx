@@ -1,14 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useSearchParams, useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-import { Video, Share2, Loader2, Check, X, ExternalLink } from "lucide-react"
+import { Video, Share2, Loader2, Check, X, ExternalLink, Link2 } from "lucide-react"
 import { updateAgentSettings } from "@/app/actions/agent-settings"
-import { connectSocialAccount, disconnectSocialAccount } from "@/app/actions/social-publishing"
+import { disconnectSocialAccount } from "@/app/actions/social-publishing"
 import { useToast } from "@/hooks/use-toast"
 
 interface VideoSettingsProps {
@@ -22,41 +21,36 @@ const SOCIAL_PLATFORMS = [
     key: "meta",
     label: "Meta (Facebook & Instagram)",
     description: "Facebook & Instagram publishing",
-    docsUrl: "https://developers.facebook.com/docs/facebook-login/access-tokens/",
-    docsLabel: "Get your Meta token",
-    placeholder: "EAABwzLi...",
   },
   {
     key: "linkedin",
     label: "LinkedIn",
     description: "Professional network publishing",
-    docsUrl: "https://www.linkedin.com/developers/apps",
-    docsLabel: "Get your LinkedIn token",
-    placeholder: "AQX...",
   },
   {
     key: "twitter",
     label: "Twitter / X",
     description: "Tweet scheduling and publishing",
-    docsUrl: "https://developer.twitter.com/en/portal/dashboard",
-    docsLabel: "Get your X token",
-    placeholder: "AAAAAAAAAA...",
   },
   {
     key: "tiktok",
     label: "TikTok",
     description: "Short-form video publishing",
-    docsUrl: "https://developers.tiktok.com/",
-    docsLabel: "Get your TikTok token",
-    placeholder: "act.xxxxx...",
   },
   {
     key: "youtube",
     label: "YouTube",
     description: "Long-form video and channel management",
-    docsUrl: "https://console.cloud.google.com/apis/credentials",
-    docsLabel: "Get your YouTube token",
-    placeholder: "ya29.xxx...",
+  },
+  {
+    key: "pinterest",
+    label: "Pinterest",
+    description: "Pin property images and listings to boards",
+  },
+  {
+    key: "google_business",
+    label: "Google Business Profile",
+    description: "Post updates to your Google Business listing",
   },
 ] as const
 
@@ -144,10 +138,33 @@ export function VideoSettingsCard({ userId, initialAvatarId, initialVoiceId }: V
 
 export function SocialAccountsCard({ userId, initialAccounts }: SocialAccountsProps) {
   const [accounts, setAccounts] = useState<any[]>(initialAccounts)
-  const [tokenInputs, setTokenInputs] = useState<Record<string, string>>({})
-  const [connecting, setConnecting] = useState<string | null>(null)
   const [disconnecting, setDisconnecting] = useState<string | null>(null)
   const { toast } = useToast()
+  const searchParams = useSearchParams()
+  const router = useRouter()
+
+  // Handle OAuth callback results
+  useEffect(() => {
+    const oauthSuccess = searchParams.get("oauth_success")
+    const oauthError = searchParams.get("oauth_error")
+    const tab = searchParams.get("tab")
+
+    if (tab === "social" && oauthSuccess) {
+      const platformLabel = SOCIAL_PLATFORMS.find((p) => p.key === oauthSuccess)?.label ?? oauthSuccess
+      toast({ title: `${platformLabel} connected`, description: "Your account has been linked successfully." })
+      // Clear query params without page reload
+      const url = new URL(window.location.href)
+      url.searchParams.delete("oauth_success")
+      url.searchParams.delete("tab")
+      router.replace(url.pathname + url.search)
+    } else if (oauthError) {
+      toast({ title: "Connection failed", description: oauthError, variant: "destructive" })
+      const url = new URL(window.location.href)
+      url.searchParams.delete("oauth_error")
+      url.searchParams.delete("provider")
+      router.replace(url.pathname + url.search)
+    }
+  }, [searchParams, router, toast])
 
   function isConnected(platformKey: string) {
     return accounts.some((a) => a.platform === platformKey && a.is_active)
@@ -157,31 +174,8 @@ export function SocialAccountsCard({ userId, initialAccounts }: SocialAccountsPr
     return accounts.find((a) => a.platform === platformKey && a.is_active)
   }
 
-  async function handleConnect(platformKey: string) {
-    const token = tokenInputs[platformKey]?.trim()
-    if (!token) {
-      toast({ title: "Token required", description: "Enter your access token to connect.", variant: "destructive" })
-      return
-    }
-    setConnecting(platformKey)
-    try {
-      const result = await connectSocialAccount({
-        platform: platformKey,
-        accountId: userId,
-        accountName: platformKey,
-        accessToken: token,
-        userId,
-      })
-      if (result) {
-        setAccounts((prev) => [...prev.filter((a) => a.platform !== platformKey), result])
-        setTokenInputs((prev) => ({ ...prev, [platformKey]: "" }))
-        toast({ title: `${platformKey} connected`, description: "Account connected successfully." })
-      }
-    } catch (err: any) {
-      toast({ title: "Connection failed", description: err.message, variant: "destructive" })
-    } finally {
-      setConnecting(null)
-    }
+  function handleOAuthConnect(platformKey: string) {
+    window.location.href = `/api/social/oauth/${platformKey}`
   }
 
   async function handleDisconnect(platformKey: string) {
@@ -207,13 +201,12 @@ export function SocialAccountsCard({ userId, initialAccounts }: SocialAccountsPr
           Social Media Accounts
         </CardTitle>
         <CardDescription className="text-xs">
-          Connect your personal social accounts to publish videos and content directly from the platform.
+          Connect your social accounts via OAuth to publish content directly from the platform.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         {SOCIAL_PLATFORMS.map((platform) => {
           const connected = isConnected(platform.key)
-          const isConnecting = connecting === platform.key
           const isDisconnecting = disconnecting === platform.key
 
           return (
@@ -245,24 +238,14 @@ export function SocialAccountsCard({ userId, initialAccounts }: SocialAccountsPr
 
               {!connected && (
                 <div className="flex items-center gap-2">
-                  <Input
-                    className="text-xs h-8"
-                    value={tokenInputs[platform.key] ?? ""}
-                    onChange={(e) => setTokenInputs((prev) => ({ ...prev, [platform.key]: e.target.value }))}
-                    placeholder={platform.placeholder}
-                  />
                   <Button
                     size="sm"
-                    className="shrink-0"
-                    onClick={() => handleConnect(platform.key)}
-                    disabled={isConnecting}
+                    variant="outline"
+                    className="shrink-0 gap-1.5"
+                    onClick={() => handleOAuthConnect(platform.key)}
                   >
-                    {isConnecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Connect"}
-                  </Button>
-                  <Button variant="ghost" size="sm" asChild className="shrink-0">
-                    <a href={platform.docsUrl} target="_blank" rel="noopener noreferrer">
-                      <ExternalLink className="h-3.5 w-3.5" />
-                    </a>
+                    <Link2 className="h-3.5 w-3.5" />
+                    Connect with {platform.label.split(" ")[0]}
                   </Button>
                 </div>
               )}
