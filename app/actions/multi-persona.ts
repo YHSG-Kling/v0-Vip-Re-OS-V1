@@ -513,22 +513,18 @@ export async function createWorkflowAutomation(data: {
 }) {
   const supabase = await createClient()
 
-  // workflow_automations does not exist — use workflow_executions as a log
-  // and store config in context jsonb
   const { data: workflow, error } = await supabase
-    .from("workflow_executions")
+    .from("workflow_automations")
     .insert({
       brokerage_id: data.brokerageId,
       workflow_name: data.workflowName,
-      status: "pending",
-      context: {
-        workflow_type: data.workflowType,
-        trigger_event: data.triggerEvent,
-        trigger_conditions: data.triggerConditions,
-        actions: data.actions,
-        assigned_to_role: data.assignedToRole,
-        created_by: data.createdBy,
-      },
+      workflow_type: data.workflowType,
+      trigger_event: data.triggerEvent,
+      trigger_conditions: data.triggerConditions,
+      actions: data.actions,
+      assigned_to_role: data.assignedToRole,
+      created_by: data.createdBy,
+      is_active: true,
     })
     .select()
     .single()

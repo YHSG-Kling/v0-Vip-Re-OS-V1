@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { InboxClient } from "./inbox-client"
 import { Skeleton } from "@/components/ui/skeleton"
+import { getInboxMessages } from "@/app/actions/inbox"
 
 export const metadata = {
   title: "Universal Inbox | VIP RE OS",
@@ -72,6 +73,10 @@ export default async function InboxPage({ searchParams }: PageProps) {
 
   const { contact: contactId, channel } = await searchParams
 
+  const inboxResult = await getInboxMessages({ channel: "all", limit: 50 }).catch(() => ({
+    threads: [],
+  }))
+
   return (
     <div className="flex flex-col" style={{ height: "calc(100dvh - 64px)" }}>
       <div className="px-6 py-3 border-b shrink-0">
@@ -82,7 +87,11 @@ export default async function InboxPage({ searchParams }: PageProps) {
       </div>
       <div className="flex-1 overflow-hidden px-4 pb-4 pt-3">
         <Suspense fallback={<InboxSkeleton />}>
-          <InboxClient initialContactId={contactId ?? null} initialChannel={channel ?? null} />
+          <InboxClient
+            initialContactId={contactId ?? null}
+            initialChannel={channel ?? null}
+            initialThreads={inboxResult.threads ?? []}
+          />
         </Suspense>
       </div>
     </div>

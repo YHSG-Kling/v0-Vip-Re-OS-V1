@@ -612,9 +612,13 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             <AlertTriangle className="h-4 w-4 text-amber-600" />
             <AlertTitle className="text-amber-800">HeyGen Not Configured</AlertTitle>
             <AlertDescription className="text-amber-700">
-              The HeyGen API key is not set. You can still build and save your video project — it will be queued and generated once HeyGen is connected in{" "}
+              The HeyGen API key is not set. You can still build and save your video project — it will be queued once HeyGen is connected. Admins: configure in{" "}
               <a href="/settings/integrations" className="underline font-medium">
                 Settings &rarr; Integrations
+              </a>
+              . To set your personal avatar and voice ID, visit your{" "}
+              <a href="/dashboard/profile" className="underline font-medium">
+                Profile Settings
               </a>
               .
             </AlertDescription>
