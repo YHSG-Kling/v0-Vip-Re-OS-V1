@@ -51,6 +51,7 @@ interface PodcastDashboardProps {
   brokerageId?: string
   initialEpisodes?: Episode[]
   totalPlays?: number
+  userType?: string
 }
 
 export function PodcastDashboard({
@@ -58,7 +59,9 @@ export function PodcastDashboard({
   brokerageId = "",
   initialEpisodes = [],
   totalPlays = 0,
+  userType = "agent",
 }: PodcastDashboardProps) {
+  const isAdmin = userType === "broker" || userType === "broker_admin" || userType === "admin" || userType === "superadmin"
   const [episodes, setEpisodes] = useState<Episode[]>(initialEpisodes)
   const [templates, setTemplates] = useState<Template[]>([])
   const [channels, setChannels] = useState<DistributionChannel[]>([])
@@ -241,6 +244,7 @@ export function PodcastDashboard({
                 channels={channels}
                 loading={loading}
                 onUpdate={handleChannelUpdated}
+                isAdmin={isAdmin}
               />
             </TabsContent>
           </div>

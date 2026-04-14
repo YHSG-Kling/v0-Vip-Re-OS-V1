@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 function parseAIJsonResponse(text: string) {
   // Strip markdown code blocks if present
@@ -172,13 +173,37 @@ export async function getCompetitorContent(userId?: string, userRole?: string) {
 
 // Add Competitor to Monitor
 export async function addCompetitor(name: string, url?: string) {
-  console.log("[v0] addCompetitor called but table doesn't exist:", name, url)
-  return {
-    id: "mock-id",
-    competitor_name: name,
-    competitor_url: url,
-    created_at: new Date().toISOString(),
+  const { brokerageId } = await getAgentContext()
+  if (!brokerageId) return { error: "No brokerage context" }
+
+  const supabase = createServiceClient()
+
+  const { data, error } = await supabase
+    .from("competitors")
+    .insert({
+      brokerage_id: brokerageId,
+      competitor_name: name,
+      competitor_url: url ?? null,
+    })
+    .select("id, competitor_name, competitor_url, created_at")
+    .single()
+
+  if (error) {
+    // Unique constraint violation — competitor already tracked
+    if (error.code === "23505") {
+      const { data: existing } = await supabase
+        .from("competitors")
+        .select("id, competitor_name, competitor_url, created_at")
+        .eq("brokerage_id", brokerageId)
+        .eq("competitor_name", name)
+        .single()
+      return existing
+    }
+    console.error("[v0] addCompetitor error:", error)
+    return { error: error.message }
   }
+
+  return data
 }
 
 // Get Content Calendar - using content_ideas table as substitute

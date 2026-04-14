@@ -957,7 +957,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             </div>
 
             {/* Row 4: Seller-Safe Marketing Summary (full width) */}
-            <SellerSafeMarketingSummary listings={listings} />
+            <SellerSafeMarketingSummary campaigns={campaigns} />
           </TabsContent>
 
           {/* Overview Tab */}

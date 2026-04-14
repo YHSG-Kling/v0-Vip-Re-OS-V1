@@ -865,6 +865,45 @@ export async function updateDistributionChannel(
   }
 }
 
+// Create a distribution channel for the brokerage
+export async function createDistributionChannel(channelName: string) {
+  const { brokerageId } = await getAgentContext()
+  const supabase = await createClient()
+
+  try {
+    // Check if channel already exists to prevent duplicates
+    const { data: existing } = await supabase
+      .from("podcast_distribution_channels")
+      .select("id")
+      .eq("brokerage_id", brokerageId)
+      .eq("channel_name", channelName)
+      .maybeSingle()
+
+    if (existing) {
+      return { success: true, channel: existing, alreadyExists: true }
+    }
+
+    const { data: channel, error } = await supabase
+      .from("podcast_distribution_channels")
+      .insert({
+        brokerage_id: brokerageId,
+        channel_name: channelName,
+        is_enabled: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    return { success: true, channel }
+  } catch (error: any) {
+    console.error("[v0] Error creating distribution channel:", error)
+    return { success: false, error: error.message }
+  }
+}
+
 // Get video scripts library for episode sourcing
 export async function getVideoScriptsLibrary() {
   const { brokerageId } = await getAgentContext()

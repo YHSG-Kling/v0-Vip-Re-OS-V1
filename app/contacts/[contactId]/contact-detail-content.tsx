@@ -13,6 +13,7 @@ import {
   getContactVideoEngagement,
   getContactTransactions,
   getContactCopilotSuggestions,
+  getContactActivity,
 } from "@/app/actions/contact-details"
 import { useEffect } from "react"
 import {
@@ -31,21 +32,24 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
   const [videos, setVideos] = useState<any[]>([])
   const [transactions, setTransactions] = useState<any[]>([])
   const [suggestions, setSuggestions] = useState<any[]>([])
+  const [activity, setActivity] = useState<any[]>([])
 
   useEffect(() => {
     async function loadData() {
       try {
-        const [credit, video, trans, sugg] = await Promise.all([
+        const [credit, video, trans, sugg, act] = await Promise.all([
           getContactCreditAccounts(contact.id),
           getContactVideoEngagement(contact.id),
           getContactTransactions(contact.id),
           getContactCopilotSuggestions(contact.id),
+          getContactActivity(contact.id),
         ])
 
         setCreditAccounts(credit?.accounts ?? [])
         setVideos(video?.videos ?? [])
         setTransactions(trans?.transactions ?? [])
         setSuggestions(sugg?.suggestions ?? [])
+        setActivity(act?.activity ?? [])
       } catch (err) {
         console.error("[ContactDetail] Failed to load contact data:", err)
         // Keep empty arrays — component renders gracefully with no data
@@ -95,14 +99,20 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <Button size="sm">
-                    <Phone className="h-4 w-4" />
+                  <Button size="sm" asChild>
+                    <a href={`/dashboard/voice?contactId=${contact.id}`}>
+                      <Phone className="h-4 w-4" />
+                    </a>
                   </Button>
-                  <Button size="sm">
-                    <Mail className="h-4 w-4" />
+                  <Button size="sm" asChild>
+                    <a href={contact.email ? `mailto:${contact.email}` : `/dashboard/inbox?compose=1&contactId=${contact.id}`}>
+                      <Mail className="h-4 w-4" />
+                    </a>
                   </Button>
-                  <Button size="sm">
-                    <MessageSquare className="h-4 w-4" />
+                  <Button size="sm" asChild>
+                    <a href={`/dashboard/inbox?contactId=${contact.id}`}>
+                      <MessageSquare className="h-4 w-4" />
+                    </a>
                   </Button>
                 </div>
               </div>
@@ -319,22 +329,30 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                 </CardHeader>
                 <CardContent>
                   <div className="space-y-4">
-                    {contact.interactions?.map((interaction: any) => (
-                      <div key={interaction.id} className="flex gap-3 pb-4 border-b last:border-0">
-                        <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
-                        <div className="flex-1 space-y-1">
-                          <div className="flex items-center justify-between">
-                            <span className="font-medium text-sm capitalize">
-                              {interaction.interaction_type.replace("_", " ")}
-                            </span>
-                            <span className="text-xs text-muted-foreground">
-                              {new Date(interaction.interaction_date).toLocaleDateString()}
-                            </span>
+                    {activity.length === 0 ? (
+                      <p className="text-sm text-muted-foreground text-center py-8">No activity recorded yet</p>
+                    ) : (
+                      activity.map((item: any) => (
+                        <div key={`${item.activity_type}-${item.id}`} className="flex gap-3 pb-4 border-b last:border-0">
+                          <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
+                          <div className="flex-1 space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="font-medium text-sm capitalize">
+                                {item.activity_type.replace("_", " ")}
+                              </span>
+                              <span className="text-xs text-muted-foreground">
+                                {new Date(item.activity_date).toLocaleDateString()}
+                              </span>
+                            </div>
+                            {(item.notes || item.body || item.title || item.subject) && (
+                              <p className="text-sm text-muted-foreground">
+                                {item.notes || item.body || item.title || item.subject}
+                              </p>
+                            )}
                           </div>
-                          {interaction.notes && <p className="text-sm text-muted-foreground">{interaction.notes}</p>}
                         </div>
-                      </div>
-                    ))}
+                      ))
+                    )}
                   </div>
                 </CardContent>
               </Card>

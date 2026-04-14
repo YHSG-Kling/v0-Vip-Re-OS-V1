@@ -1,10 +1,7 @@
 import { redirect } from "next/navigation"
 import { createServerClient } from "@/lib/supabase/server"
-import { VideoProjectList } from "@/app/components/features/video/VideoProjectList"
-import { ScriptEditor } from "@/app/components/features/video/ScriptEditor"
-import { GenerationSettings } from "@/app/components/features/video/GenerationSettings"
-import { VideoPreview } from "@/app/components/features/video/VideoPreview"
-import { DistributionControls } from "@/app/components/features/video/DistributionControls"
+import { getVideoProjects } from "@/app/actions/video/create-video-project"
+import VideoHubClient from "./VideoHubClient"
 
 export const metadata = {
   title: "Video Generation Hub",
@@ -51,20 +48,14 @@ export default async function VideoPage() {
     )
   }
 
-  return (
-    <div className="container mx-auto py-8">
-      <div className="mb-12">
-        <h1 className="text-4xl font-bold mb-2">Video Generation Hub</h1>
-        <p className="text-muted-foreground">Create, customize, and distribute AI-powered property videos</p>
-      </div>
+  // Fetch real projects for this brokerage/user
+  const projects = await getVideoProjects(profile.brokerage_id, user.id)
 
-      <div className="grid gap-8">
-        <VideoProjectList brokerageId={profile.brokerage_id} />
-        <ScriptEditor projectId="sample-project-id" />
-        <GenerationSettings projectId="sample-project-id" />
-        <VideoPreview projectId="sample-project-id" />
-        <DistributionControls projectId="sample-project-id" />
-      </div>
-    </div>
+  return (
+    <VideoHubClient
+      initialProjects={projects}
+      brokerageId={profile.brokerage_id}
+      userId={user.id}
+    />
   )
 }

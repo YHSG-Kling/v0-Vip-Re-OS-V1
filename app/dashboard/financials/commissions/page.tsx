@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DollarSign, ArrowLeft, TrendingUp, Clock, CheckCircle2, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
+import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
 import {
   CommissionIntelligencePanel,
   FinancialActionStack,
@@ -21,7 +22,8 @@ export default async function CommissionsPage() {
 
   let context: any = null
   try { context = await getAgentContext() } catch { redirect('/login') }
-  const { agentId, brokerageId } = context
+  const { agentId, brokerageId, role } = context
+  const isBrokerAdmin = role === 'broker' || role === 'broker_admin' || role === 'admin' || role === 'superadmin'
 
   const currentYear = new Date().getFullYear()
 
@@ -155,6 +157,7 @@ export default async function CommissionsPage() {
                     <th className="text-right py-2 px-2 font-semibold">GCI</th>
                     <th className="text-right py-2 px-2 font-semibold">My Commission</th>
                     <th className="text-center py-2 px-2 font-semibold">Status</th>
+                    {isBrokerAdmin && <th className="text-center py-2 px-2 font-semibold">Action</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -165,7 +168,7 @@ export default async function CommissionsPage() {
                       <td className="py-3 px-2 text-right font-medium">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(c.gross_commission || 0)}</td>
                       <td className="py-3 px-2 text-right font-semibold text-green-600">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(c.agent_commission || 0)}</td>
                       <td className="py-3 px-2 text-center">
-                        <Badge 
+                        <Badge
                           variant={c.status === 'paid' ? 'default' : c.status === 'pending' ? 'secondary' : 'outline'}
                           className="text-xs"
                         >
@@ -182,6 +185,16 @@ export default async function CommissionsPage() {
                           )}
                         </Badge>
                       </td>
+                      {isBrokerAdmin && (
+                        <td className="py-3 px-2 text-center">
+                          {c.status === 'pending' && (
+                            <PayoutButton
+                              commissionId={c.id}
+                              brokerageId={brokerageId ?? ''}
+                            />
+                          )}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

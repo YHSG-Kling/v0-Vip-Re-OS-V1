@@ -20,6 +20,7 @@ import {
   ListingMarketPosition,
   ListingWorkbenchRail,
 } from "@/app/components/listing/command-center"
+import { EmailCampaignPanel } from "@/app/components/email-campaign-panel"
 
 interface ListingDetailPageProps {
   params: Promise<{
@@ -61,6 +62,7 @@ export default async function ListingDetailPage({ params }: ListingDetailPagePro
     documentsResult,
     sellerUpdatesResult,
     insightsResult,
+    campaignsResult,
   ] = await Promise.all([
     getListingMedia(listingId),
     getOffersForListing(listingId),
@@ -81,6 +83,12 @@ export default async function ListingDetailPage({ params }: ListingDetailPagePro
       start: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
       end: new Date().toISOString().split("T")[0],
     }),
+    supabase
+      .from("marketing_campaigns")
+      .select("id, campaign_name, campaign_type, status, budget_total, budget_spent, created_at")
+      .eq("listing_id", listingId)
+      .order("created_at", { ascending: false })
+      .limit(10),
   ])
 
   // Extract real data
@@ -95,6 +103,15 @@ export default async function ListingDetailPage({ params }: ListingDetailPagePro
     name: d.doc_label || d.doc_type,
     type: d.doc_type,
     uploaded_at: d.uploaded_at,
+  }))
+
+  const emailCampaigns = (campaignsResult.data ?? []).map((c: any) => ({
+    id: c.id,
+    type: c.campaign_type ?? "general",
+    recipients: c.budget_total ?? 0,
+    status: c.status ?? "draft",
+    sent_date: c.status === "live" || c.status === "ended" ? new Date(c.created_at).toLocaleDateString() : undefined,
+    scheduled_date: c.status === "approved" || c.status === "pending_approval" ? new Date(c.created_at).toLocaleDateString() : undefined,
   }))
 
   const sellerUpdates = sellerUpdatesResult.data ?? []
@@ -306,6 +323,9 @@ export default async function ListingDetailPage({ params }: ListingDetailPagePro
             marketTrend="stable"
             competitorPressure="medium"
           />
+          <div className="md:col-span-2">
+            <EmailCampaignPanel transactionId={listingId} campaigns={emailCampaigns} />
+          </div>
           <div className="md:col-span-2">
             <ListingWorkbenchRail
               listingId={listingId}
