@@ -21,6 +21,11 @@ export default async function ListingMarketingTierPage({ params }: PageProps) {
 
   if (!userRow?.brokerage_id) redirect("/dashboard")
 
+  // Marketing tiers are superadmin-only — redirect everyone else
+  if (userRow.role !== "superadmin") {
+    redirect(`/dashboard/listings/${listingId}/lifecycle`)
+  }
+
   // Load listing with current tier
   const { data: listing } = await supabase
     .from("listings")

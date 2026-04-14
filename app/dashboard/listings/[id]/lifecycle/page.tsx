@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { notFound, redirect } from "next/navigation"
+import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 import { getAllStages, getStageDefinition, getEnabledSystemGates } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import type { ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import { StagePipeline }       from "@/app/components/dashboard/listings/lifecycle/stage-pipeline"
@@ -151,7 +152,12 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const mediaReady = photoCount >= 5
 
   const currentTier = tierResult.data
-  const marketingReady = !!currentTier
+  // Gate: check if this user's plan includes listing_marketing_tiers.
+  // The superadmin controls which tier plan each brokerage is on; features are
+  // determined by that plan. canAccessFeature handles trial overrides, disabled
+  // overrides, and per-tier access columns from the feature_flags table.
+  const marketingAccess = await canAccessFeature(user.id, "listing_marketing_tiers")
+  const marketingReady = marketingAccess.allowed
 
   const neighborhoodReport = neighborhoodResult.data
   const hasNeighborhoodReport = !!neighborhoodReport
@@ -202,11 +208,15 @@ const { data: listingVendorBookings } = await supabase
     .not("status", "in", "(cancelled,no_show)")
     .order("scheduled_date", { ascending: true })
 
+  const canOverride = ["broker", "admin", "team_lead"].includes(userRow.role)
+  const isSuperAdmin = userRow.role === "superadmin"
+
   // Blockers
   const blockers: string[] = []
   if (!mediaReady) blockers.push(`Need at least 5 photos (${photoCount} uploaded)`)
   if (!publishReady) blockers.push("Missing required listing fields")
-  if (!marketingReady) blockers.push("No marketing tier selected")
+  // Marketing tier is superadmin-controlled — only surface the blocker to superadmins
+  if (!marketingReady && isSuperAdmin) blockers.push("No marketing tier selected")
 
   const currentStage = (listing.lifecycle_stage ?? "LEAD") as ListingStage
   const allStages = getAllStages()
@@ -224,8 +234,6 @@ const { data: listingVendorBookings } = await supabase
   const validNextStages = allStages
     .filter(s => s.allowedFrom.includes(currentStage))
     .map(s => s.stage)
-
-  const canOverride = ["broker", "admin", "team_lead"].includes(userRow.role)
 
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden bg-background">
@@ -317,6 +325,7 @@ const { data: listingVendorBookings } = await supabase
             campaignReady={!!currentTier}
             assetsCreated={media.length}
             assetsRequired={10}
+            isSuperAdmin={isSuperAdmin}
           />
           <SellerUpdateReadinessCard
             listingId={listingId}
@@ -432,6 +441,7 @@ const { data: listingVendorBookings } = await supabase
           brokerageId={userRow.brokerage_id}
           canLaunch={mediaReady && publishReady && marketingReady}
           blockers={blockers}
+          isSuperAdmin={isSuperAdmin}
         />
         <StageTimeline
           listing={listing}

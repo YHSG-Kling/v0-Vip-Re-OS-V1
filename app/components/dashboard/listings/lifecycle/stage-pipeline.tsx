@@ -1,10 +1,10 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { Check, Star, ChevronRight, Loader2 } from "lucide-react"
+import { Check, Star, ChevronRight, Loader2, Eye, EyeOff } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { StageDefinition, ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
-import { advanceListingStage } from "@/app/actions/listing-lifecycle"
+import { advanceListingStage, setMilestonePortalVisibility } from "@/app/actions/listing-lifecycle"
 import { StageAdvanceModal } from "./stage-advance-modal"
 
 const MILESTONE_STAGES = new Set([
@@ -51,6 +51,32 @@ export function StagePipeline({
   const [selectedStage, setSelectedStage] = useState<StageDefinition | null>(null)
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+
+  // Portal visibility state per milestone stage
+  // Derived from the most recent lifecycle event for each milestone stage
+  const [portalVisibility, setPortalVisibility] = useState<Record<string, boolean>>(() => {
+    const map: Record<string, boolean> = {}
+    for (const stage of MILESTONE_STAGES) {
+      const events = lifecycleEvents
+        .filter(e => e.metadata?.to_state === stage)
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      if (events.length > 0) {
+        map[stage] = events[0].metadata?.portal_visible === true
+      }
+    }
+    return map
+  })
+  const [togglingStage, setTogglingStage] = useState<string | null>(null)
+
+  async function handlePortalToggle(stage: string) {
+    const newVisible = !portalVisibility[stage]
+    setTogglingStage(stage)
+    const result = await setMilestonePortalVisibility(listingId, stage, newVisible)
+    if (result.success) {
+      setPortalVisibility((prev: Record<string, boolean>) => ({ ...prev, [stage]: newVisible }))
+    }
+    setTogglingStage(null)
+  }
 
   function handleStageClick(stage: StageDefinition) {
     if (!validNextStages.includes(stage.stage)) return
@@ -148,6 +174,33 @@ export function StagePipeline({
                   <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" />
                 )}
               </button>
+
+              {/* Portal visibility toggle for completed milestones */}
+              {isMilestone && isCompleted && (
+                <div className="ml-7 mt-0.5 mb-1">
+                  <button
+                    type="button"
+                    disabled={togglingStage === stage.stage}
+                    onClick={() => handlePortalToggle(stage.stage)}
+                    className={cn(
+                      "flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border transition-colors",
+                      portalVisibility[stage.stage]
+                        ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+                        : "bg-muted text-muted-foreground border-border hover:bg-muted/70"
+                    )}
+                    title={portalVisibility[stage.stage] ? "Hide from client portal" : "Share with client portal"}
+                  >
+                    {togglingStage === stage.stage ? (
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                    ) : portalVisibility[stage.stage] ? (
+                      <Eye className="w-2.5 h-2.5" />
+                    ) : (
+                      <EyeOff className="w-2.5 h-2.5" />
+                    )}
+                    {portalVisibility[stage.stage] ? "Shared with client" : "Share with client"}
+                  </button>
+                </div>
+              )}
 
               {/* Stage history rows */}
               {historyEvents.map((evt) => {

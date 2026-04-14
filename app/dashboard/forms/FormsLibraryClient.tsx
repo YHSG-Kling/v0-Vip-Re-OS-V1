@@ -18,9 +18,18 @@ import {
   Tabs, TabsContent, TabsList, TabsTrigger,
 } from "@/components/ui/tabs"
 import {
+  Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
+} from "@/components/ui/sheet"
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog"
+import {
+  Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
+} from "@/components/ui/command"
+import {
   FileText, ExternalLink, Search, Building2, CheckCircle2,
   AlertCircle, Clock, ClipboardList, Send, Download, RefreshCw,
-  Shield, Loader2, Users, Settings,
+  Shield, Loader2, Users, Settings, Eye, UserCircle2,
 } from "lucide-react"
 import { formatDistanceToNow, format } from "date-fns"
 import Link from "next/link"
@@ -28,9 +37,11 @@ import {
   loadAvailableFormsAction,
   resolveFormsProviderAction,
 } from "@/app/actions/forms-kernel"
+import { getContacts } from "@/app/actions/contacts"
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
+  type DefaultSigner,
 } from "@/app/dashboard/transactions/[id]/components/transaction-form-esign-flow"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -151,6 +162,18 @@ export function FormsLibraryClient({
   const [searchForms, setSearchForms]           = useState("")
   const [selectedForm, setSelectedForm]         = useState<FormTemplate | null>(null)
 
+  // "View Form" Sheet
+  const [viewingForm, setViewingForm]           = useState<FormTemplate | null>(null)
+
+  // Contact picker — shown before launching e-sign flow
+  const [pendingEsignForm, setPendingEsignForm] = useState<FormTemplate | null>(null)
+  const [contactPickerOpen, setContactPickerOpen] = useState(false)
+  const [contactSearch, setContactSearch]       = useState("")
+  const [contacts, setContacts]                 = useState<Array<{ id: string; first_name: string; last_name: string; email: string }>>([])
+  const [contactsLoading, setContactsLoading]   = useState(false)
+  // Signers pre-populated from the contact picker; passed to TransactionFormEsignFlow
+  const [esignDefaultSigners, setEsignDefaultSigners] = useState<DefaultSigner[]>([])
+
   // Kernel-loaded transaction forms (lazy loaded on first render)
   const [kernelForms, setKernelForms]           = useState<FormTemplate[]>([])
   const [kernelFormsLoading, setKernelFormsLoading] = useState(false)
@@ -176,6 +199,40 @@ export function FormsLibraryClient({
     }).catch(() => setKernelFormsLoaded(true))
       .finally(() => setKernelFormsLoading(false))
   }, [kernelFormsLoaded, kernelFormsLoading])
+
+  // Load agent's contacts lazily when the contact picker is opened
+  useEffect(() => {
+    if (!contactPickerOpen || contacts.length > 0 || contactsLoading) return
+    setContactsLoading(true)
+    getContacts({ limit: 100 })
+      .then(res => setContacts((res.contacts ?? []) as any))
+      .catch(() => {})
+      .finally(() => setContactsLoading(false))
+  }, [contactPickerOpen, contacts.length, contactsLoading])
+
+  // Open contact picker before launching e-sign flow
+  function handleUseForm(form: FormTemplate) {
+    setPendingEsignForm(form)
+    setContactPickerOpen(true)
+    setViewingForm(null)
+  }
+
+  // Launch e-sign flow — optionally with a pre-selected contact as first signer
+  function launchEsign(contact: { first_name: string; last_name: string; email: string } | null) {
+    if (!pendingEsignForm) return
+    if (contact) {
+      setEsignDefaultSigners([{
+        name:  `${contact.first_name} ${contact.last_name}`.trim(),
+        email: contact.email,
+        role:  "client",
+      }])
+    } else {
+      setEsignDefaultSigners([])
+    }
+    setSelectedForm(pendingEsignForm)
+    setContactPickerOpen(false)
+    setPendingEsignForm(null)
+  }
 
   const activeCred = platformCreds.find(c => c.is_active)
 
@@ -423,8 +480,17 @@ export function FormsLibraryClient({
                         <div className="flex items-center gap-2 ml-3 shrink-0">
                           <Button
                             size="sm"
+                            variant="ghost"
+                            className="text-xs h-7 gap-1 text-muted-foreground"
+                            onClick={() => setViewingForm(form)}
+                          >
+                            <Eye className="h-3 w-3" />
+                            View
+                          </Button>
+                          <Button
+                            size="sm"
                             className="text-xs h-7 gap-1"
-                            onClick={() => setSelectedForm(form)}
+                            onClick={() => handleUseForm(form)}
                           >
                             Use This Form
                           </Button>
@@ -639,18 +705,157 @@ export function FormsLibraryClient({
         </Tabs>
       </div>
 
-      {/* E-Sign Flow Sheet — launched when agent clicks "Use This Form" */}
+      {/* E-Sign Flow Sheet — launched after contact picker step */}
       {selectedForm && (
         <TransactionFormEsignFlow
           open={!!selectedForm}
-          onOpenChange={open => { if (!open) setSelectedForm(null) }}
+          onOpenChange={open => {
+            if (!open) {
+              setSelectedForm(null)
+              setEsignDefaultSigners([])
+            }
+          }}
           formTemplate={selectedForm}
           contextType="transaction"
           contextId="new"
+          defaultSigners={esignDefaultSigners}
           providerName={resolvedProvider?.provider_name ?? activeCred?.platform}
-          onSuccess={() => setSelectedForm(null)}
+          onSuccess={() => {
+            setSelectedForm(null)
+            setEsignDefaultSigners([])
+          }}
         />
       )}
+
+      {/* View Form Sheet */}
+      <Sheet open={!!viewingForm} onOpenChange={open => { if (!open) setViewingForm(null) }}>
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          {viewingForm && (
+            <>
+              <SheetHeader className="pb-4">
+                <SheetTitle className="flex items-start gap-2">
+                  <FileText className="h-5 w-5 text-muted-foreground mt-0.5 shrink-0" />
+                  <span>{viewingForm.name}</span>
+                </SheetTitle>
+                <SheetDescription asChild>
+                  <div className="space-y-1">
+                    <p className="text-xs capitalize text-muted-foreground">
+                      {viewingForm.category.replace(/_/g, " ")} &middot; {viewingForm.form_type}
+                    </p>
+                    {viewingForm.is_required && (
+                      <div className="pt-1">
+                        <Badge variant="destructive" className="text-[10px]">Required</Badge>
+                      </div>
+                    )}
+                  </div>
+                </SheetDescription>
+              </SheetHeader>
+
+              <div className="space-y-4 text-sm">
+                {viewingForm.description && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Description</p>
+                    <p className="text-sm text-muted-foreground">{viewingForm.description}</p>
+                  </div>
+                )}
+
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">Details</p>
+                  <div className="space-y-1 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Category</span>
+                      <span className="capitalize font-medium">{viewingForm.category.replace(/_/g, " ")}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Form Type</span>
+                      <span className="capitalize font-medium">{viewingForm.form_type}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Mandatory</span>
+                      <span className="font-medium">{viewingForm.is_required ? "Yes" : "No"}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-6">
+                <Button className="w-full" onClick={() => handleUseForm(viewingForm)}>
+                  Use This Form
+                </Button>
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Contact Picker Dialog — shown before e-sign flow */}
+      <Dialog open={contactPickerOpen} onOpenChange={open => {
+        if (!open) {
+          setContactPickerOpen(false)
+          setPendingEsignForm(null)
+          setContactSearch("")
+        }
+      }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <UserCircle2 className="h-4 w-4" />
+              Select a Contact
+            </DialogTitle>
+            <DialogDescription>
+              Optionally pick a contact from your CRM to pre-fill as the first signer.
+            </DialogDescription>
+          </DialogHeader>
+
+          <Command className="border rounded-md">
+            <CommandInput
+              placeholder="Search contacts..."
+              value={contactSearch}
+              onValueChange={setContactSearch}
+            />
+            <CommandList className="max-h-56">
+              {contactsLoading ? (
+                <div className="flex items-center justify-center py-6">
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <>
+                  <CommandEmpty>No contacts found.</CommandEmpty>
+                  <CommandGroup>
+                    {contacts
+                      .filter(c => {
+                        const q = contactSearch.toLowerCase()
+                        return !q ||
+                          `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
+                          c.email.toLowerCase().includes(q)
+                      })
+                      .slice(0, 50)
+                      .map(c => (
+                        <CommandItem
+                          key={c.id}
+                          onSelect={() => launchEsign(c)}
+                          className="flex items-center gap-2 cursor-pointer"
+                        >
+                          <UserCircle2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">{c.first_name} {c.last_name}</p>
+                            <p className="text-xs text-muted-foreground truncate">{c.email}</p>
+                          </div>
+                        </CommandItem>
+                      ))}
+                  </CommandGroup>
+                </>
+              )}
+            </CommandList>
+          </Command>
+
+          <DialogFooter>
+            <Button variant="ghost" size="sm" onClick={() => launchEsign(null)} className="w-full text-xs">
+              Skip — proceed without contact
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

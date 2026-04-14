@@ -177,3 +177,44 @@ export async function sendReviewRequest(requestId: string, platform: string) {
 
 // Export for orchestrator
 export { scheduleClosingGift }
+
+// ─── Portal Visibility ────────────────────────────────────────────────────────
+
+/**
+ * Set portal_visible flag on the most recent lifecycle_event for a given stage.
+ * Agents use this to share milestone updates with the buyer/seller portal.
+ */
+export async function setMilestonePortalVisibility(
+  listingId: string,
+  stage: string,
+  visible: boolean
+) {
+  const supabase = await createClient()
+
+  // Find the most recent event for this stage
+  const { data: evt, error: fetchError } = await supabase
+    .from("lifecycle_events")
+    .select("id, metadata")
+    .eq("listing_id", listingId)
+    .eq("metadata->>to_state", stage)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (fetchError || !evt) {
+    return { success: false, error: fetchError?.message ?? "Event not found" }
+  }
+
+  const updatedMetadata = { ...(evt.metadata ?? {}), portal_visible: visible }
+
+  const { error: updateError } = await supabase
+    .from("lifecycle_events")
+    .update({ metadata: updatedMetadata })
+    .eq("id", evt.id)
+
+  if (updateError) {
+    return { success: false, error: updateError.message }
+  }
+
+  return { success: true }
+}

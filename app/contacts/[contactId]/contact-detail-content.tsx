@@ -34,17 +34,22 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
 
   useEffect(() => {
     async function loadData() {
-      const [credit, video, trans, sugg] = await Promise.all([
-        getContactCreditAccounts(contact.id),
-        getContactVideoEngagement(contact.id),
-        getContactTransactions(contact.id),
-        getContactCopilotSuggestions(contact.id),
-      ])
+      try {
+        const [credit, video, trans, sugg] = await Promise.all([
+          getContactCreditAccounts(contact.id),
+          getContactVideoEngagement(contact.id),
+          getContactTransactions(contact.id),
+          getContactCopilotSuggestions(contact.id),
+        ])
 
-      setCreditAccounts(credit.accounts)
-      setVideos(video.videos)
-      setTransactions(trans.transactions)
-      setSuggestions(sugg.suggestions)
+        setCreditAccounts(credit?.accounts ?? [])
+        setVideos(video?.videos ?? [])
+        setTransactions(trans?.transactions ?? [])
+        setSuggestions(sugg?.suggestions ?? [])
+      } catch (err) {
+        console.error("[ContactDetail] Failed to load contact data:", err)
+        // Keep empty arrays — component renders gracefully with no data
+      }
     }
     loadData()
   }, [contact.id])
@@ -292,13 +297,13 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                         <TransactionCard
                           key={transaction.id}
                           property={
-                            transaction.listings
-                              ? `${transaction.listings.address}, ${transaction.listings.city}`
+                            transaction.property_address
+                              ? `${transaction.property_address}${transaction.city ? `, ${transaction.city}` : ""}`
                               : "Property"
                           }
                           status={transaction.status}
-                          stage={transaction.current_stage || "Active"}
-                          progress={calculateProgress(transaction.current_stage)}
+                          stage={transaction.transaction_type || "Active"}
+                          progress={calculateProgress(transaction.status)}
                         />
                       ))
                     )}
