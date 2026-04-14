@@ -481,6 +481,24 @@ export default function CRMPage() {
       .catch(() => {/* non-blocking */})
   }, [selectedContactId])
 
+  // Load conversations for the selected contact so RelationshipRadar and
+  // CommunicationHealthPanel both have accurate thread counts / history.
+  useEffect(() => {
+    if (!selectedContactId) {
+      setConversations([])
+      return
+    }
+    const supabase = createClient()
+    supabase
+      .from("conversations")
+      .select("*")
+      .eq("contact_id", selectedContactId)
+      .order("created_at", { ascending: false })
+      .limit(50)
+      .then(({ data }) => setConversations(data || []))
+      .catch(() => setConversations([]))
+  }, [selectedContactId])
+
   // Lazy-load Journey & Team tab data
   const loadJourneyTeam = useCallback(async (contactId: string) => {
     if (journeyTeamLoaded || journeyTeamLoading) return

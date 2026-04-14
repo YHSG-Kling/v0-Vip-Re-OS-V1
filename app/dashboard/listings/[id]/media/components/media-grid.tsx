@@ -1,11 +1,12 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Dialog,
   DialogContent,
@@ -27,6 +28,7 @@ import {
   setPrimaryMedia,
   runComplianceCheck,
 } from "@/app/actions/listing-media"
+import { createClient } from "@/lib/supabase/client"
 import {
   MoreHorizontalIcon,
   PlusIcon,
@@ -36,6 +38,8 @@ import {
   ShieldAlertIcon,
   StarIcon,
   Trash2Icon,
+  UploadIcon,
+  Loader2,
 } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 
@@ -84,6 +88,39 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
     mediaType: "photo" as const,
     isPrimary: false,
   })
+
+  // File upload state
+  const [fileUploading, setFileUploading] = useState(false)
+  const [fileUploadProgress, setFileUploadProgress] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setFileUploading(true)
+    setFileUploadProgress("Uploading...")
+
+    try {
+      const supabase = createClient()
+      const ext = file.name.split(".").pop() ?? "jpg"
+      const path = `${listingId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+
+      const { error: uploadError } = await supabase.storage
+        .from("listing-media")
+        .upload(path, file, { upsert: false })
+
+      if (uploadError) throw uploadError
+
+      const { data: urlData } = supabase.storage.from("listing-media").getPublicUrl(path)
+      setForm(f => ({ ...f, fileUrl: urlData.publicUrl }))
+      setFileUploadProgress("File uploaded — URL filled in below")
+    } catch (err: any) {
+      setFileUploadProgress(`Upload failed: ${err?.message ?? "Unknown error"}`)
+    } finally {
+      setFileUploading(false)
+    }
+  }
 
   const handleUpload = () => {
     if (!form.fileUrl.trim()) return
@@ -286,7 +323,13 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
       )}
 
       {/* Upload dialog */}
-      <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
+      <Dialog open={uploadOpen} onOpenChange={open => {
+        setUploadOpen(open)
+        if (!open) {
+          setFileUploadProgress(null)
+          if (fileInputRef.current) fileInputRef.current.value = ""
+        }
+      }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Add Media</DialogTitle>
@@ -305,15 +348,63 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
                 ))}
               </select>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="fileUrl">File URL <span className="text-destructive">*</span></Label>
-              <Input
-                id="fileUrl"
-                placeholder="https://..."
-                value={form.fileUrl}
-                onChange={e => setForm(f => ({ ...f, fileUrl: e.target.value }))}
-              />
-            </div>
+
+            {/* File source: upload or URL */}
+            <Tabs defaultValue="upload" className="w-full">
+              <TabsList className="w-full">
+                <TabsTrigger value="upload" className="flex-1 text-xs gap-1.5">
+                  <UploadIcon className="h-3.5 w-3.5" /> Upload File
+                </TabsTrigger>
+                <TabsTrigger value="url" className="flex-1 text-xs">Enter URL</TabsTrigger>
+              </TabsList>
+              <TabsContent value="upload" className="mt-2 space-y-2">
+                <div
+                  className="border-2 border-dashed border-border rounded-lg p-4 text-center cursor-pointer hover:bg-muted/30 transition-colors"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {fileUploading ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                      <p className="text-xs text-muted-foreground">Uploading…</p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-1">
+                      <UploadIcon className="h-6 w-6 text-muted-foreground" />
+                      <p className="text-xs font-medium">Click to choose a file</p>
+                      <p className="text-[10px] text-muted-foreground">JPG, PNG, PDF, MP4</p>
+                    </div>
+                  )}
+                </div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/*,application/pdf"
+                  className="hidden"
+                  onChange={handleFileSelect}
+                />
+                {fileUploadProgress && (
+                  <p className={`text-xs ${fileUploadProgress.startsWith("Upload failed") ? "text-destructive" : "text-green-600"}`}>
+                    {fileUploadProgress}
+                  </p>
+                )}
+                {form.fileUrl && (
+                  <p className="text-xs text-muted-foreground truncate">
+                    URL: {form.fileUrl}
+                  </p>
+                )}
+              </TabsContent>
+              <TabsContent value="url" className="mt-2">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="fileUrl">File URL <span className="text-destructive">*</span></Label>
+                  <Input
+                    id="fileUrl"
+                    placeholder="https://..."
+                    value={form.fileUrl}
+                    onChange={e => setForm(f => ({ ...f, fileUrl: e.target.value }))}
+                  />
+                </div>
+              </TabsContent>
+            </Tabs>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="thumbnailUrl">Thumbnail URL</Label>
               <Input

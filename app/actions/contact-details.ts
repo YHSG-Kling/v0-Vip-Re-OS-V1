@@ -46,32 +46,24 @@ export async function getContactCreditAccounts(contactId: string) {
   return { accounts: data || [], error }
 }
 
-export async function getContactVideoEngagement(contactId: string) {
-  const supabase = await createClient()
-
-  const { data, error } = await supabase
-    .from("video_scripts_library")
-    .select("*")
-    .eq("target_contact_id", contactId)
-    .order("created_at", { ascending: false })
-
-  return { videos: data || [], error }
+export async function getContactVideoEngagement(_contactId: string) {
+  // video_scripts_library does not have a target_contact_id column — video engagement
+  // tracking per contact is not yet wired up. Return empty until that feature is built.
+  return { videos: [], error: null }
 }
 
 export async function getContactTransactions(contactId: string) {
   const supabase = await createClient()
 
+  // Transactions are created from accepted offers via createTransactionFromCompliantAcceptedOffer().
+  // They carry their own property data and are self-contained — no join to listings needed.
   const { data, error } = await supabase
     .from("transactions")
-    .select(`
-      *,
-      listings (
-        address,
-        city,
-        state,
-        price
-      )
-    `)
+    .select(
+      "id, contact_id, listing_id, agent_id, property_address, city, state, " +
+      "purchase_price, sale_price, list_price, status, contract_date, " +
+      "closing_date, earnest_money, transaction_type, created_at, updated_at"
+    )
     .eq("contact_id", contactId)
     .order("created_at", { ascending: false })
 
