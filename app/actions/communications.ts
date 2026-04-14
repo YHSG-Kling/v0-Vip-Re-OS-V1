@@ -503,14 +503,24 @@ export async function sendNotificationToAgent(
     return { success: false, error: "User not found" }
   }
 
-  // In production, this would:
-  // 1. Send push notification via Firebase/OneSignal
-  // 2. Send SMS if priority is high
-  // 3. Send email if urgent
-  // 4. Create in-app notification
+  // Write in-app notification to notifications table
+  const { data: notifRecord, error: notifError } = await supabaseService.client
+    .from("notifications")
+    .insert({
+      user_id: userId,
+      type: "agent_notification",
+      title: notification.title,
+      body: notification.message,
+      priority: notification.priority || "medium",
+      is_read: false,
+      channel: "in_app",
+    })
+    .select("id")
+    .single()
 
-  // For now, log the notification
-  console.log(`[v0] Notification to ${user.email}:`, notification)
+  if (notifError) {
+    console.error("[v0] Failed to write notification:", notifError.message)
+  }
 
   // Log to activity table
   await supabaseService.logActivity({
@@ -527,7 +537,6 @@ export async function sendNotificationToAgent(
 
   return {
     success: true,
-    notificationId: `notif_${Date.now()}`,
-    mock: true,
+    notificationId: notifRecord?.id ?? `notif_${Date.now()}`,
   }
 }

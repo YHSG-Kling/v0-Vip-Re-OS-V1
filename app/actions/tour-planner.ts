@@ -667,3 +667,21 @@ Focus on geography flow, any standout properties, and pacing. Be specific and he
     }
   }
 }
+
+// ─── 9. Update tour stop order (manual drag reorder) ─────────────────────────
+
+export async function updateTourStopOrder(
+  tourId: string,
+  orderedStopIds: string[]
+): Promise<{ success: boolean; error?: string }> {
+  if (!isValidUUID(tourId)) return { success: false, error: 'Invalid tour ID' }
+
+  const supabase = createServiceClient()
+  const updates = orderedStopIds.map((id, idx) =>
+    supabase.from('tour_stops').update({ order_index: idx }).eq('id', id).eq('tour_id', tourId)
+  )
+  const results = await Promise.all(updates)
+  const failed = results.find(r => r.error)
+  if (failed?.error) return { success: false, error: failed.error.message }
+  return { success: true }
+}

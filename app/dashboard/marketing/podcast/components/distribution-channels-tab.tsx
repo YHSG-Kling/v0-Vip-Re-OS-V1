@@ -15,8 +15,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/app/components/ui/dialog"
-import { Rss, Music2, Apple, Youtube, Loader2, ExternalLink, Radio } from "lucide-react"
-import { updateDistributionChannel } from "@/app/actions/podcast-generation"
+import { Rss, Music2, Apple, Youtube, Loader2, ExternalLink, Radio, Plus } from "lucide-react"
+import { updateDistributionChannel, createDistributionChannel } from "@/app/actions/podcast-generation"
 
 interface DistributionChannel {
   id: string
@@ -30,6 +30,7 @@ interface DistributionChannelsTabProps {
   channels: DistributionChannel[]
   loading: boolean
   onUpdate: () => void
+  isAdmin?: boolean
 }
 
 const CHANNEL_ICONS: Record<string, React.ReactNode> = {
@@ -46,9 +47,12 @@ const CHANNEL_COLORS: Record<string, string> = {
   rss: "bg-orange-500",
 }
 
-export function DistributionChannelsTab({ channels, loading, onUpdate }: DistributionChannelsTabProps) {
+const DEFAULT_CHANNELS = ["spotify", "apple", "youtube", "rss"]
+
+export function DistributionChannelsTab({ channels, loading, onUpdate, isAdmin = false }: DistributionChannelsTabProps) {
   const [editingChannel, setEditingChannel] = useState<DistributionChannel | null>(null)
   const [processing, setProcessing] = useState(false)
+  const [seeding, setSeeding] = useState(false)
   const [formData, setFormData] = useState({
     isEnabled: false,
     externalShowId: "",
@@ -102,6 +106,16 @@ export function DistributionChannelsTab({ channels, loading, onUpdate }: Distrib
       }
     } finally {
       setProcessing(false)
+    }
+  }
+
+  async function handleSeedChannels() {
+    setSeeding(true)
+    try {
+      await Promise.all(DEFAULT_CHANNELS.map((name) => createDistributionChannel(name)))
+      onUpdate()
+    } finally {
+      setSeeding(false)
     }
   }
 
@@ -160,19 +174,46 @@ export function DistributionChannelsTab({ channels, loading, onUpdate }: Distrib
           <Radio className="h-8 w-8 text-gray-400" />
         </div>
         <h3 className="text-lg font-semibold text-gray-900 mb-2">No distribution channels</h3>
-        <p className="text-sm text-gray-500 max-w-sm">
-          Distribution channels are configured at the brokerage level. Contact your administrator to set up podcast distribution.
-        </p>
+        {isAdmin ? (
+          <>
+            <p className="text-sm text-gray-500 max-w-sm mb-4">
+              Set up distribution channels to publish your podcast to Spotify, Apple Podcasts, YouTube, and RSS.
+            </p>
+            <Button onClick={handleSeedChannels} disabled={seeding}>
+              {seeding ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Initializing...
+                </>
+              ) : (
+                <>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Initialize Distribution Channels
+                </>
+              )}
+            </Button>
+          </>
+        ) : (
+          <p className="text-sm text-gray-500 max-w-sm">
+            Distribution channels are configured at the brokerage level. Contact your administrator to set up podcast distribution.
+          </p>
+        )}
       </div>
     )
   }
 
   return (
     <>
-      <div className="mb-4">
+      <div className="mb-4 flex items-center justify-between">
         <p className="text-sm text-gray-600">
           Configure where your podcast episodes are distributed. Enable channels and provide the required IDs to start distributing.
         </p>
+        {isAdmin && (
+          <Button variant="outline" size="sm" onClick={handleSeedChannels} disabled={seeding}>
+            {seeding ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
+            Add Channels
+          </Button>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

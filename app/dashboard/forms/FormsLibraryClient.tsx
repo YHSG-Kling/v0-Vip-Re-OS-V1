@@ -352,7 +352,7 @@ export function FormsLibraryClient({
                   <div>
                     <p className="text-sm font-semibold text-amber-900">No transaction provider connected</p>
                     <p className="text-xs text-amber-700">
-                      Connect Dotloop, SkySlope, or another provider to access forms directly.
+                      Connect a transaction management provider in Settings to access forms directly.
                     </p>
                   </div>
                 </div>

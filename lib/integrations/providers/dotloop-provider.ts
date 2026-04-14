@@ -30,12 +30,20 @@ const DOTLOOP_API_BASE = "https://api-gateway.dotloop.com/public/v2"
 export class DotloopProvider implements ITransactionProvider {
   readonly name = "dotloop"
 
+  private injectedCredentials?: { apiKey: string; profileId: string }
+
+  constructor(credentials?: { apiKey: string; profileId: string }) {
+    this.injectedCredentials = credentials
+  }
+
   private getCredentials() {
+    // Injected DB credentials take priority over env vars
+    if (this.injectedCredentials) return this.injectedCredentials
+
     const apiKey = process.env.DOTLOOP_API_KEY
     const profileId = process.env.DOTLOOP_PROFILE_ID
 
     if (!apiKey || !profileId) {
-      console.warn("[v0] Dotloop credentials not configured - using mock mode")
       return null
     }
 

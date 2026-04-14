@@ -46,6 +46,10 @@ export default async function TransactionsPage() {
   const agentId = agentRecord?.id ?? user.id
   const brokerageId = agentRecord?.brokerage_id ?? null
 
+  const { data: brokerageInfo } = brokerageId
+    ? await supabase.from("brokerages").select("name, logo_url").eq("id", brokerageId).maybeSingle()
+    : { data: null }
+
   // Fetch transactions using server action (proper architecture pattern)
   // getTransactions returns { success, data } or { success: false, error }
   const txResult = await getTransactions({
@@ -103,10 +107,13 @@ export default async function TransactionsPage() {
             <h1 className="text-xl sm:text-2xl font-bold text-foreground text-balance">Transaction Command Center</h1>
             <p className="text-muted-foreground text-sm">Monitor deal progress and pipeline health</p>
           </div>
-          {brokerageId && (
-            <div className="text-right shrink-0">
-              <p className="text-[10px] text-muted-foreground">Brokerage ID</p>
-              <p className="font-mono text-xs text-muted-foreground select-all">{brokerageId}</p>
+          {(brokerageInfo?.name || brokerageInfo?.logo_url) && (
+            <div className="flex items-center gap-2 shrink-0">
+              {brokerageInfo.logo_url ? (
+                <img src={brokerageInfo.logo_url} alt={brokerageInfo.name ?? "Brokerage"} className="h-8 w-auto max-w-[120px] object-contain" />
+              ) : (
+                <span className="text-sm font-medium text-muted-foreground">{brokerageInfo.name}</span>
+              )}
             </div>
           )}
         </div>

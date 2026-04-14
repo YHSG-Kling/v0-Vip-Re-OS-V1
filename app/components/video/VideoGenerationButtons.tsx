@@ -34,7 +34,7 @@ export function VideoGenerationButtons({
     setComplianceStatus("checking")
     setComplianceMessage("Checking Them-First compliance...")
 
-    const forbiddenWords = ["guaranteed", "promise", "can't lose", "risk-free", "instant", "best", "only", "must"]
+    const forbiddenWords = ["guaranteed", "can't lose", "risk-free", "instant"]
     const foundForbidden = forbiddenWords.filter((word) => text.toLowerCase().includes(word))
 
     if (foundForbidden.length > 0) {

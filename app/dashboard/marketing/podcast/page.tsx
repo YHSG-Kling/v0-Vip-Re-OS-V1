@@ -13,13 +13,15 @@ export default async function PodcastPage() {
   // Resolve agent context + load initial data server-side
   let agentId = ""
   let brokerageId = ""
+  let userType = "agent"
   let initialEpisodes: any[] = []
   let totalPlays = 0
 
   try {
     const ctx = await getAgentContext()
-    agentId = ctx.agentId
-    brokerageId = ctx.brokerageId
+    agentId = ctx.agentId ?? ""
+    brokerageId = ctx.brokerageId ?? ""
+    userType = ctx.userType
 
     const [episodesResult, supabase] = await Promise.all([
       getPodcastEpisodes(),
@@ -52,6 +54,7 @@ export default async function PodcastPage() {
           brokerageId={brokerageId}
           initialEpisodes={initialEpisodes}
           totalPlays={totalPlays}
+          userType={userType}
         />
       </Suspense>
     </div>

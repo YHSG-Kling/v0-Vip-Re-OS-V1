@@ -3,9 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
-import Anthropic from "@anthropic-ai/sdk"
-
-const anthropic = new Anthropic()
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 interface GenerateDraftParams {
   listingId: string
@@ -156,27 +154,22 @@ ${milestones.map(m => `- ${m.milestone_name}: ${m.status} (${m.milestone_date})`
 ` : ""}
 `
 
-  // Call Claude to generate draft
-  const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 500,
-    system: `You are a real estate agent writing a weekly update to your seller client. 
+  // Call AI to generate draft
+  const { text: draftText } = await generateText({
+    model: "openai/gpt-4o-mini",
+    prompt: `You are a real estate agent writing a weekly update to your seller client.
 Be warm, professional, and specific. Max 200 words.
 Focus on:
 1. Activity summary (showings, interest level)
 2. Feedback highlights (without being negative)
 3. Market positioning
 4. Next steps or recommendations
-Do NOT include subject lines or greetings like "Dear" - start directly with the update content.`,
-    messages: [
-      {
-        role: "user",
-        content: `Generate a weekly seller update email based on this context:\n\n${contextPrompt}`,
-      },
-    ],
-  })
+Do NOT include subject lines or greetings like "Dear" - start directly with the update content.
 
-  const draftText = message.content[0].type === "text" ? message.content[0].text : ""
+Generate a weekly seller update email based on this context:
+
+${contextPrompt}`,
+  })
 
   return {
     draft: draftText,

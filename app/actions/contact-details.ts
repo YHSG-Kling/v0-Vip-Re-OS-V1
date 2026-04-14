@@ -46,10 +46,45 @@ export async function getContactCreditAccounts(contactId: string) {
   return { accounts: data || [], error }
 }
 
-export async function getContactVideoEngagement(_contactId: string) {
-  // video_scripts_library does not have a target_contact_id column — video engagement
-  // tracking per contact is not yet wired up. Return empty until that feature is built.
-  return { videos: [], error: null }
+export async function getContactVideoEngagement(contactId: string) {
+  const supabase = await createClient()
+
+  const { data: events } = await supabase
+    .from("video_engagement_events")
+    .select("video_asset_id, event_type, timestamp")
+    .eq("contact_id", contactId)
+    .order("timestamp", { ascending: false })
+    .limit(20)
+
+  const assetIds = [...new Set((events ?? []).map((e: any) => e.video_asset_id).filter(Boolean))]
+  if (!assetIds.length) return { videos: [], error: null }
+
+  const [{ data: perf }, { data: projects }] = await Promise.all([
+    supabase
+      .from("video_performance_tracking")
+      .select("video_asset_id, total_views, average_completion_rate, last_event_at")
+      .in("video_asset_id", assetIds),
+    supabase
+      .from("ai_video_projects")
+      .select("id, title, created_at")
+      .in("id", assetIds),
+  ])
+
+  const videos = assetIds.map((id: string) => {
+    const p = perf?.find((x: any) => x.video_asset_id === id)
+    const proj = projects?.find((x: any) => x.id === id)
+    const firstEvent = (events ?? []).find((e: any) => e.video_asset_id === id)
+    return {
+      id,
+      script_title: proj?.title ?? "Video",
+      created_at: proj?.created_at ?? firstEvent?.timestamp,
+      view_count: p?.total_views ?? 0,
+      avg_completion_rate: p?.average_completion_rate ?? 0,
+      last_viewed_at: p?.last_event_at ?? null,
+    }
+  })
+
+  return { videos, error: null }
 }
 
 export async function getContactTransactions(contactId: string) {
