@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateText as generateTextBase, Output } from "ai"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
@@ -372,19 +373,34 @@ export async function createOfferDotloop(params: {
       return { success: false, error: "Invalid agent ID" }
     }
 
-    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
-    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
+    const supabase = await createClient()
 
-    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
+    // Resolve Dotloop credentials from platform_credentials (brokerage-scoped, not env vars)
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("id", params.agentId)
+      .maybeSingle()
+    if (!agentRow?.brokerage_id) {
+      return { success: false, error: "Agent or brokerage not found" }
+    }
+    const serviceClient = createServiceClient()
+    const { data: dotloopCred } = await serviceClient
+      .from("platform_credentials")
+      .select("access_token, account_id")
+      .eq("brokerage_id", agentRow.brokerage_id)
+      .eq("platform", "dotloop")
+      .eq("is_active", true)
+      .maybeSingle()
+    if (!dotloopCred?.access_token || !dotloopCred?.account_id) {
       return {
-        success: true,
-        loopId: `mock-offer-loop-${Date.now()}`,
-        loopUrl: `https://dotloop.com/loop/mock-offer-${Date.now()}`,
-        mock: true,
+        success: false,
+        error: "Dotloop is not configured for your brokerage. Go to Settings > Integrations.",
+        notConfigured: true,
       }
     }
-
-    const supabase = await createClient()
+    const DOTLOOP_API_KEY = dotloopCred.access_token
+    const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
     // If existing loop provided, link to it
     if (params.existingLoopId) {

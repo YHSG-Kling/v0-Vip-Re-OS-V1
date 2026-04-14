@@ -127,13 +127,13 @@ export interface BuyerPropertyInterest {
 
 export async function resolveTransactionFormsProvider(input: {
   brokerage_id: string
-}): Promise<KernelFormsResult<{ provider_name: string; is_configured: boolean }>> {
+}): Promise<KernelFormsResult<{ provider_name: string; is_configured: boolean; access_token: string | null; account_id: string | null }>> {
   try {
     const supabase = createServiceClient()
 
     const { data: credential } = await supabase
       .from("platform_credentials")
-      .select("platform, account_id, is_active")
+      .select("platform, account_id, access_token, is_active")
       .eq("brokerage_id", input.brokerage_id)
       .in("platform", ["dotloop", "skyslope", "formsimplicity", "brokermint", "authentisign", "docusign"])
       .eq("is_active", true)
@@ -146,7 +146,12 @@ export async function resolveTransactionFormsProvider(input: {
 
     return {
       success: true,
-      data: { provider_name, is_configured },
+      data: {
+        provider_name,
+        is_configured,
+        access_token: credential?.access_token ?? null,
+        account_id: credential?.account_id ?? null,
+      },
     }
   } catch (error: any) {
     return { success: false, error: error.message }
@@ -555,10 +560,16 @@ export async function launchEsignEnvelope(input: {
       return { success: false, error: "Already sent for signature" }
     }
 
-    // Resolve provider
+    // Resolve provider with credentials from platform_credentials
     const providerResult = await resolveTransactionFormsProvider({ brokerage_id: input.brokerage_id })
-    const providerName   = providerResult.data?.provider_name ?? "dotloop"
-    const provider       = getTransactionProviderByName(providerName)
+    if (!providerResult.success || !providerResult.data?.is_configured) {
+      return { success: false, error: "No transaction provider configured for this brokerage. Go to Settings > Integrations." }
+    }
+    const { provider_name: providerName, access_token, account_id } = providerResult.data
+    const injectedCredentials = access_token && account_id
+      ? { apiKey: access_token, profileId: account_id }
+      : undefined
+    const provider = getTransactionProviderByName(providerName, injectedCredentials)
 
     // Delegate to provider (transport only)
     const sendResult = await provider.sendForSignature({

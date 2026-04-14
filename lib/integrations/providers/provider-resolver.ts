@@ -10,12 +10,14 @@ import { DotloopProvider } from "./dotloop-provider"
 import { getTransactionProvider as getProviderName } from "@/lib/brokerage"
 
 // ── Provider registry ────────────────────────────────────────────────────────
-// Add new providers here. Factory returns an instance; throw means not-yet-implemented.
+// Add new providers here. Factory accepts optional injected credentials.
 
 export type ProviderName = "dotloop" | "skyslope" | "formsimplicity" | "brokermint"
 
-const PROVIDER_REGISTRY: Record<ProviderName, () => ITransactionProvider> = {
-  dotloop:         () => new DotloopProvider(),
+type ProviderCredentials = { apiKey: string; profileId: string }
+
+const PROVIDER_REGISTRY: Record<ProviderName, (creds?: ProviderCredentials) => ITransactionProvider> = {
+  dotloop:         (creds) => new DotloopProvider(creds),
   skyslope:        () => { throw new Error("SkySlope provider not yet implemented") },
   formsimplicity:  () => { throw new Error("FormSimplicity provider not yet implemented") },
   brokermint:      () => { throw new Error("BrokerMint provider not yet implemented") },
@@ -49,7 +51,10 @@ export async function getTransactionProvider(
  * Used by submitForSignature where the platform name comes from platform_credentials,
  * not from a brokerage settings lookup. Throws if provider is not configured.
  */
-export function getTransactionProviderByName(providerName?: string): ITransactionProvider {
+export function getTransactionProviderByName(
+  providerName?: string,
+  credentials?: ProviderCredentials
+): ITransactionProvider {
   if (!providerName || providerName === "not_configured") {
     throw new Error("No transaction provider configured. Set up a provider in Settings > Integrations.")
   }
@@ -61,7 +66,7 @@ export function getTransactionProviderByName(providerName?: string): ITransactio
     throw new Error(`Unknown transaction provider: ${providerName}. Contact support.`)
   }
 
-  return factory()
+  return factory(credentials)
 }
 
 /**

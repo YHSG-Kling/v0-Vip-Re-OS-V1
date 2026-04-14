@@ -1113,8 +1113,35 @@ export async function generateVideoFromScript(params: {
 
     if (scriptError) console.warn("[v0] Script record error:", scriptError)
 
-    // TODO: Integrate with HeyGen API when credentials are added
-    // For now, mark as queued - actual processing happens in background job
+    // Call HeyGen API to start generation (non-fatal if API key not yet configured)
+    const heygenApiKey = process.env.HEYGEN_API_KEY
+    if (heygenApiKey && params.avatarId && params.voiceId) {
+      try {
+        const heygenRes = await fetch("https://api.heygen.com/v2/video/generate", {
+          method: "POST",
+          headers: { "X-Api-Key": heygenApiKey, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            video_inputs: [{
+              character: { type: "avatar", avatar_id: params.avatarId, avatar_style: "normal" },
+              voice: { type: "text", input_text: params.script, voice_id: params.voiceId },
+            }],
+            dimension: { width: 1920, height: 1080 },
+          }),
+        })
+        if (heygenRes.ok) {
+          const heygenData = await heygenRes.json()
+          const heygenVideoId = heygenData.data?.video_id
+          if (heygenVideoId) {
+            await supabase.from("video_generation_queue")
+              .update({ heygen_video_id: heygenVideoId, status: "generating" })
+              .eq("id", queueRecord.id)
+          }
+        }
+      } catch (heygenErr) {
+        console.warn("[v0] HeyGen API call failed, video stays queued:", heygenErr)
+      }
+    }
+
     console.log("[v0] Video queued successfully:", queueRecord.id)
     return { success: true, videoId: queueRecord.id, queueId: scriptRecord?.id }
   } catch (error: any) {
@@ -1133,26 +1160,54 @@ export async function createAvatarVideo(params: {
   const supabase = createServiceClient()
 
   try {
-    console.log("[v0] Generating video for script:", params.scriptId)
+    console.log("[v0] Generating avatar video for script:", params.scriptId)
 
-    // TODO: Integrate with HeyGen API when credentials are added
-    // For now, simulate video generation
-    const videoUrl = `https://example.com/videos/${params.scriptId}.mp4`
+    const heygenApiKey = process.env.HEYGEN_API_KEY
+    if (!heygenApiKey) {
+      return { success: false, error: "HeyGen API key not configured. Contact your administrator." }
+    }
 
-    // Update script with video URL
+    const heygenRes = await fetch("https://api.heygen.com/v2/video/generate", {
+      method: "POST",
+      headers: { "X-Api-Key": heygenApiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        video_inputs: [{
+          character: {
+            type: "avatar",
+            avatar_id: params.avatarId || "Angela-insuit-20220820",
+            avatar_style: "normal",
+          },
+          voice: {
+            type: "text",
+            input_text: params.script,
+            voice_id: params.voice || "1bd001e7e50f421d891986aad5158bc8",
+          },
+        }],
+        dimension: { width: 1920, height: 1080 },
+      }),
+    })
+
+    const heygenData = await heygenRes.json()
+    if (!heygenRes.ok) {
+      throw new Error(heygenData.message || heygenData.error || "HeyGen API error")
+    }
+
+    const heygenVideoId = heygenData.data?.video_id
+
+    // Update script record — status generating, store heygen video ID
     const { error } = await supabase
       .from("video_scripts_library")
       .update({
-        video_url: videoUrl,
-        video_status: "completed",
+        video_status: "generating",
+        video_heygen_id: heygenVideoId,
         video_generated_at: new Date().toISOString(),
       })
       .eq("id", params.scriptId)
 
     if (error) throw error
 
-    console.log("[v0] Video generated successfully:", videoUrl)
-    return { success: true, videoUrl }
+    console.log("[v0] HeyGen video generation started:", heygenVideoId)
+    return { success: true, videoId: heygenVideoId, status: "generating" }
   } catch (error: any) {
     console.error("[v0] Video generation error:", error)
     return { success: false, error: error.message }

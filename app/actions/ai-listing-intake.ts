@@ -1,6 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
@@ -426,22 +427,34 @@ export async function createOrPullDotloop(params: {
       return { success: false, error: "Invalid agent ID" }
     }
 
-    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
-    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
+    const supabase = await createClient()
 
-    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
-      // Return mock for development
-      console.log("[AI Listing Intake] Dotloop not configured, using mock")
+    // Resolve Dotloop credentials from platform_credentials (brokerage-scoped, not env vars)
+    const { data: agentRow } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("id", params.agentId)
+      .maybeSingle()
+    if (!agentRow?.brokerage_id) {
+      return { success: false, error: "Agent or brokerage not found" }
+    }
+    const serviceClient = createServiceClient()
+    const { data: dotloopCred } = await serviceClient
+      .from("platform_credentials")
+      .select("access_token, account_id")
+      .eq("brokerage_id", agentRow.brokerage_id)
+      .eq("platform", "dotloop")
+      .eq("is_active", true)
+      .maybeSingle()
+    if (!dotloopCred?.access_token || !dotloopCred?.account_id) {
       return {
-        success: true,
-        loopId: `mock-loop-${Date.now()}`,
-        loopUrl: `https://dotloop.com/loop/mock-${Date.now()}`,
-        documents: [],
-        mock: true,
+        success: false,
+        error: "Dotloop is not configured for your brokerage. Go to Settings > Integrations.",
+        notConfigured: true,
       }
     }
-
-    const supabase = await createClient()
+    const DOTLOOP_API_KEY = dotloopCred.access_token
+    const DOTLOOP_PROFILE_ID = dotloopCred.account_id
 
     // If existing loop, pull data from it
     if (params.existingLoopId) {
@@ -528,28 +541,33 @@ export async function aiCheckDocumentStatus(params: { loopId: string; agentId: s
       return { success: false, error: "Invalid agent ID" }
     }
 
-    const DOTLOOP_API_KEY = process.env.DOTLOOP_API_KEY
-    const DOTLOOP_PROFILE_ID = process.env.DOTLOOP_PROFILE_ID
-
-    if (!DOTLOOP_API_KEY || !DOTLOOP_PROFILE_ID) {
-      // Mock response for development
+    // Resolve Dotloop credentials from platform_credentials (brokerage-scoped, not env vars)
+    const supabase = await createClient()
+    const { data: agentRow2 } = await supabase
+      .from("agents")
+      .select("brokerage_id")
+      .eq("id", params.agentId)
+      .maybeSingle()
+    if (!agentRow2?.brokerage_id) {
+      return { success: false, error: "Agent or brokerage not found" }
+    }
+    const serviceClient2 = createServiceClient()
+    const { data: dotloopCred2 } = await serviceClient2
+      .from("platform_credentials")
+      .select("access_token, account_id")
+      .eq("brokerage_id", agentRow2.brokerage_id)
+      .eq("platform", "dotloop")
+      .eq("is_active", true)
+      .maybeSingle()
+    if (!dotloopCred2?.access_token || !dotloopCred2?.account_id) {
       return {
-        success: true,
-        documents: [
-          { name: "Listing Agreement", status: "signed", signedDate: new Date().toISOString() },
-          { name: "Seller Disclosure", status: "pending_signature", sentDate: new Date().toISOString() },
-          { name: "Lead Paint Disclosure", status: "not_started" },
-        ],
-        summary: {
-          total: 3,
-          signed: 1,
-          pending: 1,
-          notStarted: 1,
-        },
-        aiRecommendation: "Send reminder for Seller Disclosure - pending 2 days",
-        mock: true,
+        success: false,
+        error: "Dotloop is not configured for your brokerage. Go to Settings > Integrations.",
+        notConfigured: true,
       }
     }
+    const DOTLOOP_API_KEY = dotloopCred2.access_token
+    const DOTLOOP_PROFILE_ID = dotloopCred2.account_id
 
     // Fetch documents from Dotloop
     const response = await fetch(

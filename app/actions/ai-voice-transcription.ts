@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { openai } from "@ai-sdk/openai"
 import { z } from "zod"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -316,21 +317,18 @@ Provide:
   }
 }
 
-// Transcribe audio (mock - would integrate with actual transcription service)
+// Transcribe audio using Vercel AI SDK (OpenAI Whisper)
 export async function transcribeAudio(params: {
   audioUrl: string
   contactId: string
   agentId: string
   callType: "inbound" | "outbound"
 }) {
-  // In production, this would call a transcription API like Deepgram, AssemblyAI, or Whisper
-  // For now, we'll simulate the process
-  
   const supabase = await createClient()
 
   try {
-    // Create pending transcription record
-    const { data: transcription } = await supabase
+    // Create processing record first so the UI can show progress
+    const { data: transcription, error: insertErr } = await supabase
       .from("call_transcriptions")
       .insert({
         audio_url: params.audioUrl,
@@ -343,14 +341,42 @@ export async function transcribeAudio(params: {
       .select()
       .single()
 
-    // In production: Call transcription API here
-    // const transcript = await deepgram.transcribe(params.audioUrl)
+    if (insertErr || !transcription) {
+      return { success: false, error: "Failed to create transcription record" }
+    }
+
+    // Fetch audio bytes from the provided URL
+    const audioResponse = await fetch(params.audioUrl)
+    if (!audioResponse.ok) {
+      await supabase.from("call_transcriptions")
+        .update({ status: "failed", error_message: "Could not fetch audio file" })
+        .eq("id", transcription.id)
+      return { success: false, error: "Could not fetch audio file from URL" }
+    }
+    const audioBuffer = await audioResponse.arrayBuffer()
+
+    // Transcribe with OpenAI Whisper via the Vercel AI SDK
+    const { experimental_transcribe } = await import("ai")
+    const result = await experimental_transcribe({
+      model: openai.transcription("whisper-1"),
+      audio: new Uint8Array(audioBuffer),
+    })
+    const transcriptText = result.text
+
+    // Persist completed transcript
+    await supabase.from("call_transcriptions")
+      .update({
+        transcript_text: transcriptText,
+        status: "completed",
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", transcription.id)
 
     return {
       success: true,
-      transcriptionId: transcription?.id,
-      status: "processing",
-      message: "Transcription started. You will be notified when complete.",
+      transcriptionId: transcription.id,
+      transcript: transcriptText,
+      status: "completed",
     }
   } catch (error) {
     return handleError(error, "transcribeAudio")
