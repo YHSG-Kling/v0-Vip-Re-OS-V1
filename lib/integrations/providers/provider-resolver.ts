@@ -47,16 +47,18 @@ export async function getTransactionProvider(
 /**
  * Get transaction provider by name string.
  * Used by submitForSignature where the platform name comes from platform_credentials,
- * not from a brokerage settings lookup. Defaults to Dotloop if provider not found.
+ * not from a brokerage settings lookup. Throws if provider is not configured.
  */
 export function getTransactionProviderByName(providerName?: string): ITransactionProvider {
-  const normalizedName = (providerName?.toLowerCase() || "dotloop") as ProviderName
+  if (!providerName || providerName === "not_configured") {
+    throw new Error("No transaction provider configured. Set up a provider in Settings > Integrations.")
+  }
 
+  const normalizedName = providerName.toLowerCase() as ProviderName
   const factory = PROVIDER_REGISTRY[normalizedName]
 
   if (!factory) {
-    console.warn(`[v0] Unknown provider: ${providerName}, defaulting to Dotloop`)
-    return new DotloopProvider()
+    throw new Error(`Unknown transaction provider: ${providerName}. Contact support.`)
   }
 
   return factory()

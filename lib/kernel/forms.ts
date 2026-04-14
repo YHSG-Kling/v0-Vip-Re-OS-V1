@@ -141,7 +141,7 @@ export async function resolveTransactionFormsProvider(input: {
       .limit(1)
       .maybeSingle()
 
-    const provider_name = credential?.platform ?? "dotloop"
+    const provider_name = credential?.platform ?? "not_configured"
     const is_configured = !!credential?.account_id
 
     return {

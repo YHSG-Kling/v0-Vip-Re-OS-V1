@@ -51,6 +51,7 @@ import {
 } from "../components/business-context"
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 import { generateVideoScript } from "@/app/actions/video/generate-script"
+import { getAgentSettings } from "@/app/actions/agent-settings"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -170,6 +171,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   const [avatars, setAvatars] = useState<any[]>([])
   const [voiceProfiles, setVoiceProfiles] = useState<any[]>([])
   const [brandingPresets, setBrandingPresets] = useState<any[]>([])
+  const [connectedPlatforms, setConnectedPlatforms] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   // Resolved agents.id (FK) — distinct from auth users.id
   const [resolvedAgentId, setResolvedAgentId] = useState<string | null>(null)
@@ -208,6 +210,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           .eq("user_id", user?.id)
           .maybeSingle()
 
+        let clonedVoiceProfiles: any[] = []
         if (agentData?.id) {
           setResolvedAgentId(agentData.id)
 
@@ -218,7 +221,8 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             .eq("training_status", "completed")
             .order("is_default", { ascending: false })
 
-          setVoiceProfiles(voiceData || [])
+          clonedVoiceProfiles = voiceData || []
+          setVoiceProfiles(clonedVoiceProfiles)
         }
 
         // Load branding presets — use agents.id (FK), not auth user id
@@ -230,14 +234,45 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
         setBrandingPresets(brandingData || [])
 
-        // Default avatars (HeyGen standard avatars) - in production, fetch from HeyGen API
-        setAvatars([
+        // HeyGen default avatars (shown when user has no personal avatar configured)
+        const defaultAvatars = [
           { id: "Angela-inblackskirt-20220820", name: "Angela", style: "Professional" },
           { id: "Daisy-inskirt-20220818", name: "Daisy", style: "Friendly" },
           { id: "Josh_lite3_20230714", name: "Josh", style: "Casual" },
           { id: "Kristin_public_3_20240108", name: "Kristin", style: "Professional" },
           { id: "Wayne_20240711", name: "Wayne", style: "Executive" },
-        ])
+        ]
+
+        // Load per-user avatar + voice configured during onboarding
+        if (user?.id) {
+          const agentSettings = await getAgentSettings(user.id)
+          if (agentSettings.avatarId) {
+            // Personal avatar goes first, defaults as fallbacks
+            setAvatars([
+              { id: agentSettings.avatarId, name: "My Avatar", style: "Personal" },
+              ...defaultAvatars,
+            ])
+            setSelectedAvatar(agentSettings.avatarId)
+          } else {
+            setAvatars(defaultAvatars)
+          }
+          // Pre-select configured voice ID if no cloned voice profiles exist
+          if (agentSettings.voiceId && clonedVoiceProfiles.length === 0) {
+            setSelectedVoice(agentSettings.voiceId)
+          }
+
+          // Load connected social platforms for repurpose destination indicators
+          const { data: socialData } = await supabase
+            .from("social_media_accounts")
+            .select("platform")
+            .eq("user_id", user.id)
+            .eq("is_active", true)
+
+          const platforms = (socialData ?? []).map((a: any) => a.platform as string)
+          setConnectedPlatforms(platforms)
+        } else {
+          setAvatars(defaultAvatars)
+        }
       } catch (err) {
         console.error("Error loading data:", err)
       } finally {
@@ -654,6 +689,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                     purpose={selectedPurpose}
                     selectedDestinations={repurposeDestinations}
                     onToggleDestination={handleToggleDestination}
+                    connectedPlatforms={connectedPlatforms}
                     listingId={selectedContextType === "listing" ? selectedContextId : undefined}
                     contactId={selectedContextType === "contact" || selectedContextType === "homeowner" ? selectedContextId : undefined}
                   />
