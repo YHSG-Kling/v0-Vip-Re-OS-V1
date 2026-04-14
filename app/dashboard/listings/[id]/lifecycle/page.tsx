@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server"
 import { notFound, redirect } from "next/navigation"
+import { canAccessFeature } from "@/lib/kernel/0.1-feature-access"
 import { getAllStages, getStageDefinition, getEnabledSystemGates } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import type { ListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 import { StagePipeline }       from "@/app/components/dashboard/listings/lifecycle/stage-pipeline"
@@ -151,10 +152,12 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const mediaReady = photoCount >= 5
 
   const currentTier = tierResult.data
-  // Tier display is shown to all user types. For testing, all tiers are enabled
-  // so marketingReady is always true — agents are never blocked by tier assignment.
-  // Only the tier management controls are restricted to superadmins.
-  const marketingReady = true
+  // Gate: check if this user's plan includes listing_marketing_tiers.
+  // The superadmin controls which tier plan each brokerage is on; features are
+  // determined by that plan. canAccessFeature handles trial overrides, disabled
+  // overrides, and per-tier access columns from the feature_flags table.
+  const marketingAccess = await canAccessFeature(user.id, "listing_marketing_tiers")
+  const marketingReady = marketingAccess.allowed
 
   const neighborhoodReport = neighborhoodResult.data
   const hasNeighborhoodReport = !!neighborhoodReport
