@@ -255,10 +255,10 @@ export function MarketingTierClient({
                       <span className="font-medium">No Matching Tier</span>
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      A <strong>marketing tier</strong> is a broker-configured spend level that automatically
-                      assigns a marketing budget and required assets to a listing based on its price range.
-                      For example, a "Standard Tier" might cover $200K–$500K listings with a $2,500 budget
-                      split across social media, direct mail, and email.
+                      A <strong>marketing tier</strong> is a platform-level spend configuration that
+                      automatically assigns a marketing budget and required assets to a listing based on
+                      its price range. For example, a "Standard Tier" might cover $200K–$500K listings
+                      with a $2,500 budget split across social media, direct mail, and email.
                     </p>
                     <p className="text-sm text-muted-foreground">
                       This listing ({formatCurrency(listing.list_price)}) doesn&apos;t match any tier
@@ -266,21 +266,10 @@ export function MarketingTierClient({
                         ? "no marketing tiers have been configured for this brokerage yet"
                         : "no existing tier covers this price range"}.
                     </p>
-                    {isAdmin ? (
-                      <Button
-                        size="sm"
-                        onClick={() => setActiveTab("settings")}
-                        className="w-full"
-                      >
-                        <Plus className="h-3.5 w-3.5 mr-1.5" />
-                        {allTiers.length === 0 ? "Create Your First Tier" : "Add a Tier for This Price Range"}
-                      </Button>
-                    ) : (
-                      <p className="text-xs text-muted-foreground bg-muted/50 border rounded p-2">
-                        Contact your broker or admin to configure a marketing tier that covers{" "}
-                        {formatCurrency(listing.list_price)}.
-                      </p>
-                    )}
+                    <p className="text-xs text-muted-foreground bg-muted/50 border rounded p-2">
+                      Marketing tiers are configured at the platform level by your superadmin.
+                      Contact your superadmin to add or update tiers for this brokerage.
+                    </p>
                   </div>
                 )}
               </CardContent>
