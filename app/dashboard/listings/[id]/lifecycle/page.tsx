@@ -202,11 +202,15 @@ const { data: listingVendorBookings } = await supabase
     .not("status", "in", "(cancelled,no_show)")
     .order("scheduled_date", { ascending: true })
 
+  const canOverride = ["broker", "admin", "team_lead"].includes(userRow.role)
+  const isSuperAdmin = userRow.role === "superadmin"
+
   // Blockers
   const blockers: string[] = []
   if (!mediaReady) blockers.push(`Need at least 5 photos (${photoCount} uploaded)`)
   if (!publishReady) blockers.push("Missing required listing fields")
-  if (!marketingReady) blockers.push("No marketing tier selected")
+  // Marketing tier is superadmin-controlled — only surface the blocker to superadmins
+  if (!marketingReady && isSuperAdmin) blockers.push("No marketing tier selected")
 
   const currentStage = (listing.lifecycle_stage ?? "LEAD") as ListingStage
   const allStages = getAllStages()
@@ -224,8 +228,6 @@ const { data: listingVendorBookings } = await supabase
   const validNextStages = allStages
     .filter(s => s.allowedFrom.includes(currentStage))
     .map(s => s.stage)
-
-  const canOverride = ["broker", "admin", "team_lead"].includes(userRow.role)
 
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden bg-background">
@@ -311,13 +313,15 @@ const { data: listingVendorBookings } = await supabase
             complianceBlockers={[]}
             packetReady={packetReady}
           />
-          <MarketingTierReadinessCard
-            listingId={listingId}
-            currentTier={currentTier}
-            campaignReady={!!currentTier}
-            assetsCreated={media.length}
-            assetsRequired={10}
-          />
+          {isSuperAdmin && (
+            <MarketingTierReadinessCard
+              listingId={listingId}
+              currentTier={currentTier}
+              campaignReady={!!currentTier}
+              assetsCreated={media.length}
+              assetsRequired={10}
+            />
+          )}
           <SellerUpdateReadinessCard
             listingId={listingId}
             agentId={user.id}
@@ -432,6 +436,7 @@ const { data: listingVendorBookings } = await supabase
           brokerageId={userRow.brokerage_id}
           canLaunch={mediaReady && publishReady && marketingReady}
           blockers={blockers}
+          isSuperAdmin={isSuperAdmin}
         />
         <StageTimeline
           listing={listing}
