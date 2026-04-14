@@ -17,6 +17,7 @@ interface ListingMarketingStatusProps {
   assets: MarketingAsset[]
   activeChannels: number
   totalChannels: number
+  isSuperAdmin?: boolean
 }
 
 export function ListingMarketingStatus({
@@ -24,6 +25,7 @@ export function ListingMarketingStatus({
   assets,
   activeChannels,
   totalChannels,
+  isSuperAdmin = false,
 }: ListingMarketingStatusProps) {
   const live = assets.filter(a => a.status === "live").length
   const missing = assets.filter(a => a.status === "missing").length
@@ -60,12 +62,14 @@ export function ListingMarketingStatus({
           </p>
         )}
         <div className="flex gap-2 flex-wrap pt-1">
-          <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
-            <Button size="sm" variant="outline" className="text-xs gap-1.5">
-              <Megaphone className="h-3 w-3" />
-              Marketing Studio
-            </Button>
-          </Link>
+          {isSuperAdmin && (
+            <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
+              <Button size="sm" variant="outline" className="text-xs gap-1.5">
+                <Megaphone className="h-3 w-3" />
+                Marketing Studio
+              </Button>
+            </Link>
+          )}
           <Link href={`/dashboard/listings/${listingId}/media`}>
             <Button size="sm" variant="outline" className="text-xs gap-1.5">
               <Video className="h-3 w-3" />

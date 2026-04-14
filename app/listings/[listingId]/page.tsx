@@ -40,6 +40,18 @@ export default async function ListingDetailPage({ params }: ListingDetailPagePro
 
   const listing = result.listing
 
+  // Resolve current user role
+  const { data: { user } } = await supabase.auth.getUser()
+  let isSuperAdmin = false
+  if (user) {
+    const { data: userRow } = await supabase
+      .from("users")
+      .select("role")
+      .eq("id", user.id)
+      .single()
+    isSuperAdmin = userRow?.role === "superadmin"
+  }
+
   // Parallel fetch all real data
   const [
     mediaResult,
@@ -266,6 +278,7 @@ export default async function ListingDetailPage({ params }: ListingDetailPagePro
             assets={marketingAssets as any}
             activeChannels={marketingAssets.filter((a) => a.status === "live").length}
             totalChannels={marketingAssets.length}
+            isSuperAdmin={isSuperAdmin}
           />
           <ListingShowingIntelligence
             listingId={listingId}

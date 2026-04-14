@@ -12,6 +12,7 @@ interface MarketingTierReadinessCardProps {
   campaignReady: boolean
   assetsCreated: number
   assetsRequired: number
+  isSuperAdmin?: boolean
 }
 
 export function MarketingTierReadinessCard({
@@ -20,6 +21,7 @@ export function MarketingTierReadinessCard({
   campaignReady,
   assetsCreated,
   assetsRequired,
+  isSuperAdmin = false,
 }: MarketingTierReadinessCardProps) {
   const hasTier = !!currentTier
   const assetsComplete = assetsCreated >= assetsRequired
@@ -91,12 +93,14 @@ export function MarketingTierReadinessCard({
           </p>
         )}
 
-        <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
-          <Button size="sm" variant="outline" className="w-full text-xs">
-            <TrendingUp className="h-3.5 w-3.5 mr-1.5" />
-            Marketing Settings
-          </Button>
-        </Link>
+        {isSuperAdmin && (
+          <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
+            <Button size="sm" variant="outline" className="w-full text-xs">
+              <TrendingUp className="h-3.5 w-3.5 mr-1.5" />
+              Marketing Settings
+            </Button>
+          </Link>
+        )}
       </CardContent>
     </Card>
   )

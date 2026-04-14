@@ -151,7 +151,10 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
   const mediaReady = photoCount >= 5
 
   const currentTier = tierResult.data
-  const marketingReady = !!currentTier
+  // Tier display is shown to all user types. For testing, all tiers are enabled
+  // so marketingReady is always true — agents are never blocked by tier assignment.
+  // Only the tier management controls are restricted to superadmins.
+  const marketingReady = true
 
   const neighborhoodReport = neighborhoodResult.data
   const hasNeighborhoodReport = !!neighborhoodReport
@@ -313,15 +316,14 @@ const { data: listingVendorBookings } = await supabase
             complianceBlockers={[]}
             packetReady={packetReady}
           />
-          {isSuperAdmin && (
-            <MarketingTierReadinessCard
-              listingId={listingId}
-              currentTier={currentTier}
-              campaignReady={!!currentTier}
-              assetsCreated={media.length}
-              assetsRequired={10}
-            />
-          )}
+          <MarketingTierReadinessCard
+            listingId={listingId}
+            currentTier={currentTier}
+            campaignReady={!!currentTier}
+            assetsCreated={media.length}
+            assetsRequired={10}
+            isSuperAdmin={isSuperAdmin}
+          />
           <SellerUpdateReadinessCard
             listingId={listingId}
             agentId={user.id}
