@@ -3438,26 +3438,6 @@ export function TransactionDetailClient({
                     <div className="flex flex-wrap gap-2 pt-1">
                       {formsProvider?.is_configured ? (
                         <>
-                          <Button
-                            size="sm"
-                            variant="default"
-                            className="gap-1.5 text-xs"
-                            onClick={() => {
-                              const provider = formsProvider.provider_name
-                              const providerUrls: Record<string, string> = {
-                                dotloop:        "https://www.dotloop.com/",
-                                skyslope:       "https://app.skyslope.com/",
-                                formsimplicity: "https://www.formsimplicity.com/",
-                                brokermint:     "https://brokermint.com/",
-                                authentisign:   "https://authentisign.com/",
-                                docusign:       "https://www.docusign.com/",
-                              }
-                              window.open(providerUrls[provider] ?? "https://www.dotloop.com/", "_blank")
-                            }}
-                          >
-                            <ExternalLink className="h-3 w-3" />
-                            Open {formsProvider.provider_name.charAt(0).toUpperCase() + formsProvider.provider_name.slice(1)} Portal
-                          </Button>
                           <Link href="/dashboard/settings?tab=integrations">
                             <Button size="sm" variant="outline" className="gap-1.5 text-xs">
                               <PenLine className="h-3 w-3" />

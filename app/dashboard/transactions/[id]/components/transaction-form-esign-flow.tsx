@@ -50,8 +50,10 @@ import {
   prefillFormAction,
   saveFormDraftAction,
   launchEsignAction,
+  getFormFieldsAction,
 } from "@/app/actions/forms-kernel"
 import type { FormContextType } from "@/lib/kernel/forms"
+import type { FormFieldDef } from "@/app/actions/forms-kernel"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -115,6 +117,7 @@ export function TransactionFormEsignFlow({
   const [step, setStep] = useState<Step>("prefill")
   const [prefilling, setPrefilling] = useState(false)
   const [prefillData, setPrefillData] = useState<Record<string, any>>({})
+  const [templateFields, setTemplateFields] = useState<FormFieldDef[]>([])
   const [formSubmissionId, setFormSubmissionId] = useState<string | null>(null)
   const [signers, setSigners] = useState<Signer[]>(
     defaultSigners.length > 0
@@ -142,9 +145,15 @@ export function TransactionFormEsignFlow({
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Prefill on step=prefill mount
+  // Load form template fields + attempt prefill when sheet opens
   useEffect(() => {
-    if (!open || step !== "prefill" || contextId === "pending") return
+    if (!open || step !== "prefill") return
+    // Always load template field schema
+    getFormFieldsAction(formTemplate.id).then(res => {
+      if (res.success && res.fields) setTemplateFields(res.fields)
+    }).catch(() => {})
+    // Prefill from context when we have a real context ID
+    if (contextId === "pending") return
     setPrefilling(true)
     prefillFormAction({
       form_name: formTemplate.name,
@@ -158,7 +167,7 @@ export function TransactionFormEsignFlow({
       })
       .catch(() => {/* prefill is best-effort */})
       .finally(() => setPrefilling(false))
-  }, [open, step, formTemplate.name, contextType, contextId])
+  }, [open, step, formTemplate.id, formTemplate.name, contextType, contextId])
 
   // Debounced draft save
   const saveDraft = useCallback(async () => {
@@ -293,35 +302,63 @@ export function TransactionFormEsignFlow({
               ))}
             </>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <p className="text-xs text-muted-foreground">
-                Enter the form details below. All fields are editable before sending for signatures.
+                Enter the form details below. Fields are sourced from the form template and are editable before sending for signatures.
               </p>
-              {[
-                { key: "property_address", label: "Property Address" },
-                { key: "city", label: "City" },
-                { key: "state", label: "State" },
-                { key: "zip_code", label: "ZIP Code" },
-                { key: "purchase_price", label: "Purchase Price" },
-                { key: "closing_date", label: "Closing Date" },
-                { key: "mls_number", label: "MLS Number" },
-                { key: "commission_rate", label: "Commission Rate" },
-                { key: "seller_name", label: "Seller Name" },
-                { key: "seller_email", label: "Seller Email" },
-                { key: "buyer_name", label: "Buyer Name" },
-                { key: "buyer_email", label: "Buyer Email" },
-              ].map(({ key, label }) => (
-                <div key={key} className="space-y-1">
-                  <Label htmlFor={`field-${key}`} className="text-xs">{label}</Label>
-                  <Input
-                    id={`field-${key}`}
-                    value={String(prefillData[key] ?? "")}
-                    onChange={e => setPrefillData(prev => ({ ...prev, [key]: e.target.value }))}
-                    className="text-sm h-8"
-                    placeholder={label}
-                  />
+              {templateFields.length > 0 ? (
+                // Group fields by section and render categorized
+                Object.entries(
+                  templateFields.reduce<Record<string, FormFieldDef[]>>((acc, f) => {
+                    const s = f.section ?? "Details"
+                    ;(acc[s] = acc[s] ?? []).push(f)
+                    return acc
+                  }, {})
+                ).map(([section, fields]) => (
+                  <div key={section} className="space-y-2">
+                    <div className="flex items-center gap-2 pb-1 border-b border-border/60">
+                      <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                        {section}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {fields.map(field => (
+                        <div key={field.key} className={`space-y-1 ${field.type === "textarea" ? "col-span-2" : ""}`}>
+                          <Label htmlFor={`field-${field.key}`} className="text-xs flex items-center gap-1">
+                            {field.label}
+                            {field.required && <span className="text-destructive text-[10px]">*</span>}
+                          </Label>
+                          {field.type === "textarea" ? (
+                            <Textarea
+                              id={`field-${field.key}`}
+                              value={String(prefillData[field.key] ?? "")}
+                              onChange={e => setPrefillData(prev => ({ ...prev, [field.key]: e.target.value }))}
+                              className="text-sm resize-none"
+                              rows={3}
+                              placeholder={field.placeholder ?? field.label}
+                            />
+                          ) : (
+                            <Input
+                              id={`field-${field.key}`}
+                              type={field.type}
+                              value={String(prefillData[field.key] ?? "")}
+                              onChange={e => setPrefillData(prev => ({ ...prev, [field.key]: e.target.value }))}
+                              className="text-sm h-8"
+                              placeholder={field.placeholder ?? field.label}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                // Loading state for template fields
+                <div className="flex items-center justify-center py-6 gap-2 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span className="text-xs">Loading form fields...</span>
                 </div>
-              ))}
+              )}
             </div>
           )}
         </div>

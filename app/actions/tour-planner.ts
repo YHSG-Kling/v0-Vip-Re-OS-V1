@@ -331,7 +331,11 @@ export async function createTourPlan(params: CreateTourParams) {
     channel:     'in_app',
   })
 
-  return { success: true, tourId, stopCount: stops.length }
+  const stopIds = (insertedStops ?? [])
+    .sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0))
+    .map(s => s.id)
+
+  return { success: true, tourId, stopCount: stops.length, stopIds }
 }
 
 // ─── 4. Confirm a single stop ─────────────────────────────────────────────────

@@ -75,8 +75,9 @@ export function TourPlanTab({
   const [optimizingRoute, setOptimizingRoute] = useState(false)
   const [routeSummary, setRouteSummary]       = useState<string | null>(null)
 
-  // Stored tourId after creation so Optimize Route knows which tour to reorder
+  // Stored tourId + stop IDs after creation so drag reorder can persist order
   const [createdTourId, setCreatedTourId]     = useState<string | null>(null)
+  const [createdStopIds, setCreatedStopIds]   = useState<string[]>([])
   const [dragIdx, setDragIdx]                 = useState<number | null>(null)
 
   function toggleProperty(prop: SavedProperty) {
@@ -190,6 +191,7 @@ export function TourPlanTab({
       })
       if (res.success) {
         if (res.tourId) setCreatedTourId(res.tourId)
+        if (res.stopIds) setCreatedStopIds(res.stopIds)
         toast({ title: `Tour plan created — ${res.stopCount} stops` })
         onTourCreated()
       } else {
@@ -293,11 +295,17 @@ export function TourPlanTab({
                   const [moved] = next.splice(dragIdx, 1)
                   next.splice(idx, 0, moved)
                   setOrderedStops(next)
-                  setDragIdx(null)
-                  // Persist after creation if tour exists (stops need IDs — handled server-side via optimizeTourRoute)
-                  if (createdTourId) {
-                    void updateTourStopOrder(createdTourId, next.map((_, i) => String(i)))
+                  // Reorder createdStopIds in the same way so they stay in sync
+                  if (createdStopIds.length > 0) {
+                    const nextIds = [...createdStopIds]
+                    const [movedId] = nextIds.splice(dragIdx, 1)
+                    nextIds.splice(idx, 0, movedId)
+                    setCreatedStopIds(nextIds)
+                    if (createdTourId) {
+                      void updateTourStopOrder(createdTourId, nextIds)
+                    }
                   }
+                  setDragIdx(null)
                 }}
                 onDragEnd={() => setDragIdx(null)}
               >

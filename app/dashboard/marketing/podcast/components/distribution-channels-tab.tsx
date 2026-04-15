@@ -194,9 +194,32 @@ export function DistributionChannelsTab({ channels, loading, onUpdate, isAdmin =
             </Button>
           </>
         ) : (
-          <p className="text-sm text-gray-500 max-w-sm">
-            Distribution channels are configured at the brokerage level. Contact your administrator to set up podcast distribution.
-          </p>
+          <div className="space-y-4 w-full max-w-md">
+            <div className="grid grid-cols-2 gap-3">
+              {(["spotify", "apple", "youtube", "rss"] as const).map((name) => (
+                <div
+                  key={name}
+                  className="flex flex-col items-center gap-2 p-4 rounded-xl border bg-muted/30 opacity-60"
+                >
+                  <div className={`p-2 rounded-lg text-white ${getChannelColor(name)}`}>
+                    {getChannelIcon(name)}
+                  </div>
+                  <span className="text-xs capitalize font-medium">{name === "apple" ? "Apple Podcasts" : name}</span>
+                  <span className="text-[10px] text-muted-foreground">Not configured</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-sm text-muted-foreground text-center">
+              Channels follow brokerage → team → agent hierarchy.{" "}
+              <a
+                href="/dashboard/settings/podcast-channels"
+                className="text-primary underline underline-offset-2 hover:no-underline"
+              >
+                Configure your personal channels
+              </a>{" "}
+              or contact your administrator for brokerage-level setup.
+            </p>
+          </div>
         )}
       </div>
     )
