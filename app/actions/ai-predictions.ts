@@ -2307,7 +2307,7 @@ Detect churn risk and provide save strategy:
         entity_type: "lead",
         entity_id: leadId,
         insight_title: "CLIENT CHURN RISK - Act Now",
-        insight_description: `${lead.first_name} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
+        insight_description: `${resolvedLead.first_name} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
         actionable_steps: result.saveStrategy?.immediate || [],
         priority: "critical",
         estimated_impact: {

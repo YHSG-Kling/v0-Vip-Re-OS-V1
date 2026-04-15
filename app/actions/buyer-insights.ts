@@ -14,19 +14,27 @@ export interface BuyerInsights {
     inferred_property_types: string[]
     inferred_cities:         string[]
     inferred_zip_codes:      string[]
+    preferred_price_min:     number | null
+    preferred_price_max:     number | null
     confidence_score:        number
     signals_processed:       number
     last_calculated_at:      string | null
   } | null
   prediction: {
     predicted_next_action:    string | null
+    predicted_price_min:      number | null
+    predicted_price_max:      number | null
+    predicted_property_type:  string | null
+    predicted_timeline_days:  number | null
     confidence:               number | null
+    confidence_score:         number | null
     predicted_ready_to_offer: boolean
     predicted_fatigue_risk:   boolean
     days_to_predicted_offer:  number | null
     engagement_velocity:      string | null
     engagement_score:         number
     prediction_factors:       Record<string, unknown>
+    ai_reasoning:             string | null
     expires_at:               string | null
   } | null
 }
@@ -63,11 +71,10 @@ export async function getBuyerInsights(
   const [prefsRes, predRes, signalRes] = await Promise.all([
     svc
       .from("property_preferences")
-      // Only select columns that exist in the live schema.
-      // preferred_price_min/preferred_price_max do not exist on property_preferences.
       .select(
         "inferred_min_price, inferred_max_price, inferred_beds_min, inferred_baths_min, " +
         "inferred_property_types, inferred_cities, inferred_zip_codes, " +
+        "preferred_price_min, preferred_price_max, " +
         "confidence_score, signals_processed, last_calculated_at"
       )
       .eq("contact_id", contactId)
@@ -76,16 +83,12 @@ export async function getBuyerInsights(
 
     svc
       .from("buyer_behavior_predictions")
-      // Only select columns that exist in the live schema.
-      // confidence_score, predicted_property_type, predicted_timeline_days, ai_reasoning
-      // do not exist — use: confidence, engagement_score (int), engagement_velocity (text),
-      // predicted_next_action, predicted_ready_to_offer, predicted_fatigue_risk,
-      // days_to_predicted_offer, prediction_factors, expires_at, generated_at
       .select(
-        "predicted_next_action, " +
-        "confidence, predicted_ready_to_offer, predicted_fatigue_risk, " +
+        "predicted_next_action, predicted_price_min, predicted_price_max, " +
+        "predicted_property_type, predicted_timeline_days, " +
+        "confidence, confidence_score, predicted_ready_to_offer, predicted_fatigue_risk, " +
         "days_to_predicted_offer, engagement_velocity, engagement_score, " +
-        "prediction_factors, expires_at"
+        "prediction_factors, ai_reasoning, expires_at"
       )
       .eq("contact_id", contactId)
       .eq("brokerage_id", brokerageId)
