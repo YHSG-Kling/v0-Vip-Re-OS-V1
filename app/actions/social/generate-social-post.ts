@@ -384,7 +384,7 @@ export async function generateWeeklyContentPlan(params: {
   } catch (error: any) {
     return { success: false, error: error?.message ?? "Failed to generate weekly plan" }
   }
-} (notes, emails, seller updates, etc.) ───────────────────
+}
 
 /**
  * Generic contextual draft generator.
