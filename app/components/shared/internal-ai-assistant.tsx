@@ -662,8 +662,13 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
       wakeRecognitionRef.current = wr
       setWakeListening(true)
 
+      // Guard: onresult and onerror each schedule a restart; onend must NOT also
+      // schedule one, or we get exponential growth of SpeechRecognition instances.
+      let restartScheduled = false
+
       wr.onresult = (e: SpeechRecognitionEvent) => {
         const heard = Array.from(e.results).map((r) => r[0].transcript).join(" ").toLowerCase()
+        restartScheduled = true
         if (heard.includes(resolvedWakeWord)) {
           // Wake word detected — start command capture immediately
           setTimeout(() => { if (active) startVoiceCapture() }, 300)
@@ -672,10 +677,16 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
           setTimeout(() => { if (active) startWakeDetection() }, 500)
         }
       }
-      wr.onerror = () => { setTimeout(() => { if (active) startWakeDetection() }, 1500) }
+      wr.onerror = () => {
+        restartScheduled = true
+        setTimeout(() => { if (active) startWakeDetection() }, 1500)
+      }
       wr.onend = () => {
         setWakeListening(false)
-        setTimeout(() => { if (active) startWakeDetection() }, 500)
+        // Only restart from onend when onresult/onerror hasn't already scheduled one
+        if (!restartScheduled) {
+          setTimeout(() => { if (active) startWakeDetection() }, 500)
+        }
       }
 
       try { wr.start() } catch { /* already running */ }
