@@ -40,12 +40,11 @@ export async function aiCalculateLeadScore(params: {
       return { success: false, error: "Contact not found" }
     }
 
-    // interactions table does not exist — use activities which stores the same data
     const { data: interactions } = await supabase
-      .from("activities")
-      .select("id, activity_type, title, description, status, created_at, contact_id")
+      .from("interactions")
+      .select("*")
       .eq("contact_id", params.contactId)
-      .order("created_at", { ascending: false })
+      .order("interaction_date", { ascending: false })
       .limit(50)
 
     // Get property views/searches
@@ -270,10 +269,10 @@ export async function aiSuggestFollowUp(params: {
       .single()
 
     const { data: recentInteractions } = await supabase
-      .from("activities")
-      .select("id, activity_type, title, description, status, created_at")
+      .from("interactions")
+      .select("*")
       .eq("contact_id", params.contactId)
-      .order("created_at", { ascending: false })
+      .order("interaction_date", { ascending: false })
       .limit(10)
 
     const { data: scheduledTasks } = await supabase
@@ -523,8 +522,8 @@ export async function aiPredictConversion(params: {
       .single()
 
     const { data: interactions } = await supabase
-      .from("activities")
-      .select("id, activity_type, title, description, status, created_at")
+      .from("interactions")
+      .select("*")
       .eq("contact_id", params.contactId)
 
     const { data: propertyViews } = await supabase
