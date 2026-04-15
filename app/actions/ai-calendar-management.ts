@@ -597,12 +597,12 @@ export async function prepareMeetingBrief(params: {
       return { success: false, error: "Appointment not found" }
     }
 
-    // Get additional context
+    // Get additional context — use activities (interactions table does not exist)
     const { data: interactions } = await supabase
-      .from("interactions")
-      .select("*")
+      .from("activities")
+      .select("id, activity_type, title, description, status, created_at")
       .eq("contact_id", appointment.contact_id)
-      .order("interaction_date", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(10)
 
     const { data: transactions } = await supabase

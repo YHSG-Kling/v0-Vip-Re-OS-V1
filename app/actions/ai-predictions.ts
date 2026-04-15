@@ -2210,17 +2210,11 @@ Find TOP 10 arbitrage opportunities:
 export async function detectClientChurn(leadId: string) {
   const supabase = await createClient()
 
+  // Fetch lead without embedded joins — lead_behavioral_data, chat_sessions,
+  // communications, and showings are not FK-registered on leads/contacts in PostgREST.
   const { data: lead, error } = await supabase
     .from("leads")
-    .select(
-      `
-      *,
-      lead_behavioral_data(*),
-      chat_sessions(*),
-      communications(*),
-      showings(*)
-    `,
-    )
+    .select("*")
     .eq("id", leadId)
     .maybeSingle()
 
@@ -2229,13 +2223,7 @@ export async function detectClientChurn(leadId: string) {
     // Try contacts table as fallback
     const { data: contact } = await supabase
       .from("contacts")
-      .select(
-        `
-        *,
-        communications(*),
-        showings(*)
-      `,
-      )
+      .select("*")
       .eq("id", leadId)
       .maybeSingle()
 
