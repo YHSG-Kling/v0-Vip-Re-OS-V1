@@ -43,7 +43,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         slug,
         label,
         purpose,
-        agent_user_id: agentUserId,
+        agent_id: agentUserId,
         brokerage_id: brokerageId,
         is_active: true,
         scan_count: 0,
