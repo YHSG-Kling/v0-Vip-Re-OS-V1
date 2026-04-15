@@ -41,10 +41,10 @@ export async function aiCalculateLeadScore(params: {
     }
 
     const { data: interactions } = await supabase
-      .from("interactions")
-      .select("*")
+      .from("activities")
+      .select("id, activity_type, title, description, notes, outcome, channel, status, created_at, contact_id, agent_id")
       .eq("contact_id", params.contactId)
-      .order("interaction_date", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(50)
 
     // Get property views/searches
@@ -269,10 +269,10 @@ export async function aiSuggestFollowUp(params: {
       .single()
 
     const { data: recentInteractions } = await supabase
-      .from("interactions")
-      .select("*")
+      .from("activities")
+      .select("id, activity_type, title, description, notes, outcome, channel, status, created_at")
       .eq("contact_id", params.contactId)
-      .order("interaction_date", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(10)
 
     const { data: scheduledTasks } = await supabase
@@ -522,8 +522,8 @@ export async function aiPredictConversion(params: {
       .single()
 
     const { data: interactions } = await supabase
-      .from("interactions")
-      .select("*")
+      .from("activities")
+      .select("id, activity_type, title, description, notes, outcome, channel, status, created_at")
       .eq("contact_id", params.contactId)
 
     const { data: propertyViews } = await supabase

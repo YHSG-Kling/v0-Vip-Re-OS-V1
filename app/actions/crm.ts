@@ -38,12 +38,13 @@ export async function updateContactStage(params: {
 
     if (params.notes) {
       const supabase = await createClient()
-      await supabase.from("interactions").insert({
-        contact_id:       params.contactId,
-        interaction_type: "stage_change",
-        interaction_date: new Date().toISOString(),
-        notes:            `Stage changed to ${params.newStage}. ${params.notes}`,
-        outcome:          "completed",
+      await supabase.from("activities").insert({
+        contact_id:    params.contactId,
+        activity_type: "stage_change",
+        title:         `Stage changed to ${params.newStage}`,
+        notes:         params.notes,
+        outcome:       "completed",
+        status:        "completed",
       })
     }
 
@@ -125,10 +126,10 @@ export async function getContactTimeline(contactId: string) {
 
     const [interactions, tasks, communications, notes] = await Promise.all([
       supabase
-        .from("interactions")
-        .select("*")
+        .from("activities")
+        .select("id, activity_type, title, description, notes, outcome, channel, status, created_at")
         .eq("contact_id", contactId)
-        .order("interaction_date", { ascending: false }),
+        .order("created_at", { ascending: false }),
       supabase
         .from("tasks")
         .select("*")
@@ -148,7 +149,7 @@ export async function getContactTimeline(contactId: string) {
 
     // Combine all timeline events
     const timeline = [
-      ...(interactions.data || []).map((i: any) => ({ ...i, type: "interaction", date: i.interaction_date })),
+      ...(interactions.data || []).map((i: any) => ({ ...i, type: "interaction", date: i.created_at })),
       ...(tasks.data || []).map((t: any) => ({ ...t, type: "task", date: t.created_at })),
       ...(communications.data || []).map((c: any) => ({ ...c, type: "communication", date: c.sent_at })),
       ...(notes.data || []).map((n: any) => ({ ...n, type: "note", date: n.created_at }))

@@ -597,12 +597,11 @@ export async function prepareMeetingBrief(params: {
       return { success: false, error: "Appointment not found" }
     }
 
-    // Get additional context from interactions table
     const { data: interactions } = await supabase
-      .from("interactions")
-      .select("id, interaction_type, interaction_date, notes, outcome, channel")
+      .from("activities")
+      .select("id, activity_type, title, notes, outcome, channel, status, created_at")
       .eq("contact_id", appointment.contact_id)
-      .order("interaction_date", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(10)
 
     const { data: transactions } = await supabase
@@ -649,7 +648,7 @@ Contact Type: ${appointment.contacts?.contact_type}
 Stage: ${appointment.contacts?.stage}
 
 Recent Interactions:
-${interactions?.map((i: any) => `- ${i.interaction_date}: ${i.interaction_type} - ${i.notes?.substring(0, 100)}`).join('\n') || 'None'}
+${interactions?.map((i: any) => `- ${i.created_at}: ${i.activity_type} - ${i.notes?.substring(0, 100)}`).join('\n') || 'None'}
 
 Transaction History:
 ${transactions?.map((t: any) => `- ${t.property_address}: ${t.status}`).join('\n') || 'None'}

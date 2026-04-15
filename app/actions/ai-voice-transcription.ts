@@ -172,14 +172,14 @@ Extract:
       })
     }
 
-    // Log interaction for call analysis
-    await supabase.from("interactions").insert({
-      contact_id:       params.contactId,
-      agent_id:         params.agentId,
-      interaction_type: "call",
-      interaction_date: new Date().toISOString(),
-      notes:            analysis.summary,
-      outcome:          "completed",
+    await supabase.from("activities").insert({
+      contact_id:    params.contactId,
+      agent_id:      params.agentId,
+      activity_type: "call",
+      title:         "Call completed",
+      notes:         analysis.summary,
+      outcome:       "completed",
+      status:        "completed",
     })
 
     revalidatePath(`/contacts/${params.contactId}`)
