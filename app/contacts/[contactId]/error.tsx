@@ -1,8 +1,10 @@
 "use client"
 
 import { useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
-import { AlertTriangle } from "lucide-react"
+import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card"
+import { AlertTriangle, ArrowLeft, RefreshCw, Users } from "lucide-react"
 
 export default function ContactError({
   error,
@@ -11,23 +13,57 @@ export default function ContactError({
   error: Error & { digest?: string }
   reset: () => void
 }) {
+  const router = useRouter()
+
   useEffect(() => {
     console.error("[ContactDetail] Error boundary:", error)
   }, [error])
 
   return (
-    <div className="container mx-auto py-16 flex flex-col items-center gap-4 text-center">
-      <AlertTriangle className="h-10 w-10 text-destructive" />
-      <h2 className="text-lg font-semibold">Unable to load contact</h2>
-      <p className="text-sm text-muted-foreground max-w-sm">
-        Something went wrong loading this contact record. Please try again.
-      </p>
-      <div className="flex gap-2">
-        <Button onClick={reset} variant="outline">Try Again</Button>
-        <Button asChild variant="ghost">
-          <a href="/dashboard/contacts">Back to Contacts</a>
-        </Button>
-      </div>
+    <div className="flex items-center justify-center min-h-[60vh] p-6">
+      <Card className="w-full max-w-md shadow-lg">
+        <CardHeader className="text-center pb-2">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10">
+            <AlertTriangle className="h-7 w-7 text-destructive" />
+          </div>
+          <h2 className="text-xl font-semibold tracking-tight">Contact Unavailable</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            There was a problem loading this contact profile. This may be a temporary issue.
+          </p>
+        </CardHeader>
+
+        <CardContent className="text-center">
+          {error.digest && (
+            <p className="text-xs text-muted-foreground/60 font-mono bg-muted rounded px-2 py-1 inline-block">
+              Ref: {error.digest}
+            </p>
+          )}
+        </CardContent>
+
+        <CardFooter className="flex flex-col gap-2">
+          <Button onClick={reset} className="w-full gap-2">
+            <RefreshCw className="h-4 w-4" />
+            Try Again
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full gap-2"
+            onClick={() => router.push("/contacts")}
+          >
+            <Users className="h-4 w-4" />
+            Back to Contacts
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full gap-1.5 text-muted-foreground"
+            onClick={() => router.back()}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Go Back
+          </Button>
+        </CardFooter>
+      </Card>
     </div>
   )
 }

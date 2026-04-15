@@ -1,10 +1,14 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+
+// Stage values that indicate the listing is live on MLS and eligible for packet generation
+const MLS_LIVE_STAGES = ["live", "mls_active", "active", "mls_live", "for_sale", "MLS_ACTIVE"]
 
 // =====================================================
 // AI LISTING PACKET SYSTEM
@@ -44,11 +48,14 @@ export async function generateListingPacket(config: ListingPacketConfig) {
     return { success: false, error: "Invalid listing or agent ID" }
   }
 
+  // Use service client for listing lookup — packet generation is an admin action
+  // that must work regardless of RLS policies on the listings table.
+  const service = createServiceClient()
   const supabase = await createClient()
 
   try {
-    // Get listing details
-    const { data: listing, error: listingError } = await supabase
+    // Get listing details (service client bypasses RLS)
+    const { data: listing, error: listingError } = await service
       .from("listings")
       .select(`
         *,
@@ -62,13 +69,16 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       return { success: false, error: "Listing not found" }
     }
 
-    // Verify listing is live
-    if (listing.stage !== "live") {
+    // Verify listing is in an MLS-active state
+    const listingStage = (listing.stage ?? listing.status ?? "").toLowerCase()
+    const isLive = MLS_LIVE_STAGES.some(s => s.toLowerCase() === listingStage) ||
+      listingStage.includes("active") || listingStage.includes("live")
+    if (!isLive) {
       return { success: false, error: "Listing must be live on MLS before generating packet" }
     }
 
     // Get agent's brokerage_id for the job record
-    const { data: agent } = await supabase
+    const { data: agent } = await service
       .from("agents")
       .select("brokerage_id")
       .eq("user_id", config.agentId)

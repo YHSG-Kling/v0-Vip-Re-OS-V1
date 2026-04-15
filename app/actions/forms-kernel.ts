@@ -210,6 +210,86 @@ export async function recordPropertyActionAction(input: {
   })
 }
 
+// ─── ACTION: getFormFields ───────────────────────────────────────────────────
+// Returns the field_schema for a specific form template.
+// Falls back to category-based defaults when field_schema is empty.
+
+export interface FormFieldDef {
+  key: string
+  label: string
+  type: "text" | "email" | "tel" | "number" | "date" | "textarea"
+  section: string
+  required?: boolean
+  placeholder?: string
+}
+
+const CATEGORY_DEFAULT_FIELDS: Record<string, FormFieldDef[]> = {
+  purchase_agreement: [
+    { key: "property_address", label: "Property Address", type: "text", section: "Property", required: true, placeholder: "123 Main St" },
+    { key: "city", label: "City", type: "text", section: "Property", required: true },
+    { key: "state", label: "State", type: "text", section: "Property", required: true },
+    { key: "zip_code", label: "ZIP Code", type: "text", section: "Property" },
+    { key: "mls_number", label: "MLS Number", type: "text", section: "Property" },
+    { key: "purchase_price", label: "Purchase Price", type: "number", section: "Financial Terms", required: true, placeholder: "500000" },
+    { key: "earnest_money", label: "Earnest Money", type: "number", section: "Financial Terms" },
+    { key: "closing_date", label: "Closing Date", type: "date", section: "Financial Terms" },
+    { key: "commission_rate", label: "Commission Rate (%)", type: "number", section: "Financial Terms" },
+    { key: "buyer_name", label: "Buyer Name", type: "text", section: "Parties", required: true },
+    { key: "buyer_email", label: "Buyer Email", type: "email", section: "Parties" },
+    { key: "seller_name", label: "Seller Name", type: "text", section: "Parties", required: true },
+    { key: "seller_email", label: "Seller Email", type: "email", section: "Parties" },
+  ],
+  listing_agreement: [
+    { key: "property_address", label: "Property Address", type: "text", section: "Property", required: true },
+    { key: "city", label: "City", type: "text", section: "Property", required: true },
+    { key: "state", label: "State", type: "text", section: "Property" },
+    { key: "zip_code", label: "ZIP Code", type: "text", section: "Property" },
+    { key: "list_price", label: "List Price", type: "number", section: "Financial Terms", required: true },
+    { key: "listing_start_date", label: "Listing Start Date", type: "date", section: "Financial Terms" },
+    { key: "listing_expiration_date", label: "Expiration Date", type: "date", section: "Financial Terms" },
+    { key: "commission_rate", label: "Commission Rate (%)", type: "number", section: "Financial Terms" },
+    { key: "seller_name", label: "Seller Name", type: "text", section: "Parties", required: true },
+    { key: "seller_email", label: "Seller Email", type: "email", section: "Parties" },
+    { key: "seller_phone", label: "Seller Phone", type: "tel", section: "Parties" },
+  ],
+  disclosure: [
+    { key: "property_address", label: "Property Address", type: "text", section: "Property", required: true },
+    { key: "seller_name", label: "Seller Name", type: "text", section: "Parties", required: true },
+    { key: "seller_email", label: "Seller Email", type: "email", section: "Parties" },
+    { key: "disclosure_date", label: "Disclosure Date", type: "date", section: "Details" },
+    { key: "notes", label: "Additional Notes", type: "textarea", section: "Details" },
+  ],
+}
+
+export async function getFormFieldsAction(formId: string): Promise<{
+  success: boolean
+  fields?: FormFieldDef[]
+  error?: string
+}> {
+  const ctx = await resolveActorContext()
+  if (!ctx) return { success: false, error: "Unauthorized" }
+
+  const supabase = await createClient()
+  const { data: form } = await supabase
+    .from("brokerage_forms")
+    .select("field_schema, form_category")
+    .eq("id", formId)
+    .eq("brokerage_id", ctx.brokerage_id)
+    .maybeSingle()
+
+  if (!form) return { success: false, error: "Form not found" }
+
+  const schema = form.field_schema as FormFieldDef[] | null
+  if (schema && Array.isArray(schema) && schema.length > 0) {
+    return { success: true, fields: schema }
+  }
+
+  // Fallback to category defaults
+  const category = (form.form_category ?? "").toLowerCase().replace(/\s+/g, "_")
+  const defaults = CATEGORY_DEFAULT_FIELDS[category] ?? CATEGORY_DEFAULT_FIELDS.purchase_agreement
+  return { success: true, fields: defaults }
+}
+
 // ─── ACTION: loadBuyerProperties ────────────────────────────────────────────
 
 export async function loadBuyerPropertiesAction(input: {

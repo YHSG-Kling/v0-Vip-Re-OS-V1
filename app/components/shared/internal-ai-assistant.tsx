@@ -545,10 +545,20 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   const suggestions = ROLE_SUGGESTIONS[normalizedRole] ?? ROLE_SUGGESTIONS.agent
 
   const [sessionIdForTransport, setSessionIdForTransport] = useState<string | null>(null)
+  // Stable ref so the fetch wrapper never captures a stale setSessionId
+  const setSessionIdRef = useRef(setSessionId)
+  useEffect(() => { setSessionIdRef.current = setSessionId }, [setSessionId])
+
   const { messages, sendMessage, status } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/internal/ai-chat",
       headers: sessionIdForTransport ? { "x-internal-session-id": sessionIdForTransport } : {},
+      fetch: async (url, options) => {
+        const response = await fetch(url, options as RequestInit)
+        const newId = response.headers.get("x-session-id")
+        if (newId) setSessionIdRef.current(newId)
+        return response
+      },
     }),
   })
 
