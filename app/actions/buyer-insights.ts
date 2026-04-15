@@ -45,16 +45,27 @@ export interface SignalCounts {
   dismissals: number
 }
 
-async function getBrokerageId(userId: string): Promise<string> {
-  // user_profiles does not have brokerage_id — use user_role_assignments instead
+async function getBrokerageId(authUserId: string): Promise<string> {
+  // user_role_assignments.user_id stores the app users.id, not the Supabase auth UID.
+  // Look up via the users table first to get the app-level brokerage_id.
   const svc = createServiceClient()
-  const { data } = await svc
+
+  // Try users table directly by auth UID first (works when auth.uid = users.id)
+  const { data: userRow } = await svc
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", authUserId)
+    .maybeSingle()
+  if (userRow?.brokerage_id) return userRow.brokerage_id
+
+  // Fallback: try user_role_assignments
+  const { data: uraRow } = await svc
     .from("user_role_assignments")
     .select("brokerage_id")
-    .eq("user_id", userId)
+    .eq("user_id", authUserId)
     .limit(1)
     .maybeSingle()
-  return data?.brokerage_id ?? ""
+  return uraRow?.brokerage_id ?? ""
 }
 
 export async function getBuyerInsights(
