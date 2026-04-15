@@ -12,12 +12,9 @@ import {
   mergeIntentWithContext,
   inferBuyerPersona,
 } from '@/lib/buyer-search'
-import type { BuyerSearchResult } from '@/lib/buyer-search'
 import { isValidUUID } from '@/lib/validations'
 import { handleError } from '@/lib/errors'
 import { createServiceClient } from '@/lib/supabase/service'
-
-export type { BuyerSearchResult }
 
 /**
  * Main buyer-facing search: Natural language → Smart matches
