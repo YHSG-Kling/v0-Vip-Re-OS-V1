@@ -259,10 +259,14 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
     // FAILURE ISOLATION: Notification processing is non-blocking
     // If processKernelEvent fails, it is logged but does NOT prevent compliance checks from completing
     // This ensures compliance evaluation ALWAYS succeeds even if notifications fail
+    //
+    // entityType/entityId routing: when a specific contact is present, route to that
+    // contact row. For broadcast campaigns (no contact), route to "brokerage" so the
+    // notification engine does not query the contacts table with a brokerage UUID.
     await processKernelEvent({
       event: KernelEvent.COMPLIANCE_VIOLATION,
       brokerageId: actorContext.brokerageId,
-      entityType: "contact",
+      entityType: params.contact ? "contact" : "brokerage",
       entityId: params.contact?.id ?? actorContext.brokerageId,
       complianceEventId: complianceEvent.id,
     }).catch(err => {

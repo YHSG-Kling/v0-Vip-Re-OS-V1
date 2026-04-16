@@ -15,22 +15,23 @@ export async function captureFormSubmissionAction(input: CaptureFormInput) {
     const supabase = createServiceClient()
 
     // Validate the form exists and belongs to the claimed brokerage before accepting submission.
+    // Query lead_capture_forms — the canonical table written by the kernel publishLeadMagnet
+    // command. Checking is_active=true ensures only published/activated forms accept submissions.
     // This prevents a client-supplied brokerageId from routing leads to the wrong tenant.
     const { data: form } = await supabase
-      .from("lead_magnets")
+      .from("lead_capture_forms")
       .select("id, is_active")
       .eq("id", input.formId)
       .eq("brokerage_id", input.brokerageId)
-      .eq("status", "published")
       .eq("is_active", true)
       .maybeSingle()
 
     if (!form) {
-      return { success: false, error: "Form not found, not published, or not active" }
+      return { success: false, error: "Form not found or not active" }
     }
 
     const { data, error } = await supabase
-      .from("lead_magnet_submissions")
+      .from("form_submissions")
       .insert({
         form_id: input.formId,
         brokerage_id: input.brokerageId,

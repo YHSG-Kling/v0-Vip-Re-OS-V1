@@ -66,9 +66,13 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
 
   if (!contact) throw new Error("Contact not found")
 
+  if (!contact.email) {
+    return { success: false, error: "Contact has no email address for anniversary message" }
+  }
+
   const message = `Hi ${contact.first_name}! Can you believe it's been ${yearsAgo} year${yearsAgo > 1 ? "s" : ""} since you closed on your home? Time flies! Hope you're still loving it. Here's a quick market update for your neighborhood...`
 
-  // Create touchpoint record
+  // Create touchpoint record only after confirming email exists — status "sent" must be truthful
   const { error } = await supabase.from("past_client_touchpoints").insert({
     contact_id: contactId,
     agent_id: agentId,
@@ -81,10 +85,6 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
   })
 
   if (error) throw error
-
-  if (!contact.email) {
-    return { success: false, error: "Contact has no email address for anniversary message" }
-  }
 
   // Send via consolidated communications service — anniversary is email-only
   // to match the touchpoint record above (channel: "email")

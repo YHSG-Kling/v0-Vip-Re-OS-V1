@@ -95,6 +95,7 @@ export async function generateAndStorePDF(options: PDFGenerationOptions): Promis
           agentEmail: agent.email,
           brokerageId: agent.brokerage_id,
           contactId: options.contactId,
+          agentId: options.agentId,
         })
         if (emailResult.success) emailsSent++
       }
@@ -357,6 +358,7 @@ async function sendDocumentEmail(params: {
   agentEmail: string
   brokerageId: string
   contactId?: string
+  agentId?: string
 }) {
   const documentNames: Record<string, string> = {
     cma: "Comparative Market Analysis",
@@ -397,6 +399,7 @@ async function sendDocumentEmail(params: {
     html: body,
     from: params.agentEmail,
     contactId: params.contactId,
+    agentId: params.agentId,
     channelPurpose: "transactional",
   })
 }

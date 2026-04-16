@@ -297,9 +297,12 @@ export async function transitionCampaignStatus(
       .single()
 
     if (fullCampaign) {
-      // Extract content from campaign assets
+      // Extract actual copy text from campaign assets — never use URLs as compliance content
       const campaignContent = fullCampaign.assets
-        ?.map((asset: any) => asset.content_url || asset.asset_name)
+        ?.map((asset: any) =>
+          asset.copy_text || asset.content_text || asset.preview_text || asset.description || asset.headline || asset.asset_name
+        )
+        .filter(Boolean)
         .join(" ") || fullCampaign.campaign_name
 
       // Determine channel and message type
@@ -328,31 +331,10 @@ export async function transitionCampaignStatus(
         }
       }
 
-      // Run brand/style compliance check for broadcast campaigns.
-      // Per-contact DNC/TCPA checks are intentionally skipped here — broadcast
-      // campaigns target an audience, not a single known contact. Individual
-      // contact-level opt-out enforcement happens at send time in the
-      // campaign-sequences dispatch layer.
-      const brandResult = await applyBrandVoice({
-        brokerageId: brokerageId!,
-        actorUserId: userId!,
-        actorRole: "agent" as ActorRole,
-        journeyType: "seller",
-        persona: "homeowner" as Persona,
-        messageType,
-        content: campaignContent,
-      })
-
-      if (brandResult.violations && brandResult.violations.length > 0) {
-        console.error("[v0] Campaign failed brand voice check:", brandResult.violations)
-        return {
-          success: false,
-          error: `Campaign cannot be launched: ${brandResult.violations.join(", ")}`,
-          violations: brandResult.violations,
-        }
-      }
-
-      // Apply brand voice to campaign content
+      // Apply brand voice to campaign content.
+      // Brand voice violation checking is already performed inside evaluateOutbound (Gate 1)
+      // above — do NOT call applyBrandVoice a second time for violation checking.
+      // This single call transforms the content with the correct tone/style.
       const brandVoiceResult = await applyBrandVoice({
         brokerageId: brokerageId!,
         actorUserId: userId!,

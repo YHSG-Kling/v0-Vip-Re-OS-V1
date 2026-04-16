@@ -237,6 +237,10 @@ Respond with JSON only: { "recommended": [{ "type": string, "duration": number, 
       !Array.isArray(cont.recommended) ||
       !Array.isArray(cont.notRecommended) ||
       typeof cont.riskAnalysis !== "object" ||
+      cont.riskAnalysis === null ||
+      typeof cont.riskAnalysis.overallRisk !== "string" ||
+      typeof cont.riskAnalysis.buyerProtection !== "number" ||
+      typeof cont.riskAnalysis.competitiveness !== "number" ||
       cont.recommended.some((r: any) => !r.type || r.duration === undefined || r.critical === undefined) ||
       cont.notRecommended.some((nr: any) => !nr.type || !nr.reasoning)
     ) {
