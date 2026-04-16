@@ -75,7 +75,7 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
         userId: contact.agent_id ?? '',
         role: 'isa' as import('@/lib/kernel/types').ActorRole,
       },
-      journeyType: 'buyer' as import('@/lib/kernel/types').JourneyType,
+      journeyType: contact.contact_type === 'seller' ? 'seller' : contact.contact_type === 'both' ? 'dual' : 'buyer',
       persona: 'other' as import('@/lib/kernel/types').Persona,
       messageType: 'email' as import('@/lib/kernel/types').MessageType,
       content: 'AI-ISA contact re-engagement',
