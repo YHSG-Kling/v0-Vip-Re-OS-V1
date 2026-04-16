@@ -5,5 +5,5 @@ export const metadata = {
 }
 
 export default function ReputationPage() {
-  redirect("/past-clients?tab=reputation")
+  redirect("/past-clients?tab=reviews")
 }
