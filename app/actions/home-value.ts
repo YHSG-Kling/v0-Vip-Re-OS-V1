@@ -278,16 +278,19 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
           .select("user_id")
           .eq("id", resolvedAgentId)
           .maybeSingle()
-          .then(({ data: agentRow }) => {
-            if (agentRow?.user_id) {
-              createPortalInviteForContact({
-                contactId: newContact.id,
-                brokerageId: resolvedBrokerageId!,
-                invitedByUserId: agentRow.user_id,
-                sendMagicLink: true,
-              }).catch(() => {})
-            }
-          }, () => {})
+          .then(
+            ({ data: agentRow }) => {
+              if (agentRow?.user_id) {
+                createPortalInviteForContact({
+                  contactId: newContact.id,
+                  brokerageId: resolvedBrokerageId!,
+                  invitedByUserId: agentRow.user_id,
+                  sendMagicLink: true,
+                }).then(() => {}, () => {})
+              }
+            },
+            (err) => console.error("[home-value] background task failed:", err)
+          )
       }
     } else {
       contactId = existingContact.id

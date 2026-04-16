@@ -73,12 +73,12 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
         magnet_type: magnetType,
       })
 
-      if (!result.success || !result.magnet?.id) {
+      if (!result.success || !result.magnetId) {
         setError(result.error ?? "Failed to create lead magnet")
         return
       }
 
-      setCreatedMagnet({ magnetId: result.magnet.id, slug: title.trim().toLowerCase().replace(/\s+/g, "-") })
+      setCreatedMagnet({ magnetId: result.magnetId, slug: title.trim().toLowerCase().replace(/\s+/g, "-") })
       setStep("publish")
     })
   }

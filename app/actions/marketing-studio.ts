@@ -312,34 +312,27 @@ export async function transitionCampaignStatus(
                                        campaignType.includes("sms") ? "sms" :
                                        "social"
 
-      // Run compliance check including DNC/opt-out verification
-      const complianceResult = await evaluateOutbound({
-        actorContext: {
-          userId: userId!,
-          role: "agent" as ActorRole,
-          brokerageId: brokerageId!,
-        },
+      // Run brand/style compliance check for broadcast campaigns.
+      // Per-contact DNC/TCPA checks are intentionally skipped here — broadcast
+      // campaigns target an audience, not a single known contact. Individual
+      // contact-level opt-out enforcement happens at send time in the
+      // campaign-sequences dispatch layer.
+      const brandResult = await applyBrandVoice({
+        brokerageId: brokerageId!,
+        actorUserId: userId!,
+        actorRole: "agent" as ActorRole,
         journeyType: "seller",
         persona: "homeowner" as Persona,
         messageType,
         content: campaignContent,
-        contact: {
-          id: "broadcast",
-          first_name: "Broadcast",
-          last_name: "Audience",
-          contact_type: "buyer",
-          tcpa_consent: true,
-          isa_reengage_allowed: false,
-          dnc_status: false,
-        },
       })
 
-      if (!complianceResult.allowed) {
-        console.error("[v0] Campaign failed compliance check:", complianceResult.violations)
+      if (brandResult.violations && brandResult.violations.length > 0) {
+        console.error("[v0] Campaign failed brand voice check:", brandResult.violations)
         return {
           success: false,
-          error: `Campaign cannot be launched: ${complianceResult.violations?.join(", ")}`,
-          violations: complianceResult.violations,
+          error: `Campaign cannot be launched: ${brandResult.violations.join(", ")}`,
+          violations: brandResult.violations,
         }
       }
 

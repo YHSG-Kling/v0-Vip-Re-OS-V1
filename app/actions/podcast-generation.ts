@@ -41,15 +41,17 @@ export async function createPodcastEpisode(params: {
   publishChannels?: string[]
 }) {
   const supabase = await createClient()
-  
+
   // Get agent context for proper FK relationships and kernel calls
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
     const ctx = await getAgentContext()
+    if (!ctx.agentId) return { success: false, error: "Missing agent context" }
+    if (!ctx.brokerageId) return { success: false, error: "Missing agent context" }
     agentContext = {
       userId: ctx.userId,
-      agentId: ctx.agentId ?? ctx.userId,
-      brokerageId: ctx.brokerageId ?? "",
+      agentId: ctx.agentId,
+      brokerageId: ctx.brokerageId,
     }
   } catch {
     return { success: false, error: "Not authenticated" }
@@ -270,10 +272,12 @@ export async function generatePodcastAudio(episodeId: string) {
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
     const ctx = await getAgentContext()
+    if (!ctx.agentId) return { success: false, error: "Missing agent context" }
+    if (!ctx.brokerageId) return { success: false, error: "Missing agent context" }
     agentContext = {
       userId: ctx.userId,
-      agentId: ctx.agentId ?? ctx.userId,
-      brokerageId: ctx.brokerageId ?? "",
+      agentId: ctx.agentId,
+      brokerageId: ctx.brokerageId,
     }
   } catch {
     return { success: false, error: "Not authenticated" }
@@ -550,10 +554,12 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
     const ctx = await getAgentContext()
+    if (!ctx.agentId) return { success: false, error: "Missing agent context" }
+    if (!ctx.brokerageId) return { success: false, error: "Missing agent context" }
     agentContext = {
       userId: ctx.userId,
-      agentId: ctx.agentId ?? ctx.userId,
-      brokerageId: ctx.brokerageId ?? "",
+      agentId: ctx.agentId,
+      brokerageId: ctx.brokerageId,
     }
   } catch {
     return { success: false, error: "Not authenticated" }

@@ -8,6 +8,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { z } from "zod"
 
 // ============================================
@@ -759,6 +760,10 @@ export async function runCompleteListingIntake(params: {
   hasPool?: boolean
 }) {
   try {
+    const agentCtx = await getAgentContext()
+    const brokerageId = agentCtx.brokerageId
+    if (!brokerageId) return { success: false, error: "Missing brokerage context" }
+
     // Step 1: Enrich property data
     const enrichResult = await aiEnrichPropertyData(params.address, params.agentId)
     if (!enrichResult.success) return enrichResult
@@ -797,7 +802,7 @@ export async function runCompleteListingIntake(params: {
     // Step 6: Create the listing
     const listingResult = await createListing({
       agentId: params.agentId,
-      brokerageId: "",
+      brokerageId,
       propertyAddress: params.address,
       city: params.city,
       state: params.state,

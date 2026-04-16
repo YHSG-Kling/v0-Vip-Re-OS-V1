@@ -62,7 +62,7 @@ export async function getListingDetails(contactId: string) {
       listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url,
       lot_size, year_built, property_type, listing_type
     `)
-    .eq("contact_id", contactId)
+    .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -109,7 +109,7 @@ export async function getShowingInsights(contactId: string) {
   const { data: listings } = await supabase
     .from("listings")
     .select("id")
-    .eq("contact_id", contactId)
+    .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -193,7 +193,7 @@ export async function getSellerOffers(contactId: string) {
   const { data: listings } = await supabase
     .from("listings")
     .select("id, list_price")
-    .eq("contact_id", contactId)
+    .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -229,7 +229,7 @@ export async function getMarketPosition(contactId: string) {
   const { data: listings } = await supabase
     .from("listings")
     .select("id, list_price")
-    .eq("contact_id", contactId)
+    .eq("seller_contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -327,5 +327,5 @@ export async function emitSellerPortalViewed(contactId: string) {
     brokerageId,
     entityType: "contact",
     entityId: contactId,
-  }).catch(() => {})
+  }).then(() => {}, (err) => { console.error("[portal-seller] kernel event failed:", err) })
 }

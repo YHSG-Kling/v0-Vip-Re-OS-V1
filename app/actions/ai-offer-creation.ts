@@ -230,6 +230,13 @@ Respond with JSON only: { "recommended": [{ "type": string, "duration": number, 
     } catch {
       return { success: false, error: "AI response was not valid JSON" }
     }
+    if (
+      typeof contingencies !== "object" ||
+      contingencies === null ||
+      (!Array.isArray((contingencies as any).recommended) && !Array.isArray((contingencies as any).items))
+    ) {
+      return { success: false, error: "AI returned malformed contingency data" }
+    }
 
     return { success: true, contingencies }
   } catch (error) {
@@ -481,6 +488,13 @@ Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away",
       strategy = JSON.parse(strategyResult.text)
     } catch {
       return { success: false, error: "AI response was not valid JSON" }
+    }
+    if (
+      typeof strategy !== "object" ||
+      strategy === null ||
+      (!(strategy as any).recommendedResponse && !(strategy as any).strategy && !(strategy as any).offerStrategy)
+    ) {
+      return { success: false, error: "AI returned malformed strategy data" }
     }
 
     return { success: true, strategy }

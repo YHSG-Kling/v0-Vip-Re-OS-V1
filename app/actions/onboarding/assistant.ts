@@ -165,7 +165,7 @@ export async function escapeAssistant(
   const supabase = await createClient()
   const { agentId } = await getAgentContext()
 
-  if (!agentId) return { success: false, error: "Missing agent or brokerage context" }
+  if (!agentId) return { success: false, error: "Missing agent context" }
 
   // Mark as escalated
   await saveAssistantChat(agentOnboardingId, [], currentStep, true)

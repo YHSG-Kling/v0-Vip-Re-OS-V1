@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { listLeadMagnets } from "@/lib/kernel/lead-magnets"
+import { listLeadMagnets, createLeadMagnet } from "@/lib/kernel/lead-magnets"
 
 export async function listLeadMagnetsAction(options?: { brokerageId?: string; agentId?: string }) {
   try {
@@ -22,20 +22,16 @@ export async function createLeadMagnetAction(input: {
   settings?: Record<string, unknown>
 }) {
   try {
-    const supabase = createServiceClient()
     const ctx = await getAgentContext()
-    const { data, error } = await supabase
-      .from("lead_magnets")
-      .insert({
-        ...input,
-        brokerage_id: ctx.brokerageId,
-        agent_user_id: ctx.agentId,
-        status: "draft",
-      })
-      .select("id")
-      .single()
-    if (error) return { success: false as const, error: error.message }
-    return { success: true as const, magnet: data }
+    if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
+    return createLeadMagnet({
+      title: input.name,
+      magnetType: input.magnet_type as any,
+      brokerageId: ctx.brokerageId,
+      agentId: ctx.agentId,
+      createdBy: ctx.agentId,
+      description: "",
+    })
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to create magnet" }
   }
@@ -57,13 +53,15 @@ export async function publishLeadMagnetAction(magnetId: string) {
   }
 }
 
-export async function updateMagnetSettingsAction(magnetId: string, settings: Record<string, unknown>) {
+export async function updateMagnetSettingsAction(magnetId: string, settings: Record<string, unknown>, isActive?: boolean) {
   try {
     const supabase = createServiceClient()
     const ctx = await getAgentContext()
+    const updatePayload: Record<string, unknown> = { settings }
+    if (isActive !== undefined) updatePayload.is_active = isActive
     const { error } = await supabase
       .from("lead_magnets")
-      .update({ settings })
+      .update(updatePayload)
       .eq("id", magnetId)
       .eq("brokerage_id", ctx.brokerageId)
     if (error) return { success: false as const, error: error.message }

@@ -500,7 +500,7 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
         await sendOpenHouseInvitation({
           contactId,
           eventId: params.eventId,
-          method: "email",
+          method: contact?.preferred_contact_method ?? "email",
         })
       }
 

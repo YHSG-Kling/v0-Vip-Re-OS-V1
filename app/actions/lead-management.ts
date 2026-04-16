@@ -45,8 +45,8 @@ export async function getLeadsAdmin(params?: {
     }
 
     const { agentId, brokerageId } = await getAgentContext()
-    if (!agentId || !brokerageId) return { success: false, error: "Missing agent context", leads: [], total: 0, page: 1, limit: 10, totalPages: 0 }
-    const result = await serviceGetLeads(agentId, brokerageId, params as any)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context", leads: [], total: 0, page: 1, limit: 10, totalPages: 0 }
+    const result = await serviceGetLeads((agentId ?? null) as any, brokerageId, params as any)
     return { success: true, ...result }
   } catch (error) {
     return { success: false, error: String(error), leads: [], total: 0, page: 1, limit: 10, totalPages: 0 }

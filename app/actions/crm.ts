@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { 
+import {
   createContact as createContactService,
   updateContact as updateContactService,
   deleteContact as deleteContactService,
@@ -12,6 +12,7 @@ import {
 } from "@/lib/services/contact-management.service"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * CRM-specific actions - uses consolidated contact service
@@ -96,7 +97,8 @@ export async function getContacts(agentId: string, filters?: { status?: string; 
   return getContactsService(agentId, filters)
 }
 
-export async function getContactById(contactId: string, agentId?: string) {
+export async function getContactById(contactId: string) {
+  const { agentId } = await getAgentContext()
   if (!agentId) return { success: false, error: "Not authenticated" }
   return getContact(contactId, agentId)
 }

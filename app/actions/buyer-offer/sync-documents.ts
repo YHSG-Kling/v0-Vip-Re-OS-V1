@@ -32,6 +32,11 @@ export async function syncOfferDocumentsFromProvider(offerId: string, userId: st
       contactId: (offer as any).contact_id ?? "",
       transactionId: offer.transaction_id,
     })
+
+    if (!syncResult.success) {
+      return { success: false, error: syncResult.error ?? "Provider sync failed" }
+    }
+
     const documents = syncResult.documents ?? []
 
     // Sync to client_documents table

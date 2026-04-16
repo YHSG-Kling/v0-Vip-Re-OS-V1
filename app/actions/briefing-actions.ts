@@ -64,7 +64,9 @@ export async function generateBriefing(
     
     const { agentId, brokerageId } = context
 
-    const briefing = await generateDailyBriefing(agentId, brokerageId ?? "", forceRegenerate)
+    if (!brokerageId) return { briefing: null, error: "Missing brokerage context" }
+
+    const briefing = await generateDailyBriefing(agentId, brokerageId, forceRegenerate)
 
     return { briefing }
   } catch (err) {
