@@ -309,7 +309,9 @@ async function dispatchToChannel(
       property_interest: lead.property_interest,
       timeline: lead.timeline,
     })
-    const finalEmailBody = await embedVideoInEmail(body, videoResult.videoId ?? null)
+    // HeyGen rendering is async — videoId is a provider message ID, not a playable URL.
+    // Pass null so the graceful placeholder is shown; a follow-up can embed the URL once rendering completes.
+    const finalEmailBody = await embedVideoInEmail(body, null)
 
     // Run compliance on final content
     const finalCompliance = await evaluateOutbound({

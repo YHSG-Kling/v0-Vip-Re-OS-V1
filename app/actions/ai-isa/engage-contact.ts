@@ -274,7 +274,9 @@ async function dispatchContactChannel(
       property_interest: undefined,
       timeline: undefined,
     })
-    const finalBody = await embedVideoInEmail(body, videoResult.videoId ?? null)
+    // HeyGen rendering is async — videoId is a provider message ID, not a playable URL.
+    // Pass null so the graceful placeholder is shown; a follow-up can embed the URL once rendering completes.
+    const finalBody = await embedVideoInEmail(body, null)
 
     // Final compliance pass on generated content
     const finalCompliance = await evaluateOutbound({

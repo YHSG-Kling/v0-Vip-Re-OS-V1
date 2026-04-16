@@ -2,7 +2,7 @@
 
 import { put } from "@vercel/blob"
 import { createClient } from "@/lib/supabase/server"
-import { sendEmail } from "@/lib/providers/messaging"
+import { dispatchEmail } from "@/lib/providers/dispatch"
 
 // PDF Generation using jsPDF for client-side or Puppeteer for server-side
 // For production, integrate with Puppeteer or similar for high-quality PDFs
@@ -93,6 +93,8 @@ export async function generateAndStorePDF(options: PDFGenerationOptions): Promis
           pdfUrl: blob.url,
           agentName: `${agent.first_name} ${agent.last_name}`,
           agentEmail: agent.email,
+          brokerageId: agent.brokerage_id,
+          contactId: options.contactId,
         })
         if (emailResult.success) emailsSent++
       }
@@ -353,6 +355,8 @@ async function sendDocumentEmail(params: {
   pdfUrl: string
   agentName: string
   agentEmail: string
+  brokerageId: string
+  contactId?: string
 }) {
   const documentNames: Record<string, string> = {
     cma: "Comparative Market Analysis",
@@ -386,11 +390,14 @@ async function sendDocumentEmail(params: {
     </div>
   `
 
-  return await sendEmail({
+  return await dispatchEmail({
+    brokerageId: params.brokerageId,
     to: params.to,
     subject,
     html: body,
     from: params.agentEmail,
+    contactId: params.contactId,
+    channelPurpose: "transactional",
   })
 }
 

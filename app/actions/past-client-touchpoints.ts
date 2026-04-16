@@ -82,12 +82,16 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
 
   if (error) throw error
 
-  // Send via consolidated communications service
+  if (!contact.email) {
+    return { success: false, error: "Contact has no email address for anniversary message" }
+  }
+
+  // Send via consolidated communications service — anniversary is email-only
+  // to match the touchpoint record above (channel: "email")
   const { sendAnniversaryMessage: sendAnniversaryComm } = await import("@/lib/services")
   await sendAnniversaryComm({
     contactId,
-    email: contact.email ?? undefined,
-    phone: contact.phone ?? undefined,
+    email: contact.email,
     message,
     occasionType: "Home Anniversary",
   })

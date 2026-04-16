@@ -62,7 +62,7 @@ Provide insights on:
 2. Areas for improvement
 3. Recommended training areas
 4. Commission optimization opportunities`,
-      feature: "ai_coaching",
+      feature: "coaching_insight",
     })
 
     return {

@@ -312,6 +312,22 @@ export async function transitionCampaignStatus(
                                        campaignType.includes("sms") ? "sms" :
                                        "social"
 
+      // Fair-housing + misleading-claim compliance gate (broadcast — no specific contact)
+      const complianceResult = await evaluateOutbound({
+        actorContext: { brokerageId: brokerageId!, userId: userId!, role: "agent" as any },
+        journeyType: "seller" as any,
+        persona: "homeowner" as any,
+        messageType,
+        content: campaignContent,
+        contact: undefined,
+      })
+      if (!complianceResult.allowed) {
+        return {
+          success: false,
+          error: `Campaign failed compliance review: ${complianceResult.violations?.join(", ") ?? "Unknown violation"}`,
+        }
+      }
+
       // Run brand/style compliance check for broadcast campaigns.
       // Per-contact DNC/TCPA checks are intentionally skipped here — broadcast
       // campaigns target an audience, not a single known contact. Individual

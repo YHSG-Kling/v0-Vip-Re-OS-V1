@@ -119,12 +119,12 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
 
   // ══════════════════════════════════════════════════════════════════════════
   // GATE 2 — TCPA Consent
-  // Applies to sms and phone channels only.
+  // Skipped for broadcast campaigns (contact = undefined).
   // ══════════════════════════════════════════════════════════════════════════
 
   // Re-fetch contact for all message types — per-channel opt-outs must be checked
   // regardless of channel, not just for SMS/phone.
-  {
+  if (contact) {
     const { data: freshContact } = await supabase
       .from("contacts")
       .select("tcpa_consent, tcpa_consent_date, dnc_status, email_opt_out, sms_opt_out, phone_opt_out, direct_mail_opt_out")
@@ -165,21 +165,18 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
   // GATE 3 — Authority Rule (ISA override allowed)
   // ═══��══════════════════════════════════���═══════════════════════════════════
 
-  const contactStatus: string = contact.status ?? ""
+  if (contact) {
+    const contactStatus: string = contact.status ?? ""
 
-  if (RESTRICTED_STATES.has(contactStatus)) {
-    if (actorContext.role === "isa") {
-      // ISA may re-engage only if the brokerage has explicitly approved it.
-      const isaReengageAllowed = contact.isa_reengage_allowed === true
-
-      // ghosted / marked_to_contact columns do not exist in the live schema —
-      // the spec says "if column exists" — we skip those checks.
-
-      if (!isaReengageAllowed) {
-        violations.push("Authority: Contact represented, ISA re-engagement not approved")
+    if (RESTRICTED_STATES.has(contactStatus)) {
+      if (actorContext.role === "isa") {
+        const isaReengageAllowed = contact.isa_reengage_allowed === true
+        if (!isaReengageAllowed) {
+          violations.push("Authority: Contact represented, ISA re-engagement not approved")
+        }
+      } else {
+        violations.push("Authority: Contact in restricted state")
       }
-    } else {
-      violations.push("Authority: Contact in restricted state")
     }
   }
 
@@ -252,7 +249,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
       actor_role: actorContext.role,
       actor_user_id: actorContext.userId,
       entity_type: "contact",
-      entity_id: contact.id ?? null,
+      entity_id: contact?.id ?? null,
       message_type: messageType,
     })
     .select("id")
@@ -266,7 +263,7 @@ export async function evaluateOutbound(params: EvaluateOutboundParams): Promise<
       event: KernelEvent.COMPLIANCE_VIOLATION,
       brokerageId: actorContext.brokerageId,
       entityType: "contact",
-      entityId: params.contact.id,
+      entityId: params.contact?.id ?? actorContext.brokerageId,
       complianceEventId: complianceEvent.id,
     }).catch(err => {
       console.error("[Compliance] Notification processing failed (non-blocking):", err)

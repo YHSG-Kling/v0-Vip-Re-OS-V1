@@ -636,6 +636,10 @@ export async function prepareListingEmailCampaign(params: {
 
     if (error) throw error
 
+    if (!emailContent.data?.generated_content) {
+      return { success: false, error: "AI failed to generate email content" }
+    }
+
     // Create email template from generated content
     const { data: template } = await supabase
       .from("email_templates")
@@ -643,8 +647,8 @@ export async function prepareListingEmailCampaign(params: {
         agent_id: transaction.agent_id,
         template_name: `${params.campaignType} - ${listing.address}`,
         template_type: params.campaignType,
-        subject_line: emailContent.data?.subject || `New Listing: ${listing.address}`,
-        email_body: emailContent.data?.generated_content || "",
+        subject_line: emailContent.data.subject || `New Listing: ${listing.address}`,
+        email_body: emailContent.data.generated_content,
         variables: {
           property_address: listing.address,
           property_city: listing.city,

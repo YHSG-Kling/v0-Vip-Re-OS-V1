@@ -55,7 +55,7 @@ type ExpenseCategory = typeof VALID_EXPENSE_CATEGORIES[number]
 
 export interface FinancialActorContext {
   userId:      string
-  agentId:     string
+  agentId:     string | null
   brokerageId: string
   userType:    "agent" | "team_lead" | "broker" | "admin" | "superadmin"
 }
@@ -112,7 +112,7 @@ export interface AgentFinancialDashboardSummary {
   earningsHistory: any[]
 }
 export interface FinancialWorkspace {
-  agentId:      string
+  agentId:      string | null
   brokerageId:  string
   userType:     string
   accessLevel:  "personal" | "team" | "brokerage" | "system"

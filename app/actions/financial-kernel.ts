@@ -55,7 +55,7 @@ async function getFinancialActorContext(): Promise<FinancialActorContext> {
 
   const { agentId, brokerageId, role } = await getAgentContext()
 
-  if (!agentId || !brokerageId) throw new Error("Missing agent or brokerage context")
+  if (!brokerageId) throw new Error("Missing brokerage context")
 
   return {
     userId: user.id,

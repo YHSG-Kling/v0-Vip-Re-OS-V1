@@ -2,7 +2,7 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
-import { listLeadMagnets, createLeadMagnet } from "@/lib/kernel/lead-magnets"
+import { listLeadMagnets, createLeadMagnet, publishLeadMagnet } from "@/lib/kernel/lead-magnets"
 
 export async function listLeadMagnetsAction(options?: { brokerageId?: string; agentId?: string }) {
   try {
@@ -18,8 +18,6 @@ export async function listLeadMagnetsAction(options?: { brokerageId?: string; ag
 export async function createLeadMagnetAction(input: {
   name: string
   magnet_type: string
-  slug?: string
-  settings?: Record<string, unknown>
 }) {
   try {
     const ctx = await getAgentContext()
@@ -37,30 +35,33 @@ export async function createLeadMagnetAction(input: {
   }
 }
 
+// Delegates to kernel publishLeadMagnet which reads/writes lead_capture_forms
 export async function publishLeadMagnetAction(magnetId: string) {
   try {
-    const supabase = createServiceClient()
     const ctx = await getAgentContext()
-    const { error } = await supabase
-      .from("lead_magnets")
-      .update({ status: "published", published_at: new Date().toISOString() })
-      .eq("id", magnetId)
-      .eq("brokerage_id", ctx.brokerageId)
-    if (error) return { success: false as const, error: error.message }
-    return { success: true as const }
+    if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
+    return publishLeadMagnet({
+      magnetId,
+      brokerageId: ctx.brokerageId,
+      channels: ["landing_page"],
+      actorUserId: ctx.agentId,
+      baseUrl: process.env.NEXT_PUBLIC_APP_URL ?? "",
+    })
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to publish" }
   }
 }
 
+// Writes to lead_capture_forms (canonical table used by kernel)
 export async function updateMagnetSettingsAction(magnetId: string, settings: Record<string, unknown>, isActive?: boolean) {
   try {
     const supabase = createServiceClient()
     const ctx = await getAgentContext()
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
     const updatePayload: Record<string, unknown> = { settings }
     if (isActive !== undefined) updatePayload.is_active = isActive
     const { error } = await supabase
-      .from("lead_magnets")
+      .from("lead_capture_forms")
       .update(updatePayload)
       .eq("id", magnetId)
       .eq("brokerage_id", ctx.brokerageId)
@@ -75,16 +76,17 @@ export async function getMagnetPerformanceAction(magnetId: string) {
   try {
     const supabase = createServiceClient()
     const ctx = await getAgentContext()
-    // Verify the magnet belongs to this brokerage before reading submissions
-    const { data: magnet } = await supabase
-      .from("lead_magnets")
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    // Verify the form belongs to this brokerage before reading submissions
+    const { data: form } = await supabase
+      .from("lead_capture_forms")
       .select("id")
       .eq("id", magnetId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
-    if (!magnet) return { success: false as const, error: "Magnet not found" }
+    if (!form) return { success: false as const, error: "Magnet not found" }
     const { data, error } = await supabase
-      .from("lead_magnet_submissions")
+      .from("form_submissions")
       .select("*")
       .eq("form_id", magnetId)
     if (error) return { success: false as const, error: error.message }
@@ -98,14 +100,15 @@ export async function generateQRCodeAction(input: { magnetId: string; url: strin
   try {
     const supabase = createServiceClient()
     const ctx = await getAgentContext()
-    // Verify the magnet belongs to this brokerage before creating a QR code for it
-    const { data: magnet } = await supabase
-      .from("lead_magnets")
+    if (!ctx.brokerageId) return { success: false as const, error: "Not authenticated" }
+    // Verify the form belongs to this brokerage before creating a QR code for it
+    const { data: form } = await supabase
+      .from("lead_capture_forms")
       .select("id")
       .eq("id", input.magnetId)
       .eq("brokerage_id", ctx.brokerageId)
       .maybeSingle()
-    if (!magnet) return { success: false as const, error: "Magnet not found" }
+    if (!form) return { success: false as const, error: "Magnet not found" }
     const { data, error } = await supabase
       .from("qr_codes")
       .insert({

@@ -18,14 +18,15 @@ export async function captureFormSubmissionAction(input: CaptureFormInput) {
     // This prevents a client-supplied brokerageId from routing leads to the wrong tenant.
     const { data: form } = await supabase
       .from("lead_magnets")
-      .select("id")
+      .select("id, is_active")
       .eq("id", input.formId)
       .eq("brokerage_id", input.brokerageId)
       .eq("status", "published")
+      .eq("is_active", true)
       .maybeSingle()
 
     if (!form) {
-      return { success: false, error: "Form not found or not published" }
+      return { success: false, error: "Form not found, not published, or not active" }
     }
 
     const { data, error } = await supabase

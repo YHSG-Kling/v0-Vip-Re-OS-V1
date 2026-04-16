@@ -9,6 +9,7 @@ import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
 import { z } from "zod"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
 import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
@@ -85,7 +86,8 @@ export async function aiGenerateSubjectLines(params: {
     }
 
     // Kernel: Feature access check
-    const access = await canAccessFeature(params.agentId, "newsletter_engine")
+    const { userId: _ctxUserId } = await getAgentContext()
+    const access = await canAccessFeature(_ctxUserId ?? params.agentId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -158,7 +160,8 @@ export async function aiWriteNewsletterContent(params: {
     }
 
     // Kernel: Feature access check
-    const access = await canAccessFeature(params.agentId, "newsletter_engine")
+    const { userId: _ctxUserId } = await getAgentContext()
+    const access = await canAccessFeature(_ctxUserId ?? params.agentId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -409,7 +412,8 @@ export async function createNewsletterCampaign(params: {
     }
 
     // Kernel: Feature access check
-    const access = await canAccessFeature(params.agentId, "newsletter_engine")
+    const { userId: _ctxUserId } = await getAgentContext()
+    const access = await canAccessFeature(_ctxUserId ?? params.agentId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -492,7 +496,8 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
     }
 
     // Kernel: Feature access check
-    const access = await canAccessFeature(params.agentId, "newsletter_engine")
+    const { userId: _ctxUserId } = await getAgentContext()
+    const access = await canAccessFeature(_ctxUserId ?? params.agentId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }

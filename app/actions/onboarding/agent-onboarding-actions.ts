@@ -10,7 +10,7 @@ export async function fetchMyOnboardingDashboard() {
   if (!user?.id) throw new Error("Unauthorized")
 
   const { agentId } = await getAgentContext()
-  if (!agentId) return { success: false, error: "Missing agent context" }
+  if (!agentId) throw new Error("Missing agent context")
 
   return await getAgentOnboardingDashboard({ userId: user.id, agentId })
 }
@@ -25,7 +25,7 @@ export async function completeMyOnboardingStep(stepId: string, data?: {
   if (!user?.id) throw new Error("Unauthorized")
 
   const { agentId } = await getAgentContext()
-  if (!agentId) return { success: false, error: "Missing agent context" }
+  if (!agentId) throw new Error("Missing agent context")
 
   await completeAISessionStep({ userId: user.id, agentId, stepId, data })
 }

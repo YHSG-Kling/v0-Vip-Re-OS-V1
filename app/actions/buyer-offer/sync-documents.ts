@@ -4,6 +4,28 @@ import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { getTransactionProvider } from "@/lib/integrations"
 
+const DOCUMENT_TYPE_MAP: Record<string, string> = {
+  purchase_agreement: "purchase_agreement",
+  purchase_contract: "purchase_agreement",
+  contract: "purchase_agreement",
+  loan_documents: "financial_docs",
+  financial: "financial_docs",
+  financing: "financial_docs",
+  title_report: "title_docs",
+  title: "title_docs",
+  inspection: "inspection_docs",
+  inspection_report: "inspection_docs",
+  disclosure: "disclosure_docs",
+  disclosures: "disclosure_docs",
+  closing: "closing_docs",
+  closing_documents: "closing_docs",
+}
+
+function normalizeDocumentType(folderName: string): string {
+  const key = folderName.toLowerCase().replace(/[\s-]+/g, "_")
+  return DOCUMENT_TYPE_MAP[key] ?? "other"
+}
+
 export async function syncOfferDocumentsFromProvider(offerId: string, userId: string) {
   if (!isValidUUID(offerId) || !isValidUUID(userId)) {
     return { success: false, error: "Invalid IDs" }
@@ -46,7 +68,7 @@ export async function syncOfferDocumentsFromProvider(offerId: string, userId: st
         .upsert({
           transaction_id: offer.transaction_id,
           document_name: doc.documentName,
-          document_type: doc.folderName,
+          document_type: normalizeDocumentType(doc.folderName),
           external_url: doc.url,
           external_provider: offer.external_provider,
           external_provider_id: doc.externalDocumentId,

@@ -562,7 +562,7 @@ export async function calculateHomeValue(address: string, visitorId?: string) {
     // Get property details and comparables
     const [property, comps, propertyData] = await Promise.all([
       idxClient.searchProperties(address),
-      idxClient.getProperties({ status: "sold" }),
+      (idxClient.getProperties as any)({ status: "sold", address, proximity: true }),
       batchData.searchByAddress(address, "", ""),
     ])
 

@@ -501,6 +501,7 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
           contactId,
           eventId: params.eventId,
           method: contact?.preferred_contact_method ?? "email",
+          personalizedMessage: inviteResult.data.email_body,
         })
       }
 

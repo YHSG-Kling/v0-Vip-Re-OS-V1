@@ -236,7 +236,7 @@ Return this exact JSON structure:
   "market_trend": "appreciating"|"stable"|"depreciating",
   "school_ratings": [{ "school_name": string, "rating": number, "level": "elementary"|"middle"|"high", "distance": number }]
 }`,
-        { maxTokens: 600, feature: "neighborhood_report" }
+        { maxTokens: 600, feature: "generate_json" }
       )
       const aiStructured = JSON.parse(rawStructured.trim())
 

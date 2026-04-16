@@ -123,9 +123,10 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
     await logEventAndTrigger({
       brokerage_id: offer.brokerage_id,
       event_type: "buyer.offer.signature.sent_to_contact",
-      user_id:    offer.contact_id,
+      user_id:    userId,
       payload: {
         offerId,
+        contact_id:  offer.contact_id,
         signerCount: signers.length,
         provider:    credential?.platform ?? null,
       },

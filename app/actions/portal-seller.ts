@@ -311,7 +311,7 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
 
 // ─── KERNEL EVENT EMISSION ────────────────────────────────────────────────────
 
-export async function emitSellerPortalViewed(contactId: string) {
+export async function emitSellerPortalViewed(contactId: string, moduleName?: string) {
   const supabase = await createClient()
 
   const { data: contact } = await supabase
@@ -321,6 +321,15 @@ export async function emitSellerPortalViewed(contactId: string) {
     .maybeSingle()
   const brokerageId = contact?.brokerage_id
   if (!brokerageId) return
+
+  // Track which module was viewed in client_portal_activity for analytics
+  if (moduleName) {
+    supabase.from("client_portal_activity").insert({
+      contact_id: contactId,
+      activity_type: "portal_module_viewed",
+      activity_data: { module: moduleName, viewed_at: new Date().toISOString() },
+    }).then(() => {}, (err) => console.error("[portal-seller] activity tracking failed:", err))
+  }
 
   await processKernelEvent({
     event: KernelEvent.PORTAL_MODULE_VIEWED,

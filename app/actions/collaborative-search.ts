@@ -4,7 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { v4 as uuidv4 } from "uuid"
 
-const COLLAB_SEARCH_AVAILABLE = true
+const COLLAB_SEARCH_AVAILABLE = process.env.COLLABORATIVE_SEARCH_ENABLED !== 'false'
 
 // ==================== COLLABORATIVE SEARCH CRUD ====================
 

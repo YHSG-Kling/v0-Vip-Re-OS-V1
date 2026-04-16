@@ -12,6 +12,7 @@ export interface SendInvitationParams {
   contactId: string
   eventId: string
   method: "email" | "sms" | "both"
+  personalizedMessage?: string
 }
 
 export interface SendReminderParams {
@@ -62,14 +63,16 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams) {
       const emailContent = {
         to: contact.email,
         subject: `You're Invited: Open House at ${property.address}`,
-        html: generateInvitationEmailHTML({
-          contactName: `${contact.first_name} ${contact.last_name}`,
-          propertyAddress: property.address,
-          eventDate,
-          eventTime: `${event.start_time} - ${event.end_time}`,
-          propertyImage: property.featured_image || "",
-          rsvpLink: `${process.env.NEXT_PUBLIC_APP_URL}/open-house/rsvp/${event.id}`,
-        }),
+        html: params.personalizedMessage
+          ? `<div style="font-family:sans-serif;max-width:600px;margin:0 auto">${params.personalizedMessage}</div>`
+          : generateInvitationEmailHTML({
+              contactName: `${contact.first_name} ${contact.last_name}`,
+              propertyAddress: property.address,
+              eventDate,
+              eventTime: `${event.start_time} - ${event.end_time}`,
+              propertyImage: property.featured_image || "",
+              rsvpLink: `${process.env.NEXT_PUBLIC_APP_URL}/open-house/rsvp/${event.id}`,
+            }),
       }
 
       // Log email send (integrate with your email service)
