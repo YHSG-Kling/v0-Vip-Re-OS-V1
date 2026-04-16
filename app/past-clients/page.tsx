@@ -147,11 +147,17 @@ export default function LifetimeCustomersPage() {
   const searchParams = useSearchParams()
 
   // Tab state — supports ?tab= URL param for deep-linking (e.g. from redirects)
-  const VALID_TABS = ["feed", "intelligence", "radar", "portal", "reputation"]
+  const VALID_TABS = ["feed", "intelligence", "radar", "portal", "reputation", "referrals", "reviews", "gifting"]
   const tabParam = searchParams.get("tab")
-  const [activeTab, setActiveTab] = useState(
-    tabParam && VALID_TABS.includes(tabParam) ? tabParam : "feed"
-  )
+  const TAB_ALIAS: Record<string, string> = {
+    referrals: "radar",
+    reviews: "reputation",
+    gifting: "intelligence",
+  }
+  const resolvedTab = tabParam
+    ? TAB_ALIAS[tabParam] ?? (VALID_TABS.includes(tabParam) ? tabParam : "feed")
+    : "feed"
+  const [activeTab, setActiveTab] = useState(resolvedTab)
 
   // Data state
   const [clients, setClients] = useState<PastClient[]>([])
@@ -529,7 +535,7 @@ export default function LifetimeCustomersPage() {
         {/* Header */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">Lifetime Customers</h1>
+            <h1 className="text-2xl font-bold text-foreground">Sphere of Influence</h1>
             <p className="text-sm text-muted-foreground mt-1">
               Your relationship intelligence engine
             </p>

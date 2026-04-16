@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
-import { toast } from "sonner"
+import { useToast } from "@/hooks/use-toast"
 import {
   Play,
   Pause,
@@ -43,22 +43,16 @@ export function ISACampaignsPanel({ campaigns: initialCampaigns, brokerageId }: 
   const [isPending, startTransition] = useTransition()
   const [toggling, setToggling] = useState<string | null>(null)
   const [showCreateDrawer, setShowCreateDrawer] = useState(false)
+  const { toast } = useToast()
 
-  const handleToggleCampaign = (campaignId: string, currentStatus: string) => {
-    setToggling(campaignId)
-    startTransition(async () => {
-      const result = await toggleCampaignStatus(
-        campaignId,
-        currentStatus as "active" | "paused" | "draft" | "completed"
-      )
-      if (result.success) {
-        toast.success(currentStatus === "active" ? "Campaign paused" : "Campaign resumed")
-        router.refresh()
-      } else {
-        toast.error(result.error ?? "Failed to update campaign")
-      }
-      setToggling(null)
-    })
+  async function handleToggleCampaign(campaignId: string, currentStatus: string) {
+    const result = await toggleCampaignStatus(campaignId, currentStatus as any)
+    if ((result as any).success) {
+      toast({ title: "Campaign updated" })
+      router.refresh()
+    } else {
+      toast({ title: "Failed to update campaign", description: (result as any).error ?? "Please try again.", variant: "destructive" })
+    }
   }
 
   if (initialCampaigns.length === 0) {

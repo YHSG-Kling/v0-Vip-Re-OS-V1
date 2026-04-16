@@ -728,7 +728,7 @@ export default function CRMPage() {
   const handleToggleAutopilot = async (planId: string, pause: boolean) => {
     startTransition(async () => {
       const result = await toggleAutoPilot({ planId, pause })
-      if ((result as any)?.success === false) {
+      if (!(result as any).success) {
         toast.error((result as any).error ?? "Failed to update autopilot")
         return
       }
