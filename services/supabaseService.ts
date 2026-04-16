@@ -1596,7 +1596,7 @@ export const supabaseService = {
     try {
       // Extract all unique statuses and personas for batch mapping
       const statuses = contacts.map((c) => c.status).filter(Boolean) as string[]
-      const personas = contacts.map((c) => c.persona).filter(Boolean) as string[]
+      const personas = contacts.map((c) => (c as any).persona).filter(Boolean) as string[]
 
       // Batch map using AI
       console.log(`[Supabase Service] Batch mapping ${statuses.length} statuses and ${personas.length} personas...`)
@@ -1612,7 +1612,7 @@ export const supabaseService = {
       const normalizedContacts = contacts.map((contact) => ({
         ...contact,
         status: contact.status ? statusMap.get(contact.status) || contact.status : "new",
-        persona: contact.persona || "first_time_buyer",
+        persona: (contact as any).persona || "first_time_buyer",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }))

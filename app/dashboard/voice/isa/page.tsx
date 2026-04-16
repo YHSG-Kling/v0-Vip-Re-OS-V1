@@ -31,7 +31,9 @@ export const metadata = {
 
 export default async function VoiceISAPage() {
   const supabase = await createClient()
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId: agentIdRaw, brokerageId: brokerageIdRaw } = await getAgentContext()
+  const agentId = agentIdRaw ?? ""
+  const brokerageId = brokerageIdRaw ?? ""
 
   // Get today's date at midnight
   const today = new Date()
@@ -325,37 +327,37 @@ export default async function VoiceISAPage() {
         </TabsContent>
 
         <TabsContent value="today" className="mt-4">
-          <ISACallsTable 
-            calls={todaysCalls || []} 
+          <ISACallsTable
+            calls={(todaysCalls || []) as any[]}
             emptyMessage="No calls today yet"
             showRetry={false}
           />
         </TabsContent>
 
         <TabsContent value="completed" className="mt-4">
-          <ISACallsTable 
-            calls={completedCalls || []} 
+          <ISACallsTable
+            calls={(completedCalls || []) as any[]}
             emptyMessage="No completed calls"
             showRetry={false}
           />
         </TabsContent>
 
         <TabsContent value="failed" className="mt-4">
-          <ISACallsTable 
-            calls={failedCalls?.map(c => ({
+          <ISACallsTable
+            calls={(failedCalls?.map(c => ({
               id: c.id,
               voice_call_id: c.id,
               appointment_set: false,
               appointment_datetime: null,
               lead_quality_score: null,
               ai_response_summary: null,
-              created_at: c.started_at,
+              created_at: c.started_at ?? "",
               contact_id: c.contact_id,
-              contacts: c.contacts,
+              contacts: c.contacts as any,
               call_status: c.status,
               call_outcome: c.outcome,
               duration_seconds: c.duration_seconds,
-            })) || []} 
+            })) || []) as any[]}
             emptyMessage="No failed calls"
             showRetry={true}
             brokerageId={brokerageId}
@@ -367,14 +369,14 @@ export default async function VoiceISAPage() {
       {/* Bottom Panels */}
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Coaching Insights Panel */}
-        <CoachingInsightsPanel 
-          insights={coachingInsights || []} 
+        <CoachingInsightsPanel
+          insights={(coachingInsights || []) as any[]}
           agentId={agentId}
         />
 
         {/* Handoff Queue */}
-        <HandoffQueuePanel 
-          queue={handoffQueue || []} 
+        <HandoffQueuePanel
+          queue={(handoffQueue || []) as any[]}
           brokerageId={brokerageId}
           agentId={agentId}
         />

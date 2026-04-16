@@ -274,7 +274,7 @@ export default function BriefingPage() {
 
       // Load AI priority contacts non-blocking — resolve user from session
       const supabase = createClient()
-      supabase.auth.getSession().then(({ data: { session } }) => {
+      supabase.auth.getSession().then(({ data: { session } }: { data: { session: any } }) => {
         if (session?.user?.id) {
           generateContactInsights(session.user.id, "agent")
             .then((insights) => setPriorityContacts(insights.slice(0, 3)))

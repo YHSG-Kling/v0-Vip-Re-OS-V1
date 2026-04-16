@@ -18,7 +18,8 @@ export const metadata = {
 export default async function RepurposePage() {
   try {
     const agentContext = await getAgentContext()
-    const { userId, brokerageId, teamId } = agentContext
+    const { userId, brokerageId } = agentContext
+    const teamId: string | null = (agentContext as any).teamId ?? null
     const supabase = await createClient()
 
     // Get user profile with role
@@ -30,8 +31,8 @@ export default async function RepurposePage() {
 
     // Fetch pipelines and history in parallel
     const [pipelinesResult, historyResult] = await Promise.all([
-      getPipelines(brokerageId),
-      getRepurposeHistory(brokerageId),
+      getPipelines(brokerageId ?? ""),
+      getRepurposeHistory(brokerageId ?? ""),
     ])
 
     // Fetch available source content
@@ -77,7 +78,7 @@ export default async function RepurposePage() {
       <Suspense fallback={<div>Loading...</div>}>
         <RepurposeDashboardClient
           userId={userId}
-          brokerageId={brokerageId}
+          brokerageId={brokerageId ?? ""}
           teamId={teamId}
           userRole={profile?.role || "agent"}
           pipelines={pipelinesResult.success ? pipelinesResult.pipelines : []}

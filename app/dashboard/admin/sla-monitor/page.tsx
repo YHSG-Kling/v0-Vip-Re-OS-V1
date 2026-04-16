@@ -60,7 +60,7 @@ export default function SLAMonitorPage() {
 
   // Load brokerage from session
   useEffect(() => {
-    supabase.auth.getUser().then(async ({ data }) => {
+    supabase.auth.getUser().then(async ({ data }: { data: any }) => {
       if (!data.user) return
       const { data: profile } = await supabase
         .from("users")

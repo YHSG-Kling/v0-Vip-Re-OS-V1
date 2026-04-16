@@ -81,13 +81,14 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
       console.log("[v0] Generating direct mail:", { agentId, campaignType: mailCampaignType, targetArea: mailTargetArea, headline: mailHeadline })
       const result = await generateAIDirectMail({
         agentId,
-        campaignType: mailCampaignType,
-        targetArea: mailTargetArea,
-        headline: mailHeadline
+        mailType: "postcard",
+        targetAudience: "farm_area",
+        farmAreaZip: mailTargetArea,
+        customMessage: mailHeadline,
       })
       console.log("[v0] Direct mail result:", result)
-      if (result && result.content) {
-        setOutput(result.content)
+      if (result && result.mailPiece) {
+        setOutput(result.mailPiece.body)
       } else {
         setOutput("Generated content is empty. Please try again or provide more details.")
       }
@@ -126,13 +127,12 @@ export function AgentSuperpowersPanel({ agentId, brokerageId, hotLeadName }: Age
     try {
       console.log("[v0] Generating market report:", { marketArea, reportType, agentId })
       const result = await generateMarketReport({
-        marketArea,
-        reportType,
-        agentId
+        agentId,
+        city: marketArea,
       })
       console.log("[v0] Market report result:", result)
-      if (result && result.report) {
-        setOutput(result.report)
+      if (result && (result as any).report) {
+        setOutput((result as any).report)
       } else {
         setOutput("Generated report is empty. Please provide a valid market area and try again.")
       }

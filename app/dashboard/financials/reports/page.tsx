@@ -142,8 +142,8 @@ export default async function FinancialReportsPage() {
 
         {/* Client component handles export/download actions */}
         <ReportsClient
-          agentId={agentId}
-          brokerageId={brokerageId}
+          agentId={agentId ?? ""}
+          brokerageId={brokerageId ?? ""}
           commissions={commissionsResult}
           currentYear={currentYear}
           ytdCommissions={ytdCommissions}

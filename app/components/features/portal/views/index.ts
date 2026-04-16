@@ -1,2 +1,2 @@
-export { default as PortalPropertiesView } from './PortalPropertiesView.tsx'
-export { default as PropertyDetailsView } from './PropertyDetailsView.tsx'
+export { PortalPropertiesView } from './PortalPropertiesView.tsx'
+export { PropertyDetailsView } from './PropertyDetailsView.tsx'

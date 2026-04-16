@@ -136,8 +136,8 @@ export function LessonDetailDrawer({
     setLoadingContent(true)
     getLessonByKey(lesson.key, contactId)
       .then(r => {
-        if (r?.lesson?.body_markdown) {
-          setContent(r.lesson.body_markdown)
+        if (r?.description) {
+          setContent(r.description)
         } else {
           setContent("Lesson content will be available soon.")
         }

@@ -33,10 +33,12 @@ interface HandoffIssue {
 }
 
 interface HandoffCoachingPanelProps {
-  metrics: HandoffMetric[]
-  issues: HandoffIssue[]
-  totalHandoffs: number
-  successRate: number
+  metrics?: HandoffMetric[]
+  issues?: HandoffIssue[]
+  totalHandoffs?: number
+  successRate?: number
+  agentId?: string
+  brokerageId?: string
 }
 
 const issueTypeLabels = {
@@ -53,10 +55,10 @@ const urgencyColors = {
 }
 
 export function HandoffCoachingPanel({
-  metrics,
-  issues,
-  totalHandoffs,
-  successRate,
+  metrics = [],
+  issues = [],
+  totalHandoffs = 0,
+  successRate = 0,
 }: HandoffCoachingPanelProps) {
   return (
     <Card>

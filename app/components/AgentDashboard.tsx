@@ -23,7 +23,7 @@ import {
   ArrowRight,
   Sparkles,
 } from "lucide-react"
-import type { UserContext } from "../types"
+import type { UserContext } from "@/types"
 
 interface AgentDashboardProps {
   userContext?: UserContext | null
@@ -286,7 +286,7 @@ export default function AgentDashboard({ userContext, onNavigate }: AgentDashboa
         </div>
 
         {/* Daily Gameplan - AI Suggestions */}
-        {userContext?.id && <DailyGameplan agentId={userContext.id} />}
+        {userContext?.userId && <DailyGameplan agentId={userContext.userId} />}
 
         {/* Two Column Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

@@ -14,7 +14,7 @@ export default async function VendorEarningsPage() {
   if (!user) redirect('/login')
 
   let costData: any = null
-  try { costData = await getVendorCostComparison() } catch { costData = null }
+  try { costData = await getVendorCostComparison("general") } catch { costData = null }
 
   return (
     <div className="p-6 space-y-6">

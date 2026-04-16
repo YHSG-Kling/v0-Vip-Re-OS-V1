@@ -70,6 +70,8 @@ import {
 import {
   executePipeline,
   createRepurposePipeline,
+  togglePipelineActive,
+  deletePipeline,
 } from "@/lib/repurpose/actions"
 import { OUTPUT_FORMAT_CONFIG } from "@/lib/repurpose/types"
 import type { SourceType, OutputFormat } from "@/lib/repurpose/types"
@@ -189,6 +191,7 @@ export function RepurposeDashboardClient({
   const [newPipeline, setNewPipeline] = useState({
     pipelineName: "",
     sourceType: "video_project" as SourceType,
+    sourceId: "" as string,
     outputFormats: [] as OutputFormat[],
     autoApprove: false,
   })
@@ -225,7 +228,7 @@ export function RepurposeDashboardClient({
     const result = await createRepurposePipeline({
       pipelineName: newPipeline.pipelineName,
       sourceType: newPipeline.sourceType,
-      sourceId: newPipeline.sourceId || "",
+      sourceId: (newPipeline as any).sourceId || "",
       outputFormats: newPipeline.outputFormats,
       brokerageId: brokerageId,
       agentUserId: userId,
@@ -237,6 +240,7 @@ export function RepurposeDashboardClient({
       setNewPipeline({
         pipelineName: "",
         sourceType: "video_project",
+        sourceId: "",
         outputFormats: [],
         autoApprove: false,
       })

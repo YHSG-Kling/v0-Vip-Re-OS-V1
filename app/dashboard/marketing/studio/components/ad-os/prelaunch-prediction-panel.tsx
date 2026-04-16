@@ -37,8 +37,8 @@ const CONTENT_TYPES: { value: ContentType; label: string }[] = [
   { value: "newsletter", label: "Email / Newsletter" },
   { value: "ad_creative", label: "Ad Creative" },
   { value: "blog_post", label: "Blog Post" },
-  { value: "listing_description", label: "Listing Description" },
-  { value: "video_script", label: "Video Script" },
+  { value: "listing_description" as any, label: "Listing Description" },
+  { value: "video_script" as any, label: "Video Script" },
 ]
 
 const PLATFORMS = [

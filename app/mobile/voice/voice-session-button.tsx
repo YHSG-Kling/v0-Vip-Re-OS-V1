@@ -29,8 +29,8 @@ export function VoiceSessionButton({
 
     // Check for browser speech recognition support
     const SpeechRecognition =
-      (window as unknown as { SpeechRecognition?: typeof window.SpeechRecognition }).SpeechRecognition ||
-      (window as unknown as { webkitSpeechRecognition?: typeof window.SpeechRecognition }).webkitSpeechRecognition
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition
 
     if (!SpeechRecognition) {
       setError("Speech recognition is not supported in this browser.")
@@ -49,7 +49,7 @@ export function VoiceSessionButton({
       setError("")
     }
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
+    recognition.onresult = (event: any) => {
       const current = event.resultIndex
       const transcriptResult = event.results[current][0].transcript
       setTranscript(transcriptResult)
@@ -61,7 +61,7 @@ export function VoiceSessionButton({
       }
     }
 
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+    recognition.onerror = (event: any) => {
       setError(`Error: ${event.error}`)
       setIsListening(false)
     }

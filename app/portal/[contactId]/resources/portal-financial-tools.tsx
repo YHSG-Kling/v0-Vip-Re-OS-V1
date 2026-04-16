@@ -66,7 +66,7 @@ export function PortalFinancialTools({ contactId, calcHistory }: PortalFinancial
 
   async function handleEstimateMoving() {
     if (!currentCity || !currentState || !newCity || !newState) {
-      toast.error("Please fill in origin and destination")
+      toast({ title: "Please fill in origin and destination", variant: "destructive" })
       return
     }
     setMovingLoading(true)

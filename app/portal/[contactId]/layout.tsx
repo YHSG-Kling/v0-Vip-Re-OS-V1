@@ -151,8 +151,7 @@ export default async function PortalLayout({
                 entity_id: contactId,
               })
             }
-          })
-          .catch(() => {})
+          }, () => {})
       }
     }
   }

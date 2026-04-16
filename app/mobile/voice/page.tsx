@@ -101,7 +101,7 @@ export default async function MobileVoicePage() {
         />
 
         {/* Mobile OS Command Strip */}
-        <MobileCommandStrip agentId={agentId ?? ""} activeSection="voice" />
+        <MobileCommandStrip agentId={agentId ?? ""} />
 
         {/* Section 1: Voice Status Card */}
         <section>

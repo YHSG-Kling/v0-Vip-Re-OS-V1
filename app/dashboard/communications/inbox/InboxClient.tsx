@@ -341,7 +341,7 @@ export default function InboxClient({
       {/* PANEL 3 — Contact Detail (desktop only) */}
       <div className="hidden lg:flex">
         <ContactDetailPane
-          contact={contact}
+          contact={contact as any}
           sentimentSummary={sentiment}
           agentId={agentId}
         />

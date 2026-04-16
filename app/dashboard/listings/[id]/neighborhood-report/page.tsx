@@ -84,8 +84,8 @@ export default async function NeighborhoodReportPage({
     notFound()
   }
 
-  // listings.zip is the correct column name (confirmed from schema)
-  const zip = listing.zip
+  // getNeighborhoodReport returns zip_code; alias to zip for local use
+  const zip = listing.zip_code
 
   const [marketData, marketInsight, homeValueEstimate, propertyHistory] = await Promise.all([
     // Area market snapshot from market_data table (MLS-sourced, zip-level)
@@ -187,8 +187,8 @@ export default async function NeighborhoodReportPage({
         {report ? (
           <NeighborhoodReportContent
             report={report}
-            listing={listing}
-            priceHistory={priceHistory}
+            listing={{ ...listing, zip: listing.zip_code }}
+            priceHistory={priceHistory as any}
             dataSources={dataSources}
             listingId={listingId}
             marketData={marketData}
@@ -198,7 +198,7 @@ export default async function NeighborhoodReportPage({
             neighborhoodAI={neighborhoodAI}
           />
         ) : (
-          <EmptyState listingId={listingId} listing={listing} />
+          <EmptyState listingId={listingId} listing={{ ...listing, zip: listing.zip_code }} />
         )}
       </div>
     </div>
@@ -375,7 +375,7 @@ function NeighborhoodReportContent({
         <CardContent>
           {priceHistory.length > 1 ? (
             <div className="h-64">
-              <PriceHistoryChart data={priceHistory} />
+              <PriceHistoryChart data={priceHistory as any} />
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">No historical price data available</p>

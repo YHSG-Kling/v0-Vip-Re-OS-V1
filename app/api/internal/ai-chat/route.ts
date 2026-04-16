@@ -403,7 +403,7 @@ export async function POST(req: NextRequest) {
         role: "user",
         content: textContent,
         metadata: { source: "internal", role },
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     }
   }
 
@@ -579,7 +579,7 @@ export async function POST(req: NextRequest) {
         role: "assistant",
         content: text,
         metadata: { source: "internal", role },
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     },
   })
 

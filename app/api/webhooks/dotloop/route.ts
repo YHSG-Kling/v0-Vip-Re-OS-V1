@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
             },
             source: "webhook",
             dedupe_key: `docs-complete-${doc.transaction_id}`,
-          })
+          } as any)
 
           // Normalized provider event
           await logEventAndTrigger({
@@ -96,7 +96,7 @@ export async function POST(request: NextRequest) {
             },
             source: "webhook",
             dedupe_key: `provider-sigs-complete-${doc.transaction_id}`,
-          })
+          } as any)
         }
       }
 
@@ -119,12 +119,13 @@ export async function POST(request: NextRequest) {
             .eq("id", matchedOffer.id)
 
           await logEventAndTrigger({
+            brokerage_id: "",
             event_type: "buyer.offer.esign.completed",
             user_id:    matchedOffer.contact_id,
             payload:    { offerId: matchedOffer.id, loop_id, provider: "dotloop" },
             source:     "webhook",
             dedupe_key: `offer-esign-complete-${matchedOffer.id}`,
-          })
+          } as any)
         }
 
         // ── Esign completion: listing_agreements ─────────────────────────────
@@ -151,12 +152,13 @@ export async function POST(request: NextRequest) {
             .in("current_stage", ["prep", "pre_listing", "coming_soon"])
 
           await logEventAndTrigger({
+            brokerage_id: "",
             event_type: "listing.agreement.esign.completed",
             user_id:    matchedAgreement.listing_id,
             payload:    { listingId: matchedAgreement.listing_id, agreementId: matchedAgreement.id, loop_id, provider: "dotloop" },
             source:     "webhook",
             dedupe_key: `listing-agreement-esign-complete-${matchedAgreement.id}`,
-          })
+          } as any)
         }
       }
     }

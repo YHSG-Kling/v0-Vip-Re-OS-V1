@@ -23,7 +23,9 @@ export default async function CoachingPage() {
     redirect("/login")
   }
 
-  const { agentId, brokerageId } = await getAgentContext()
+  const { agentId: rawAgentId, brokerageId: rawBrokerageId } = await getAgentContext()
+  const agentId = rawAgentId ?? ""
+  const brokerageId = rawBrokerageId ?? ""
 
   // Fetch data in parallel
   const [
@@ -74,7 +76,7 @@ export default async function CoachingPage() {
   // Fetch coaching content for each buyer and seller
   const buyerCoachingPromises = buyerContacts.map(async (contact) => {
     const coaching = await getBuyerCoaching(
-      contact.buyer_stage,
+      contact.buyer_stage ?? "",
       contact.contact_persona as any,
       brokerageId
     )
@@ -83,7 +85,7 @@ export default async function CoachingPage() {
 
   const sellerCoachingPromises = activeListings.map(async (listing) => {
     const coaching = await getSellerCoaching(
-      listing.lifecycle_stage || "pre_listing",
+      listing.lifecycle_stage ?? "pre_listing",
       listing.seller_persona as any,
       brokerageId
     )

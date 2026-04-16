@@ -36,17 +36,11 @@ export function HeatmapMap({
     const newMap = new google.maps.Map(mapRef.current, {
       center: { lat: 39.8283, lng: -98.5795 }, // Center of US
       zoom: 4,
-      styles: [
-        {
-          featureType: "poi",
-          elementType: "labels",
-          stylers: [{ visibility: "off" }],
-        },
-      ],
-    })
+      mapTypeControlOptions: { mapTypeIds: [] },
+    } as google.maps.MapOptions)
 
     setMap(newMap)
-    setInfoWindow(new google.maps.InfoWindow())
+    setInfoWindow(new (google.maps as any).InfoWindow())
 
     return () => {
       markers.forEach((m) => m.setMap(null))
@@ -153,7 +147,7 @@ export function HeatmapMap({
         </div>
       `
 
-      marker.addListener("click", () => {
+      ;(marker as any).addListener("click", () => {
         infoWindow.setContent(content)
         infoWindow.open(map, marker)
       })
@@ -179,7 +173,7 @@ export function HeatmapMap({
             },
           })
 
-          marker.addListener("click", () => {
+          ;(marker as any).addListener("click", () => {
             infoWindow.setContent(`
               <div style="padding: 8px;">
                 <div style="font-weight: 600; color: #B45309;">Opportunity Zone</div>
@@ -199,7 +193,7 @@ export function HeatmapMap({
     // Fit bounds if we have markers
     if (newMarkers.length > 0) {
       map.fitBounds(bounds)
-      const zoom = map.getZoom()
+      const zoom = (map as any).getZoom?.() as number | undefined
       if (zoom && zoom > 12) {
         map.setZoom(12)
       }

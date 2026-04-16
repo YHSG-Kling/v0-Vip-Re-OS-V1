@@ -390,9 +390,9 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
                                 {formatDate(completion.completed_at)}
                               </span>
                             )}
-                            {isCompleted && completion?.quiz_score !== null && (
+                            {isCompleted && completion?.quiz_score != null && (
                               <Badge variant="outline">
-                                Quiz: {completion.quiz_score}%
+                                Quiz: {completion?.quiz_score}%
                               </Badge>
                             )}
                           </div>

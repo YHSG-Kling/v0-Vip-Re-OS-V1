@@ -75,7 +75,7 @@ export function VoiceAnalytics({ summaryCards, commandTypeData, avgConfidence }:
                 </Pie>
                 <Tooltip
                   contentStyle={{ fontSize: 11, borderRadius: 6 }}
-                  formatter={(val: number, name: string) => [val, name]}
+                  formatter={((val: number, name: string) => [val, name]) as any}
                 />
                 <Legend
                   iconType="circle"

@@ -239,7 +239,7 @@ export function TourConfirmTab({ tours, contactId, brokerageId, agentUserId, onR
         toast({ title: 'Route optimized — stops reordered for efficiency' })
         onRefresh()
       } else {
-        toast({ title: res.error ?? 'Route optimization failed', variant: 'destructive' })
+        toast({ title: (res as any).error ?? 'Route optimization failed', variant: 'destructive' })
       }
     } catch (err) {
       toast({ title: 'Route optimization failed', variant: 'destructive' })

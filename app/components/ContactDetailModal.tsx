@@ -28,7 +28,6 @@ export default function ContactDetailModal({ contact, onClose, agentId }: Contac
     try {
       const result = await updateContact(contact.id, {
         status: "qualified",
-        updated_at: new Date().toISOString(),
       })
       if (result?.success !== false) {
         setLocalContact((prev) => ({ ...prev, status: "qualified" }))

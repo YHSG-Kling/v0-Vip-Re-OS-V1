@@ -22,7 +22,7 @@ export const dynamic = "force-dynamic"
 
 export default async function SystemHealthPage() {
   const supabase = await createClient()
-  const ctx = await getAgentContext(supabase)
+  const ctx = await getAgentContext()
 
   if (!ctx) {
     redirect("/login")

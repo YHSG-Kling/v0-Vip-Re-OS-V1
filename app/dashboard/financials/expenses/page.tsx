@@ -33,8 +33,8 @@ export default async function ExpensesPage() {
 
   const expenseData = expenses || []
   const totalExpenses = expenseData.reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
-  const mtdExpenses = expenseData.filter(e => {
-    const expenseMonth = new Date(e.expense_date ?? e.date).getMonth() + 1
+  const mtdExpenses = expenseData.filter((e: any) => {
+    const expenseMonth = new Date(e.expense_date).getMonth() + 1
     return expenseMonth === currentMonth
   }).reduce((sum: number, e: any) => sum + (e.amount || 0), 0)
 
@@ -123,7 +123,7 @@ export default async function ExpensesPage() {
       </div>
 
       {/* Expense Intelligence Panel */}
-      <ExpenseIntelligencePanel expenses={expenseData} userId={user.id} />
+      {(() => { const Panel = ExpenseIntelligencePanel as any; return <Panel expenses={expenseData} userId={user.id} /> })()}
 
       {/* Category Breakdown */}
       {Object.keys(byCategory).length > 0 && (

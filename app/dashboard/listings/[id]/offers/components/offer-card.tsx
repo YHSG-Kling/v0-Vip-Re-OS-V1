@@ -64,7 +64,7 @@ function fmt(n: number | null) {
 
 export function OfferCard({ offer, listPrice, canApprove, isPending, onAccept, onReject, onCounter }: Props) {
   const priceDiff = listPrice > 0 ? ((offer.offer_price - listPrice) / listPrice) * 100 : 0
-  const isWinner = offer.is_winning_offer || offer.winning_offer
+  const isWinner = offer.is_winning_offer
   const extracting = offer.ai_extraction_status === "processing" || offer.ai_extraction_status === "pending"
 
   return (

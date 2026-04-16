@@ -407,6 +407,7 @@ export function AdsDashboardClient({
 
     const result = await createAudience(userId, {
       brokerageId,
+      agentId: userId,
       audienceName: newAudience.audienceName,
       audienceType: newAudience.audienceType,
       sourceRule,

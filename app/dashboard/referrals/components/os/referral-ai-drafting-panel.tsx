@@ -60,11 +60,11 @@ export function ReferralAiDraftingPanel({
         touchpointType: "referral_ask",
       })
 
-      if (touchpointResult.success && touchpointResult.message) {
-        setDraft(touchpointResult.message)
+      if (touchpointResult.success && (touchpointResult as any).data?.message) {
+        setDraft((touchpointResult as any).data?.message ?? "")
 
         // Check compliance
-        const compliance = await checkThemFirstCompliance(touchpointResult.message)
+        const compliance = await checkThemFirstCompliance((touchpointResult as any).data?.message ?? "")
         setComplianceResult(compliance)
       }
     })

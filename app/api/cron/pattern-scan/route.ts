@@ -116,7 +116,7 @@ export async function GET(request: Request) {
       duration_ms: duration,
     })
   } catch (error) {
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
     return NextResponse.json(
       {
         success: false,

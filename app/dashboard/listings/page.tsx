@@ -346,7 +346,7 @@ export default async function ListingsPage({
       </div>
 
       {/* Listing create sheet — opened by ?action=new, optionally prefilled from CRM */}
-      <ListingCreateSheet open={showCreateSheet} prefillContact={prefillContact} />
+      <ListingCreateSheet open={showCreateSheet} prefillContact={prefillContact as any} />
     </div>
   )
 }

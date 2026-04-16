@@ -8,7 +8,7 @@
  * Placed in the right column of buyer-overview-client.tsx below BuyerInsightsPanel.
  */
 
-import { useState, useTransition } from "react"
+import React, { useState, useTransition } from "react"
 import { useRouter }               from "next/navigation"
 import { Badge }                   from "@/components/ui/badge"
 import { Button }                  from "@/components/ui/button"
@@ -230,19 +230,19 @@ export function FatigueWidget({ contactId, brokerageId, agentUserId }: Props) {
                     Suggest a <strong>{recovery.pause_days as number}-day</strong> pause from active searching.
                   </p>
                 )}
-                {recovery.re_engagement_message && (
+                {!!recovery.re_engagement_message && (
                   <p className="text-xs text-orange-800 italic">
-                    "{recovery.re_engagement_message as string}"
+                    "{String(recovery.re_engagement_message)}"
                   </p>
                 )}
-                {recovery.search_reset_suggestion && (
+                {!!recovery.search_reset_suggestion && (
                   <p className="text-xs text-orange-900">
-                    Search reset: {recovery.search_reset_suggestion as string}
+                    Search reset: {String(recovery.search_reset_suggestion)}
                   </p>
                 )}
-                {recovery.morale_boost && (
+                {!!recovery.morale_boost && (
                   <p className="text-xs text-muted-foreground border-t border-orange-200 pt-1.5">
-                    {recovery.morale_boost as string}
+                    {String(recovery.morale_boost)}
                   </p>
                 )}
               </div>

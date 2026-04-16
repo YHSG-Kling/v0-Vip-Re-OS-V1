@@ -51,7 +51,7 @@ export function PlanningAiSummaryPanel({
       })
 
       if (result.report) {
-        setSummary(result.report)
+        setSummary(result.report as any)
       }
     } catch (error) {
       console.error("Error generating summary:", error)

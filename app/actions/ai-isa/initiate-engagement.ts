@@ -303,11 +303,13 @@ async function dispatchToChannel(
     const videoResult = await generateHeyGenVideo({
       leadId: lead.id,
       firstName: lead.first_name || 'there',
+      brokerageId: lead.brokerage_id,
+      recipientEmail: lead.email ?? '',
       motivation_type: lead.motivation_type,
       property_interest: lead.property_interest,
       timeline: lead.timeline,
     })
-    const finalEmailBody = await embedVideoInEmail(body, videoResult.videoUrl)
+    const finalEmailBody = await embedVideoInEmail(body, videoResult.videoId ?? null)
 
     // Run compliance on final content
     const finalCompliance = await evaluateOutbound({
@@ -369,6 +371,7 @@ async function dispatchToChannel(
     if (shouldSendMail) {
       await triggerDirectMailCampaign({
         leadId: lead.id,
+        brokerageId: lead.brokerage_id,
         firstName: lead.first_name || '',
         lastName: lead.last_name || '',
         motivation_type: lead.motivation_type,
@@ -414,7 +417,7 @@ async function dispatchToChannel(
     })
 
     if (callContext.blocked) {
-      console.error('[AI-ISA][TCPA] buildCallContext blocked call:', callContext.blockedReason)
+      console.error('[AI-ISA][TCPA] buildCallContext blocked call:', callContext.blockReason)
       return await dispatchToChannel('email', lead, contactRow, leadId, supabase)
     }
 
@@ -431,7 +434,7 @@ async function dispatchToChannel(
           ...(callContext.voiceConfig?.voiceId
             ? {
                 voice: {
-                  provider:        callContext.voiceConfig.provider ?? 'elevenlabs',
+                  provider:        (callContext.voiceConfig.provider ?? 'elevenlabs') as "elevenlabs" | "playht" | "deepgram" | "openai" | "azure",
                   voiceId:         callContext.voiceConfig.voiceId,
                   stability:       callContext.voiceConfig.stability        ?? 0.7,
                   similarityBoost: callContext.voiceConfig.similarityBoost  ?? 0.8,
@@ -448,7 +451,7 @@ async function dispatchToChannel(
     }
 
     // voice_calls row — initiateCall confirmed the call is live
-    const { data: voiceCallRow } = await supabase
+    const voiceCallRow = await supabase
       .from('voice_calls')
       .insert({
         contact_id:  contactRow.id,
@@ -562,6 +565,7 @@ async function dispatchToChannel(
 
     await triggerDirectMailCampaign({
       leadId: lead.id,
+      brokerageId: lead.brokerage_id,
       firstName: lead.first_name || '',
       lastName: lead.last_name || '',
       motivation_type: lead.motivation_type,

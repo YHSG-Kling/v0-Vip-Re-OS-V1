@@ -55,17 +55,21 @@ export async function POST(req: NextRequest) {
   if (channel === "email") {
     if (!contact.email) return NextResponse.json({ error: "No email on contact" }, { status: 400 })
 
+    const isaBodyHtml = `<p>Hi there,</p><p>We wanted to follow up and see if we can help you with your real estate goals. Please let us know if you have any questions.</p>`
     const emailPayload = await assembleEmail({
+      bodyHtml: isaBodyHtml,
+      userId: user.id,
       brokerageId: contact.brokerage_id,
       contactId: contact.id,
-      templateKey: "isa_followup",
     })
 
     await dispatchEmail({
+      from: process.env.OUTBOUND_EMAIL_FROM || "noreply@example.com",
       to: contact.email,
-      subject: emailPayload.subject,
+      subject: "Following up on your real estate inquiry",
       html: emailPayload.html,
       brokerageId: contact.brokerage_id,
+      contactId: contact.id,
     })
 
     return NextResponse.json({ success: true })

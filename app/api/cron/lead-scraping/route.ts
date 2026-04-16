@@ -394,9 +394,9 @@ export async function GET(request: Request) {
                     kw.sources?.includes("nextdoor") && post.content?.toLowerCase().includes(kw.keyword.toLowerCase()),
                 )
                 if (matchedKeyword && matchedKeyword.weight >= 3) {
-                  const nameParts = (post.author_name ?? "").split(" ")
+                  const nameParts = ((post as any).author_name ?? "").split(" ")
                   const ndRecord: NormalizedScrapedRecord = {
-                    sourceRecordId:  `nextdoor-${post.post_id ?? `${Date.now()}-${Math.random()}`}`,
+                    sourceRecordId:  `nextdoor-${(post as any).post_id ?? `${Date.now()}-${Math.random()}`}`,
                     source:          "nextdoor",
                     behaviorType:    "social_intent",
                     intentType:      matchedKeyword.category === "buying_intent" ? "buyer" : "seller",
@@ -619,7 +619,7 @@ export async function GET(request: Request) {
           leads_created: socialLeadsCreated,
           api_cost: sourceCostUsd,
           error_message: sourceErr?.message ?? null,
-        }).eq("id", execRecord?.id).catch(() => {})
+        }).eq("id", execRecord?.id).then(() => {}, () => {})
 
         territorySpendUsd += sourceCostUsd
       }
@@ -632,7 +632,7 @@ export async function GET(request: Request) {
           last_scraped_at: new Date().toISOString(),
         })
         .eq("id", market.id)
-        .catch(() => {})
+        .then(() => {}, () => {})
     }
 
     const durationMs = Date.now() - cronStartedAt
@@ -653,7 +653,7 @@ export async function GET(request: Request) {
       brokerage_id: null,
       metadata:     { ...results, duration_ms: durationMs, context_id: contextId },
       created_at:   new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return NextResponse.json({ message: "Lead scraping completed", results })
   } catch (error) {
@@ -661,7 +661,7 @@ export async function GET(request: Request) {
     console.error("[Lead Scraping Cron] Fatal error:", error)
 
     // Close cron context — failure
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
 
     await serviceClient.from("lifecycle_events").insert({
       entity_type:  "system",
@@ -670,7 +670,7 @@ export async function GET(request: Request) {
       brokerage_id: null,
       metadata:     { error: String(error), duration_ms: durationMs, context_id: contextId },
       created_at:   new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return NextResponse.json({ error: String(error), results, context_id: contextId }, { status: 500 })
   }
@@ -749,7 +749,7 @@ async function enrichLeadPipeline(
 
       // Boost motivation score if life events indicate motivated seller
       const motivatedEvents = ["divorce", "bankruptcy", "foreclosure", "death_in_family", "inheritance"]
-      const hasMotivatedEvent = osintResult.life_events.some((e) => motivatedEvents.includes(e.event))
+      const hasMotivatedEvent = osintResult.life_events.some((e: any) => motivatedEvents.includes(e.event))
       if (hasMotivatedEvent) {
         ;(enrichedLead as any).motivation_boost = 25
       }
@@ -779,11 +779,11 @@ async function enrichLeadPipeline(
         }
 
         // Fill in missing contact info from PeopleData
-        if (!enrichedLead.email && peopleDataResult.additionalContacts?.email) {
-          enrichedLead.email = peopleDataResult.additionalContacts.email
+        if (!enrichedLead.email && (peopleDataResult.additionalContacts as any)?.email) {
+          enrichedLead.email = (peopleDataResult.additionalContacts as any).email
         }
-        if (!enrichedLead.phone && peopleDataResult.additionalContacts?.phone) {
-          enrichedLead.phone = peopleDataResult.additionalContacts.phone
+        if (!enrichedLead.phone && (peopleDataResult.additionalContacts as any)?.phone) {
+          enrichedLead.phone = (peopleDataResult.additionalContacts as any).phone
         }
       }
     } catch (error) {

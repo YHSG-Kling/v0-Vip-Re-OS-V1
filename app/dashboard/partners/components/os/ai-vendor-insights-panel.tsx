@@ -29,12 +29,12 @@ export function AiVendorInsightsPanel({ brokerageId }: AiVendorInsightsPanelProp
     setLoading(true)
     try {
       // Get AI recommendations
-      const result = await getVendorRecommendations(brokerageId)
-      
+      const result = await getVendorRecommendations(brokerageId as any)
+
       const aiInsights: Insight[] = []
 
-      if (result.success && result.recommendations) {
-        result.recommendations.forEach((rec: any, idx: number) => {
+      if (result.success && (result as any).recommendations) {
+        ((result as any).recommendations as any[]).forEach((rec: any, idx: number) => {
           aiInsights.push({
             id: `rec-${idx}`,
             type: rec.priority === "high" ? "warning" : "recommendation",

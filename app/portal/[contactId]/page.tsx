@@ -391,7 +391,7 @@ export default async function PortalHomePage({
             {activeTransaction && milestones.length > 0 && (
               <div className="border-t pt-3">
                 <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Milestone Progress</p>
-                <MilestoneProgressBar milestones={milestones} currentStage={contact.buyer_stage || ''} />
+                <MilestoneProgressBar milestones={milestones} contactId={contactId} />
                 {activeTransaction.close_date && (
                   <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1">
                     <Calendar className="h-3.5 w-3.5" />
@@ -556,7 +556,17 @@ export default async function PortalHomePage({
         )}
 
         {/* My Team */}
-        <DealTeamCard contactId={contactId} agentId={contact.agent_id} />
+        <DealTeamCard
+          primaryAgent={primaryAgent ? {
+            id: primaryAgent.id,
+            first_name: primaryAgent.full_name?.split(" ")[0] ?? null,
+            last_name: primaryAgent.full_name?.split(" ").slice(1).join(" ") ?? null,
+            phone: primaryAgent.phone_mobile,
+            email: primaryAgent.email,
+            profile_photo_url: primaryAgent.profile_image_url,
+          } : null}
+          teamMembers={dealTeamMembers as any[]}
+        />
 
         {/* Property alerts */}
         {alerts.length > 0 && (

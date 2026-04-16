@@ -143,7 +143,7 @@ export function CDAWorkflowClient({
       .from("commission_distributions")
       .select("id, distribution_type, calculation_type, calculation_value, calculated_amount, source_of_funds, cap_applied, status, paid_at")
       .eq("transaction_id", transaction.id)
-      .then(({ data }) => {
+      .then(({ data }: { data: any }) => {
         if (data) setDistributions(data)
       })
   }, [transaction.id])

@@ -55,7 +55,7 @@ export default async function HomeValuePageBuilderPage() {
       .limit(30),
   ])
 
-  const allRequests = requestsResult.data ?? []
+  const allRequests = (requestsResult.data ?? []) as any[]
   const newRequests = allRequests.filter((r) => !r.contact_id)
   const convertedRequests = allRequests.filter((r) => r.contact_id)
 

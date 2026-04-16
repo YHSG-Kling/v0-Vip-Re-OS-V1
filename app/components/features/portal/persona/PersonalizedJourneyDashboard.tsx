@@ -265,7 +265,7 @@ export default function PersonalizedJourneyDashboard({
                             Tasks to Complete
                           </h4>
                           <div className="space-y-2">
-                            {stage.tasks.map((task, taskIdx) => {
+                            {stage.tasks.map((task: any, taskIdx: any) => {
                               const milestone = stageMilestones[taskIdx]
                               const isCompleted = milestone?.status === "completed" || status === "completed"
 
@@ -310,7 +310,7 @@ export default function PersonalizedJourneyDashboard({
                               Helpful Resources
                             </h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                              {stage.resources.map((resource, resourceIdx) => {
+                              {stage.resources.map((resource: any, resourceIdx: any) => {
                                 const ResourceIcon = getResourceIcon(resource.type)
                                 return (
                                   <Button
@@ -345,7 +345,7 @@ export default function PersonalizedJourneyDashboard({
                               Pro Tips
                             </h4>
                             <ul className="space-y-1">
-                              {stage.tips.map((tip, tipIdx) => (
+                              {stage.tips.map((tip: any, tipIdx: any) => (
                                 <li key={tipIdx} className="text-sm text-slate-700 flex items-start gap-2">
                                   <span
                                     className={cn(

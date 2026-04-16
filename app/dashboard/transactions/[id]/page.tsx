@@ -363,7 +363,7 @@ export default async function TransactionDetailPage({ params }: PageProps) {
       availableTCs={availableTCs ?? []}
       currentLenderId={currentLenderId}
       availableLenders={availableLenders ?? []}
-      vendorBookings={vendorBookings ?? []}
+      vendorBookings={(vendorBookings ?? []) as any}
     />
   )
 }

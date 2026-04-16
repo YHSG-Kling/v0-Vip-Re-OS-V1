@@ -22,7 +22,7 @@ interface Message {
 
 // ... existing code for createBlob and decode functions ...
 
-function createBlob(data: Float32Array): Blob {
+function createBlob(data: Float32Array): { data: string; mimeType: string } {
   const l = data.length
   const int16 = new Int16Array(l)
   for (let i = 0; i < l; i++) {
@@ -197,7 +197,7 @@ Answer their questions while keeping the focus on their needs and perspective.`
       }
 
       const sources: { title: string; uri: string }[] = []
-      const chunks = result.candidates?.[0]?.groundingMetadata?.groundingChunks
+      const chunks = (result as any).candidates?.[0]?.groundingMetadata?.groundingChunks
       if (chunks) {
         chunks.forEach((chunk: any) => {
           if (chunk.web) sources.push({ title: chunk.web.title, uri: chunk.web.uri })

@@ -31,9 +31,9 @@ export default async function ReferralsPage({
   const [stats, leaderboard, referrals, sphereScore, leaderboardWidget, recentClosingsRes, existingReviewsRes, anniversaryTransactionsRes] = await Promise.all([
     getReferralROI(),
     getReferralLeaderboard(),
-    getReferrals({ agentId: agentId!, brokerageId: brokerageId! }),
+    getReferrals(),
     aiScoreSphereEngagement({ agentId: agentId! }).catch(() => null),
-    getLeaderboardWidget({ agentId: agentId!, brokerageId: brokerageId! }).catch(() => null),
+    getLeaderboardWidget({ agentId: agentId! }).catch(() => null),
     // Recent closings for review requests (last 90 days)
     supabase
       .from("transactions")

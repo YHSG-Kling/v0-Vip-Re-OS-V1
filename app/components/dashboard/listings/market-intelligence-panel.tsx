@@ -24,7 +24,7 @@ export function MarketIntelligencePanel({ city, state, agentId }: MarketIntellig
     setLoadingShift(true)
     try {
       const result = await predictMarketShift({ city, state })
-      setShiftData(result && !result.error ? result : null)
+      setShiftData(result && !(result as any).error ? result : null)
     } catch {
       setShiftData(null)
     } finally {
@@ -36,7 +36,7 @@ export function MarketIntelligencePanel({ city, state, agentId }: MarketIntellig
     setLoadingArbitrage(true)
     try {
       const result = await findMarketArbitrage({ city, state, agentId })
-      setArbitrageData(result && !result.error ? result : null)
+      setArbitrageData(result && !(result as any).error ? result : null)
     } catch {
       setArbitrageData(null)
     } finally {

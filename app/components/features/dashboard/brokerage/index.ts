@@ -1,3 +1,3 @@
-export { default as AgentList } from './agent-list.tsx'
-export { default as ComplianceOverview } from './compliance-overview.tsx'
-export { default as RevenueChart } from './revenue-chart.tsx'
+export { BrokerageAgentList as AgentList } from './agent-list.tsx'
+export { BrokerageComplianceOverview as ComplianceOverview } from './compliance-overview.tsx'
+export { BrokerageRevenueChart as RevenueChart } from './revenue-chart.tsx'

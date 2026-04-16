@@ -501,7 +501,8 @@ export async function serviceScrapeNextdoorLeads(neighborhood: string) {
   const buyerKeywords = ["buying", "looking for", "searching", "house hunting", "moving to"]
   const leads: any[] = []
 
-  for (const post of scrapedData.posts || []) {
+  for (const rawPost of scrapedData.posts || []) {
+    const post = rawPost as any
     const hasIntent = realEstateKeywords.some((kw) => post.content?.toLowerCase().includes(kw))
     if (!hasIntent) continue
 
@@ -559,10 +560,12 @@ export async function serviceScrapeBatchDataLeads(
 
   const leads: any[] = []
 
-  for (const property of propertyDataRecords || []) {
+  for (const rawProperty of propertyDataRecords || []) {
+    const property = rawProperty as any
     if (criteria?.equity_min && (property.equity_estimate || 0) < criteria.equity_min) continue
     if (criteria?.ownership_years_min && (property.ownership_years || 0) < criteria.ownership_years_min) continue
 
+    const motivationScore = Number(property.motivation_score) || 0
     const { data: lead, error } = await supabase
       .from("leads")
       .insert({
@@ -575,8 +578,8 @@ export async function serviceScrapeBatchDataLeads(
         lead_source: "batchdata",
         scraped_from: "batchdata_api",
         intent_type: "seller",
-        temperature: property.motivation_score > 70 ? "hot" : property.motivation_score > 50 ? "warm" : "cold",
-        motivation_score: property.motivation_score || 0,
+        temperature: motivationScore > 70 ? "hot" : motivationScore > 50 ? "warm" : "cold",
+        motivation_score: motivationScore,
         raw_scraped_data: property,
       })
       .select()
@@ -605,8 +608,8 @@ export async function serviceScrapeBatchDataLeads(
         data_source: "batchdata",
       })
 
-      if (property.motivation_indicators?.length > 0) {
-        for (const indicator of property.motivation_indicators) {
+      if ((property.motivation_indicators as any[])?.length > 0) {
+        for (const indicator of (property.motivation_indicators as any[])) {
           await supabase.from("lead_motivated_seller_signals").insert({
             lead_id: lead.id,
             signal_type: indicator.type,

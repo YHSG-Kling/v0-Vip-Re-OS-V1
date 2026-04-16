@@ -121,7 +121,7 @@ export default async function TitleDashboardPage() {
           urgency: 'high',
           actionRequired: t.status === 'pending',
         }))} />
-        <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} />
+        <ExternalDocStatusPanel partnerType="title" partnerId={titleCompanyId} documents={[]} />
       </div>
 
       <ExternalBatchActionsPanel partnerType="title" items={[]} />

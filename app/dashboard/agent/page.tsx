@@ -160,7 +160,8 @@ export default function AgentDashboard() {
         }
 
         if (results[4].status === 'fulfilled' && results[4].value) {
-          setAnniversaries(results[4].value || [])
+          const annivResult = results[4].value as any
+          setAnniversaries(annivResult.success ? (annivResult.anniversaries ?? []) : [])
         }
 
         if (results[5].status === 'fulfilled' && results[5].value) {
@@ -168,7 +169,8 @@ export default function AgentDashboard() {
         }
 
         if (results[6].status === 'fulfilled' && results[6].value) {
-          setMonthlyExpenses(results[6].value.expenses || [])
+          const expResult = results[6].value as any
+          setMonthlyExpenses(expResult.success && expResult.expenses ? expResult.expenses : [])
         }
 
         if (results[7].status === 'fulfilled' && results[7].value) {

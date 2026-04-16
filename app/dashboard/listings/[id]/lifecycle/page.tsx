@@ -188,8 +188,8 @@ export default async function ListingLifecyclePage({ params }: PageProps) {
       attendees: allOpenHouseAttendees.filter((a: any) => a.event_id === e.id),
     }))
   const openHousePromotionStatus: "not_started" | "scheduled" | "published" =
-    openHouseData?.posts?.some((p: any) => p.status === "published") ? "published" :
-    openHouseData?.posts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
+    openHouseData?.socialPosts?.some((p: any) => p.status === "published") ? "published" :
+    openHouseData?.socialPosts?.some((p: any) => p.status === "scheduled") ? "scheduled" : "not_started"
   const rsvpCount = openHouseData?.invitations?.filter((i: any) => i.rsvp_response === "yes").length ?? 0
 
 // Fetch vendors for the "Assign Vendor" modal
@@ -390,14 +390,14 @@ const { data: listingVendorBookings } = await supabase
             />
           </div>
           {(listingVendorBookings ?? []).length > 0 && (
-            <VendorBookingsPanel bookings={listingVendorBookings ?? []} />
+            <VendorBookingsPanel bookings={(listingVendorBookings ?? []) as any} />
           )}
         </div>
 
         {(currentStage === "COMING_SOON_PREP" ||
           currentStage === "COMING_SOON_ACTIVE" ||
           currentStage === "MEDIA_APPROVED" ||
-          currentStage === "PRE_LISTING") && (
+          (currentStage as string) === "PRE_LISTING") && (
           <div className="mb-6">
             <ComingSoonCommandCard
               listingId={listingId}

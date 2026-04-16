@@ -179,8 +179,8 @@ export default async function VoiceCallReviewPage({ params }: PageProps) {
     }
   }
 
-  const contact = voiceCall.contacts as { id: string; first_name: string; last_name: string; phone: string } | null
-  const agent = voiceCall.agents as { id: string; first_name: string; last_name: string } | null
+  const contact = voiceCall.contacts as unknown as { id: string; first_name: string; last_name: string; phone: string } | null
+  const agent = voiceCall.agents as unknown as { id: string; first_name: string; last_name: string } | null
 
   return (
     <div className="container max-w-5xl py-6 space-y-6">

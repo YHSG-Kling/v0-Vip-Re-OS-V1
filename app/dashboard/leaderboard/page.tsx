@@ -56,8 +56,8 @@ export default async function LeaderboardPage({
       periodLabel,
       limit: 20,
     }),
-    getAgentPointsAndTier(agentContext.agentId),
-    getAgentBadges(agentContext.agentId),
+    getAgentPointsAndTier(agentContext.agentId ?? ""),
+    getAgentBadges(agentContext.agentId ?? ""),
   ])
 
   // Check if current user is in top 20
@@ -92,7 +92,7 @@ export default async function LeaderboardPage({
 
       <Suspense fallback={<div className="animate-pulse">Loading leaderboard...</div>}>
         <LeaderboardClient
-          rankings={leaderboardData.rankings}
+          rankings={leaderboardData.rankings as any}
           currentAgentId={leaderboardData.currentAgentId}
           currentUserRank={currentUserRank}
           currentUserInList={currentUserInList}

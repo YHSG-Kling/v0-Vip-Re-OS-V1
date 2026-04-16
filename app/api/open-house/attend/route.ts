@@ -162,7 +162,7 @@ export async function POST(req: NextRequest) {
         .then(async () => {
           // Fallback if RPC not available
         })
-        .catch(async () => {
+        .then(() => {}, async () => {
           const { data: qr } = await supabase
             .from("qr_codes")
             .select("scan_count, lead_count")

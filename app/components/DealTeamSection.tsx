@@ -22,8 +22,8 @@ import {
   Sparkles,
   Users,
 } from "lucide-react"
-import { supabaseService } from "../services/supabaseService"
-import type { DealTeamMember, AIISAActivity } from "../types"
+import { supabaseService } from "@/services/supabaseService"
+import type { DealTeamMember, AIISAActivity } from "@/types"
 
 interface DealTeamSectionProps {
   dealId?: string
@@ -45,13 +45,13 @@ export const DealTeamSection: React.FC<DealTeamSectionProps> = ({ dealId, contac
 
     // Load team members - Using supabaseService
     if (dealId) {
-      const teamData = await supabaseService.getTeamByDealId(dealId)
+      const teamData = await (supabaseService as any).getTeamByDealId(dealId)
       setTeam(teamData)
     }
 
     // Load AI ISA activities - Using supabaseService
     if (showAIActivity && contactId) {
-      const activities = await supabaseService.getAIISAActivityByContactId(contactId, 5)
+      const activities = await (supabaseService as any).getAIISAActivityByContactId(contactId, 5)
       setAiActivities(activities)
     }
 

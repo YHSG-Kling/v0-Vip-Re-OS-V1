@@ -35,7 +35,7 @@ export const ComplianceCheckedTextArea: React.FC<ComplianceCheckedTextAreaProps>
   const [showWarning, setShowWarning] = useState(false)
 
   const checkCompliance = async () => {
-    if (!value || value.length < 10) return { blocked: false }
+    if (!value || value.length < 10) return { compliant: true }
 
     setIsChecking(true)
     const result = await workflowService.checkFairHousingCompliance(user?.id || "agent_1", contentType, value)
@@ -43,7 +43,7 @@ export const ComplianceCheckedTextArea: React.FC<ComplianceCheckedTextAreaProps>
     setIsChecking(false)
     setComplianceResult(result)
 
-    if (result.blocked) {
+    if (!result.compliant) {
       setShowWarning(true)
     }
 
@@ -52,7 +52,7 @@ export const ComplianceCheckedTextArea: React.FC<ComplianceCheckedTextAreaProps>
 
   const handleSend = async () => {
     const result = await checkCompliance()
-    if (result.blocked) return
+    if (!result.compliant) return
     onSend(value)
   }
 
@@ -92,7 +92,7 @@ export const ComplianceCheckedTextArea: React.FC<ComplianceCheckedTextAreaProps>
               <Loader2 size={14} className="animate-spin text-indigo-600" />
               <span className="text-[9px] font-black uppercase text-indigo-600 tracking-widest">AI Audit...</span>
             </div>
-          ) : complianceResult && !complianceResult.blocked ? (
+          ) : complianceResult && complianceResult.compliant ? (
             <div className="bg-emerald-50 px-3 py-1.5 rounded-xl flex items-center gap-2 border border-emerald-200 shadow-sm animate-fade-in">
               <CheckCircle2 size={14} className="text-emerald-600" />
               <span className="text-[9px] font-black uppercase text-emerald-600 tracking-widest">Compliant</span>
@@ -101,7 +101,7 @@ export const ComplianceCheckedTextArea: React.FC<ComplianceCheckedTextAreaProps>
         </div>
       </div>
 
-      {showWarning && complianceResult?.blocked && (
+      {showWarning && complianceResult && !complianceResult.compliant && (
         <div className="p-6 bg-red-50 border-2 border-red-300 rounded-[2rem] animate-fade-in shadow-xl ring-4 ring-red-100">
           <div className="flex items-start gap-4">
             <div className="p-3 bg-red-600 text-white rounded-2xl shadow-lg shrink-0">

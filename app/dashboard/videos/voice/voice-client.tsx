@@ -114,7 +114,7 @@ export function VoiceCloneClient({
       if (existingManifest) {
         setSampleManifest(existingManifest)
         // Find first unrecorded phrase
-        const firstUnrecorded = existingManifest.phrases.findIndex(p => p.status === "pending")
+        const firstUnrecorded = (existingManifest.phrases ?? []).findIndex(p => p.status === "pending")
         setCurrentPhraseIndex(firstUnrecorded >= 0 ? firstUnrecorded : 0)
       } else {
         // Fresh manifest
@@ -240,7 +240,7 @@ export function VoiceCloneClient({
 
     // In production, upload to storage and get URL
     // For now, mark as recorded with placeholder
-    const updatedPhrases = [...sampleManifest.phrases]
+    const updatedPhrases = [...(sampleManifest.phrases ?? [])]
     updatedPhrases[currentPhraseIndex] = {
       ...updatedPhrases[currentPhraseIndex],
       status: "recorded",
@@ -290,7 +290,7 @@ export function VoiceCloneClient({
 
     const HEYGEN_MIN_SAMPLES = 5
 
-    const readyPhrases = sampleManifest.phrases.filter(
+    const readyPhrases = (sampleManifest.phrases ?? []).filter(
       (p) =>
         (p.status === "recorded" || p.status === "validated") &&
         p.audio_url &&
@@ -365,7 +365,7 @@ export function VoiceCloneClient({
 
   // ─── Computed values ────────────────────────────────────────────────────────
 
-  const recordedCount = sampleManifest?.phrases.filter(p => p.status === "recorded" || p.status === "validated").length || 0
+  const recordedCount = (sampleManifest?.phrases ?? []).filter(p => p.status === "recorded" || p.status === "validated").length || 0
   const totalRequired = VOICE_CLONE_SAMPLE_PHRASES.length
   const recordingProgress = (recordedCount / totalRequired) * 100
   const canStartTraining = recordedCount >= totalRequired
@@ -599,15 +599,15 @@ export function VoiceCloneClient({
                         <div className="flex items-center justify-between mb-2">
                           <Badge variant="outline">Phrase {currentPhraseIndex + 1}</Badge>
                           <Badge className={cn(
-                            sampleManifest.phrases[currentPhraseIndex]?.status === "recorded"
+                            (sampleManifest.phrases ?? [])[currentPhraseIndex]?.status === "recorded"
                               ? "bg-green-100 text-green-700"
                               : "bg-slate-100 text-slate-700"
                           )}>
-                            {sampleManifest.phrases[currentPhraseIndex]?.status === "recorded" ? "Recorded" : "Not Recorded"}
+                            {(sampleManifest.phrases ?? [])[currentPhraseIndex]?.status === "recorded" ? "Recorded" : "Not Recorded"}
                           </Badge>
                         </div>
                         <p className="text-lg leading-relaxed text-foreground">
-                          {sampleManifest.phrases[currentPhraseIndex]?.phrase_text}
+                          {(sampleManifest.phrases ?? [])[currentPhraseIndex]?.phrase_text}
                         </p>
                       </div>
 
@@ -682,7 +682,7 @@ export function VoiceCloneClient({
                       {/* Training readiness + Start Training */}
                       {selectedProfile.training_status !== "completed" && (() => {
                         const HEYGEN_MIN_SAMPLES = 5
-                        const readyCount = sampleManifest.phrases.filter(
+                        const readyCount = (sampleManifest.phrases ?? []).filter(
                           (p) =>
                             (p.status === "recorded" || p.status === "validated") &&
                             p.audio_url &&
@@ -743,7 +743,7 @@ export function VoiceCloneClient({
                     <CardContent>
                       <ScrollArea className="h-[500px]">
                         <div className="space-y-2">
-                          {sampleManifest.phrases.map((phrase, index) => (
+                          {(sampleManifest.phrases ?? []).map((phrase, index) => (
                             <div
                               key={phrase.phrase_id}
                               className={cn(
@@ -774,7 +774,7 @@ export function VoiceCloneClient({
                                         Needs recording
                                       </span>
                                     )
-                                  : phrase.status === "recording"
+                                  : (phrase.status as string) === "recording"
                                     ? (
                                       <span className="flex items-center gap-1 text-[11px] font-medium text-blue-600">
                                         <Loader2 className="h-3.5 w-3.5 animate-spin" />

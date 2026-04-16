@@ -17,6 +17,8 @@ import { useToast } from "@/hooks/use-toast"
 import { Copy, Check, ExternalLink, Save, Globe, Clock, ClipboardList, Palette, Inbox, ArrowRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 
+type Tab = "branding" | "questions" | "hours" | "embed" | "requests"
+
 // ── Next-action logic ─────────────────────────────────────────────────────────
 // Uses only real columns that exist on valuation_requests post-migration:
 //   qualification_data, contact_id, cma_sent, appointment_scheduled

@@ -42,15 +42,15 @@ export function AnalyticsTab({ listingId }: Props) {
     const completedEvent = analytics.events.find((e: any) => e.status === "completed")
     if (!completedEvent?.id) return
     getOpenHouseVisitors(completedEvent.id)
-      .then((res) => setEventAttendees(res?.visitors ?? []))
-      .catch(() => null)
+      .then((res) => setEventAttendees((res as any)?.visitors ?? []))
+      .then(() => {}, () => null)
     const supabase = createClient()
     supabase
       .from("open_house_feedback")
       .select("rating, price_opinion, liked_most, concerns, interested_in_offer, has_own_agent, contact_id")
       .eq("event_id", completedEvent.id)
-      .then(({ data }) => setFeedbackData(data ?? []))
-      .catch(() => null)
+      .then(({ data }: { data: any }) => setFeedbackData(data ?? []))
+      .then(() => {}, () => null)
   }, [analytics])
 
   if (loading) {

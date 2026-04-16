@@ -776,7 +776,7 @@ export function SearchClient({
       .eq("contact_id", buyerId)
       .eq("dismissed", false)
       .order("saved_at", { ascending: false })
-      .then(({ data }) => { setSaved(data ?? []); setLoading(false) })
+      .then(({ data }: { data: any[] | null }) => { setSaved(data ?? []); setLoading(false) })
   }, [buyerId])
 
   async function handleRemove(id: string) {

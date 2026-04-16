@@ -38,7 +38,7 @@ export default async function LifetimeHome({ contactId }: LifetimeHomeProps) {
 
   const { contact, transaction, homeValueEstimate, touchpoints, preferredVendors } = context
   const firstName = contact.first_name || contact.name?.split(" ")[0] || "Homeowner"
-  const agentName = (contact.agents as any)?.name
+  const agentName = (contact as any).agents?.name
 
   // Get last market update touchpoint
   const lastMarketUpdate = touchpoints.find(

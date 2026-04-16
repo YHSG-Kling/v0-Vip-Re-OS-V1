@@ -223,7 +223,7 @@ Respond with ONLY the intent string, nothing else.`,
       success: true,
       source: "voice_assistant",
     })
-    .catch(() => {}) // non-fatal
+    .then(() => {}, () => {}) // non-fatal
 
   const response: VoiceCommandResponse = {
     spokenResponse,

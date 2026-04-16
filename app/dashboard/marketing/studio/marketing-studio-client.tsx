@@ -284,7 +284,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         getMarketingStudioDashboard(),
         getCampaigns({ status: statusFilter !== "all" ? (statusFilter as CampaignStatus) : undefined }),
       ])
-      if (dashboardResult.success) setDashboard(dashboardResult.dashboard)
+      if (dashboardResult.success) setDashboard((dashboardResult as any).dashboard)
       if (campaignsResult.success) setCampaigns(campaignsResult.campaigns)
     } catch (error) {
       console.error("[v0] Failed to load marketing studio data:", error)

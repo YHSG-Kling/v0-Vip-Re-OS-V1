@@ -225,7 +225,7 @@ export async function POST(request: NextRequest) {
 
       // Check if we have a dedicated check function
       if (SERVICE_CHECKS[serviceKey]) {
-        checkResult = await SERVICE_CHECKS[serviceKey].checkFn(supabase)
+        checkResult = await SERVICE_CHECKS[serviceKey].checkFn(supabase as any)
       } else if (INTEGRATION_SERVICES.includes(serviceKey)) {
         // Check brokerage_integrations for this service
         const { data: integration } = await supabase

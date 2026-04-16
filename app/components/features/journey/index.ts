@@ -1,3 +1,3 @@
-export { default as DealTeamSection } from './DealTeamSection.tsx'
-export { default as JourneyCardsRenderer } from './JourneyCardsRenderer.tsx'
-export { default as PersonaTools } from './PersonaTools.tsx'
+export { DealTeamSection } from './DealTeamSection.tsx'
+export { JourneyCardsRenderer } from './JourneyCardsRenderer.tsx'
+export { PersonaTools } from './PersonaTools.tsx'

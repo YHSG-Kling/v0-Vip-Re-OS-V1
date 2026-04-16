@@ -136,7 +136,7 @@ Please respond as the AI assistant.`
     const response = await generateAIResponse({
       prompt: fullPrompt,
       metadata: {
-        userId: actorContext?.userId,
+        userId: actorContext?.userId ?? "",
         brokerageId: actorContext?.brokerageId,
         feature: "portal_message",
       },

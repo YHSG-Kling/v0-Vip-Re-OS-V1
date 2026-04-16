@@ -31,13 +31,13 @@ export function CostEntryPanel({ brokerageId }: Props) {
 
     startTransition(async () => {
       try {
-        await addRecruitingCost({
-          brokerage_id: brokerageId,
-          cost_type: formData.cost_type,
-          amount: Math.round(parseFloat(formData.amount) * 100),
-          recruit_name: formData.recruit_name,
-          notes: formData.notes,
-        })
+        await addRecruitingCost(
+          brokerageId,
+          formData.recruit_name,
+          formData.cost_type,
+          Math.round(parseFloat(formData.amount) * 100),
+          formData.notes || undefined,
+        )
 
         setFormData({ cost_type: "training", amount: "", recruit_name: "", notes: "" })
         setIsOpen(false)

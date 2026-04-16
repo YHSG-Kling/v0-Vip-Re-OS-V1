@@ -229,8 +229,9 @@ export default function LifetimeCustomersPage() {
     for (const client of targets) {
       try {
         const draftResult = await generateTouchpoint({ contactId: client.id, touchpointType: "market_update" })
-        if (draftResult.success && draftResult.message) {
-          await sendMarketUpdate({ contactId: client.id, messageBody: draftResult.message })
+        const draftMessage = draftResult.success && 'data' in draftResult && draftResult.data ? (draftResult.data as any).message : undefined
+        if (draftMessage) {
+          await sendMarketUpdate({ contactId: client.id, messageBody: draftMessage })
         }
       } catch {
         // continue — don't abort bulk on single failure
@@ -266,7 +267,7 @@ export default function LifetimeCustomersPage() {
           setClients(clientsResult.clients)
         }
         if (anniversariesResult.success && anniversariesResult.anniversaries) {
-          setAnniversaries(anniversariesResult.anniversaries)
+          setAnniversaries(anniversariesResult.anniversaries as unknown as Anniversary[])
         }
       } catch (e) {
         console.error("Error loading data:", e)
@@ -337,8 +338,9 @@ export default function LifetimeCustomersPage() {
     setTouchpointContactId(contactId)
     startTransition(async () => {
       const result = await generateTouchpoint({ contactId, touchpointType: type })
-      if (result.success && result.message) {
-        setTouchpointDraft(result.message)
+      const genMessage = result.success && 'data' in result && result.data ? (result.data as any).message : undefined
+      if (genMessage) {
+        setTouchpointDraft(genMessage)
         setTouchpointDialogTitle(title || `AI ${type.replace('_', ' ')} Message`)
         setTouchpointDialogOpen(true)
       }
@@ -348,8 +350,9 @@ export default function LifetimeCustomersPage() {
   async function handleOptimizeReferral(contactId: string) {
     startTransition(async () => {
       const result = await optimizeReferralAsk(contactId)
-      if (result.success && result.message) {
-        setTouchpointDraft(result.message)
+      const refMessage = result.success && 'data' in result && result.data ? (result.data as any).message ?? (result.data as any).askScript : undefined
+      if (refMessage) {
+        setTouchpointDraft(refMessage)
         setTouchpointDialogTitle("Optimized Referral Ask")
         setTouchpointDialogOpen(true)
       }
@@ -379,8 +382,9 @@ export default function LifetimeCustomersPage() {
     startTransition(async () => {
       // Generate a market update draft then immediately send it to the portal
       const draftResult = await generateTouchpoint({ contactId, touchpointType: "market_update" })
-      if (draftResult.success && draftResult.message) {
-        const sendResult = await sendMarketUpdate({ contactId, messageBody: draftResult.message })
+      const mktMessage = draftResult.success && 'data' in draftResult && draftResult.data ? (draftResult.data as any).message : undefined
+      if (mktMessage) {
+        const sendResult = await sendMarketUpdate({ contactId, messageBody: mktMessage })
         if (sendResult.success) {
           toast.success(`Market update sent to ${firstName}`)
         } else {
@@ -427,9 +431,10 @@ export default function LifetimeCustomersPage() {
   async function handleLoadMilestones() {
     startTransition(async () => {
       const result = await getUpcomingMilestones(30)
-      if (result.success && result.milestones) {
-        setMilestones(result.milestones)
-        toast.success(`Found ${result.milestones.length} milestones`)
+      if (result.success && 'data' in result && result.data) {
+        const milestonesData = result.data as any[]
+        setMilestones(milestonesData)
+        toast.success(`Found ${milestonesData.length} milestones`)
       }
     })
   }

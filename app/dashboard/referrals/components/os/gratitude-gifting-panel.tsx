@@ -60,7 +60,7 @@ export function GratitudeGiftingPanel({
       const result = await aiRecommendGift({
         agentId,
         contactId,
-        occasion,
+        occasion: occasion as any,
         budget: { min, max },
       })
       // Server action returns result.data.topRecommendation

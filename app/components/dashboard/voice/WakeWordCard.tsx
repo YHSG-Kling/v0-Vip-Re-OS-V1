@@ -116,7 +116,7 @@ export function WakeWordCard({ wakeName, onCommand }: WakeWordCardProps) {
 
     rec.onerror = () => setState("IDLE")
     rec.onend = () => {
-      if (state === "LISTENING") setState("IDLE")
+      if ((state as string) === "LISTENING") setState("IDLE")
     }
 
     rec.start()

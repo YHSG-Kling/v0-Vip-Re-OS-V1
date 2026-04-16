@@ -13,7 +13,7 @@ export function useDataAccess() {
     () => ({
       userId: user?.id || "",
       role,
-      subType: user?.subType,
+      subType: user?.subType as UserAccessContext["subType"],
       agentId: user?.agentId || (role === "agent" ? user?.id : undefined),
       contactId: user?.contactId || (role === "contact" ? user?.id : undefined),
       vendorId: user?.vendorId || (role === "vendor" ? user?.id : undefined),

@@ -179,7 +179,7 @@ export async function POST(request: NextRequest) {
     try {
       const brandResult = await applyBrandVoice({
         brokerageId: brokerage_id,
-        actorUserId: agent_id,
+        actorUserId: agent_id ?? undefined,
         actorRole: "agent",
         journeyType: script_type.includes("buyer") ? "buyer" : "seller",
         persona: contactInfo.persona ?? "default",
@@ -327,9 +327,9 @@ Return ONLY the script text, ready to be read by the agent.`
     const response = await generateAIResponse({
       prompt: `${systemPrompt}\n\n${userPrompt}`,
       temperature: 0.7,
-      maxOutputTokens: 2000,
+      maxTokens: 2000,
       metadata: {
-        userId: agent_id,
+        userId: agent_id ?? "",
         brokerageId: brokerage_id,
         feature: "video_script_generation",
       },
@@ -359,7 +359,7 @@ Return ONLY the script text, ready to be read by the agent.`
     try {
       const brandCheck = await applyBrandVoice({
         brokerageId: brokerage_id,
-        actorUserId: agent_id,
+        actorUserId: agent_id ?? undefined,
         actorRole: "agent",
         journeyType: script_type.includes("buyer") ? "buyer" : "seller",
         persona: contactInfo.persona ?? "default",
@@ -393,7 +393,7 @@ Return ONLY the script text, ready to be read by the agent.`
     let savedScript: Record<string, any> | null = null
 
     if (save_to_library !== false) {
-      const title = `${script_type.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())} - ${
+      const title = `${script_type.replace(/_/g, " ").replace(/\b\w/g, (l: any) => l.toUpperCase())} - ${
         listingInfo.address ?? contactInfo.name ?? new Date().toLocaleDateString()
       }`
 

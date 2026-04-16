@@ -278,7 +278,7 @@ export default function CoachingTab({ agentInsights, teamAvgResponseTime, topicF
               <XAxis type="number" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
               <YAxis dataKey="topic" type="category" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" width={76} />
               <Tooltip
-                formatter={(v: number) => [v, "Mentions"]}
+                formatter={((v: number) => [v, "Mentions"]) as any}
                 contentStyle={{ fontSize: 12, borderRadius: 6, border: "1px solid hsl(var(--border))" }}
               />
               <Bar dataKey="count" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />

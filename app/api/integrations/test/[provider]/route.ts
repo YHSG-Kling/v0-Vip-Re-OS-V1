@@ -127,11 +127,6 @@ export async function POST(
       brokerageId: targetBrokerageId,
       entityType: "platform_credentials",
       entityId: targetBrokerageId,
-      metadata: {
-        provider,
-        testResult: result.pass ? "pass" : "fail",
-        detail: result.detail,
-      },
     }).catch(err => {
       console.error("[L11-IntegrationTest] Kernel event failed (non-blocking):", err)
     })

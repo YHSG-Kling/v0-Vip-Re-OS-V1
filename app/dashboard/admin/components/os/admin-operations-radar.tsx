@@ -84,7 +84,7 @@ export function AdminOperationsRadar({ brokerageId }: AdminOperationsRadarProps)
       ])
 
       // Calculate stuck onboarding (no progress in 7+ days)
-      const stuckOnboarding = (onboarding || []).filter((o) => {
+      const stuckOnboarding = (onboarding || []).filter((o: any) => {
         if (!o.updated_at) return false
         const lastUpdate = new Date(o.updated_at)
         return lastUpdate < weekAgo && (o.completion_percentage || 0) < 100
@@ -92,7 +92,7 @@ export function AdminOperationsRadar({ brokerageId }: AdminOperationsRadarProps)
 
       // Calculate assignment pressure (high volume or exceptions)
       const assignmentPressure = (assignmentLog || []).filter(
-        (a) => a.routing_reason?.includes("exception") || a.routing_reason?.includes("manual")
+        (a: any) => a.routing_reason?.includes("exception") || a.routing_reason?.includes("manual")
       ).length
 
       setData({
@@ -193,7 +193,7 @@ export function AdminOperationsRadar({ brokerageId }: AdminOperationsRadarProps)
             return (
               <div
                 key={signal.label}
-                className={`p-3 rounded-lg border ${statusColors[signal.status]}`}
+                className={`p-3 rounded-lg border ${statusColors[signal.status as keyof typeof statusColors]}`}
               >
                 <div className="flex items-center gap-2 mb-1">
                   <Icon className="h-4 w-4" />

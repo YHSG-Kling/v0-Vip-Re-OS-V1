@@ -62,7 +62,7 @@ export default async function CoordinationPage() {
   
   return (
     <CoordinationDashboardClient
-      brokerageId={brokerageId}
+      brokerageId={brokerageId ?? ""}
       initialSessions={sessionsResult.sessions}
       initialMetrics={metricsResult}
       recentEscalations={recentEscalations || []}

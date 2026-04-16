@@ -40,9 +40,9 @@ export function ComplianceMonitorPanel({ brokerageId }: ComplianceMonitorPanelPr
         // Calculate stats
         if (data) {
           setStats({
-            critical: data.filter(c => c.severity === 'critical').length,
-            warnings: data.filter(c => c.severity === 'warning').length,
-            resolved: data.filter(c => c.status === 'resolved').length,
+            critical: data.filter((c: any) => c.severity === 'critical').length,
+            warnings: data.filter((c: any) => c.severity === 'warning').length,
+            resolved: data.filter((c: any) => c.status === 'resolved').length,
           })
         }
       } catch (error) {

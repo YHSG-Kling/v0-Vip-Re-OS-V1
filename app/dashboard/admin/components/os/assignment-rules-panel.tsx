@@ -64,9 +64,9 @@ export function AssignmentRulesPanel({ brokerageId }: AssignmentRulesPanelProps)
           .gte("created_at", weekAgo.toISOString()),
       ])
 
-      const activeRules = (rules || []).filter((r) => r.is_active).length
+      const activeRules = (rules || []).filter((r: any) => r.is_active).length
       const exceptionCount = (recentAssignments || []).filter(
-        (a) => a.routing_reason?.includes("exception") || a.routing_reason?.includes("manual")
+        (a: any) => a.routing_reason?.includes("exception") || a.routing_reason?.includes("manual")
       ).length
 
       setHealth({

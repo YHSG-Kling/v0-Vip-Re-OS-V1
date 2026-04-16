@@ -106,7 +106,7 @@ const SmartCMA: React.FC = () => {
         squareFeet: Number(inputs.sqft) || 0,
         lotSize: Number(inputs.lotSize) || undefined,
         yearBuilt: Number(inputs.yearBuilt) || undefined,
-        condition: inputs.condition || undefined,
+        condition: (inputs.condition as "excellent" | "good" | "fair" | "poor" | undefined) || undefined,
         features: inputs.upgrades ? [inputs.upgrades] : undefined,
         listingType: "seller",
       })
@@ -118,7 +118,7 @@ const SmartCMA: React.FC = () => {
       // Map the real CMA result to the display shape
       setPackageResult({
         cmaId: res.id,
-        marketSnapshot: res.marketTrends?.summary ?? "",
+        marketSnapshot: (res.marketTrends as any)?.summary ?? "",
         pricing: {
           aggressive: res.pricingStrategy?.priceRangeHigh
             ? `$${Number(res.pricingStrategy.priceRangeHigh).toLocaleString()}`

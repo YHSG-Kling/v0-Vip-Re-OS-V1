@@ -228,12 +228,12 @@ export default async function CoordinatorDashboard({
 
       {/* OS Command Strip */}
       <div>
-        <CoordinatorCommandStrip coordinatorId={coordinatorId} brokerageId={brokerageId || ""} />
+        <CoordinatorCommandStrip brokerageId={brokerageId || ""} />
       </div>
 
       {/* OS Intelligence Grid - First Row */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <DealPipelineRadar coordinatorId={coordinatorId} brokerageId={brokerageId || ""} />
+        <DealPipelineRadar brokerageId={brokerageId || ""} />
         <DeadlineIntelligencePanel brokerageId={brokerageId || ""} />
         <DocumentTrackingPanel brokerageId={brokerageId || ""} />
       </div>

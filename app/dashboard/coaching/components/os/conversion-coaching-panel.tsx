@@ -32,15 +32,17 @@ interface ConversionIssue {
 }
 
 interface ConversionCoachingPanelProps {
-  metrics: ConversionMetric[]
-  issues: ConversionIssue[]
-  topImprovement: string | null
+  metrics?: ConversionMetric[]
+  issues?: ConversionIssue[]
+  topImprovement?: string | null
+  agentId?: string
+  brokerageId?: string
 }
 
 export function ConversionCoachingPanel({
-  metrics,
-  issues,
-  topImprovement,
+  metrics = [],
+  issues = [],
+  topImprovement = null,
 }: ConversionCoachingPanelProps) {
   return (
     <Card>

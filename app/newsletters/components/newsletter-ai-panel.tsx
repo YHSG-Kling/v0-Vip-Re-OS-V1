@@ -58,8 +58,13 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
         tone: slTone,
         includeEmoji: false,
       })
-      if (res.success && res.subjectLines?.length) {
-        setSubjectLines(res.subjectLines)
+      if (res.success && res.subjectLines) {
+        const sl = res.subjectLines as any
+        const lines: string[] = [
+          sl.primary?.subject,
+          ...(sl.variants?.map((v: any) => v.subject) ?? []),
+        ].filter(Boolean)
+        setSubjectLines(lines)
       }
     } catch (err) {
       console.error(err)

@@ -632,7 +632,7 @@ async function searchOnlineActivity(leadId: string, lead: any) {
         num: 20,
       })
 
-      const detectedIntent = analyzeSearchIntent(results as any[])
+      const detectedIntent = analyzeSearchIntent(results as unknown as any[])
 
       if (detectedIntent) {
         await supabase.from("google_search_activity").insert({
