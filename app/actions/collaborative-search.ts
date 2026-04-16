@@ -4,9 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
 import { v4 as uuidv4 } from "uuid"
 
-// NOTE: collaborative_searches and related tables are not yet provisioned in the database.
-// All functions return safe no-op responses until the migration is run.
-const COLLAB_SEARCH_AVAILABLE = false
+const COLLAB_SEARCH_AVAILABLE = true
 
 // ==================== COLLABORATIVE SEARCH CRUD ====================
 
