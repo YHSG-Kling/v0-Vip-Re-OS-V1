@@ -82,20 +82,28 @@ interface Contact {
   first_name: string
   last_name: string
   email: string
-  phone?: string
-  contact_type?: string
-  contact_persona?: string
-  buyer_stage?: string
-  status?: string
-  city?: string
-  state?: string
-  zip_code?: string
-  lead_source?: string
-  created_at?: string
-  engagement_score?: number
+  phone?: string | null
+  contact_type?: string | null
+  contact_persona?: string | null
+  buyer_stage?: string | null
+  status?: string | null
+  city?: string | null
+  state?: string | null
+  zip_code?: string | null
+  lead_source?: string | null
+  created_at?: string | null
+  engagement_score?: number | null
   /** DB column: last_contacted_at */
   last_contacted_at?: string | null
   referral_potential?: "high" | "medium" | "low" | null
+  // Communication opt-out / DNC fields (selected by getContacts)
+  dnc_status?: boolean | null
+  email_opt_out?: boolean | null
+  sms_opt_out?: boolean | null
+  phone_opt_out?: boolean | null
+  direct_mail_opt_out?: boolean | null
+  source?: string | null
+  source_family?: string | null
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -697,32 +705,28 @@ export default function CRMPage() {
   }
 
   // Handlers for OS components
-  const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive") => {
+  const handleEnableAutopilot = async (level: "conservative" | "moderate" | "aggressive"): Promise<void> => {
     if (!selectedContactId || !agentId) return
-    startTransition(async () => {
-      const result = await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
-      if (result?.success) {
-        toast.success(result.message ?? "AI Autopilot enabled")
-        // Re-fetch both the agent's plans list and the copilot plan for this contact
-        const [plans] = await Promise.all([
-          getActiveAutoPilotPlans(agentId).catch(() => []),
-        ])
-        setAutopilotPlans(Array.isArray(plans) ? plans : [])
-        // Re-fetch the copilot plan for this contact so the plan card appears
-        const supabase = createClient()
-        const { data: updatedPlan } = await supabase
-          .from("copilot_plans")
-          .select("id, plan_name, status, next_action, next_action_date, updated_at")
-          .eq("contact_id", selectedContactId)
-          .eq("status", "active")
-          .order("updated_at", { ascending: false })
-          .limit(1)
-          .maybeSingle()
-        setCopilotPlan(updatedPlan ?? null)
-      } else {
-        toast.error((result as any)?.error ?? "Failed to enable AI Autopilot")
-      }
-    })
+    const result = await enableAIPilot({ agentId, leadId: selectedContactId, autopilotLevel: level })
+    if (result?.success) {
+      toast.success(result.message ?? "AI Autopilot enabled")
+      const [plans] = await Promise.all([
+        getActiveAutoPilotPlans(agentId).catch(() => []),
+      ])
+      setAutopilotPlans(Array.isArray(plans) ? plans : [])
+      const supabase = createClient()
+      const { data: updatedPlan } = await supabase
+        .from("copilot_plans")
+        .select("id, plan_name, status, next_action, next_action_date, updated_at")
+        .eq("contact_id", selectedContactId)
+        .eq("status", "active")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      setCopilotPlan(updatedPlan ?? null)
+    } else {
+      toast.error((result as any)?.error ?? "Failed to enable AI Autopilot")
+    }
   }
 
   const handleToggleAutopilot = async (planId: string, pause: boolean) => {

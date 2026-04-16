@@ -20,7 +20,7 @@ export async function generateContactInsights(userId: string, userRole: string):
     const { data: contacts } = await supabase
       .from("contacts")
       .select(
-        "id, first_name, last_name, email, phone, lead_stage, last_contact_date, engagement_score, intent_score, created_at",
+        "id, first_name, last_name, email, phone, buyer_stage, last_contacted_at, engagement_score, intent_score, created_at",
       )
       .eq(
         userRole === "admin" || userRole === "broker" ? "id" : "agent_id",
@@ -37,7 +37,7 @@ export async function generateContactInsights(userId: string, userRole: string):
       prompt: `You are an AI assistant for a real estate agent. Analyze these contacts and suggest the top 3 most important actions to take today.
 
 Contacts:
-${contacts.map((c) => `- ${c.first_name} ${c.last_name}: Stage=${c.lead_stage}, Engagement=${c.engagement_score}, Intent=${c.intent_score}, Last Contact=${c.last_contact_date}`).join("\n")}
+${contacts.map((c) => `- ${c.first_name} ${c.last_name}: Stage=${c.buyer_stage}, Engagement=${c.engagement_score}, Intent=${c.intent_score}, Last Contact=${c.last_contacted_at}`).join("\n")}
 
 For each of the top 3, provide:
 1. Contact ID
@@ -67,7 +67,7 @@ export async function draftSmartEmail(contactId: string, context: string): Promi
 
   const { data: contact } = await supabase
     .from("contacts")
-    .select("first_name, last_name, lead_stage, contact_persona")
+    .select("first_name, last_name, buyer_stage, contact_persona")
     .eq("id", contactId)
     .single()
 
@@ -78,7 +78,7 @@ export async function draftSmartEmail(contactId: string, context: string): Promi
     prompt: `Draft a professional yet friendly email for a real estate agent to send to ${contact.first_name} ${contact.last_name}.
 
 Context: ${context}
-Lead Stage: ${contact.lead_stage}
+Lead Stage: ${contact.buyer_stage}
 Persona: ${contact.contact_persona}
 
 Write a concise email (3-4 sentences) that:

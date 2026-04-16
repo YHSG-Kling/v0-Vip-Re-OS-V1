@@ -172,19 +172,14 @@ Extract:
       })
     }
 
-    // Log interaction
-    await supabase.from("interactions").insert({
-      contact_id: params.contactId,
-      agent_id: params.agentId,
-      interaction_type: "call",
-      interaction_date: new Date().toISOString(),
-      notes: analysis.summary,
-      outcome: analysis.sentiment === "very_positive" || analysis.sentiment === "positive" ? "positive" : "neutral",
-      metadata: {
-        call_analysis_id: savedAnalysis?.id,
-        duration: params.callDuration,
-        action_items_count: analysis.actionItems.length,
-      },
+    await supabase.from("activities").insert({
+      contact_id:    params.contactId,
+      agent_id:      params.agentId,
+      activity_type: "call",
+      title:         "Call completed",
+      notes:         analysis.summary,
+      outcome:       "completed",
+      status:        "completed",
     })
 
     revalidatePath(`/contacts/${params.contactId}`)
