@@ -130,6 +130,8 @@ export async function fireAssistantEvent(
   const supabase = await createClient()
   const { brokerageId } = await getAgentContext()
 
+  if (!agentId || !brokerageId) return { success: false, error: "Missing agent or brokerage context" }
+
   const eventMap = {
     query_made: KernelEvent.SETUP_ASSISTANT_QUERY_MADE,
     escalated: KernelEvent.SETUP_ASSISTANT_ESCALATED,
@@ -163,11 +165,13 @@ export async function escapeAssistant(
   const supabase = await createClient()
   const { agentId } = await getAgentContext()
 
+  if (!agentId) return { success: false, error: "Missing agent or brokerage context" }
+
   // Mark as escalated
   await saveAssistantChat(agentOnboardingId, [], currentStep, true)
 
   // Fire escalation event
-  await fireAssistantEvent(agentId ?? "", 'escalated', currentStep)
+  await fireAssistantEvent(agentId, 'escalated', currentStep)
 
   // Create escalation ticket
   const { error } = await supabase

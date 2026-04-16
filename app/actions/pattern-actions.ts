@@ -203,8 +203,10 @@ export async function recordOutcome(
 ): Promise<{ success: boolean; error?: string }> {
   const { agentId, brokerageId } = await getAgentContext()
 
+  if (!agentId || !brokerageId) return { success: false, error: "Missing agent or brokerage context" }
+
   try {
-    await recordPredictionOutcome(predictionId, outcome, agentId ?? "", brokerageId ?? "")
+    await recordPredictionOutcome(predictionId, outcome, agentId, brokerageId)
     return { success: true }
   } catch (error) {
     return {
