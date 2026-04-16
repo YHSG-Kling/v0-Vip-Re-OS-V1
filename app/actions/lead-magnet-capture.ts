@@ -14,6 +14,20 @@ export async function captureFormSubmissionAction(input: CaptureFormInput) {
   try {
     const supabase = createServiceClient()
 
+    // Validate the form exists and belongs to the claimed brokerage before accepting submission.
+    // This prevents a client-supplied brokerageId from routing leads to the wrong tenant.
+    const { data: form } = await supabase
+      .from("lead_magnets")
+      .select("id")
+      .eq("id", input.formId)
+      .eq("brokerage_id", input.brokerageId)
+      .eq("status", "published")
+      .maybeSingle()
+
+    if (!form) {
+      return { success: false, error: "Form not found or not published" }
+    }
+
     const { data, error } = await supabase
       .from("lead_magnet_submissions")
       .insert({
