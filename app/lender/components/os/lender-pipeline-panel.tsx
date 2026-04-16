@@ -50,21 +50,21 @@ export function LenderPipelinePanel({ lenderId }: LenderPipelinePanelProps) {
       }
 
       const totalApplications = applications.length
-      const approved = applications.filter(a => a.status === "approved" || a.status === "funded").length
-      const pending = applications.filter(a => ["pending", "processing", "underwriting"].includes(a.status)).length
-      const denied = applications.filter(a => a.status === "denied").length
+      const approved = applications.filter((a: any) => a.status === "approved" || a.status === "funded").length
+      const pending = applications.filter((a: any) => ["pending", "processing", "underwriting"].includes(a.status)).length
+      const denied = applications.filter((a: any) => a.status === "denied").length
       
       const decisioned = approved + denied
       const approvalRate = decisioned > 0 ? (approved / decisioned) * 100 : 0
 
       const totalVolume = applications
-        .filter(a => a.status === "approved" || a.status === "funded")
-        .reduce((sum, a) => sum + (a.loan_amount || 0), 0)
+        .filter((a: any) => a.status === "approved" || a.status === "funded")
+        .reduce((sum: any, a: any) => sum + (a.loan_amount || 0), 0)
 
       // Calculate avg processing time for approved loans
-      const processedLoans = applications.filter(a => a.approved_at && a.created_at)
+      const processedLoans = applications.filter((a: any) => a.approved_at && a.created_at)
       const avgProcessingDays = processedLoans.length > 0
-        ? processedLoans.reduce((sum, a) => {
+        ? processedLoans.reduce((sum: any, a: any) => {
             const days = (new Date(a.approved_at).getTime() - new Date(a.created_at).getTime()) / (1000 * 60 * 60 * 24)
             return sum + days
           }, 0) / processedLoans.length

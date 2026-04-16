@@ -15,6 +15,8 @@ export interface EntityResolutionResult {
   disambiguation_options?: string[]
   clarification_message?: string
   error?: string
+  listing_id?: string
+  contact_id?: string
 }
 
 interface ResolveEntitiesRequest {
@@ -82,7 +84,7 @@ export async function resolveEntities(request: ResolveEntitiesRequest): Promise<
 async function resolveAddress(
   address: string,
   brokerageId: string,
-  supabase: ReturnType<typeof createClient>
+  supabase: Awaited<ReturnType<typeof createClient>>
 ): Promise<EntityResolutionResult> {
   const { data: listings, error } = await supabase
     .from('listings')
@@ -107,7 +109,7 @@ async function resolveAddress(
     return {
       success: false,
       requires_clarification: true,
-      disambiguation_options: listings.map(l => `${l.address}, ${l.city}, ${l.state} ${l.zip}`),
+      disambiguation_options: listings.map((l: any) => `${l.address}, ${l.city}, ${l.state} ${l.zip}`),
       clarification_message: `I found ${listings.length} properties matching "${address}". Which one did you mean?`
     }
   }
@@ -126,7 +128,7 @@ async function resolveContactName(
   name: string,
   userId: string,
   brokerageId: string,
-  supabase: ReturnType<typeof createClient>
+  supabase: Awaited<ReturnType<typeof createClient>>
 ): Promise<EntityResolutionResult> {
   const nameParts = name.trim().split(/\s+/)
   const firstName = nameParts[0]
@@ -164,7 +166,7 @@ async function resolveContactName(
     return {
       success: false,
       requires_clarification: true,
-      disambiguation_options: contacts.map(c => `${c.first_name} ${c.last_name} (${c.email || 'no email'})`),
+      disambiguation_options: contacts.map((c: any) => `${c.first_name} ${c.last_name} (${c.email || 'no email'})`),
       clarification_message: `I found ${contacts.length} contacts matching "${name}". Which one did you mean?`
     }
   }

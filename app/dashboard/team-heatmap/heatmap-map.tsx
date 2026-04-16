@@ -27,7 +27,7 @@ export function HeatmapMap({
   const mapRef = useRef<HTMLDivElement>(null)
   const [map, setMap] = useState<google.maps.Map | null>(null)
   const [markers, setMarkers] = useState<google.maps.Marker[]>([])
-  const [infoWindow, setInfoWindow] = useState<google.maps.InfoWindow | null>(null)
+  const [infoWindow, setInfoWindow] = useState<any | null>(null)
 
   useEffect(() => {
     if (!mapRef.current || typeof google === "undefined") return

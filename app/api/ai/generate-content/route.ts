@@ -63,7 +63,7 @@ Target Contact Profile:
     const response = await generateAIResponse({
       prompt,
       temperature: 0.7,
-      maxOutputTokens: contentType === "blog_post" ? 2000 : 500,
+      maxTokens: contentType === "blog_post" ? 2000 : 500,
       metadata: {
         userId: agentCtx.userId,
         brokerageId,
@@ -80,7 +80,7 @@ Target Contact Profile:
       contentType,
       prompt,
       model: response.model || "email_generation",
-      tokensUsed: (response.usage?.promptTokens || 0) + (response.usage?.completionTokens || 0),
+      tokensUsed: (response.tokensUsed?.input || 0) + (response.tokensUsed?.output || 0),
       generationTime,
       success: true,
     })
@@ -103,7 +103,7 @@ Target Contact Profile:
       content: text,
       hashtags,
       seoKeywords,
-      tokensUsed: response.usage?.totalTokens || 0,
+      tokensUsed: response.tokensUsed?.total || 0,
       generationTime,
     })
   } catch (error: any) {

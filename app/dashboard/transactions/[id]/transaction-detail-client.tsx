@@ -48,6 +48,13 @@ import {
   Scale,
   ClipboardList,
   PenLine,
+  ArrowLeft,
+  ArrowRight,
+  MapPin,
+  Calendar,
+  Shield,
+  Wrench,
+  CheckSquare,
   Brain,
   TrendingDown,
   Landmark,
@@ -1041,7 +1048,7 @@ export function TransactionDetailClient({
                 {canMarkLost && (
                   <div className="pt-3 border-t mt-3 space-y-1">
                     {/* Close Transaction — sets status=closed, stage=CLOSED */}
-                    {currentStage !== "CLOSED" && currentStage !== "LOST" && (
+                    {(currentStage as string) !== "CLOSED" && (currentStage as string) !== "LOST" && (
                       <Button
                         variant="ghost"
                         size="sm"

@@ -28,23 +28,23 @@ export default async function CoordinationPage() {
   
   // Fetch initial data
   const [sessionsResult, metricsResult] = await Promise.all([
-    getActiveSessions(brokerageId),
-    getAgentMetrics(brokerageId, 7),
+    getActiveSessions(brokerageId!),
+    getAgentMetrics(brokerageId!, 7),
   ])
   
   // Get recent escalations
   const { data: recentEscalations } = await supabase
     .from('agent_state_machine')
     .select('*')
-    .eq('brokerage_id', brokerageId)
+    .eq('brokerage_id', brokerageId!)
     .eq('status', 'escalated')
     .order('ended_at', { ascending: false })
     .limit(10)
   
   // Get agent names for display
   const agentIds = [
-    ...new Set(sessionsResult.sessions.map(s => s.assigned_agent_id).filter(Boolean)),
-    ...new Set((recentEscalations || []).map(e => e.assigned_agent_id).filter(Boolean)),
+    ...new Set(sessionsResult.sessions.map((s: any) => s.assigned_agent_id).filter(Boolean)),
+    ...new Set((recentEscalations || []).map((e: any) => e.assigned_agent_id).filter(Boolean)),
   ]
   
   let agentNames: Record<string, string> = {}

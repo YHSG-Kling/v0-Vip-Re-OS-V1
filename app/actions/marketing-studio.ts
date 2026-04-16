@@ -30,7 +30,9 @@ import {
   canAccessFeature,
   incrementFeatureUsage,
 } from "@/lib/kernel/0.1-feature-access"
-import { applyBrandVoice, evaluateOutbound, checkBrandCompliance } from "@/lib/kernel/compliance"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -146,9 +148,9 @@ export async function createCampaign(params: CreateCampaignParams) {
   // Emit kernel event
   await processKernelEvent({
     event: KernelEvent.MARKETING_CAMPAIGN_CREATED,
-    brokerageId,
+    brokerageId: brokerageId!,
     entityType: "marketing_campaign",
-    entityId: campaign.id,
+    entityId: campaign!.id,
   }).catch((err) => console.error("[MarketingStudio] Kernel event failed:", err))
 
   await incrementFeatureUsage(userId, "marketing_studio")
@@ -308,22 +310,31 @@ export async function transitionCampaignStatus(
       
       const messageType: MessageType = campaignType.includes("email") ? "email" :
                                        campaignType.includes("sms") ? "sms" :
-                                       "social_post"
+                                       "social"
 
       // Run compliance check including DNC/opt-out verification
       const complianceResult = await evaluateOutbound({
-        brokerageId,
-        actorUserId: userId,
-        actorRole: "agent" as ActorRole,
+        actorContext: {
+          userId: userId!,
+          role: "agent" as ActorRole,
+          brokerageId: brokerageId!,
+        },
         journeyType: "seller",
         persona: "homeowner" as Persona,
         messageType,
         content: campaignContent,
-        channel,
-        recipientContactId: null, // Campaign doesn't have single recipient
+        contact: {
+          id: "broadcast",
+          first_name: "Broadcast",
+          last_name: "Audience",
+          contact_type: "buyer",
+          tcpa_consent: true,
+          isa_reengage_allowed: false,
+          dnc_status: false,
+        },
       })
 
-      if (!complianceResult.passed) {
+      if (!complianceResult.allowed) {
         console.error("[v0] Campaign failed compliance check:", complianceResult.violations)
         return {
           success: false,
@@ -334,9 +345,8 @@ export async function transitionCampaignStatus(
 
       // Apply brand voice to campaign content
       const brandVoiceResult = await applyBrandVoice({
-        brokerageId,
-        teamId: null,
-        actorUserId: userId,
+        brokerageId: brokerageId!,
+        actorUserId: userId!,
         actorRole: "agent" as ActorRole,
         journeyType: "seller",
         persona: "homeowner" as Persona,
@@ -350,8 +360,8 @@ export async function transitionCampaignStatus(
 
   // Use kernel lifecycle transition
   const result = await transitionLifecycle({
-    brokerageId,
-    entityType: "marketing_campaign_machine",
+    brokerageId: brokerageId!,
+    entityType: "marketing_campaign_machine" as any,
     entityId: campaignId,
     fromState: fromStatus,
     toState: toStatus,

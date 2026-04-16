@@ -1,5 +1,7 @@
 
 import { registerEventDispatcher, type OrchestratorEvent as WorkflowEvent } from "@/lib/events"
+import type { Event, EventInput } from "@/lib/orchestrator"
+import { EVENT_TYPES } from "@/lib/orchestrator"
 
 import { createServerClient } from "@/lib/supabase/server"
 import { generateSmartSuggestion } from "./assistant"
@@ -105,14 +107,14 @@ export async function orchestrateEventById(eventId: string) {
     }
 
     const handler = await handlerLoader()
-    const result = await handler(eventAsEvent.payload)
+    const result = await (handler as (e: typeof eventAsEvent) => Promise<any>)(eventAsEvent)
 
     await supabase
       .from("lifecycle_events")
       .update({
         processed:    true,
         processed_at: new Date().toISOString(),
-        error:        result.success ? null : (result as any).error || null,
+        error:        result?.success ? null : result?.error || null,
       })
       .eq("id", eventId)
 

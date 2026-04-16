@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube } from "lucide-react"
-import { toggleCampaignStatus } from "@/app/actions/ai-isa"
+import { toggleCampaignStatus, sendCampaignTestTouch } from "@/app/actions/ai-isa"
 import type { ISACampaignRow } from "@/app/actions/ai-isa"
 
 const TYPE_BADGE: Record<string, string> = {

@@ -1,10 +1,12 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import React, { useState, useEffect } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Video, Share2, Loader2, Check, X, ExternalLink, Link2 } from "lucide-react"
 import { updateAgentSettings } from "@/app/actions/agent-settings"
 import { disconnectSocialAccount } from "@/app/actions/social-publishing"
@@ -109,7 +111,7 @@ export function VideoSettingsCard({ userId, initialAvatarId, initialVoiceId }: V
           <Input
             id="avatarId"
             value={avatarId}
-            onChange={(e) => setAvatarId(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAvatarId(e.target.value)}
             placeholder="e.g. Angela-inblackskirt-20220820"
           />
           <p className="text-xs text-muted-foreground">
@@ -121,7 +123,7 @@ export function VideoSettingsCard({ userId, initialAvatarId, initialVoiceId }: V
           <Input
             id="voiceId"
             value={voiceId}
-            onChange={(e) => setVoiceId(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setVoiceId(e.target.value)}
             placeholder="e.g. 1bd001e7e50f421d891986aad5158bc8"
           />
           <p className="text-xs text-muted-foreground">

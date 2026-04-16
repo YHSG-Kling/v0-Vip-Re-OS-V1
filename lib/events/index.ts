@@ -1,5 +1,5 @@
 // ─── TYPES ────────────────────────────────────────────────────────────────────
-export type { EventInput, Event } from "./types"
+export type { EventInput, Event, OrchestratorEvent } from "./types"
 export { EVENT_TYPES } from "./types"
 
 // ─── EVENT HELPERS ────────────────────────────────────────────────────────────

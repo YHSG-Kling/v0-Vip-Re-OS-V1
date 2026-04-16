@@ -331,7 +331,7 @@ function extractFactors(
 
 function calculateOptimalContactTime(behavioralData: unknown[]): string {
   // Analyze past engagement patterns
-  const hourCounts: Record<number, number> = {}
+  const hourCounts: Record<number, number> = {};
 
   (behavioralData || []).forEach((e: unknown) => {
     const record = e as Record<string, unknown> | null

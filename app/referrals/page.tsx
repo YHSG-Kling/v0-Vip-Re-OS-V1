@@ -31,9 +31,9 @@ export default async function ReferralsPage({
   const [stats, leaderboard, referrals, sphereScore, leaderboardWidget, recentClosingsRes, existingReviewsRes, anniversaryTransactionsRes] = await Promise.all([
     getReferralROI(),
     getReferralLeaderboard(),
-    getReferrals({ agentId, brokerageId }),
-    aiScoreSphereEngagement({ agentId }).catch(() => null),
-    getLeaderboardWidget({ agentId, brokerageId }).catch(() => null),
+    getReferrals({ agentId: agentId!, brokerageId: brokerageId! }),
+    aiScoreSphereEngagement({ agentId: agentId! }).catch(() => null),
+    getLeaderboardWidget({ agentId: agentId!, brokerageId: brokerageId! }).catch(() => null),
     // Recent closings for review requests (last 90 days)
     supabase
       .from("transactions")
@@ -93,13 +93,13 @@ export default async function ReferralsPage({
     <div className="container mx-auto p-6 space-y-6">
       {/* OS Command Strip + Pipeline + Action Stack */}
       <ReferralsOsClient
-        agentId={agentId}
-        brokerageId={brokerageId}
+        agentId={agentId!}
+        brokerageId={brokerageId!}
         referralCount={stats.totalReferrals}
         pendingReferrals={pendingReferrals}
         roiSummary={{
           totalReferrals: stats.totalReferrals,
-          converted: stats.closed,
+          converted: (stats as any).closed,
           conversionRate: stats.conversionRate,
           totalValue: stats.totalValue,
         }}
@@ -151,7 +151,7 @@ export default async function ReferralsPage({
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground">Contacted</p>
-              <p className="text-2xl font-bold">{stats.contacted}</p>
+              <p className="text-2xl font-bold">{(stats as any).contacted}</p>
             </div>
             <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold">
               C
@@ -163,7 +163,7 @@ export default async function ReferralsPage({
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground">Qualified</p>
-              <p className="text-2xl font-bold">{stats.qualified}</p>
+              <p className="text-2xl font-bold">{(stats as any).qualified}</p>
             </div>
             <div className="w-8 h-8 rounded-full bg-green-100 flex items-center justify-center text-green-600 font-bold">
               Q
@@ -175,7 +175,7 @@ export default async function ReferralsPage({
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-muted-foreground">Closed</p>
-              <p className="text-2xl font-bold">{stats.closed}</p>
+              <p className="text-2xl font-bold">{(stats as any).closed}</p>
             </div>
             <Award className="w-8 h-8 text-yellow-500" />
           </div>
@@ -199,7 +199,7 @@ export default async function ReferralsPage({
             <h3 className="text-lg font-semibold mb-2">Conversion Rate</h3>
             <p className="text-4xl font-bold text-green-600">{stats.conversionRate.toFixed(1)}%</p>
             <p className="text-sm text-muted-foreground mt-1">
-              {stats.closed} of {stats.totalReferrals} referrals closed
+              {(stats as any).closed} of {stats.totalReferrals} referrals closed
             </p>
           </div>
           <TrendingUp className="w-16 h-16 text-green-600" />
