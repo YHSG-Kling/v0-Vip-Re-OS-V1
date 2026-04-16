@@ -361,7 +361,7 @@ export default function CRMPage() {
           await Promise.all([
             getContactById(contactId),
             detectClientChurn(contactId).catch(() => null),
-            getActiveAutoPilotPlans(agentId).catch(() => []),
+            getActiveAutoPilotPlans(agentId ?? "").catch(() => []),
             aiSuggestFollowUp({ contactId, agentId: agentId ?? "" }).catch(() => ({ suggestions: [] })),
             getConversationIntelligence(contactId).catch(() => null),
           ])
@@ -727,7 +727,7 @@ export default function CRMPage() {
 
   const handleToggleAutopilot = async (planId: string, pause: boolean) => {
     startTransition(async () => {
-      const result = await toggleAutoPilot({ planId, pause })
+      const result = await toggleAutoPilot(planId, pause)
       if (!(result as any).success) {
         toast.error((result as any).error ?? "Failed to update autopilot")
         return

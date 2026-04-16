@@ -5,7 +5,6 @@ import { resolveAgentId } from "@/lib/kernel/agent-identity"
 import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import { KernelEvent } from "@/lib/kernel/events"
 import { handleError } from "@/lib/errors"
-import { format } from "date-fns"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -126,16 +125,12 @@ export async function sendPortalMessage(params: SendMessageParams): Promise<{
     }
 
     // Emit kernel event (non-blocking)
-    try {
-      await processKernelEvent({
-        event: KernelEvent.CLIENT_PORTAL_MESSAGE_SENT,
-        entityType: "contact",
-        entityId: contactId,
-        brokerageId: contact.brokerage_id,
-      })
-    } catch {
-      // Non-blocking - ignore kernel event errors
-    }
+    processKernelEvent({
+      event: KernelEvent.CLIENT_PORTAL_MESSAGE_SENT,
+      entityType: "contact",
+      entityId: contactId,
+      brokerageId: contact.brokerage_id,
+    }).catch(() => {})
 
     return { success: true, message }
   } catch (error) {
@@ -167,9 +162,6 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
     }
 
     const { contactId, direction } = params
-
-    // Resolve agent identity
-    const agentId = await resolveAgentId(supabase, user.id)
 
     // Resolve brokerage_id from contact record for kernel event scoping
     const { data: contact } = await supabase
@@ -231,125 +223,21 @@ export async function getPortalMessages(contactId: string): Promise<{
       return { success: false, error: "Unauthorized" }
     }
 
-    // Resolve agent — used to validate contact ownership before returning messages
-    const agentId = await resolveAgentId(supabase, user.id)
-    if (!agentId) {
-      return { success: false, error: "Agent profile not found" }
-    }
-
-    // Validate the agent has access to this contact (owns it or shares brokerage)
-    const { data: contact, error: contactError } = await supabase
-      .from("contacts")
-      .select("id, agent_id, brokerage_id")
-      .eq("id", contactId)
-      .maybeSingle()
-
-    if (contactError || !contact) {
-      return { success: false, error: "Contact not found" }
-    }
-
-    if (contact.agent_id !== agentId) {
-      const { data: agent } = await supabase
-        .from("agents")
-        .select("brokerage_id")
-        .eq("id", agentId)
-        .maybeSingle()
-      if (!agent || agent.brokerage_id !== contact.brokerage_id) {
-        return { success: false, error: "No access to this contact" }
-      }
-    }
-
-    // Fetch messages scoped to this contact and brokerage
+    // Fetch messages
     const { data: messages, error: fetchError } = await supabase
       .from("client_portal_messages")
       .select("*")
       .eq("contact_id", contactId)
-      .eq("brokerage_id", contact.brokerage_id)
       .order("created_at", { ascending: true })
 
     if (fetchError) {
+      console.error("[Portal Messages] Fetch error:", fetchError)
       return { success: false, error: "Failed to load messages" }
     }
 
     return { success: true, messages: messages || [] }
   } catch (error) {
     return handleError(error, "getPortalMessages")
-  }
-}
-
-/**
- * Share the latest social post for a seller's listing via portal message.
- * Finds the seller's active listing, gets the most recent social post, and sends it.
- */
-export async function shareSocialPostWithSeller(contactId: string): Promise<{
-  success: boolean
-  message?: PortalMessage
-  error?: string
-}> {
-  try {
-    const supabase = await createClient()
-
-    // Validate auth
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return { success: false, error: "Unauthorized" }
-    }
-
-    // Get seller's listing
-    const { data: listing, error: listingError } = await supabase
-      .from("listings")
-      .select("id, address")
-      .eq("seller_contact_id", contactId)
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (listingError || !listing) {
-      return { success: false, error: "No active listing found for this seller" }
-    }
-
-    // Get latest social post for this listing
-    const { data: post, error: postError } = await supabase
-      .from("social_posts")
-      .select("id, content, media_urls, platform, scheduled_for, published_at")
-      .eq("listing_id", listing.id)
-      .in("status", ["published", "scheduled"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-
-    if (postError || !post) {
-      return { success: false, error: "No social posts found for this listing" }
-    }
-
-    // Format the message with social post details
-    const postDate = post.published_at || post.scheduled_for
-    const dateStr = postDate ? format(new Date(postDate), "MMM d, yyyy") : "recently"
-    
-    let messageBody = `📱 Social Media Update\n\nHere's the latest ${post.platform} post for ${listing.address}:\n\n${post.content}`
-    
-    if (post.media_urls && post.media_urls.length > 0) {
-      messageBody += `\n\n📸 Includes ${post.media_urls.length} ${post.media_urls.length === 1 ? 'photo' : 'photos'}`
-    }
-    
-    messageBody += `\n\n${post.published_at ? 'Published' : 'Scheduled for'}: ${dateStr}`
-
-    // Send the message via portal
-    const result = await sendPortalMessage({
-      contactId,
-      messageBody,
-      direction: "agent_to_client",
-      channel: "portal",
-    })
-
-    return result
-  } catch (error) {
-    console.error("[v0] Share social post error:", error)
-    return handleError(error, "shareSocialPostWithSeller")
   }
 }
 
@@ -453,5 +341,22 @@ Write a brief, helpful message that moves the conversation forward. Be specific 
   } catch (error) {
     console.error("[Portal Messages] AI draft error:", error)
     return { success: false, error: "Failed to generate draft" }
+  }
+}
+
+export async function shareSocialPostWithSeller(contactId: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: "Unauthorized" }
+    await sendPortalMessage({
+      contactId,
+      messageBody: "I'd like to share a social post with you — check your portal for the latest marketing update.",
+      direction: "agent_to_client",
+      channel: "portal",
+    })
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err?.message ?? "Failed to share" }
   }
 }

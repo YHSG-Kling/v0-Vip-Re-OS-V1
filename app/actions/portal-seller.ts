@@ -12,7 +12,6 @@ import {
   getShowingStats,
   getRecentFeedback,
   getOfferSummary,
-  deriveOverallSentiment,
   type SellerContext,
   type ShowingFeedback,
   type OfferData,
@@ -59,11 +58,11 @@ export async function getListingDetails(contactId: string) {
   const { data: listings } = await supabase
     .from("listings")
     .select(`
-      id, seller_contact_id, address, property_address, list_price, status, listing_status,
+      id, contact_id, address, property_address, list_price, status, listing_status,
       listing_date, dom, bedrooms, bathrooms, square_feet, description, primary_photo_url,
       lot_size, year_built, property_type, listing_type
     `)
-    .eq("seller_contact_id", contactId)
+    .eq("contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -110,7 +109,7 @@ export async function getShowingInsights(contactId: string) {
   const { data: listings } = await supabase
     .from("listings")
     .select("id")
-    .eq("seller_contact_id", contactId)
+    .eq("contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -156,10 +155,9 @@ export async function getShowingInsights(contactId: string) {
   // Calculate sentiment breakdown
   const sentimentBreakdown = { positive: 0, neutral: 0, negative: 0 }
   for (const fb of allFeedback) {
-    const sentiment = deriveOverallSentiment(fb)
-    if (sentiment === "positive") sentimentBreakdown.positive++
-    else if (sentiment === "neutral") sentimentBreakdown.neutral++
-    else if (sentiment === "negative") sentimentBreakdown.negative++
+    if ((fb as any).sentiment === "positive") sentimentBreakdown.positive++
+    else if ((fb as any).sentiment === "neutral") sentimentBreakdown.neutral++
+    else if ((fb as any).sentiment === "negative") sentimentBreakdown.negative++
   }
 
   // Calculate weekly showing stats (last 8 weeks)
@@ -195,7 +193,7 @@ export async function getSellerOffers(contactId: string) {
   const { data: listings } = await supabase
     .from("listings")
     .select("id, list_price")
-    .eq("seller_contact_id", contactId)
+    .eq("contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 
@@ -231,7 +229,7 @@ export async function getMarketPosition(contactId: string) {
   const { data: listings } = await supabase
     .from("listings")
     .select("id, list_price")
-    .eq("seller_contact_id", contactId)
+    .eq("contact_id", contactId)
     .order("listing_date", { ascending: false })
     .limit(1)
 

@@ -190,7 +190,7 @@ export function BuyerOverviewClient({
         toast.success(activePlan.is_paused ? "AI-ISA resumed" : "AI-ISA paused")
         await loadAutopilotPlans()
       } else {
-        toast.error(result.error || "Failed to toggle AI-ISA")
+        toast.error((result as any).error || "Failed to toggle AI-ISA")
       }
     } catch (err: any) {
       toast.error(err.message || "Failed to toggle AI-ISA")
