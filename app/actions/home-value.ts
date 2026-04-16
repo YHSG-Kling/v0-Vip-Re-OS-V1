@@ -287,8 +287,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
                 sendMagicLink: true,
               }).catch(() => {})
             }
-          })
-          .catch(() => {})
+          }, () => {})
       }
     } else {
       contactId = existingContact.id
@@ -349,7 +348,7 @@ export async function submitHomeValueRequest(formData: HomeValueFormData): Promi
         entity_type: "contact",
         status: "pending",
         priority: qualificationData?.sellTimeline === "immediately" ? "high" : "medium",
-      }).catch(() => {})
+      }).then(() => {}, () => {})
     }
 
     // Step 5: Generate AI estimate using Claude

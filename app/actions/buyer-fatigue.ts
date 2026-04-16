@@ -106,7 +106,7 @@ export async function getReinvigorationSuggestions(
       model: "anthropic/claude-opus-4.6" as any,
       messages: [
         {
-          role: "system",
+          role: "user",
           content:
             "You are an expert real estate agent coach specializing in buyer fatigue and re-engagement. " +
             "Return a JSON array of exactly 4 reinvigoration suggestions. Each suggestion is a plain string under 20 words. " +
@@ -126,7 +126,7 @@ export async function getReinvigorationSuggestions(
             `Generate 4 specific reinvigoration suggestions for the agent.`,
         },
       ],
-      maxOutputTokens: 400,
+      maxTokens: 400,
     })
 
     const suggestions: string[] = JSON.parse(text.trim())

@@ -57,9 +57,9 @@ async function getFinancialActorContext(): Promise<FinancialActorContext> {
 
   return {
     userId: user.id,
-    agentId,
-    brokerageId,
-    userType: (role ?? "agent") as "agent" | "team_lead" | "broker" | "admin" | "superadmin" | "contact" | "tc" | "compliance_manager" | "vendor",
+    agentId: agentId ?? "",
+    brokerageId: brokerageId ?? "",
+    userType: (role ?? "agent") as "agent" | "team_lead" | "broker" | "admin" | "superadmin",
   }
 }
 

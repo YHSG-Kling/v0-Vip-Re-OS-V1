@@ -246,7 +246,7 @@ ${JSON.stringify(dataSnapshot, null, 2)}`
       model: anthropic(AI_MODEL),
       system: systemPrompt,
       prompt: userPrompt,
-      maxTokens: MAX_TOKENS,
+      maxOutputTokens: MAX_TOKENS,
       temperature: 0.3,
     })
 

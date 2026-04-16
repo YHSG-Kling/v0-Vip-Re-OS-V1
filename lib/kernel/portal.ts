@@ -270,12 +270,10 @@ export async function logPortalAccess(
 
     // Emit kernel event
     await processKernelEvent({
-      eventType: KernelEvent.PORTAL_ACCESSED,
+      event: KernelEvent.PORTAL_ACCESSED,
       entityType: "contact",
       entityId: contactId,
-      agentId: agentId ?? '',
       brokerageId: '',
-      metadata: { moduleKey, action },
     })
   } catch (error) {
     // Fail silently — portal_access_logs table may not exist yet

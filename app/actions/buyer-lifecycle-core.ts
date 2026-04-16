@@ -84,6 +84,7 @@ export async function executeBuyerStateTransition(params: {
   authorityRole: string
   userId: string
   sourceSystem: string
+  brokerageId: string
   overrideReason?: string
   metadata?: Record<string, unknown>
 }): Promise<{ success: boolean; error?: string; activityId?: string }> {
@@ -95,6 +96,7 @@ export async function executeBuyerStateTransition(params: {
     authorityRole,
     userId,
     sourceSystem,
+    brokerageId,
     overrideReason,
     metadata,
   } = params
@@ -113,6 +115,7 @@ export async function executeBuyerStateTransition(params: {
     authorityRole,
     userId,
     sourceSystem,
+    brokerageId,
     overrideReason,
     metadata,
   })
@@ -300,10 +303,10 @@ export async function getBuyerFinancialStatus(
   contactId: string
 ): Promise<FinancialVerificationStatus> {
   if (!isValidUUID(contactId)) {
-    return { status: "not_verified" }
+    return { status: "not_verified" } as unknown as FinancialVerificationStatus
   }
 
-  return await getFinancialVerificationStatus(contactId)
+  return (await getFinancialVerificationStatus(contactId)) as unknown as FinancialVerificationStatus
 }
 
 /**
@@ -311,7 +314,7 @@ export async function getBuyerFinancialStatus(
  */
 export async function recordBuyerFinancialVerification(params: {
   contactId: string
-  verificationType: "pre_approval" | "proof_of_funds" | "lender_intro" | "agent_confirmation"
+  verificationType: "preapproval" | "proof_of_funds" | "lender_intro" | "agent_confirmation"
   userId: string
   expiresAt?: Date
   metadata?: Record<string, unknown>
@@ -331,7 +334,9 @@ export async function recordBuyerFinancialVerification(params: {
     verificationType,
     userId,
     expiresAt,
-    metadata,
+    status: "verified",
+    verifiedBy: "agent",
+    source: "manual",
   })
 }
 

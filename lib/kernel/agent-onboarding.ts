@@ -66,13 +66,13 @@ async function requireUserContext(
 }
 
 async function assertCanAccessAgent(params: {
-  supabase: Awaited<ReturnType<typeof createClient>>
-  userType: string
   userId: string
   agentId: string
-}): Promise<void> {
-  if (params.userType === "agent") {
-    const { data: agent, error } = await params.supabase
+}): Promise<{ brokerageId: string }> {
+  const { brokerageId, userType } = await requireUserContext(params.userId)
+  if (userType === "agent") {
+    const supabase = await createClient()
+    const { data: agent, error } = await supabase
       .from("agents")
       .select("user_id")
       .eq("id", params.agentId)
@@ -82,12 +82,10 @@ async function assertCanAccessAgent(params: {
     if (agent.user_id !== params.userId) {
       throw new Error("Forbidden: cannot access other agents' onboarding")
     }
-    return
-  }
-
-  if (!["admin", "broker", "superadmin"].includes(params.userType)) {
+  } else if (!["admin", "broker", "superadmin"].includes(userType)) {
     throw new Error("Forbidden: insufficient permissions")
   }
+  return { brokerageId }
 }
 
 function resolveSteps(params: {
@@ -150,8 +148,6 @@ export async function getAgentOnboardingDashboard(params: {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
   await assertCanAccessAgent({
-    supabase,
-    userType,
     userId: params.userId,
     agentId: params.agentId,
   })
@@ -245,8 +241,6 @@ export async function completeAISessionStep(params: {
   const { brokerageId, userType } = await requireUserContext(params.userId)
 
   await assertCanAccessAgent({
-    supabase,
-    userType,
     userId: params.userId,
     agentId: params.agentId,
   })

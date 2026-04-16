@@ -204,7 +204,7 @@ export async function recordOutcome(
   const { agentId, brokerageId } = await getAgentContext()
 
   try {
-    await recordPredictionOutcome(predictionId, outcome, agentId, brokerageId)
+    await recordPredictionOutcome(predictionId, outcome, agentId ?? "", brokerageId ?? "")
     return { success: true }
   } catch (error) {
     return {

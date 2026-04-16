@@ -34,7 +34,7 @@ interface PacketDocument {
   type: string
   name: string
   url?: string
-  content?: string
+  content?: string | Record<string, unknown> | null
   status: "pending" | "generated" | "error"
   generatedAt?: string
 }

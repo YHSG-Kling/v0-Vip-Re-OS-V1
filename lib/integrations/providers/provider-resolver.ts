@@ -5,7 +5,7 @@
  * Defaults to Dotloop if provider unknown or not configured.
  */
 
-import type { ITransactionProvider, TransactionProvider } from "./transaction-provider.interface"
+import type { ITransactionProvider } from "./transaction-provider.interface"
 import { DotloopProvider } from "./dotloop-provider"
 import { getTransactionProvider as getProviderName } from "@/lib/brokerage"
 
@@ -29,7 +29,7 @@ const PROVIDER_REGISTRY: Record<ProviderName, (creds?: ProviderCredentials) => I
  */
 export async function getTransactionProvider(
   brokerageId: string
-): Promise<TransactionProvider> {
+): Promise<ITransactionProvider> {
   const providerName = await getProviderName(brokerageId)
   
   switch (providerName) {

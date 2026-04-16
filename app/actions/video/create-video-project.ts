@@ -123,8 +123,12 @@ Return only the script text.`
   const withVoice = await applyBrandVoice({
     content: raw.text,
     brokerageId: params.brokerageId,
-    agentId: params.agentId,
-  }).catch(() => raw.text)
+    actorUserId: params.agentId,
+    actorRole: "agent",
+    journeyType: "seller",
+    persona: "seller",
+    messageType: "social",
+  }).then((r) => r.content, () => raw.text)
 
   // Compliance check
   const scriptContent = typeof withVoice === "string" ? withVoice : raw.text
@@ -142,7 +146,7 @@ Return only the script text.`
       id: "broadcast",
       first_name: "Broadcast",
       last_name: "Audience",
-      contact_type: "buyer"| "seller",
+      contact_type: "buyer",
       tcpa_consent: true,
       isa_reengage_allowed: false,
       dnc_status: false,

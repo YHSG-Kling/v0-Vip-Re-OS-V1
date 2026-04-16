@@ -27,7 +27,12 @@ export async function syncOfferDocumentsFromProvider(offerId: string, userId: st
     const provider = await getTransactionProvider(offer.external_provider)
 
     // Fetch documents from provider
-    const documents = await provider.getDocuments(offer.external_provider_id)
+    const syncResult = await provider.syncDocuments({
+      externalTransactionId: offer.external_provider_id,
+      contactId: (offer as any).contact_id ?? "",
+      transactionId: offer.transaction_id,
+    })
+    const documents = syncResult.documents ?? []
 
     // Sync to client_documents table
     for (const doc of documents) {
@@ -35,19 +40,19 @@ export async function syncOfferDocumentsFromProvider(offerId: string, userId: st
         .from("client_documents")
         .upsert({
           transaction_id: offer.transaction_id,
-          document_name: doc.name,
-          document_type: doc.type,
+          document_name: doc.documentName,
+          document_type: doc.folderName,
           external_url: doc.url,
           external_provider: offer.external_provider,
-          external_provider_id: doc.id,
-          status: doc.signed ? "signed" : "pending",
+          external_provider_id: doc.externalDocumentId,
+          status: doc.isSigned ? "signed" : "pending",
           uploaded_by: userId
         }, {
           onConflict: "external_provider_id"
         })
 
       if (insertError) {
-        console.error("[v0] Failed to sync document:", doc.name, insertError)
+        console.error("[v0] Failed to sync document:", doc.documentName, insertError)
       }
     }
 

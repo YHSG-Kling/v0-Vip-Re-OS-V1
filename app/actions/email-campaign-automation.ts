@@ -611,7 +611,7 @@ export async function prepareListingEmailCampaign(params: {
     const emailContent = await generateEmail({
       agentId: transaction.agent_id,
       emailType: params.campaignType as any,
-      propertyId: listing.id,
+      propertyIds: [listing.id],
     })
 
     if (!emailContent.success) {
@@ -644,7 +644,7 @@ export async function prepareListingEmailCampaign(params: {
         template_name: `${params.campaignType} - ${listing.address}`,
         template_type: params.campaignType,
         subject_line: emailContent.data?.subject || `New Listing: ${listing.address}`,
-        email_body: emailContent.data?.body || emailContent.data?.generated_content || "",
+        email_body: emailContent.data?.generated_content || "",
         variables: {
           property_address: listing.address,
           property_city: listing.city,

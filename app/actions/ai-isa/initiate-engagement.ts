@@ -462,8 +462,7 @@ async function dispatchToChannel(
       })
       .select('id')
       .single()
-      .then((r) => r.data)
-      .catch(() => null)
+      .then((r) => r.data, () => null)
 
     // vapi_voice_calls billing row
     await supabase.from('vapi_voice_calls').insert({
@@ -473,7 +472,7 @@ async function dispatchToChannel(
       assistant_id:  vapiAssistantId,
       agent_id:      lead.agent_id ?? null,
       contact_id:    contactRow.id,
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     // ai_isa_calls — use callPurpose as script_used (not raw systemPrompt)
     await supabase.from('ai_isa_calls').insert({
@@ -484,7 +483,7 @@ async function dispatchToChannel(
       isa_campaign_id: null,
       script_used:     'isa_qualification',
       appointment_set: false,
-    }).catch((err: any) => {
+    }).then(() => {}, (err: any) => {
       console.error('[AI-ISA] ai_isa_calls insert error (phone path):', err?.message)
     })
 

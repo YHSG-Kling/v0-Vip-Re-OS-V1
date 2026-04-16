@@ -6,11 +6,13 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { KernelEvent } from "@/lib/kernel/events"
+import { processKernelEvent } from "@/lib/kernel/notification-engine"
 import {
   resolveSellerContext,
   getShowingStats,
   getRecentFeedback,
   getOfferSummary,
+  deriveOverallSentiment,
   type SellerContext,
   type ShowingFeedback,
   type OfferData,
@@ -154,9 +156,10 @@ export async function getShowingInsights(contactId: string) {
   // Calculate sentiment breakdown
   const sentimentBreakdown = { positive: 0, neutral: 0, negative: 0 }
   for (const fb of allFeedback) {
-    if (fb.sentiment === "positive") sentimentBreakdown.positive++
-    else if (fb.sentiment === "neutral") sentimentBreakdown.neutral++
-    else if (fb.sentiment === "negative") sentimentBreakdown.negative++
+    const sentiment = deriveOverallSentiment(fb)
+    if (sentiment === "positive") sentimentBreakdown.positive++
+    else if (sentiment === "neutral") sentimentBreakdown.neutral++
+    else if (sentiment === "negative") sentimentBreakdown.negative++
   }
 
   // Calculate weekly showing stats (last 8 weeks)
@@ -313,12 +316,10 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
 export async function emitSellerPortalViewed(contactId: string) {
   const supabase = await createClient()
 
-  await processKernelEvent(supabase, {
-    type: KernelEvent.PORTAL_MODULE_VIEWED,
-    payload: {
-      contact_id: contactId,
-      module: "seller_home",
-      viewed_at: new Date().toISOString(),
-    },
-  })
+  await processKernelEvent({
+    event: KernelEvent.PORTAL_MODULE_VIEWED,
+    brokerageId: "",
+    entityType: "contact",
+    entityId: contactId,
+  }).catch(() => {})
 }

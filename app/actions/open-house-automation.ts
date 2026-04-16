@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
-import { ContentGenerationService } from "@/lib/services"
+import { ContentGenerationResult } from "@/lib/services"
 import {
   sendOpenHouseInvitation,
   sendOpenHouseReminder,
@@ -498,11 +498,9 @@ export async function sendOpenHouseInvitations(params: { eventId: string; contac
       // Send via email using the AI-generated content
       if (invitation?.id) {
         await sendOpenHouseInvitation({
-          invitationId: invitation.id,
           contactId,
           eventId: params.eventId,
-          emailContent: inviteResult.data.email_body,
-          smsContent: inviteResult.data.sms_message,
+          method: "email",
         })
       }
 
@@ -622,7 +620,7 @@ EVENT DETAILS:
 INVITATION METRICS:
 - Total Invitations Sent: ${invitations?.length || 0}
 - RSVPs: ${rsvpYes} Yes, ${rsvpMaybe} Maybe
-- No Response: ${invitations?.length - rsvpYes - rsvpMaybe || 0}
+- No Response: ${(invitations?.length ?? 0) - rsvpYes - rsvpMaybe || 0}
 
 HISTORICAL DATA (Similar Properties):
 ${

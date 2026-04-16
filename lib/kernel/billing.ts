@@ -228,7 +228,7 @@ export async function loadBillingWorkspace(
     // Fetch tier details
     const { data: tier, error: tierError } = await supabase
       .from("subscription_tiers")
-      .select("tier_name,tier_key,features")
+      .select("tier_name,tier_key,features,price_monthly")
       .eq("tier_name", subscription?.tier_name || "free")
       .maybeSingle()
 

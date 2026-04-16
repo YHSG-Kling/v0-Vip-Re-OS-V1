@@ -71,18 +71,23 @@ export async function initiateAIISAContactEngagement(contactId: string): Promise
     // GATE G: Full compliance evaluation via kernel
     const compliance = await evaluateOutbound({
       actorContext: {
-        brokerageId: contact.brokerage_id,
-        userId: contact.agent_id,
-        role: 'isa',
+        brokerageId: contact.brokerage_id ?? '',
+        userId: contact.agent_id ?? '',
+        role: 'isa' as import('@/lib/kernel/types').ActorRole,
       },
-      messageType: 'email',
+      journeyType: 'buyer' as import('@/lib/kernel/types').JourneyType,
+      persona: 'other' as import('@/lib/kernel/types').Persona,
+      messageType: 'email' as import('@/lib/kernel/types').MessageType,
       content: 'AI-ISA contact re-engagement',
       contact: {
         id:                   contactId,
+        first_name:           contact.first_name ?? "",
+        last_name:            contact.last_name ?? "",
+        contact_type:         (contact.contact_type as "buyer" | "seller" | "both" | "investor" | "vendor" | "lender") ?? "buyer",
         status:               contact.status,
-        dnc_status:           contact.dnc_status,
-        tcpa_consent:         contact.tcpa_consent,
-        isa_reengage_allowed: contact.isa_reengage_allowed,
+        dnc_status:           contact.dnc_status ?? false,
+        tcpa_consent:         contact.tcpa_consent ?? false,
+        isa_reengage_allowed: contact.isa_reengage_allowed ?? false,
       },
     })
 

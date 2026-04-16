@@ -150,7 +150,7 @@ export async function generateAIObject<T extends z.ZodType>(
       temperature: options?.temperature ?? 0.7,
       experimental_output: Output.object({ schema }),
     })
-    return { success: true, object }
+    return { success: true, object: object as z.infer<T> | undefined }
   } catch (error: any) {
     console.error("[AI generate] generateAIObject error:", error)
     return { success: false, error: error.message ?? "Failed to generate AI object" }

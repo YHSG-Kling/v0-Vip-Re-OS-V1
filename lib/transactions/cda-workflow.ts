@@ -17,8 +17,8 @@ export async function generateCDAPreview(params: {
   const commissionResult = await calculateCommission({
     transactionId: params.transactionId,
     brokerageId: params.brokerageId,
-    agentId: params.agentId,
-    preview: true
+    calculationMode: "preview",
+    triggeredBy: params.agentId,
   })
   
   if (!commissionResult.success) {
@@ -33,8 +33,8 @@ export async function generateCDAPreview(params: {
       brokerage_id: params.brokerageId,
       status: "pending",
       gross_commission: commissionResult.gross_commission,
-      agent_net: commissionResult.agent_net,
-      brokerage_net: commissionResult.brokerage_net,
+      agent_net: commissionResult.net_to_agent,
+      brokerage_net: commissionResult.net_to_brokerage,
       calculation_version: "8.0",
       created_at: new Date().toISOString()
     })

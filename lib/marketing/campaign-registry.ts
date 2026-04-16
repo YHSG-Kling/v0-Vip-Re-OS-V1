@@ -181,7 +181,7 @@ export async function getCampaignRegistry(
         items.push({
           id: r.id,
           sourceTable: table,
-          title: truncateText(r.title ?? `${table} item`, 100),
+          title: truncateText(r.title ?? `${table} item`, 100) ?? "",
           status: r.status ?? "unknown",
           createdAt: r.created_at,
           thumbnailUrl: r.thumbnail_url ?? undefined,

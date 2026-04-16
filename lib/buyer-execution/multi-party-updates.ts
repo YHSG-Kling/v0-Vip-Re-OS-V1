@@ -29,7 +29,7 @@ export interface MultiPartyUpdateContext {
 export async function lenderConfirmFinancialVerification(params: {
   contactId: string
   lenderId: string
-  verificationType: 'pre_approval' | 'proof_of_funds' | 'lender_intro'
+  verificationType: 'preapproval' | 'proof_of_funds' | 'lender_intro'
   expiresAt?: Date
   metadata?: {
     approvedAmount?: number
@@ -60,13 +60,13 @@ export async function lenderConfirmFinancialVerification(params: {
   const result = await emitFinancialVerificationEvent({
     contactId,
     verificationType,
+    status: 'verified',
+    verifiedBy: 'lender',
+    source: 'lender_intro',
     userId: lenderId,
     expiresAt,
-    metadata: {
-      ...metadata,
-      confirmed_by_lender: true,
-      lender_id: lenderId,
-    }
+    lenderName: metadata?.lenderName,
+    preApprovalAmount: metadata?.approvedAmount,
   })
   
   if (!result.success) {
@@ -212,13 +212,11 @@ export async function adminOverrideFinancialGate(params: {
   await emitFinancialVerificationEvent({
     contactId,
     verificationType: 'agent_confirmation',
+    status: 'verified',
+    verifiedBy: 'admin',
+    source: 'manual',
     userId: adminId,
     expiresAt,
-    metadata: {
-      override: true,
-      override_reason: reason,
-      override_by_role: user.role,
-    }
   })
   
   // Log override (high severity)

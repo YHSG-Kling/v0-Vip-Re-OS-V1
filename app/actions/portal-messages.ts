@@ -190,9 +190,7 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
       event: KernelEvent.PORTAL_MODULE_VIEWED,
       entityType: "contact",
       entityId: contactId,
-      agentId: agentId || null,
-      brokerageId: null,
-      
+      brokerageId: "",
     }).catch(() => {})
 
     return { success: true, count: data?.length || 0 }

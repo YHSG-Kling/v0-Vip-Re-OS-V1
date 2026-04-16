@@ -121,7 +121,7 @@ export async function runImport(params: {
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) throw new Error('Unauthorized')
 
-  const { brokerageId } = await getAgentContext(user.id)
+  const { brokerageId } = await getAgentContext()
 
   // Remap rows using the user-defined field map
   const remapped = params.rows.map((row) => {
@@ -133,7 +133,7 @@ export async function runImport(params: {
   })
 
   return processImportRows({
-    brokerageId,
+    brokerageId: brokerageId ?? "",
     agentUserId: user.id,
     importId: params.importId,
     rows: remapped,
@@ -157,7 +157,7 @@ export async function listImports(): Promise<{
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) throw new Error('Unauthorized')
 
-  const { brokerageId } = await getAgentContext(user.id)
+  const { brokerageId } = await getAgentContext()
 
   const { data, error } = await supabase
     .from('lead_imports')

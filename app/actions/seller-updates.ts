@@ -118,7 +118,7 @@ export async function generateSellerUpdateDraft({ listingId, agentId }: Generate
 
   // Build context for AI
   const sellerName = listing.contacts
-    ? `${listing.contacts.first_name} ${listing.contacts.last_name}`
+    ? `${(listing.contacts as any[])[0]?.first_name ?? ""} ${(listing.contacts as any[])[0]?.last_name ?? ""}`.trim() || "Seller"
     : "Seller"
 
   const showingCount = showings?.length || 0

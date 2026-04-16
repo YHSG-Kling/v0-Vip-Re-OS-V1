@@ -184,7 +184,7 @@ export async function resolveEducationContext(
       .eq("status", "pending")
       .eq("is_client_visible", true)
       .order("milestone_date", { ascending: true })
-      .limit(1)
+      .maybeSingle()
 
     if (milestone) {
       currentMilestone = milestone.milestone_name

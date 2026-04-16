@@ -85,7 +85,6 @@ export async function ingestVoiceTranscript(
       contactId: params.contactId,
       agentId: params.callMetadata.agentId,
       transactionId: params.callMetadata.transactionId,
-      listingId: params.callMetadata.listingId,
     })
 
     if (!result.success) {

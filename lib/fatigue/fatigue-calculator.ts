@@ -219,7 +219,7 @@ export async function calculateFatigue(
                 `Engagement: ${engagementTrend}. What should the agent do?`,
             },
           ],
-          maxTokens: 120,
+          maxOutputTokens: 120,
         })
         alertMessage = text.trim()
       } catch {

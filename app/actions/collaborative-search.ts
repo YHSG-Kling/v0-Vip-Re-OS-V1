@@ -176,8 +176,9 @@ export async function inviteFamilyMember(
     .eq("id", searchId)
     .single()
   
-  const inviterName = search?.contacts 
-    ? `${search.contacts.first_name} ${search.contacts.last_name}`
+  const contacts = search?.contacts ?? []
+  const inviterName = contacts[0]
+    ? `${contacts[0].first_name} ${contacts[0].last_name}`
     : "A colleague"
 
   await sendCollaborativeSearchInvite({

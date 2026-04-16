@@ -679,7 +679,7 @@ export async function createListing(params: ListingIntakeData) {
       agentId: params.agentId,
       listingId: listing.id,
       propertyAddress: params.propertyAddress,
-      sellerId: params.sellerId,
+      sellerId: params.sellerId ?? "",
       transactionType: "listing",
     })
 
@@ -797,6 +797,7 @@ export async function runCompleteListingIntake(params: {
     // Step 6: Create the listing
     const listingResult = await createListing({
       agentId: params.agentId,
+      brokerageId: "",
       propertyAddress: params.address,
       city: params.city,
       state: params.state,

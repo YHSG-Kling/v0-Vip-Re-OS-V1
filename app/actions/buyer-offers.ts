@@ -172,15 +172,27 @@ export async function resolveFormSource(buyerId: string, brokerageId: string): P
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
 export interface StrategyRecommendation {
-  strategy: string
-  confidence: number
-  reasoning: string
+  id?: string
+  strategy?: string
+  confidence?: number
+  reasoning?: string
   suggestedPrice?: number
   competitivenessScore?: number
   escalationClause?: boolean
   daysToClose?: number
   contingencies?: string[]
-  generatedAt: string
+  generatedAt?: string
+  recommended_price?: number
+  recommended_earnest?: number
+  recommended_contingencies?: any
+  strategy_type?: string
+  ai_narrative?: string
+  success_probability?: number
+  risk_factors?: any[]
+  comparable_context?: string
+  template_id?: string | null
+  created_at?: string
+  status?: string
 }
 export async function getOrGenerateStrategyRecommendation(
   contactId: string,

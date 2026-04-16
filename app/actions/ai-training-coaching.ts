@@ -50,8 +50,8 @@ export async function analyzeAgentPerformance(params: {
       .order("created_at", { ascending: false })
       .limit(200)
 
-    const { text: analysis } = await generateText(
-      `Analyze this agent's performance and provide coaching insights:
+    const { text: analysis } = await generateText({
+      prompt: `Analyze this agent's performance and provide coaching insights:
 
 Transactions: ${transactions?.length || 0}
 Contacts: ${contacts?.length || 0}
@@ -61,8 +61,9 @@ Provide insights on:
 1. Performance strengths
 2. Areas for improvement
 3. Recommended training areas
-4. Commission optimization opportunities`
-    )
+4. Commission optimization opportunities`,
+      feature: "ai_coaching",
+    })
 
     return {
       success: true,
@@ -169,7 +170,7 @@ Generate a detailed role-play scenario including:
           difficulty: params.difficulty || "medium"
         }
       })
-      .catch((err) => {
+      .then(() => {}, (err) => {
         console.error("[v0] Failed to log scenario generation:", err)
       })
 
@@ -300,7 +301,7 @@ Provide evaluation including:
           score: evaluation.score
         }
       })
-      .catch((err) => {
+      .then(() => {}, (err) => {
         console.error("[v0] Failed to log evaluation:", err)
       })
 

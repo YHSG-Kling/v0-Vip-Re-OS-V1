@@ -262,7 +262,7 @@ Fair Housing compliance (Gate 4 — mandatory):
       model: "claude-sonnet",
       system: systemPrompt,
       prompt: userPrompt,
-      maxOutputTokens: 1024,
+      maxTokens: 1024,
       temperature: 0.7,
       metadata: {
         feature: "video_script_generation",

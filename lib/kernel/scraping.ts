@@ -431,7 +431,7 @@ export async function ingestRawSourceBatch(
   }
 
   // Open scraper_executions record for this source batch
-  const { data: execRecord } = await supabase
+  const execRecordResult = await supabase
     .from('scraper_executions')
     .insert({
       brokerage_id:  params.brokerageId,
@@ -441,7 +441,8 @@ export async function ingestRawSourceBatch(
     })
     .select('id')
     .maybeSingle()
-    .catch(() => ({ data: null }))
+    .then(r => r, () => ({ data: null }))
+  const execRecord = execRecordResult?.data
 
   const execId = (execRecord as any)?.id ?? params.executionId
 
@@ -989,7 +990,7 @@ export async function promoteQualifiedRawToLead(
       match_details:             {},
       new_enrichment_confidence: params.enriched.enrichmentConfidence,
       created_at:                new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true, leadId, error: null }
   } catch (err) {

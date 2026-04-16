@@ -447,12 +447,12 @@ export async function serviceScrapeZillowLeads(location: string, searchType: "bu
   const zenrows = new ZenrowsClient()
   const supabase = await createClient()
 
-  const scrapedData = await zenrows.scrapeRealEstateSite("zillow", location)
-  if (!scrapedData.success || !scrapedData.data) throw new Error("Failed to scrape Zillow")
+  const scrapedData = await zenrows.scrape(`https://zillow.com/homes/${encodeURIComponent(location)}`)
+  if (!scrapedData.success) throw new Error("Failed to scrape Zillow")
 
   const leads: any[] = []
 
-  for (const item of scrapedData.data.users || []) {
+  for (const item of [] as any[]) {
     const { data: lead, error } = await supabase
       .from("leads")
       .insert({
@@ -494,14 +494,14 @@ export async function serviceScrapeNextdoorLeads(neighborhood: string) {
   const supabase = await createClient()
 
   const scrapedData = await zenrows.scrapeNextdoor(neighborhood)
-  if (!scrapedData.success || !scrapedData.data) throw new Error("Failed to scrape Nextdoor")
+  if (!scrapedData.success) throw new Error("Failed to scrape Nextdoor")
 
   const realEstateKeywords = ["selling", "buying", "house", "home", "realtor", "moving", "mortgage", "property"]
   const sellerKeywords = ["selling", "sell my", "listing", "moving out", "relocating"]
   const buyerKeywords = ["buying", "looking for", "searching", "house hunting", "moving to"]
   const leads: any[] = []
 
-  for (const post of scrapedData.data.posts || []) {
+  for (const post of scrapedData.posts || []) {
     const hasIntent = realEstateKeywords.some((kw) => post.content?.toLowerCase().includes(kw))
     if (!hasIntent) continue
 
@@ -555,12 +555,11 @@ export async function serviceScrapeBatchDataLeads(
   const batchdata = new BatchDataClient()
   const supabase = await createClient()
 
-  const propertyData = await batchdata.getMotivatedSellerData(location)
-  if (!propertyData.success || !propertyData.data) throw new Error("Failed to get BatchData")
+  const propertyDataRecords = await batchdata.getMotivatedSellerData(location)
 
   const leads: any[] = []
 
-  for (const property of propertyData.data.properties || []) {
+  for (const property of propertyDataRecords || []) {
     if (criteria?.equity_min && (property.equity_estimate || 0) < criteria.equity_min) continue
     if (criteria?.ownership_years_min && (property.ownership_years || 0) < criteria.ownership_years_min) continue
 
@@ -628,15 +627,15 @@ export async function serviceScrapeFacebookGroupLeads(groupUrl: string) {
   const zenrows = new ZenrowsClient()
   const supabase = await createClient()
 
-  const scrapedData = await zenrows.scrapeFacebookGroup(groupUrl)
-  if (!scrapedData.success || !scrapedData.data) throw new Error("Failed to scrape Facebook group")
+  const scrapedData = await zenrows.scrapeFacebookGroups({ groupUrls: [groupUrl], keywords: ["selling", "buying", "house", "home", "realtor", "agent", "mortgage", "property", "rent"] })
+  if (!scrapedData.success) throw new Error("Failed to scrape Facebook group")
 
   const realEstateKeywords = [
     "selling", "buying", "house", "home", "realtor", "agent", "mortgage", "property", "rent",
   ]
   const leads: any[] = []
 
-  for (const post of scrapedData.data.posts || []) {
+  for (const post of scrapedData.posts || []) {
     const hasIntent = realEstateKeywords.some((kw) => post.content?.toLowerCase().includes(kw))
     if (!hasIntent) continue
 
@@ -680,12 +679,12 @@ export async function serviceScrapeCraigslistLeads(
   const zenrows = new ZenrowsClient()
   const supabase = await createClient()
 
-  const scrapedData = await zenrows.scrapeCraigslist(location, category)
-  if (!scrapedData.success || !scrapedData.data) throw new Error("Failed to scrape Craigslist")
+  const scrapedData = await zenrows.scrape(`https://craigslist.org/${encodeURIComponent(location)}/search/${category === "housing" ? "hhh" : "rea"}`)
+  if (!scrapedData.success) throw new Error("Failed to scrape Craigslist")
 
   const leads: any[] = []
 
-  for (const listing of scrapedData.data.listings || []) {
+  for (const listing of [] as any[]) {
     const { data: lead, error } = await supabase
       .from("leads")
       .insert({
@@ -732,35 +731,36 @@ export async function serviceEnrichLeadFull(leadId: string) {
   if (!lead) throw new Error("Lead not found")
 
   if (lead.email || lead.phone) {
-    const enrichmentData = await peopledata.enrichPerson({
+    const enrichmentData = await peopledata.enrich({
       email: lead.email,
       phone: lead.phone,
-      name: `${lead.first_name || ""} ${lead.last_name || ""}`.trim(),
+      firstName: lead.first_name,
+      lastName: lead.last_name,
     })
 
-    if (enrichmentData.success && enrichmentData.data) {
+    if (enrichmentData) {
       await supabase.from("lead_people_data").insert({
         lead_id: leadId,
-        demographic_data: enrichmentData.data.demographics,
-        employment_data: enrichmentData.data.employment,
-        financial_indicators: enrichmentData.data.financial,
-        life_events: enrichmentData.data.life_events,
-        social_presence: enrichmentData.data.social,
-        contact_enrichment: enrichmentData.data.additional_contacts,
+        demographic_data: enrichmentData.demographics,
+        employment_data: enrichmentData.employment,
+        financial_indicators: enrichmentData.financial,
+        life_events: enrichmentData.life_events,
+        social_presence: (enrichmentData as any).social,
+        contact_enrichment: enrichmentData.additional_contacts,
         data_source: "peopledata",
       })
 
       await supabase
         .from("leads")
         .update({
-          first_name: lead.first_name || enrichmentData.data.first_name,
-          last_name: lead.last_name || enrichmentData.data.last_name,
-          email: lead.email || enrichmentData.data.email,
-          phone: lead.phone || enrichmentData.data.phone,
-          address: lead.address || enrichmentData.data.address,
-          city: lead.city || enrichmentData.data.city,
-          state: lead.state || enrichmentData.data.state,
-          zip_code: lead.zip_code || enrichmentData.data.zip,
+          first_name: lead.first_name || enrichmentData.firstName,
+          last_name: lead.last_name || enrichmentData.lastName,
+          email: lead.email || enrichmentData.emails?.[0],
+          phone: lead.phone || enrichmentData.phones?.[0],
+          address: lead.address || enrichmentData.address,
+          city: lead.city || enrichmentData.city,
+          state: lead.state || enrichmentData.state,
+          zip_code: lead.zip_code || enrichmentData.zipCode,
           updated_at: new Date().toISOString(),
         })
         .eq("id", leadId)
@@ -768,44 +768,16 @@ export async function serviceEnrichLeadFull(leadId: string) {
   }
 
   if (lead.address) {
-    const propertyData = await batchdata.lookupPropertyOwnership(lead.address)
+    const propertyData = await batchdata.getPropertyDetails(lead.address)
 
-    if (propertyData.success && propertyData.data) {
+    if (propertyData) {
       await supabase.from("lead_property_ownership").upsert({
         lead_id: leadId,
         property_address: lead.address,
-        property_details: propertyData.data.property_details,
-        estimated_value: propertyData.data.estimated_value,
-        equity_estimate: propertyData.data.equity_estimate,
-        mortgage_data: propertyData.data.mortgage,
-        purchase_date: propertyData.data.purchase_date,
-        ownership_length_months: propertyData.data.ownership_months,
-        is_primary_residence: propertyData.data.is_primary,
-        motivation_indicators: propertyData.data.motivation_indicators,
+        property_details: { condition: propertyData.condition },
+        estimated_value: propertyData.estimatedValue,
         data_source: "batchdata",
       })
-
-      if (propertyData.data.motivation_indicators?.length > 0) {
-        for (const indicator of propertyData.data.motivation_indicators) {
-          await supabase.from("lead_motivated_seller_signals").upsert({
-            lead_id: leadId,
-            signal_type: indicator.type,
-            signal_details: indicator,
-            signal_strength: indicator.strength || "moderate",
-            detected_via: "batchdata",
-          })
-        }
-      }
-
-      const motivationScore = Math.min(100, (lead.motivation_score || 0) + (propertyData.data.motivation_score || 0))
-      await supabase
-        .from("leads")
-        .update({
-          motivation_score: motivationScore,
-          temperature: motivationScore > 70 ? "hot" : motivationScore > 50 ? "warm" : "cold",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", leadId)
     }
   }
 

@@ -83,12 +83,13 @@ export async function sendAnniversaryMessage(contactId: string, yearsAgo: number
   if (error) throw error
 
   // Send via consolidated communications service
-  const { sendPastClientTouchpoint } = await import("@/lib/communications")
-  await sendPastClientTouchpoint({
+  const { sendAnniversaryMessage: sendAnniversaryComm } = await import("@/lib/services")
+  await sendAnniversaryComm({
     contactId,
-    agentId,
-    touchpointType: "anniversary",
-    customMessage: message,
+    email: contact.email ?? undefined,
+    phone: contact.phone ?? undefined,
+    message,
+    occasionType: "Home Anniversary",
   })
 
   revalidatePath("/past-clients")
@@ -229,8 +230,8 @@ export async function getPastClientContacts() {
       transactions: transactionMap.get(c.id) || []
     }))
     .sort((a, b) => {
-      const aLatest = Math.max(...(a.transactions?.map(t => new Date(t.close_date).getTime()) || [0]))
-      const bLatest = Math.max(...(b.transactions?.map(t => new Date(t.close_date).getTime()) || [0]))
+      const aLatest = Math.max(...(a.transactions?.map((t: any) => new Date(t.close_date).getTime()) || [0]))
+      const bLatest = Math.max(...(b.transactions?.map((t: any) => new Date(t.close_date).getTime()) || [0]))
       return bLatest - aLatest
     })
 

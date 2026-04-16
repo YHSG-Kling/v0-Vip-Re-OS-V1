@@ -19,14 +19,15 @@ export async function getLenderTransactionDetail(transactionId: string, lenderId
   const { data: lender } = await supabase
     .from("lender_portal_users")
     .select("id, user_id, lender_company, brokerage_id")
-    .eq("id", data.lenderId)
+    .eq("id", lenderId)
     .single()
 
   if (!lender) throw new Error("Lender not found")
 
   // Auth: lender is authorized if they are directly assigned to this transaction
   // via lender_portal_users.transaction_id OR via transactions.lender_id
-  const isDirectlyAssigned = lender.transaction_id === transactionId
+  // lender_portal_users has no transaction_id column; authorization is checked via transactions.lender_id below
+  const isDirectlyAssigned = false
 
   const { data: txnLenderCheck } = await supabase
     .from("transactions")
@@ -193,7 +194,7 @@ export async function issueClearToClose(data: {
       contact_id: transaction.buyer_contact_id,
       direction: "outbound",
       channel: "portal",
-      body: `Great news! ${lender.lender_company || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
+      body: `Great news! ${lender.company_name || "Your lender"} has issued Clear to Close for ${transaction.property_address || "your property"}. You are one step closer to closing!`,
       created_at: new Date().toISOString(),
     })
   }

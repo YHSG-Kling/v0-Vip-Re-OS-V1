@@ -140,7 +140,7 @@ export async function linkQrToAsset(
     },
   }).catch((err) => console.error("[QrAssetLinker] Kernel event failed:", err))
 
-  return { success: true, linkId: link.id }
+  return { success: true, linkId: link.id ?? "" }
 }
 
 // ─── UNLINK QR FROM ASSET ─────────────────────────────────────────────────────

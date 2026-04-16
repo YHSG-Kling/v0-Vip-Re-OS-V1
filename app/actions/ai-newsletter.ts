@@ -85,7 +85,7 @@ export async function aiGenerateSubjectLines(params: {
     }
 
     // Kernel: Feature access check
-    const access = await canAccessFeature("newsletter_engine", params.brokerageId, params.agentId)
+    const access = await canAccessFeature(params.agentId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -158,7 +158,7 @@ export async function aiWriteNewsletterContent(params: {
     }
 
     // Kernel: Feature access check
-    const access = await canAccessFeature("newsletter_engine", params.brokerageId, params.agentId)
+    const access = await canAccessFeature(params.agentId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -208,11 +208,14 @@ Include clear CTAs where appropriate.`,
       content.sections.map(async (section: any) => {
         const branded = await applyBrandVoice({
           brokerageId: params.brokerageId,
-          agentId: params.agentId,
+          actorUserId: params.agentId,
+          actorRole: "agent",
+          journeyType: "seller",
+          persona: "seller",
+          messageType: "email",
           content: section.content,
-          contentType: "newsletter",
         })
-        return { ...section, content: branded.brandedContent || section.content }
+        return { ...section, content: branded.content || section.content }
       })
     )
 
@@ -239,7 +242,7 @@ Include clear CTAs where appropriate.`,
       }
     }
 
-    await incrementFeatureUsage("newsletter_engine", params.brokerageId, params.agentId)
+    await incrementFeatureUsage(params.agentId, "newsletter_engine")
 
     // Build a flat markdown string from sections for simple display
     const flatContent = brandedSections
@@ -364,7 +367,7 @@ export async function aiPersonalizeNewsletter(params: {
           text: z.string(),
           url: z.string(),
         }),
-        dynamicContent: z.record(z.string()),
+        dynamicContent: z.record(z.string(), z.string()),
       }),
       prompt: `Personalize this newsletter for the contact.
 
@@ -406,7 +409,7 @@ export async function createNewsletterCampaign(params: {
     }
 
     // Kernel: Feature access check
-    const access = await canAccessFeature("newsletter_engine", params.brokerageId, params.agentId)
+    const access = await canAccessFeature(params.agentId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }
@@ -463,7 +466,7 @@ export async function createNewsletterCampaign(params: {
       }).catch((err) => console.error("[Kernel] NEWSLETTER_SCHEDULED error:", err))
     }
 
-    await incrementFeatureUsage("newsletter_engine", params.brokerageId, params.agentId)
+    await incrementFeatureUsage(params.agentId, "newsletter_engine")
 
     revalidatePath("/content-studio")
     revalidatePath("/dashboard/marketing/studio")
@@ -489,7 +492,7 @@ export async function sendNewsletter(params: { newsletterId: string; agentId: st
     }
 
     // Kernel: Feature access check
-    const access = await canAccessFeature("newsletter_engine", params.brokerageId, params.agentId)
+    const access = await canAccessFeature(params.agentId, "newsletter_engine")
     if (!access.allowed) {
       return { success: false, error: access.reason || "Feature not available" }
     }

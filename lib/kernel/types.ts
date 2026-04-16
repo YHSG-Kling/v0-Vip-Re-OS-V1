@@ -24,6 +24,7 @@ export type EntityType =
   | "business_card"
   | "territory"
   | "contact"
+  | "agent_onboarding_machine"
 
 // ── Lead Lifecycle States (Layer 2, Track A) ──────────────────────────────
 export type LeadLifecycleStage =

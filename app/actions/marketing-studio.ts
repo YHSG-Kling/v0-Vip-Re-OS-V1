@@ -480,7 +480,7 @@ export async function approveAsset(assetId: string) {
   const complianceResult = await checkBrandCompliance({
     contentType: "listing_media",
     contentId: assetId,
-    brokerageId,
+    brokerageId: brokerageId ?? "",
   })
 
   if (!complianceResult.passed) {
@@ -887,7 +887,7 @@ export async function generateCampaignContent(params: {
 
   // Apply brand voice check
   const brandVoiceResult = await applyBrandVoice({
-    brokerageId,
+    brokerageId: brokerageId ?? "",
     actorUserId: userId,
     actorRole: "agent" as ActorRole,
     journeyType: campaign?.campaign_type === "listing" ? "seller" : "buyer",

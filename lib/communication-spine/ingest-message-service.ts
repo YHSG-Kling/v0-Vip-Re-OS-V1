@@ -62,7 +62,7 @@ export async function ingestMessageService(
       transactionId: params.transactionId,
       listingId: params.listingId,
       agentId: params.agentId,
-      initialChannel: params.rawMessage?.channel || params.outboundMessage?.channel,
+      initialChannel: (params.rawMessage?.channel || params.outboundMessage?.channel) as "email" | "sms" | "social_dm" | "voice" | undefined,
     })
 
     if (!convResult.success || !convResult.conversationId) {
@@ -130,9 +130,9 @@ export async function ingestMessageService(
     const persistResult = await persistMessageWithContext(normalizedMessage, {
       conversationId: convResult.conversationId,
       contactId: params.contactId,
+      brokerageId: contact.brokerage_id,
       agentId: params.agentId,
       transactionId: params.transactionId,
-      listingId: params.listingId,
     })
 
     if (!persistResult.success) {

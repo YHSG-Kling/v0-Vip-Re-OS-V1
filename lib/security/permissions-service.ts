@@ -380,7 +380,7 @@ export const permissionsService = {
         ctx.teamIds?.includes(record.team_id || '') ||
         ctx.teamIds?.includes(record.agent_id || '') ||
         ctx.managedAgentIds?.includes(record.agent_id || '')
-      return isOwner || isAssigned || !!isTeamRecord || isSharedWith
+      return isOwner || isAssigned || !!isTeamRecord || (isSharedWith ?? false)
     }
 
     if (ctx.role === 'contact') {

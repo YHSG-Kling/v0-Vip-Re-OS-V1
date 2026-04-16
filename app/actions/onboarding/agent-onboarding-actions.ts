@@ -11,7 +11,7 @@ export async function fetchMyOnboardingDashboard() {
 
   const { agentId } = await getAgentContext()
 
-  return await getAgentOnboardingDashboard({ userId: user.id, agentId })
+  return await getAgentOnboardingDashboard({ userId: user.id, agentId: agentId ?? "" })
 }
 
 export async function completeMyOnboardingStep(stepId: string, data?: {
@@ -25,5 +25,5 @@ export async function completeMyOnboardingStep(stepId: string, data?: {
 
   const { agentId } = await getAgentContext()
 
-  await completeAISessionStep({ userId: user.id, agentId, stepId, data })
+  await completeAISessionStep({ userId: user.id, agentId: agentId ?? "", stepId, data })
 }

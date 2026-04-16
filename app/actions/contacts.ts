@@ -172,9 +172,9 @@ export async function createContact(contactData: {
       zip_code:        contactData.zip_code ?? null,
       contact_type:    contactData.contact_type ?? "buyer",
       status:          contactData.status ?? "new",
-      contact_persona: contactData.contact_persona ?? null,
-      notes:           contactData.notes ?? null,
-      preferred_channel: contactData.preferred_channel ?? null,
+      contact_persona: contactData.contact_persona ?? undefined,
+      notes:           contactData.notes ?? undefined,
+      preferred_channel: contactData.preferred_channel ?? undefined,
       tcpa_consent:    contactData.tcpa_consent ?? false,
       agent_id:        agentId,   // agents.id — FK-correct
       brokerage_id:    brokerageId,

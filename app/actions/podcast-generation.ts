@@ -45,7 +45,12 @@ export async function createPodcastEpisode(params: {
   // Get agent context for proper FK relationships and kernel calls
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
-    agentContext = await getAgentContext()
+    const ctx = await getAgentContext()
+    agentContext = {
+      userId: ctx.userId,
+      agentId: ctx.agentId ?? ctx.userId,
+      brokerageId: ctx.brokerageId ?? "",
+    }
   } catch {
     return { success: false, error: "Not authenticated" }
   }
@@ -138,7 +143,11 @@ export async function createPodcastEpisode(params: {
       content: finalScript,
       contact: {
         id: agentId, // Use agent as the "contact" for broadcast content
+        first_name: "",
+        last_name: "",
+        contact_type: "buyer" as const,
         tcpa_consent: true, // Podcast is not direct outreach
+        isa_reengage_allowed: true,
         dnc_status: false,
         status: "active",
       },
@@ -260,7 +269,12 @@ export async function generatePodcastAudio(episodeId: string) {
   // Get agent context for proper FK relationships and kernel calls
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
-    agentContext = await getAgentContext()
+    const ctx = await getAgentContext()
+    agentContext = {
+      userId: ctx.userId,
+      agentId: ctx.agentId ?? ctx.userId,
+      brokerageId: ctx.brokerageId ?? "",
+    }
   } catch {
     return { success: false, error: "Not authenticated" }
   }
@@ -535,7 +549,12 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
   // Get agent context for proper FK relationships and kernel calls
   let agentContext: { userId: string; agentId: string; brokerageId: string }
   try {
-    agentContext = await getAgentContext()
+    const ctx = await getAgentContext()
+    agentContext = {
+      userId: ctx.userId,
+      agentId: ctx.agentId ?? ctx.userId,
+      brokerageId: ctx.brokerageId ?? "",
+    }
   } catch {
     return { success: false, error: "Not authenticated" }
   }

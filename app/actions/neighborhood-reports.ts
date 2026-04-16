@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { KernelEvent } from "@/lib/kernel/events"
-import Anthropic from "@anthropic-ai/sdk"
+import { generateAIText } from "@/lib/ai"
 
 // Types
 export interface NeighborhoodReport {
@@ -217,13 +217,8 @@ export async function refreshNeighborhoodReport(listingId: string): Promise<{
   const houseCanaryHadData = Object.keys(reportData).length > 0
   if (!houseCanaryHadData) {
     try {
-      const aiStructuredMsg = await anthropic.messages.create({
-        model: "claude-opus-4-20250514",
-        max_tokens: 600,
-        messages: [
-          {
-            role: "user",
-            content: `You are a real estate data assistant. Provide realistic neighborhood market data for this property. Return ONLY valid JSON — no markdown, no explanation.
+      const { text: rawStructured } = await generateAIText(
+        `You are a real estate data assistant. Provide realistic neighborhood market data for this property. Return ONLY valid JSON — no markdown, no explanation.
 
 Property: ${listing.address}, ${listing.city}, ${listing.state} ${listing.zip}
 List Price: $${listing.list_price?.toLocaleString() || "N/A"}
@@ -241,14 +236,9 @@ Return this exact JSON structure:
   "market_trend": "appreciating"|"stable"|"depreciating",
   "school_ratings": [{ "school_name": string, "rating": number, "level": "elementary"|"middle"|"high", "distance": number }]
 }`,
-          },
-        ],
-      })
-
-      const rawStructured = aiStructuredMsg.content[0].type === "text"
-        ? aiStructuredMsg.content[0].text.trim()
-        : ""
-      const aiStructured = JSON.parse(rawStructured)
+        { maxTokens: 600, feature: "neighborhood_report" }
+      )
+      const aiStructured = JSON.parse(rawStructured.trim())
 
       reportData = {
         median_home_price: aiStructured.median_home_price,
@@ -284,12 +274,11 @@ Focus on buyer appeal, market positioning, and neighborhood highlights. Keep it 
 
   let aiSummary = ""
   try {
-    const message = await anthropic.messages.create({
-      model: "claude-opus-4-20250514",
-      max_tokens: 500,
-      messages: [{ role: "user", content: aiSummaryPrompt }],
+    const { text: summaryText } = await generateAIText(aiSummaryPrompt, {
+      maxTokens: 500,
+      feature: "neighborhood_report",
     })
-    aiSummary = message.content[0].type === "text" ? message.content[0].text : ""
+    aiSummary = summaryText
   } catch (err) {
     console.error("[v0] AI summary generation error:", err)
   }

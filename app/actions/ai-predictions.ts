@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { generateAIJSON } from "@/lib/ai"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
 
 // ============================================
 // PREDICTIVE LEAD CONVERSION ENGINE
@@ -161,12 +162,12 @@ export async function predictLeadConversion(leadId: string): Promise<LeadPredict
   } catch (e) { /* Table may not exist */ }
 
   // Calculate days since first contact
-  const daysSinceFirstContact = lead.created_at
-    ? Math.floor((Date.now() - new Date(lead.created_at).getTime()) / (1000 * 60 * 60 * 24))
+  const daysSinceFirstContact = (lead as any).created_at
+    ? Math.floor((Date.now() - new Date((lead as any).created_at).getTime()) / (1000 * 60 * 60 * 24))
     : 0
 
   // Count email opens from behavioral data
-  const emailOpens = behavioralData.filter((b) => b.event_type === "email_open").length
+  const emailOpens = behavioralData.filter((b: any) => b.event_type === "email_open").length
 
   // Build the AI prompt
   const prompt = `You are an advanced real estate AI that predicts lead conversion probability.
@@ -257,7 +258,7 @@ Respond with JSON only:
         entity_id: leadId,
         prediction_value: prediction,
         confidence_score: prediction.confidence,
-        prediction_factors: extractFactors(lead, leadIntelligence, engagementScores, propertyInteractions),
+        prediction_factors: extractFactors(leadRecord, leadIntelligence, engagementScores, propertyInteractions) as any,
         model_version: "v1.0",
       })
     } catch (e) {
@@ -880,7 +881,7 @@ Respond with JSON:
         entity_type: "transaction",
         entity_id: transactionId,
         prediction_value: prediction,
-        confidence_score: prediction.confidence || 0.5,
+        confidence_score: prediction.data?.confidence || 0.5,
         model_version: "v1.0",
       })
       .select()
@@ -891,8 +892,8 @@ Respond with JSON:
     }
 
     // Create AI insights for critical risks
-    if (prediction.riskFactors?.some((r: any) => r.severity === "high")) {
-      const criticalRisks = prediction.riskFactors.filter((r: any) => r.severity === "high")
+    if (prediction.data?.riskFactors?.some((r: any) => r.severity === "high")) {
+      const criticalRisks = prediction.data?.riskFactors.filter((r: any) => r.severity === "high")
 
       for (const risk of criticalRisks) {
         await supabase.from("ai_insights").insert({
@@ -1031,7 +1032,7 @@ Provide ACTIONABLE coaching. Respond with JSON:
     const { data: intelligence, error: saveError } = await supabase
       .from("conversation_insights")
       .insert({
-        contact_id: data.contactId ?? null,
+        contact_id: data.leadId ?? null,
         agent_id: data.agentId ?? null,
         conversation_id: data.conversationId ?? null,
         overall_sentiment: result.sentiment?.label ?? "neutral",
@@ -1749,7 +1750,7 @@ export async function predictWinningOffer(data: {
   const idxClient = new IDXBrokerClient()
 
   // Get property intelligence
-  const property = await idxClient.getPropertyDetails(data.propertyMlsId)
+  const property = await idxClient.searchProperties(data.propertyMlsId)
 
   const { data: insights } = await supabase
     .from("property_smart_insights")
@@ -2352,7 +2353,7 @@ export async function optimizeShowingRoute(data: {
   const { IDXBrokerClient } = await import("@/lib/idxbroker-client")
   const idxClient = new IDXBrokerClient()
 
-  const properties = await Promise.all(data.propertyIds.map((_id) => idxClient.getProperties({ ...params })))
+  const properties = await Promise.all(data.propertyIds.map((id) => idxClient.searchProperties(id)))
 
   const prompt = `You are an AI showing coordinator. Optimize this showing route:
 

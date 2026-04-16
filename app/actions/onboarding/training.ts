@@ -320,7 +320,7 @@ export async function recordVideoProgress(
       // Fire TRAINING_VIDEO_COMPLETED
       await processKernelEvent({
         event: KernelEvent.TRAINING_VIDEO_COMPLETED,
-        brokerageId,
+        brokerageId: brokerageId ?? "",
         entityType: "training_video",
         entityId: videoId,
       })
@@ -350,9 +350,9 @@ export async function recordVideoProgress(
         // Fire TRAINING_COURSE_COMPLETED
         await processKernelEvent({
           event: KernelEvent.TRAINING_COURSE_COMPLETED,
-          brokerageId,
+          brokerageId: brokerageId ?? "",
           entityType: "agent",
-          entityId: agentId,
+          entityId: agentId ?? "",
         })
       }
     }
@@ -414,7 +414,7 @@ export async function markVideoStarted(videoId: string): Promise<{
     // Fire kernel events
     await processKernelEvent({
       event: KernelEvent.TRAINING_VIDEO_STARTED,
-      brokerageId,
+      brokerageId: brokerageId ?? "",
       entityType: "training_video",
       entityId: videoId,
     })
@@ -429,9 +429,9 @@ export async function markVideoStarted(videoId: string): Promise<{
     if (isFirstVideo && video?.is_required) {
       await processKernelEvent({
         event: KernelEvent.TRAINING_COURSE_ENROLLED,
-        brokerageId,
+        brokerageId: brokerageId ?? "",
         entityType: "agent",
-        entityId: agentId,
+        entityId: agentId ?? "",
       })
     }
 

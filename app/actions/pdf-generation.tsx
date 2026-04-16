@@ -2,7 +2,7 @@
 
 import { put } from "@vercel/blob"
 import { createClient } from "@/lib/supabase/server"
-import { sendEmail } from "./communications"
+import { sendEmail } from "@/lib/providers/messaging"
 
 // PDF Generation using jsPDF for client-side or Puppeteer for server-side
 // For production, integrate with Puppeteer or similar for high-quality PDFs
@@ -389,7 +389,7 @@ async function sendDocumentEmail(params: {
   return await sendEmail({
     to: params.to,
     subject,
-    body,
+    html: body,
     from: params.agentEmail,
   })
 }

@@ -60,7 +60,19 @@ export async function createListing(params: {
   propertyType?: string
   listingType?: string
 }) {
-  const result = await createListingService(params)
+  const result = await createListingService({
+    agentId: params.agentId,
+    sellerContactId: params.sellerId,
+    address: params.address,
+    city: params.city,
+    state: params.state,
+    zip: params.zip,
+    listPrice: params.price,
+    bedrooms: params.bedrooms,
+    bathrooms: params.bathrooms,
+    sqft: params.squareFootage,
+    propertyType: params.propertyType,
+  })
   if (result.success) {
     revalidatePath("/listings")
     revalidatePath("/dashboard")

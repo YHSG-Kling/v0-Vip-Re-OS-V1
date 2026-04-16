@@ -735,16 +735,16 @@ export async function getVideoPerformanceStats(agentId: string, brokerageId?: st
   const uniqueViews = performance?.reduce((sum, p) => sum + (p.unique_views || 0), 0) || 0
   const totalWatchTime = performance?.reduce((sum, p) => sum + (p.total_watch_time_seconds || 0), 0) || 0
   const avgWatchTime = performanceCount > 0
-    ? performance.reduce((sum, p) => sum + (p.average_watch_time_seconds || 0), 0) / performanceCount
+    ? (performance ?? []).reduce((sum, p) => sum + (p.average_watch_time_seconds || 0), 0) / performanceCount
     : 0
   const avgCompletionRate = performanceCount > 0
-    ? performance.reduce((sum, p) => sum + (p.average_completion_rate || 0), 0) / performanceCount
+    ? (performance ?? []).reduce((sum, p) => sum + (p.average_completion_rate || 0), 0) / performanceCount
     : 0
   const avgClickThroughRate = performanceCount > 0
-    ? performance.reduce((sum, p) => sum + (p.click_through_rate || 0), 0) / performanceCount
+    ? (performance ?? []).reduce((sum, p) => sum + (p.click_through_rate || 0), 0) / performanceCount
     : 0
   const avgShareRate = performanceCount > 0
-    ? performance.reduce((sum, p) => sum + (p.share_rate || 0), 0) / performanceCount
+    ? (performance ?? []).reduce((sum, p) => sum + (p.share_rate || 0), 0) / performanceCount
     : 0
   const totalLeadConversions = performance?.reduce((sum, p) => sum + (p.lead_conversions || 0), 0) || 0
   const estimatedRoi = performance?.reduce((sum, p) => sum + (p.estimated_roi || 0), 0) || 0
@@ -1042,7 +1042,7 @@ Return ONLY the script text, no formatting or labels.`
     const response = await generateAIResponse({
       prompt,
       metadata: {
-        userId: params.userId,
+        userId: params.userId ?? "",
         brokerageId: params.brokerageId,
         feature: "video_script_generation",
       },

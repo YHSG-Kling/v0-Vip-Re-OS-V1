@@ -17,6 +17,7 @@ import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { isValidUUID } from "@/lib/validations"
 import { KernelEvent } from "./events"
+import type { ListingStage as LifecycleListingStage } from "@/lib/listing-lifecycle/lifecycle-definitions"
 
 // ─── Shared result type ───────────────────────────────────────────────────────
 
@@ -26,16 +27,7 @@ export type KernelResult<T> =
 
 // ─── Listing types ────────────────────────────────────────────────────────────
 
-export type ListingStage =
-  | "LEAD"
-  | "APPOINTMENT_SET"
-  | "SIGNED"
-  | "PRE_LAUNCH"
-  | "ACTIVE"
-  | "UNDER_CONTRACT"
-  | "CLOSED"
-  | "WITHDRAWN"
-  | "EXPIRED"
+export type ListingStage = LifecycleListingStage
 
 export interface CreateListingInput {
   agentId: string

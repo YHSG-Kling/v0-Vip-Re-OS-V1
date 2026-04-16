@@ -173,11 +173,7 @@ export async function scheduleSocialPost(params: {
   }
 
   // Feature access check
-  const canAccess = await canAccessFeature({
-    featureKey: "social_automation",
-    brokerageId: params.brokerageId,
-    userId: params.userId,
-  })
+  const canAccess = await canAccessFeature(params.userId, "social_automation")
 
   if (!canAccess.allowed) {
     return { success: false, error: "Feature not available for your subscription tier" }
@@ -315,11 +311,8 @@ export async function scheduleSocialPost(params: {
     }
 
     // Increment feature usage
-    await incrementFeatureUsage({
-      featureKey: "social_automation",
-      brokerageId: params.brokerageId,
-      userId: params.userId,
-    }).catch((err) => console.warn("[social-media-automation] Usage increment failed:", err))
+    await incrementFeatureUsage(params.userId, "social_automation")
+      .catch((err) => console.warn("[social-media-automation] Usage increment failed:", err))
 
     // Fire kernel event
     await supabase.from("lifecycle_events").insert({

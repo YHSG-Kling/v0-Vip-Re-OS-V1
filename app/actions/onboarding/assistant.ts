@@ -167,7 +167,7 @@ export async function escapeAssistant(
   await saveAssistantChat(agentOnboardingId, [], currentStep, true)
 
   // Fire escalation event
-  await fireAssistantEvent(agentId, 'escalated', currentStep)
+  await fireAssistantEvent(agentId ?? "", 'escalated', currentStep)
 
   // Create escalation ticket
   const { error } = await supabase

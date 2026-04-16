@@ -136,7 +136,7 @@ export class WorkflowOrchestrator {
     }
   }
 
-  private async executeStep(executionId: string, step: WorkflowStep, context: any) {
+  private async executeStep(executionId: string, step: WorkflowStep, context: any): Promise<unknown> {
     const supabase = await this.getSupabase()
 
     // Log step start
@@ -216,17 +216,17 @@ export class WorkflowOrchestrator {
     switch (action) {
       case "send_email":
         return await sendEmail({
+          to: context.contactEmail ?? context.email ?? "",
+          subject: params.subject ?? "",
+          html: params.body ?? params.html ?? "",
           contactId: context.contactId,
-          subject: params.subject,
-          body: params.body,
-          templateId: params.template,
         })
 
       case "send_sms":
         return await sendSMS({
+          to: context.contactPhone ?? context.phone ?? "",
+          message: params.message ?? "",
           contactId: context.contactId,
-          message: params.message,
-          templateId: params.template,
         })
 
       case "create_task":
@@ -242,9 +242,9 @@ export class WorkflowOrchestrator {
 
       case "generate_video":
         return await generateVideoScript({
-          contactId: context.contactId,
-          videoType: params.type,
-          context: params.context || {},
+          content_type: "video_script",
+          contact_id: context.contactId,
+          custom_prompt: params.context ?? "",
         })
 
       case "update_contact":

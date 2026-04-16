@@ -44,7 +44,7 @@ export class ZenrowsClient {
   async scrapeFacebookGroups(params: { groupUrls: string[]; keywords: string[] }): Promise<{ success: boolean; posts: any[]; cost: number }> {
     try {
       const { scrapeFacebookGroupPosts } = await import('./apify-client')
-      const result = await scrapeFacebookGroupPosts({ groupUrls: params.groupUrls, keywords: params.keywords, limit: 50 })
+      const result = await scrapeFacebookGroupPosts({ groupUrl: params.groupUrls[0], keywords: params.keywords, limit: 50 })
       return { success: true, posts: result.posts ?? [], cost: result.cost ?? 0 }
     } catch {
       return { success: false, posts: [], cost: 0 }

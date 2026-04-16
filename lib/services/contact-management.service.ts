@@ -98,7 +98,7 @@ export async function createContact(params: CreateContactParams) {
 
     // Calculate initial lead score
     await calculateLeadScore({
-      contactId: contact.id,
+      id: contact.id,
       agentId: params.agentId,
     })
 
@@ -181,7 +181,7 @@ export async function updateContact(params: UpdateContactParams) {
 
     if (hasSignificantChanges) {
       await calculateLeadScore({
-        contactId: params.contactId,
+        id: params.contactId,
         agentId: params.agentId,
         recalculate: true,
       })

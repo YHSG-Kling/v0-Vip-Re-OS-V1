@@ -456,7 +456,7 @@ Listing:
 ${JSON.stringify(listing || {}, null, 2)}
 
 Agent:
-${JSON.stringify({ name: `${agent?.first_name} ${agent?.last_name}`, phone: agent?.phone, email: agent?.email } || {}, null, 2)}
+${JSON.stringify({ name: `${agent?.first_name} ${agent?.last_name}`, phone: agent?.phone, email: agent?.email }, null, 2)}
 
 Brochure Type: ${params.brochureType}
 

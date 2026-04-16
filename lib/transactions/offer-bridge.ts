@@ -90,7 +90,7 @@ export async function createTransactionFromOffer(params: {
     entityId:    transaction.id,
     fromState:   "offer_accepted",
     toState:     "UNDER_CONTRACT",
-    actorUserId: undefined,
+    actorUserId: "",
     actorRole:   "tc",
     eventType:   "contract_date.set",
     metadata:    {

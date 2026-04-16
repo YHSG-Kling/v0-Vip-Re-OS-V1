@@ -29,7 +29,7 @@ export async function updateContactStage(params: {
     const result = await updateContactService({
       contactId: params.contactId,
       agentId: params.agentId,
-      updates: { stage: params.newStage }
+      updates: { stage: params.newStage } as any
     })
 
     if (!result.success) {
@@ -96,8 +96,8 @@ export async function getContacts(agentId: string, filters?: { status?: string; 
   return getContactsService(agentId, filters)
 }
 
-export async function getContactById(contactId: string) {
-  return getContact(contactId)
+export async function getContactById(contactId: string, agentId: string = "") {
+  return getContact(contactId, agentId)
 }
 
 export async function searchContacts(params: { agentId: string; query: string }) {

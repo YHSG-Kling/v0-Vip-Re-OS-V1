@@ -107,6 +107,7 @@ export async function submitListingForSignature(params: SubmitListingForSignatur
   // Fire notification to the seller contact so they know to expect the signature request
   if (listing.seller_contact_id) {
     await logEventAndTrigger({
+      brokerage_id: listing.brokerage_id,
       event_type: "listing.signature.sent_to_contact",
       user_id:    listing.seller_contact_id,
       payload: {
@@ -115,7 +116,7 @@ export async function submitListingForSignature(params: SubmitListingForSignatur
         signerCount:  signers.length,
         provider:     credential?.platform ?? null,
       },
-      source:     "action",
+      source:     "ui",
       dedupe_key: `listing-sig-sent-${listingId}-${Date.now()}`,
     }).catch(() => {})
   }
