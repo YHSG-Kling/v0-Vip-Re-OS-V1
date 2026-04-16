@@ -179,7 +179,7 @@ export async function classifyISAOutcome(
           source:             'ai_isa',
           created_at:         now,
         }) // fire-and-forget: duplicate rows are acceptable
-        .catch(() => {}) // silent fail on duplicate key error
+        .then(() => {}, () => {}) // silent fail on duplicate key error
       }
     } else {
       // Lead-side suppression

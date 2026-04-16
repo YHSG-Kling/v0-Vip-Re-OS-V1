@@ -55,7 +55,7 @@ type ExpenseCategory = typeof VALID_EXPENSE_CATEGORIES[number]
 
 export interface FinancialActorContext {
   userId:      string
-  agentId:     string
+  agentId:     string | null
   brokerageId: string
   userType:    "agent" | "team_lead" | "broker" | "admin" | "superadmin"
 }
@@ -112,7 +112,7 @@ export interface AgentFinancialDashboardSummary {
   earningsHistory: any[]
 }
 export interface FinancialWorkspace {
-  agentId:      string
+  agentId:      string | null
   brokerageId:  string
   userType:     string
   accessLevel:  "personal" | "team" | "brokerage" | "system"
@@ -300,23 +300,47 @@ export async function loadFinancialWorkspace(
   const supabase = createServiceClient()
 
   try {
-    // Verify user exists and has the claimed agentId
-    const { data: agent } = await supabase
-      .from("agents")
-      .select("id, user_id, brokerage_id")
-      .eq("id", ctx.agentId)
-      .eq("user_id", ctx.userId)
-      .maybeSingle()
-
-    if (!agent) {
-      return { success: false, error: "Agent identity verification failed" }
-    }
-
-    // Determine access level based on userType
+    // Determine access level first — broker/admin users may not have an agents row
     let accessLevel: "personal" | "team" | "brokerage" | "system" = "personal"
     if (ctx.userType === "team_lead") accessLevel = "team"
     if (ctx.userType === "broker" || ctx.userType === "admin") accessLevel = "brokerage"
     if (ctx.userType === "superadmin") accessLevel = "system"
+
+    if (ctx.agentId) {
+      // Agent path: verify identity via agents table
+      const { data: agent } = await supabase
+        .from("agents")
+        .select("id, user_id, brokerage_id")
+        .eq("id", ctx.agentId)
+        .eq("user_id", ctx.userId)
+        .maybeSingle()
+
+      if (!agent) {
+        return { success: false, error: "Agent identity verification failed" }
+      }
+    } else {
+      // Broker/admin path: no agents row — verify they own or belong to the brokerage
+      const { data: brokerage } = await supabase
+        .from("brokerages")
+        .select("id")
+        .eq("id", ctx.brokerageId)
+        .eq("owner_id", ctx.userId)
+        .maybeSingle()
+
+      if (!brokerage) {
+        // Also accept admin users with a matching agents row linked to the brokerage
+        const { data: adminAgent } = await supabase
+          .from("agents")
+          .select("id")
+          .eq("user_id", ctx.userId)
+          .eq("brokerage_id", ctx.brokerageId)
+          .maybeSingle()
+
+        if (!adminAgent) {
+          return { success: false, error: "Brokerage identity verification failed" }
+        }
+      }
+    }
 
     return {
       success: true,

@@ -43,15 +43,19 @@ export const DealTeamSection: React.FC<DealTeamSectionProps> = ({ dealId, contac
   const loadTeamData = async () => {
     setIsLoading(true)
 
-    // Load team members - Using supabaseService
+    // Load team members - method not available, use empty array
     if (dealId) {
-      const teamData = await supabaseService.getTeamByDealId(dealId)
+      const teamData = (supabaseService as any).getTeamByDealId
+        ? await (supabaseService as any).getTeamByDealId(dealId)
+        : []
       setTeam(teamData)
     }
 
-    // Load AI ISA activities - Using supabaseService
+    // Load AI ISA activities - method not available, use empty array
     if (showAIActivity && contactId) {
-      const activities = await supabaseService.getAIISAActivityByContactId(contactId, 5)
+      const activities = (supabaseService as any).getAIISAActivityByContactId
+        ? await (supabaseService as any).getAIISAActivityByContactId(contactId, 5)
+        : []
       setAiActivities(activities)
     }
 

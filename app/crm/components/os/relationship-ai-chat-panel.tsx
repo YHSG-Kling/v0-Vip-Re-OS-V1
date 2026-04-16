@@ -29,7 +29,7 @@ interface RelationshipAiChatPanelProps {
   agentId: string
   contactName: string
   contactPersona?: string | null
-  channel?: "sms" | "email" | "portal"
+  channel?: "sms" | "email" | "chat"
 }
 
 type DraftPurpose = "follow_up" | "check_in" | "seller_update" | "buyer_update" | "referral_ask" | "review_request"
@@ -45,7 +45,7 @@ export function RelationshipAiChatPanel({
   const [input, setInput] = useState("")
   const [draft, setDraft] = useState("")
   const [purpose, setPurpose] = useState<DraftPurpose>("follow_up")
-  const [selectedChannel, setSelectedChannel] = useState<"sms" | "email" | "portal">(channel)
+  const [selectedChannel, setSelectedChannel] = useState<"sms" | "email" | "chat">(channel)
   const [loading, setLoading] = useState(false)
   const [brandVoice, setBrandVoice] = useState<any>(null)
   const [templates, setTemplates] = useState<any[]>([])
@@ -62,7 +62,7 @@ export function RelationshipAiChatPanel({
           getChatTemplates({ category: "relationship" }),
         ])
         if (voiceResult.success) setBrandVoice(voiceResult.profile)
-        if (templatesResult.success) setTemplates(templatesResult.templates || [])
+        if (Array.isArray(templatesResult)) setTemplates(templatesResult)
       } catch (err) {
         console.error("Failed to load AI data:", err)
       }
@@ -75,17 +75,17 @@ export function RelationshipAiChatPanel({
     setComplianceCheck(null)
     try {
       const result = await generateSmartResponse({
+        incomingMessage: input || `Draft a ${purpose.replace(/_/g, " ")} message for ${contactName}`,
         contactId,
         agentId,
-        messageType: purpose,
-        context: input,
+        brokerageId: "",
         channel: selectedChannel,
-        brandVoice: brandVoice?.tone || "professional",
+        tone: brandVoice?.tone || "professional",
       })
-      if (result.success && result.message) {
-        setDraft(result.message)
+      if (result.success && 'draft' in result && result.draft) {
+        setDraft(result.draft)
         // Run compliance check
-        const compliance = await checkThemFirstCompliance(result.message)
+        const compliance = await checkThemFirstCompliance(result.draft)
         setComplianceCheck(compliance)
       }
     } catch (err) {
@@ -100,10 +100,10 @@ export function RelationshipAiChatPanel({
     try {
       const [tempResult, suggestResult] = await Promise.all([
         analyzeClientMessageTemperature(input, contactId),
-        getAiSuggestions({ contactId, agentId, receivedMessage: input }),
+        getAiSuggestions(contactId),
       ])
-      if (tempResult.success) setTemperature(tempResult)
-      if (suggestResult.success) setSuggestions(suggestResult.suggestions || [])
+      if (tempResult?.temperature) setTemperature(tempResult)
+      if (Array.isArray(suggestResult)) setSuggestions(suggestResult)
     } catch (err) {
       console.error("Analysis failed:", err)
     } finally {
@@ -115,7 +115,7 @@ export function RelationshipAiChatPanel({
     setLoading(true)
     try {
       const result = await analyzeClientMessageTemperature(input, contactId)
-      if (result.success) setTemperature(result)
+      if (result?.temperature) setTemperature(result)
     } catch (err) {
       console.error("Temperature analysis failed:", err)
     } finally {
@@ -126,7 +126,7 @@ export function RelationshipAiChatPanel({
   const handleAcceptSuggestion = async (suggestion: any) => {
     setDraft(suggestion.text)
     setMode("draft")
-    await acceptAiSuggestion(suggestion.id, contactId, agentId)
+    await acceptAiSuggestion(suggestion.id)
   }
 
   const handleCopyDraft = () => {
@@ -228,7 +228,7 @@ export function RelationshipAiChatPanel({
                     <SelectContent>
                       <SelectItem value="sms">SMS</SelectItem>
                       <SelectItem value="email">Email</SelectItem>
-                      <SelectItem value="portal">Portal</SelectItem>
+                      <SelectItem value="chat">Chat</SelectItem>
                     </SelectContent>
                   </Select>
                   <Button variant="outline" size="sm" onClick={handleCopyDraft}>

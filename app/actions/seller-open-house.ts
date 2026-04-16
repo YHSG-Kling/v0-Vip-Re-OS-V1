@@ -442,7 +442,7 @@ export async function createOpenHouseEvent(params: {
   const supabase = await createClient()
   const serviceClient = createServiceClient()
 
-  const { data: event, error } = await supabase
+  const { data: event, error } = await serviceClient
     .from("open_house_events")
     .insert({
       listing_id: params.listingId,

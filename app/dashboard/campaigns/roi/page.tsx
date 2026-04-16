@@ -73,7 +73,7 @@ export default async function CampaignROIPage() {
       brokerageId={profile.brokerage_id}
       userRole={profile.user_type || "agent"}
       campaigns={roiResult.success ? roiResult.campaigns || [] : []}
-      summary={roiResult.success ? roiResult.summary : null}
+      summary={roiResult.success ? roiResult.summary ?? null : null}
       channelPerformance={channelResult.success ? channelResult.channels || [] : []}
       topCampaigns={topCampaignsResult.success ? topCampaignsResult.campaigns || [] : []}
       agents={agents}

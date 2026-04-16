@@ -178,7 +178,7 @@ function buildPrompt(params: ContentGenerationParams, contextData: any): string 
     case "listing_description":
       prompt += buildListingPrompt(params, contextData)
       break
-    case "video_script":
+    case "video_narration":
       prompt += buildVideoPrompt(params, contextData)
       break
     default:

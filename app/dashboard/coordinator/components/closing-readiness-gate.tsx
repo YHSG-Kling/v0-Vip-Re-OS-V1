@@ -19,6 +19,7 @@ interface ClosingReadinessGateProps {
   transactionId: string
   transactionStage: string
   agentId: string
+  brokerageId?: string
 }
 
 interface ReadinessResult {
@@ -31,6 +32,7 @@ export function ClosingReadinessGate({
   transactionId,
   transactionStage,
   agentId,
+  brokerageId = "",
 }: ClosingReadinessGateProps) {
   const [result, setResult] = useState<ReadinessResult | null>(null)
   const [blockersOpen, setBlockersOpen] = useState(false)
@@ -38,9 +40,14 @@ export function ClosingReadinessGate({
 
   function handleCheck() {
     startTransition(async () => {
-      const res = await canProceedToClosingPrep(transactionId)
-      setResult(res)
-      if (!res.canProceed) setBlockersOpen(true)
+      const res = await canProceedToClosingPrep(transactionId, brokerageId)
+      const normalized: ReadinessResult = {
+        canProceed: res.allowed,
+        blockers: res.blockers,
+        missingItems: [],
+      }
+      setResult(normalized)
+      if (!normalized.canProceed) setBlockersOpen(true)
     })
   }
 

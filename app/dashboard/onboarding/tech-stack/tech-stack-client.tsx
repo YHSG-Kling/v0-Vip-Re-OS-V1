@@ -407,7 +407,7 @@ export function TechStackClient({
   // Render provider group
   const renderGroup = (
     groupKey: "required" | "recommended" | "optional",
-    groupInfo: typeof PROVIDER_GROUPS.required,
+    groupInfo: { label: string; description: string; providers: ProviderName[]; requirements: Record<string, number> },
     providers: ProviderStatus[]
   ) => {
     const isExpanded = expandedGroups.includes(groupKey)

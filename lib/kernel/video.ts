@@ -421,7 +421,7 @@ export async function distributeVideoProject(
     throw new Error(`Video not ready for distribution: ${input.projectId}`)
   }
 
-  const distributions = []
+  const distributions: { channel: string; status: "pending" | "published" | "failed"; url?: string; error?: string }[] = []
 
   for (const channel of input.channels) {
     try {
@@ -455,7 +455,7 @@ export async function distributeVideoProject(
       // Record social post
       await supabase.from("social_posts").insert({
         agent_id: project.agent_id,
-        platform: resolvedPlatform,
+        platform: channel,
         content: input.description,
         media_url: project.video_url,
         published_url: publishUrl,

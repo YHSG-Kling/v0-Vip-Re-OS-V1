@@ -179,7 +179,7 @@ export default function LeadsPage() {
   const handleMatchGenius = async (leadId: string) => {
     setMatchGeniusLoading(leadId)
     try {
-      const result = await aiPropertyMatchGenius(leadId)
+      const result = await aiPropertyMatchGenius(leadId) as any
       if (result && !result.error) {
         setMatchGeniusResults((prev) => ({ ...prev, [leadId]: result }))
       }
@@ -296,14 +296,14 @@ export default function LeadsPage() {
           .select("lead_stage, agent_id, reengagement_status, lifecycle_state")
           .eq("brokerage_id", userRow.brokerage_id)
           .eq("is_active", true)
-          .then(({ data }) => {
+          .then(({ data }: { data: { lead_stage: any; agent_id: any; reengagement_status: any; lifecycle_state: any }[] | null }) => {
             if (data) {
               setPipelineStats({
-                unassigned:    data.filter((l) => !l.agent_id).length,
-                assigned:      data.filter((l) => !!l.agent_id).length,
-                isa_working:   data.filter((l) => l.lifecycle_state === "isa_qualifying").length,
-                stale:         data.filter((l) => l.lead_stage === "stale").length,
-                ghost_recovery: data.filter((l) => l.reengagement_status === "active").length,
+                unassigned:    data.filter((l: any) => !l.agent_id).length,
+                assigned:      data.filter((l: any) => !!l.agent_id).length,
+                isa_working:   data.filter((l: any) => l.lifecycle_state === "isa_qualifying").length,
+                stale:         data.filter((l: any) => l.lead_stage === "stale").length,
+                ghost_recovery: data.filter((l: any) => l.reengagement_status === "active").length,
               })
             }
           })

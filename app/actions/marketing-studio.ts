@@ -30,7 +30,9 @@ import {
   canAccessFeature,
   incrementFeatureUsage,
 } from "@/lib/kernel/0.1-feature-access"
-import { applyBrandVoice, evaluateOutbound, checkBrandCompliance } from "@/lib/kernel/compliance"
+import { evaluateOutbound } from "@/lib/kernel/compliance"
+import { applyBrandVoice } from "@/lib/kernel/brand-voice"
+import { checkBrandCompliance } from "@/lib/kernel/brand-compliance"
 import { transitionLifecycle } from "@/lib/kernel/lifecycle"
 import type { ActorRole, Persona, MessageType } from "@/lib/kernel/types"
 import { KernelEvent } from "@/lib/kernel/events"
@@ -146,9 +148,9 @@ export async function createCampaign(params: CreateCampaignParams) {
   // Emit kernel event
   await processKernelEvent({
     event: KernelEvent.MARKETING_CAMPAIGN_CREATED,
-    brokerageId,
+    brokerageId: brokerageId!,
     entityType: "marketing_campaign",
-    entityId: campaign.id,
+    entityId: campaign!.id,
   }).catch((err) => console.error("[MarketingStudio] Kernel event failed:", err))
 
   await incrementFeatureUsage(userId, "marketing_studio")
@@ -295,9 +297,12 @@ export async function transitionCampaignStatus(
       .single()
 
     if (fullCampaign) {
-      // Extract content from campaign assets
+      // Extract actual copy text from campaign assets — never use URLs as compliance content
       const campaignContent = fullCampaign.assets
-        ?.map((asset: any) => asset.content_url || asset.asset_name)
+        ?.map((asset: any) =>
+          asset.copy_text || asset.content_text || asset.preview_text || asset.description || asset.headline || asset.asset_name
+        )
+        .filter(Boolean)
         .join(" ") || fullCampaign.campaign_name
 
       // Determine channel and message type
@@ -308,35 +313,31 @@ export async function transitionCampaignStatus(
       
       const messageType: MessageType = campaignType.includes("email") ? "email" :
                                        campaignType.includes("sms") ? "sms" :
-                                       "social_post"
+                                       "social"
 
-      // Run compliance check including DNC/opt-out verification
+      // Fair-housing + misleading-claim compliance gate (broadcast — no specific contact)
       const complianceResult = await evaluateOutbound({
-        brokerageId,
-        actorUserId: userId,
-        actorRole: "agent" as ActorRole,
-        journeyType: "seller",
-        persona: "homeowner" as Persona,
+        actorContext: { brokerageId: brokerageId!, userId: userId!, role: "agent" as any },
+        journeyType: "seller" as any,
+        persona: "homeowner" as any,
         messageType,
         content: campaignContent,
-        channel,
-        recipientContactId: null, // Campaign doesn't have single recipient
+        contact: undefined,
       })
-
-      if (!complianceResult.passed) {
-        console.error("[v0] Campaign failed compliance check:", complianceResult.violations)
+      if (!complianceResult.allowed) {
         return {
           success: false,
-          error: `Campaign cannot be launched: ${complianceResult.violations?.join(", ")}`,
-          violations: complianceResult.violations,
+          error: `Campaign failed compliance review: ${complianceResult.violations?.join(", ") ?? "Unknown violation"}`,
         }
       }
 
-      // Apply brand voice to campaign content
+      // Apply brand voice to campaign content.
+      // Brand voice violation checking is already performed inside evaluateOutbound (Gate 1)
+      // above — do NOT call applyBrandVoice a second time for violation checking.
+      // This single call transforms the content with the correct tone/style.
       const brandVoiceResult = await applyBrandVoice({
-        brokerageId,
-        teamId: null,
-        actorUserId: userId,
+        brokerageId: brokerageId!,
+        actorUserId: userId!,
         actorRole: "agent" as ActorRole,
         journeyType: "seller",
         persona: "homeowner" as Persona,
@@ -350,8 +351,8 @@ export async function transitionCampaignStatus(
 
   // Use kernel lifecycle transition
   const result = await transitionLifecycle({
-    brokerageId,
-    entityType: "marketing_campaign_machine",
+    brokerageId: brokerageId!,
+    entityType: "marketing_campaign_machine" as any,
     entityId: campaignId,
     fromState: fromStatus,
     toState: toStatus,
@@ -470,7 +471,7 @@ export async function approveAsset(assetId: string) {
   const complianceResult = await checkBrandCompliance({
     contentType: "listing_media",
     contentId: assetId,
-    brokerageId,
+    brokerageId: brokerageId ?? "",
   })
 
   if (!complianceResult.passed) {
@@ -877,7 +878,7 @@ export async function generateCampaignContent(params: {
 
   // Apply brand voice check
   const brandVoiceResult = await applyBrandVoice({
-    brokerageId,
+    brokerageId: brokerageId ?? "",
     actorUserId: userId,
     actorRole: "agent" as ActorRole,
     journeyType: campaign?.campaign_type === "listing" ? "seller" : "buyer",

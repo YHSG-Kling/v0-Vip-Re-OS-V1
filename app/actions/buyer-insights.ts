@@ -125,8 +125,8 @@ export async function getBuyerInsights(
   return {
     success: true,
     insights: {
-      preferences: prefsRes.data ?? null,
-      prediction:  predRes.data  ?? null,
+      preferences: (prefsRes.data ?? null) as unknown as BuyerInsights["preferences"],
+      prediction:  (predRes.data  ?? null) as unknown as BuyerInsights["prediction"],
     },
     signalCounts,
   }

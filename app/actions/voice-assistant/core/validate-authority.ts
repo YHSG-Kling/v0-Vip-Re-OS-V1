@@ -46,7 +46,7 @@ export async function validateAuthority(request: ValidateAuthorityRequest): Prom
       }
     }
 
-    if (!commandRoles.includes(user_role as any)) {
+    if (!(commandRoles as readonly string[]).includes(user_role)) {
       return {
         allowed: false,
         denial_reason: `You do not have permission to ${command.replace(/_/g, ' ')}`,

@@ -683,7 +683,7 @@ export default function SequenceBuilderClient({
                       cx="50%"
                       cy="50%"
                       outerRadius={90}
-                      label={({ name, percent }) => `${name} ${Math.round(percent * 100)}%`}
+                      label={((props: any) => `${props.name} ${Math.round((props.percent ?? 0) * 100)}%`) as any}
                     >
                       {analyticsData.piData.map((_, i) => (
                         <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />

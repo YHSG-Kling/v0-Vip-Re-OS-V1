@@ -255,6 +255,9 @@ export async function recordVideoProgress(
 }> {
   try {
     const { userId, agentId, brokerageId } = await getAgentContext()
+
+    if (!agentId) return { success: false, error: "Missing agent context" }
+
     const supabase = await createClient()
 
     // Check if completion record exists
@@ -317,19 +320,20 @@ export async function recordVideoProgress(
     let allRequiredComplete = false
 
     if (shouldComplete) {
-      // Fire TRAINING_VIDEO_COMPLETED
-      await processKernelEvent({
-        event: KernelEvent.TRAINING_VIDEO_COMPLETED,
-        brokerageId,
-        entityType: "training_video",
-        entityId: videoId,
-      })
+      if (brokerageId) {
+        await processKernelEvent({
+          event: KernelEvent.TRAINING_VIDEO_COMPLETED,
+          brokerageId,
+          entityType: "training_video",
+          entityId: videoId,
+        })
+      }
 
       // Check if all required videos are now complete
       const { data: allVideos } = await supabase
         .from("training_videos")
         .select("id, is_required")
-        .or(`brokerage_id.is.null,brokerage_id.eq.${brokerageId}`)
+        .or(brokerageId ? `brokerage_id.is.null,brokerage_id.eq.${brokerageId}` : "brokerage_id.is.null")
 
       const requiredVideoIds = (allVideos || [])
         .filter((v) => v.is_required)
@@ -338,7 +342,7 @@ export async function recordVideoProgress(
       const { data: completedVideos } = await supabase
         .from("video_completion_tracking")
         .select("training_video_id")
-        .eq("agent_id", agentId)
+        .eq("agent_id", agentId!)
         .eq("completed", true)
         .in("training_video_id", requiredVideoIds)
 
@@ -346,13 +350,12 @@ export async function recordVideoProgress(
         requiredVideoIds.length > 0 &&
         (completedVideos?.length || 0) >= requiredVideoIds.length
 
-      if (allRequiredComplete) {
-        // Fire TRAINING_COURSE_COMPLETED
+      if (allRequiredComplete && brokerageId) {
         await processKernelEvent({
           event: KernelEvent.TRAINING_COURSE_COMPLETED,
           brokerageId,
           entityType: "agent",
-          entityId: agentId,
+          entityId: agentId!,
         })
       }
     }
@@ -382,6 +385,9 @@ export async function markVideoStarted(videoId: string): Promise<{
 }> {
   try {
     const { agentId, brokerageId } = await getAgentContext()
+
+    if (!agentId) return { success: false, error: "Missing agent context" }
+
     const supabase = await createClient()
 
     // Check if this is the first video they're watching (for TRAINING_COURSE_ENROLLED)
@@ -411,13 +417,15 @@ export async function markVideoStarted(videoId: string): Promise<{
       })
     }
 
-    // Fire kernel events
-    await processKernelEvent({
-      event: KernelEvent.TRAINING_VIDEO_STARTED,
-      brokerageId,
-      entityType: "training_video",
-      entityId: videoId,
-    })
+    // Fire kernel events — only when brokerageId is available
+    if (brokerageId) {
+      await processKernelEvent({
+        event: KernelEvent.TRAINING_VIDEO_STARTED,
+        brokerageId,
+        entityType: "training_video",
+        entityId: videoId,
+      })
+    }
 
     // Check if this video is required, and if so, fire TRAINING_COURSE_ENROLLED
     const { data: video } = await supabase
@@ -426,12 +434,12 @@ export async function markVideoStarted(videoId: string): Promise<{
       .eq("id", videoId)
       .single()
 
-    if (isFirstVideo && video?.is_required) {
+    if (isFirstVideo && video?.is_required && brokerageId) {
       await processKernelEvent({
         event: KernelEvent.TRAINING_COURSE_ENROLLED,
         brokerageId,
         entityType: "agent",
-        entityId: agentId,
+        entityId: agentId!,
       })
     }
 

@@ -109,7 +109,7 @@ export default function ContactDetailPane({ contact, sentimentSummary, agentId }
       .eq("contact_id", contact.id)
       .order("created_at", { ascending: false })
       .limit(10)
-      .then(({ data }) => {
+      .then(({ data }: { data: any }) => {
         setActivities(data ?? [])
         setActLoading(false)
       })

@@ -69,26 +69,26 @@ export function DiagnosisClient({ agentId, brokerageId, userId }: DiagnosisClien
     try {
       setLoadingStep("Scanning lead pipeline...")
       const [valueDashboard, topConversionCandidates] = await Promise.all([
-        loadValueDrivenDashboard({ agentId, brokerageId }).catch(() => null),
-        getTopConversionCandidates({ agentId, limit: 10 }).catch(() => []),
+        loadValueDrivenDashboard(agentId).catch(() => null),
+        getTopConversionCandidates(10).catch(() => []),
       ])
 
       setLoadingStep("Analyzing relationships...")
       const [hiddenOpportunities, sphereMining, trustCapital] = await Promise.all([
-        findHiddenOpportunities({ agentId }).catch(() => []),
-        mineSphereOfInfluence({ agentId }).catch(() => null),
-        calculateTrustCapital({ agentId, brokerageId }).catch(() => null),
+        findHiddenOpportunities(agentId).catch(() => []),
+        mineSphereOfInfluence(agentId).catch(() => null),
+        calculateTrustCapital(agentId).catch(() => null),
       ])
 
       setLoadingStep("Checking operations...")
       const [coachingInsights, workflowStats] = await Promise.all([
-        getAgentCoachingInsights({ agentId }).catch(() => null),
+        getAgentCoachingInsights(agentId).catch(() => null),
         getWorkflowStats().catch(() => null),
       ])
 
       setDiagnosisData({
         valueDashboard,
-        hiddenOpportunities: hiddenOpportunities || [],
+        hiddenOpportunities: (hiddenOpportunities as any[]) || [],
         sphereMining,
         coachingInsights,
         topConversionCandidates: topConversionCandidates || [],
@@ -121,31 +121,13 @@ Business Diagnosis Data:
       const result = await generateSmartResponse({
         agentId,
         contactId: userId,
-        messageContext: context,
-        systemPrompt: `You are a real estate business strategist analyzing an agent's complete business health.
-Based on this business diagnosis data, create a specific 30-day correction plan.
-
-Format your response as:
-
-**TOP 3 PROBLEMS**
-1. [Problem with specific numbers]
-2. [Problem with specific numbers]
-3. [Problem with specific numbers]
-
-**30-DAY CORRECTION PLAN**
-Week 1: [Specific actions]
-Week 2: [Specific actions]
-Week 3: [Specific actions]
-Week 4: [Specific actions]
-
-**THIS WEEK'S #1 ACTION**
-[Single most important action to take immediately]
-
-Be direct, specific, and prioritized. Use the actual numbers from the data.`,
+        brokerageId,
+        incomingMessage: context,
+        channel: "chat",
       })
 
-      if (result.success && result.response) {
-        setAiSummary(result.response)
+      if (result.success && (result as any).draft) {
+        setAiSummary((result as any).draft)
       }
     } catch (error) {
       console.error("Error generating correction plan:", error)

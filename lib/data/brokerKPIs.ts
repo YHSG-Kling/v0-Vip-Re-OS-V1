@@ -104,10 +104,7 @@ export async function getAgentPerformance(brokerageId: string, timeRange = "30d"
   // Get all agents in the brokerage
   const { data: agents, error: agentsError } = await supabase
     .from("user_brokerage_roles")
-    .select(`
-      user_id,
-      auth.users!inner(email, raw_user_meta_data)
-    `)
+    .select("user_id")
     .eq("brokerage_id", brokerageId)
     .eq("roles.name", "Agent")
 

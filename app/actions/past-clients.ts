@@ -61,7 +61,7 @@ export async function logTouchpoint({
     notes: JSON.stringify({ touchpoint_type: touchpointType, channel, kernel_event: KernelEvent.PAST_CLIENT_TOUCHPOINT_SENT }),
     status: "completed",
     entity_type: "contact",
-  }).catch(err => console.error("Error recording activity:", err))
+  }).then(() => {}, err => console.error("Error recording activity:", err))
 
   return { success: true, touchpoint: data }
 }
@@ -127,7 +127,7 @@ export async function sendMarketUpdate({
     notes: JSON.stringify({ message_id: message.id, kernel_event: KernelEvent.MARKET_UPDATE_SENT }),
     status: "completed",
     entity_type: "contact",
-  }).catch(err => console.error("Error recording activity:", err))
+  }).then(() => {}, err => console.error("Error recording activity:", err))
 
   return { success: true, message }
 }
@@ -454,17 +454,17 @@ export async function getAISuggestedTouchpoint(contactId: string) {
 
 export async function scoreSphereEngagement() {
   const { agentId } = await getAgentContext()
-  return aiScoreSphereEngagement({ agentId })
+  return aiScoreSphereEngagement({ agentId: agentId ?? "" })
 }
 
 export async function segmentSphere() {
   const { agentId } = await getAgentContext()
-  return aiSegmentSphere({ agentId })
+  return aiSegmentSphere({ agentId: agentId ?? "" })
 }
 
 export async function getUpcomingMilestones(daysAhead = 30) {
   const { agentId } = await getAgentContext()
-  return aiGetUpcomingMilestones({ agentId, daysAhead })
+  return aiGetUpcomingMilestones({ agentId: agentId ?? "", daysAhead })
 }
 
 export async function generateTouchpoint(params: {
@@ -472,18 +472,18 @@ export async function generateTouchpoint(params: {
   touchpointType: 'anniversary' | 'birthday' | 'check_in' | 'market_update' | 'holiday' | 'referral_ask'
 }) {
   const { agentId } = await getAgentContext()
-  return aiGenerateTouchpoint({ agentId, ...params })
+  return aiGenerateTouchpoint({ agentId: agentId ?? "", ...params })
 }
 
 export async function optimizeReferralAsk(contactId: string) {
   const { agentId } = await getAgentContext()
-  return aiOptimizeReferralAsk({ agentId, contactId })
+  return aiOptimizeReferralAsk({ agentId: agentId ?? "", contactId })
 }
 
 export async function getLifeChangeSignals(daysBack = 7) {
   try {
     const { agentId } = await getAgentContext()
-    return await getRecentLifeChanges(agentId, daysBack)
+    return await getRecentLifeChanges(agentId ?? "", daysBack)
   } catch {
     return []
   }
@@ -491,5 +491,5 @@ export async function getLifeChangeSignals(daysBack = 7) {
 
 export async function findReferralOpportunities() {
   const { agentId } = await getAgentContext()
-  return identifyReferralOpportunities(agentId)
+  return identifyReferralOpportunities(agentId ?? "")
 }

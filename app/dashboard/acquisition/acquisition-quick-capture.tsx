@@ -61,7 +61,7 @@ export function AcquisitionQuickCapture() {
         status: "active",
       } as any)
       if (result.success && result.contact) {
-        setCreatedContactId(result.contact.id)
+        setCreatedContactId(result.contact.id as string | null)
         toast({ title: "Contact added", description: `${firstName} ${lastName}`.trim() })
       } else {
         toast({

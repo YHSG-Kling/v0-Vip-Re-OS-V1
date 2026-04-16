@@ -247,7 +247,6 @@ export async function markLessonRead(params: MarkLessonReadParams): Promise<{ su
     event: KernelEvent.PORTAL_EDUCATION_VIEWED,
     entityType: "contact",
     entityId: contactId,
-    agentId: contact.agent_id,
     brokerageId: contact.brokerage_id,
   }).catch(err => {
     console.error("[PortalEducation] Error emitting kernel event:", err)

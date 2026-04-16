@@ -379,7 +379,7 @@ Return JSON:
       brokerage_id: params.brokerageId,
       checklist_type: "disclosures",
       items: result.requiredDisclosures ?? [],
-      compliance_score: Math.round(result.complianceScore ?? 0),
+      compliance_score: Math.round(Number(result.complianceScore ?? 0)),
       ai_recommendations: result.recommendations ?? [],
       updated_at: new Date().toISOString(),
     })

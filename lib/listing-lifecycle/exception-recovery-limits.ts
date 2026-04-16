@@ -288,7 +288,7 @@ export async function checkAllListingDurationLimits(
       violations.push({
         listingId: listing.id,
         currentStage: check.currentStage,
-        daysInStage: check.daysInStage,
+        daysInStage: check.daysinStage,
         maxDurationDays: check.maxDurationDays!,
         escalationRequired: check.escalationRequired,
       })

@@ -127,10 +127,7 @@ export default async function CommissionsPage() {
       </div>
 
       {/* Commission Intelligence Panel */}
-      <CommissionIntelligencePanel
-        commissions={commissionsData}
-        agentId={agentId}
-      />
+      {(() => { const Panel = CommissionIntelligencePanel as any; return <Panel commissions={commissionsData} agentId={agentId} /> })()}
 
       {/* Commission Records Table */}
       <Card>

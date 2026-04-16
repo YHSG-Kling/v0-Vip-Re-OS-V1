@@ -90,8 +90,8 @@ export async function assemblePresentation(input: PresentationInput): Promise<Pr
     const presentationContent = assemblePresentationContent({
       listing,
       contact,
-      includeCMA: input.includeCMA && hasCMA,
-      includeNetSheet: input.includeNetSheet && hasNetSheet,
+      includeCMA: (input.includeCMA ?? false) && hasCMA,
+      includeNetSheet: (input.includeNetSheet ?? false) && hasNetSheet,
       includeMarketingPlan: input.includeMarketingPlan !== false,
       customMessage: input.customMessage,
       highlightFeatures: input.highlightFeatures || []

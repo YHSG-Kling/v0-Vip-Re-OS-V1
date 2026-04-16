@@ -378,8 +378,7 @@ export async function attachAiOutputToEntity(
           actor_user_id: ctx.userId,
         },
       })
-      .then(() => void 0)
-      .catch(() => void 0) // lifecycle event is non-fatal
+      .then(() => void 0, () => void 0) // lifecycle event is non-fatal
 
     return { success: true }
   } catch (err) {

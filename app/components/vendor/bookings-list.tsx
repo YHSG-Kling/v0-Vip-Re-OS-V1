@@ -97,9 +97,11 @@ export function VendorBookingsList({ bookings }: { bookings: Booking[] }) {
     startTransition(async () => {
       await submitVendorInvoice({
         bookingId: selectedBooking.id,
-        invoiceAmount: parseFloat(invoiceAmount),
-        invoiceUrl: "",
-        invoiceDetails: { notes },
+        amount: parseFloat(invoiceAmount),
+        invoiceDate: new Date().toISOString().split("T")[0],
+        dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+        invoiceNumber: `INV-${Date.now()}`,
+        notes,
       })
       setInvoiceDialogOpen(false)
       setInvoiceAmount("")

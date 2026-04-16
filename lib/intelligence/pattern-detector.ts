@@ -519,7 +519,7 @@ async function evaluatePattern(
       }
       if (
         daysSinceShowing !== null &&
-        daysSinceShowing >= (rules.days_no_showing || 14)
+        (daysSinceShowing ?? 0) >= (rules.days_no_showing || 14)
       ) {
         matchCount++
         triggerSignals.days_since_showing = daysSinceShowing
@@ -609,7 +609,7 @@ Entity type: ${entityType}
 Entity signals: ${JSON.stringify(signals, null, 2)}
 
 Does this pattern match? Evaluate and return JSON.`,
-      maxTokens: 200,
+      maxOutputTokens: 200,
     })
 
     // Parse AI response

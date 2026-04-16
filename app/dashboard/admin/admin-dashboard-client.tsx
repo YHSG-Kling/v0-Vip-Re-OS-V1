@@ -80,12 +80,12 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
     const loadStats = async () => {
       try {
         setLoading(true)
-        const result = await getAdminDashboardStats(brokerageId)
-        if (result.success && result.stats) {
-          setStats(result.stats)
+        const result = await getAdminDashboardStats()
+        if (result) {
+          setStats(result)
           setError(null)
         } else {
-          setError(result.error || 'Failed to load dashboard stats')
+          setError('Failed to load dashboard stats')
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error')
@@ -236,26 +236,26 @@ export function AdminDashboardClient({ brokerageId, operationalSnapshot }: Admin
         })()}
 
         {/* OS Command Strip */}
-        <AdminCommandStrip brokerageId={brokerageId} stats={stats} />
+        <AdminCommandStrip brokerageId={brokerageId} />
 
         {/* OS Panels - First Row (3 columns) */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <AdminOperationsRadar brokerageId={brokerageId} stats={stats} />
+          <AdminOperationsRadar brokerageId={brokerageId} />
           <OnboardingOperationsPanel brokerageId={brokerageId} stats={stats} />
-          <AssignmentRulesPanel brokerageId={brokerageId} stats={stats} />
+          <AssignmentRulesPanel brokerageId={brokerageId} />
         </div>
 
         {/* OS Panels - Second Row (3 columns) */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <ProviderIntelligencePanel brokerageId={brokerageId} stats={stats} />
           <SlaMonitorPanel brokerageId={brokerageId} stats={stats} />
-          <FormsImportPanel brokerageId={brokerageId} stats={stats} />
+          <FormsImportPanel brokerageId={brokerageId} />
         </div>
 
         {/* OS Panels - Third Row (3 columns) */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <KnowledgeOpsPanel brokerageId={brokerageId} stats={stats} />
-          <FarmIntelligencePanel brokerageId={brokerageId} stats={stats} />
+          <KnowledgeOpsPanel brokerageId={brokerageId} />
+          <FarmIntelligencePanel brokerageId={brokerageId} />
           
           {/* Quick Stats Card */}
           <Card className="border-border">

@@ -433,7 +433,7 @@ export async function sendInboxReply(
         consent_type: contact.consent_type,
         tcpa_consent: contact.tcpa_consent,
         dnc_status: contact.dnc_status,
-      } as KernelContact,
+      } as unknown as KernelContact,
       content: body,
       messageType,
     })

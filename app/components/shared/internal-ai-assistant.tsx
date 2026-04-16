@@ -626,8 +626,8 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   // Start single-command voice capture
   const startVoiceCapture = useCallback(() => {
     if (typeof window === "undefined") return
-    const SR = (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
-      ?? (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
+    const SR = (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
+      ?? (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
     if (!SR) { alert("Voice recognition not supported in this browser."); return }
 
     if (recognitionRef.current) {
@@ -657,8 +657,8 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
   // Background wake-word detection — runs whenever component is mounted
   useEffect(() => {
     if (typeof window === "undefined") return
-    const SR = (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
-      ?? (window as Window & { webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
+    const SR = (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).SpeechRecognition
+      ?? (window as Window & { SpeechRecognition?: typeof SpeechRecognition; webkitSpeechRecognition?: typeof SpeechRecognition }).webkitSpeechRecognition
     if (!SR) return
 
     let active = true
@@ -1062,9 +1062,9 @@ export function InternalAIAssistant({ role, wakeWord, userId }: InternalAIAssist
                   const isUser = msg.role === "user"
 
                   // Tool invocation parts from this message
-                  const toolParts = (msg.parts ?? []).filter(
+                  const toolParts = ((msg.parts ?? []).filter(
                     (p: { type: string }) => p.type === "tool-invocation"
-                  ) as Array<{
+                  ) as unknown) as Array<{
                     type: "tool-invocation"
                     toolInvocation: {
                       toolCallId: string

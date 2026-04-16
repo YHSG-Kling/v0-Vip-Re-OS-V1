@@ -12,6 +12,7 @@ export interface SendInvitationParams {
   contactId: string
   eventId: string
   method: "email" | "sms" | "both"
+  personalizedMessage?: string
 }
 
 export interface SendReminderParams {
@@ -59,6 +60,8 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams) {
 
     // Send email if requested
     if (params.method === "email" || params.method === "both") {
+      // Always use the full template so event details and RSVP link are included.
+      // personalizedMessage is injected as an opening paragraph inside the template.
       const emailContent = {
         to: contact.email,
         subject: `You're Invited: Open House at ${property.address}`,
@@ -69,6 +72,7 @@ export async function sendOpenHouseInvitation(params: SendInvitationParams) {
           eventTime: `${event.start_time} - ${event.end_time}`,
           propertyImage: property.featured_image || "",
           rsvpLink: `${process.env.NEXT_PUBLIC_APP_URL}/open-house/rsvp/${event.id}`,
+          personalizedOpening: params.personalizedMessage,
         }),
       }
 
@@ -264,6 +268,7 @@ function generateInvitationEmailHTML(data: {
   eventTime: string
   propertyImage: string
   rsvpLink: string
+  personalizedOpening?: string
 }) {
   return `
     <!DOCTYPE html>
@@ -277,6 +282,7 @@ function generateInvitationEmailHTML(data: {
         .property-image { width: 100%; height: 300px; object-fit: cover; border-radius: 8px; margin: 20px 0; }
         .cta-button { display: inline-block; background: #667eea; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
         .details { background: white; padding: 20px; border-left: 4px solid #667eea; margin: 20px 0; }
+        .personalized { background: white; padding: 16px 20px; border-radius: 8px; margin-bottom: 20px; font-style: italic; color: #4b5563; }
       </style>
     </head>
     <body>
@@ -286,21 +292,24 @@ function generateInvitationEmailHTML(data: {
         </div>
         <div class="content">
           <p>Hi ${data.contactName},</p>
-          <p>We're excited to invite you to an exclusive open house event at a beautiful property we think you'll love!</p>
-          
+          ${data.personalizedOpening
+            ? `<div class="personalized">${data.personalizedOpening}</div>`
+            : `<p>We're excited to invite you to an exclusive open house event at a beautiful property we think you'll love!</p>`
+          }
+
           ${data.propertyImage ? `<img src="${data.propertyImage}" alt="Property" class="property-image" />` : ""}
-          
+
           <div class="details">
             <h3>Event Details</h3>
             <p><strong>📍 Location:</strong> ${data.propertyAddress}</p>
             <p><strong>📅 Date:</strong> ${data.eventDate}</p>
             <p><strong>⏰ Time:</strong> ${data.eventTime}</p>
           </div>
-          
+
           <p>Join us to explore this amazing property and discover if it's the perfect fit for you!</p>
-          
+
           <a href="${data.rsvpLink}" class="cta-button">RSVP Now</a>
-          
+
           <p>We look forward to seeing you there!</p>
         </div>
       </div>

@@ -87,7 +87,7 @@ export async function calibrateSystemPrompts(
           negative_themes: data.themes,
           current_approval_rate: data.approvalRate,
         }),
-        maxTokens: 500,
+        maxOutputTokens: 500,
       })
 
       // Insert into model_retraining_log

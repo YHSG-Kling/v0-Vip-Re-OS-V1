@@ -138,7 +138,7 @@ export async function createTransaction(transactionData: {
           entityId:    data.id,
           fromState:   "active",
           toState:     "commission_overridden",
-          actorUserId: userData.user?.id,
+          actorUserId: userData.user?.id ?? '',
           actorRole:   "broker",
           eventType:   "commission.overridden",
           metadata:    { commission_percentage: transactionData.commissionPercentage, resolved_from: "deal_override" },
@@ -1033,22 +1033,24 @@ export async function calculateCommissions(transactionId: string) {
     }
 
     writes.push(
-      supabase
-        .from("agent_earnings")
-        .upsert(
-          {
-            agent_id: transaction.agent_id,
-            brokerage_id: transaction.brokerage_id,
-            period_type: "ytd",
-            period_label: `${new Date().getFullYear()}`,
-            gross_commission: grossCommission,
-            agent_net: agentNet,
-            brokerage_net: brokerageFee,
-            total_fees: transactionFee,
-            transaction_count: 1,
-          },
-          { onConflict: "agent_id,period_type,period_label" },
-        ),
+      Promise.resolve(
+        supabase
+          .from("agent_earnings")
+          .upsert(
+            {
+              agent_id: transaction.agent_id,
+              brokerage_id: transaction.brokerage_id,
+              period_type: "ytd",
+              period_label: `${new Date().getFullYear()}`,
+              gross_commission: grossCommission,
+              agent_net: agentNet,
+              brokerage_net: brokerageFee,
+              total_fees: transactionFee,
+              transaction_count: 1,
+            },
+            { onConflict: "agent_id,period_type,period_label" },
+          )
+      )
     )
 
     await Promise.all(writes)
@@ -2385,7 +2387,7 @@ async function getUpcomingMilestones(agentId: string) {
   return milestones
     .filter(m => transactionMap.has(m.transaction_id))
     .map(m => {
-      const transaction = transactionMap.get(m.transaction_id)
+      const transaction = transactionMap.get(m.transaction_id)!
       return {
         ...m,
         transactions: {

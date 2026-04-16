@@ -1,6 +1,6 @@
 // Global Providers
-export { default as ThemeProvider } from './theme-provider'
-export { default as Providers } from './providers'
+export { ThemeProvider } from './theme-provider'
+export { Providers } from './providers'
 
 // UI Components (Primitives)
 export * from './ui'

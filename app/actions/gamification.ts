@@ -159,8 +159,8 @@ export async function awardBadge(data: {
     metadata: {
       agent_id: data.agentId,
       badge_id: data.badgeId,
-      badge_name: newBadge.gamification_badges?.badge_name,
-      badge_tier: newBadge.gamification_badges?.badge_tier,
+      badge_name: (newBadge.gamification_badges as any)?.[0]?.badge_name ?? (newBadge.gamification_badges as any)?.badge_name,
+      badge_tier: (newBadge.gamification_badges as any)?.[0]?.badge_tier ?? (newBadge.gamification_badges as any)?.badge_tier,
       reason: data.reason,
     },
     created_at: new Date().toISOString(),

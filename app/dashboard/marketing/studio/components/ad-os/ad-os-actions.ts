@@ -208,7 +208,9 @@ export async function scheduleRepurposedPost(params: {
     platform: platformMap[params.platform] ?? params.platform.toLowerCase().replace(/ /g, "_"),
     postType: "repurposed",
     content: params.content,
-  })
+    scheduledFor: new Date().toISOString(),
+    socialAccountId: "",
+  } as any)
 }
 
 // ─── analyzeCompetitorLandscape ───────────────────────────────────────────────

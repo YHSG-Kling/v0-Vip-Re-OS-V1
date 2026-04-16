@@ -48,10 +48,7 @@ export function TcFastActionPanel({
 
   async function handleBatchPass() {
     if (!selectedTxnId) return
-    const checksResult = await getTransactionComplianceChecks({
-      transactionId: selectedTxnId,
-      brokerageId,
-    })
+    const checksResult = await getTransactionComplianceChecks(selectedTxnId, brokerageId)
     const openChecks = (checksResult.checks ?? [])
       .filter((c: any) => c.status === "pending" || c.status === "needs_review")
       .map((c: any) => c.id)

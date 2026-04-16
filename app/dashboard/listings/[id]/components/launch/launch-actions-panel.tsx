@@ -69,7 +69,7 @@ export function LaunchActionsPanel({
       </CardHeader>
       <CardContent className="space-y-2">
         {/* Primary Launch Action */}
-        <Link href={`/dashboard/listings/${listingId}/lifecycle`}>
+        <Link href={`/dashboard/listings/${listingId}/marketing-tier`}>
           <Button
             size="sm"
             className={`w-full text-xs ${canLaunch ? "bg-green-600 hover:bg-green-700" : ""}`}

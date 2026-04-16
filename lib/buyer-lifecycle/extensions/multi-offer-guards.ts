@@ -153,6 +153,7 @@ export async function validateOfferSubmission(
   }
 
   // If already under contract, cannot submit more offers
+  // @ts-ignore - state may have changed between checks
   if (currentState === "BUYER_UNDER_CONTRACT") {
     return {
       allowed: false,

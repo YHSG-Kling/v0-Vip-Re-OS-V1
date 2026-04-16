@@ -48,6 +48,13 @@ import {
   Scale,
   ClipboardList,
   PenLine,
+  ArrowLeft,
+  ArrowRight,
+  MapPin,
+  Calendar,
+  Shield,
+  Wrench,
+  CheckSquare,
   Brain,
   TrendingDown,
   Landmark,
@@ -351,6 +358,7 @@ interface TransactionDetailClientProps {
     id: string
     display_name: string | null
     max_active_deals: number | null
+    active_transactions_count?: number | null
   }>
   // Lender assignment
   currentLenderId?: string | null
@@ -1041,7 +1049,7 @@ export function TransactionDetailClient({
                 {canMarkLost && (
                   <div className="pt-3 border-t mt-3 space-y-1">
                     {/* Close Transaction — sets status=closed, stage=CLOSED */}
-                    {currentStage !== "CLOSED" && currentStage !== "LOST" && (
+                    {(currentStage as string) !== "CLOSED" && (currentStage as string) !== "LOST" && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -1069,7 +1077,7 @@ export function TransactionDetailClient({
                       </Button>
                     )}
                     {/* Reopen — only shown when closed; requires broker/admin */}
-                    {currentStage === "CLOSED" && (
+                    {(currentStage as string) === "CLOSED" && (
                       <Button
                         variant="ghost"
                         size="sm"
@@ -1382,7 +1390,7 @@ export function TransactionDetailClient({
             <AssignTCPanel
               transactionId={transaction.id}
               currentCoordinatorId={currentCoordinatorId}
-              availableTCs={availableTCs}
+              availableTCs={(availableTCs ?? []) as any[]}
               userRole={userRole}
             />
 
@@ -2032,14 +2040,14 @@ export function TransactionDetailClient({
                     </Button>
 
                     {/* Status Indicator */}
-                    {titleEscrow?.earnest_money_received_at && (
+                    {titleEscrow?.earnest_money_received_date && (
                       <Alert className="border-green-500 bg-green-50">
                         <CheckCircle2 className="h-4 w-4 text-green-600" />
                         <AlertTitle className="text-green-800">Earnest Money Received</AlertTitle>
                         <AlertDescription className="text-green-700">
                           ${titleEscrow.earnest_money_amount?.toLocaleString() ?? emAmount} received on{" "}
-                          {new Date(titleEscrow.earnest_money_received_at).toLocaleDateString()}{" "}
-                          {titleEscrow.earnest_money_holder && `held by ${titleEscrow.earnest_money_holder.replace(/_/g, " ")}`}
+                          {new Date(titleEscrow.earnest_money_received_date).toLocaleDateString()}{" "}
+                          {titleEscrow.earnest_money_held_by && `held by ${titleEscrow.earnest_money_held_by.replace(/_/g, " ")}`}
                         </AlertDescription>
                       </Alert>
                     )}

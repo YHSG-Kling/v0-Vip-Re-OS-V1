@@ -59,7 +59,7 @@ export default async function ShowingsPage({ params }: Props) {
     getListingShowings(listingId),
     getShowingAnalytics(listingId),
     getShowingFeedbackCards(listingId),
-    getAIShowingInsights(agentId, { start: thirtyDaysAgo, end: today }),
+    getAIShowingInsights(agentId ?? "", { start: thirtyDaysAgo, end: today }),
   ])
 
   const insights = insightsResult.success ? (insightsResult as any).insights || null : null

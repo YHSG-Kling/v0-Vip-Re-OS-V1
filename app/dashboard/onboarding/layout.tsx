@@ -14,8 +14,8 @@ export default async function OnboardingLayout({
     <div className="relative">
       {children}
       <AISetupAssistant
-        brokerageId={brokerageId}
-        agentId={agentId}
+        brokerageId={brokerageId ?? ""}
+        agentId={agentId ?? ""}
       />
     </div>
   )

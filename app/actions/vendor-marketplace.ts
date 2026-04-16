@@ -593,7 +593,7 @@ export async function assignVendorToTransaction(data: {
       vendor_id: data.vendorId,
       transaction_id: data.transactionId,
       assignment_type: data.assignmentType,
-      assigned_by_agent_id: agent.id,
+      assigned_by_agent_id: agent?.id ?? user.id,
     },
     created_at: new Date().toISOString(),
   })

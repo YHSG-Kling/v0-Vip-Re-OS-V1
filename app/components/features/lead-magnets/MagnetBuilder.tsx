@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
-import { createLeadMagnetAction, publishLeadMagnetAction } from "@/app/actions/lead-magnets"
+import { createLeadMagnetAction, publishLeadMagnetAction } from "@/app/actions/lead-magnets-actions"
 import type { CreateLeadMagnetInput } from "@/lib/kernel/lead-magnets"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -69,22 +69,16 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
 
     startTransition(async () => {
       const result = await createLeadMagnetAction({
-        title: title.trim(),
-        description: description.trim(),
-        magnetType,
-        brokerageId,
-        agentId,
-        createdBy: "",
-        tcpaDisclosureText: tcpaText,
-        thankYouMessage,
+        name: title.trim(),
+        magnet_type: magnetType,
       })
 
-      if (!result.success || !result.magnetId || !result.slug) {
+      if (!result.success || !result.magnetId) {
         setError(result.error ?? "Failed to create lead magnet")
         return
       }
 
-      setCreatedMagnet({ magnetId: result.magnetId, slug: result.slug })
+      setCreatedMagnet({ magnetId: result.magnetId, slug: title.trim().toLowerCase().replace(/\s+/g, "-") })
       setStep("publish")
     })
   }
@@ -94,13 +88,7 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
     setError(null)
 
     startTransition(async () => {
-      const result = await publishLeadMagnetAction({
-        magnetId: createdMagnet.magnetId,
-        brokerageId,
-        channels: channels as any,
-        actorUserId: "",
-        baseUrl: "",
-      })
+      const result = await publishLeadMagnetAction(createdMagnet.magnetId)
 
       if (!result.success) {
         setError(result.error ?? "Failed to publish")

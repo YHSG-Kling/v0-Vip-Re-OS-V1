@@ -122,7 +122,7 @@ export async function sendDocumentForSignature(params: {
       signer_count:    signers.length,
     },
   })
-  .catch(() => {}) // fire-and-forget: silent fail on audit log errors
+  .then(() => {}, () => {}) // fire-and-forget: silent fail on audit log errors
 
   revalidatePath(`/dashboard/transactions/${transactionId}`)
   return { success: true, signatureId: sig.id }
@@ -208,7 +208,7 @@ export async function getUnsignedDocumentBlockers(
   const sigByType = (sigs ?? []).reduce((acc, s) => {
     if (!acc[s.contract_type]) acc[s.contract_type] = s
     return acc
-  }, {} as Record<string, typeof sigs[0]>)
+  }, {} as Record<string, NonNullable<typeof sigs>[0]>)
 
   return signable
     .filter(d => {

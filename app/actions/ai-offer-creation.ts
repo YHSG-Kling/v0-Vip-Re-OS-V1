@@ -203,30 +203,8 @@ export async function aiRecommendContingencies(params: {
   buyerRiskTolerance: "conservative" | "moderate" | "aggressive"
 }) {
   try {
-    const { experimental_output: contingencies } = await generateText({
+    const contingencyResult = await generateText({
       model: resolveModel("openai/gpt-4o-mini"),
-      experimental_output: Output.object({ schema: z.object({
-        recommended: z.array(
-          z.object({
-            type: z.string(),
-            duration: z.number().describe("Days"),
-            critical: z.boolean(),
-            reasoning: z.string(),
-          })
-        ),
-        notRecommended: z.array(
-          z.object({
-            type: z.string(),
-            reasoning: z.string(),
-          })
-        ),
-        riskAnalysis: z.object({
-          overallRisk: z.enum(["low", "medium", "high"]),
-          buyerProtection: z.number().min(0).max(100),
-          competitiveness: z.number().min(0).max(100),
-        }),
-        suggestions: z.array(z.string()),
-      }) }),
       prompt: `Recommend contingencies for this buyer:
 
 Financing: ${params.buyerFinancingType}
@@ -242,8 +220,32 @@ Standard contingencies:
 - Title (standard)
 - HOA review (3-5 days)
 
-Balance buyer protection with competitiveness.`,
+Balance buyer protection with competitiveness.
+
+Respond with JSON only: { "recommended": [{ "type": string, "duration": number, "critical": boolean, "reasoning": string }], "notRecommended": [{ "type": string, "reasoning": string }], "riskAnalysis": { "overallRisk": "low"|"medium"|"high", "buyerProtection": number, "competitiveness": number }, "suggestions": string[] }`,
     })
+    let contingencies: unknown
+    try {
+      contingencies = JSON.parse(contingencyResult.text)
+    } catch {
+      return { success: false, error: "AI response was not valid JSON" }
+    }
+    const cont = contingencies as any
+    if (
+      typeof contingencies !== "object" ||
+      contingencies === null ||
+      !Array.isArray(cont.recommended) ||
+      !Array.isArray(cont.notRecommended) ||
+      typeof cont.riskAnalysis !== "object" ||
+      cont.riskAnalysis === null ||
+      typeof cont.riskAnalysis.overallRisk !== "string" ||
+      typeof cont.riskAnalysis.buyerProtection !== "number" ||
+      typeof cont.riskAnalysis.competitiveness !== "number" ||
+      cont.recommended.some((r: any) => !r.type || r.duration === undefined || r.critical === undefined) ||
+      cont.notRecommended.some((nr: any) => !nr.type || !nr.reasoning)
+    ) {
+      return { success: false, error: "AI returned malformed contingency data" }
+    }
 
     return { success: true, contingencies }
   } catch (error) {
@@ -473,18 +475,8 @@ export async function aiCounterOfferStrategy(params: {
   negotiationRound: number
 }) {
   try {
-    const { experimental_output: strategy } = await generateText({
+    const strategyResult = await generateText({
       model: resolveModel("openai/gpt-4o"),
-      experimental_output: Output.object({ schema: z.object({
-        recommendedResponse: z.enum(["accept", "counter", "walk_away"]),
-        suggestedCounterPrice: z.number().nullable(),
-        suggestedTerms: z.array(z.string()),
-        reasoning: z.string(),
-        negotiationTactics: z.array(z.string()),
-        riskOfLosingDeal: z.number().min(0).max(100),
-        estimatedFinalPrice: z.number(),
-        nextMoveTimeline: z.string(),
-      }) }),
       prompt: `Help strategize response to seller's counter offer.
 
 Negotiation History:
@@ -496,8 +488,23 @@ Negotiation History:
 Buyer Budget: $${params.buyerMaxBudget.toLocaleString()}
 Counter Terms: ${JSON.stringify(params.counterTerms)}
 
-Analyze the gap and recommend next move with reasoning.`,
+Analyze the gap and recommend next move with reasoning.
+
+Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away", "suggestedCounterPrice": number|null, "suggestedTerms": string[], "reasoning": string, "negotiationTactics": string[], "riskOfLosingDeal": number, "estimatedFinalPrice": number, "nextMoveTimeline": string }`,
     })
+    let strategy: unknown
+    try {
+      strategy = JSON.parse(strategyResult.text)
+    } catch {
+      return { success: false, error: "AI response was not valid JSON" }
+    }
+    if (
+      typeof strategy !== "object" ||
+      strategy === null ||
+      (!(strategy as any).recommendedResponse && !(strategy as any).strategy && !(strategy as any).offerStrategy)
+    ) {
+      return { success: false, error: "AI returned malformed strategy data" }
+    }
 
     return { success: true, strategy }
   } catch (error) {

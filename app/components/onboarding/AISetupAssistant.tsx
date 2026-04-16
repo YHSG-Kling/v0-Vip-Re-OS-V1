@@ -1,6 +1,7 @@
 'use client'
 
 import { useChat } from '@ai-sdk/react'
+import { DefaultChatTransport } from 'ai'
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
@@ -20,9 +21,11 @@ export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [inputValue, setInputValue] = useState('')
 
-  const { messages, append, status } = useChat({
-    api: '/api/onboarding/assistant',
-    body: { brokerageId, agentId },
+  const { messages, sendMessage, status } = useChat({
+    transport: new DefaultChatTransport({
+      api: '/api/onboarding/assistant',
+      body: { brokerageId, agentId },
+    }),
   })
 
   const isLoading = status === 'streaming' || status === 'submitted'
@@ -44,7 +47,7 @@ export function AISetupAssistant({ brokerageId, agentId }: AISetupAssistantProps
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!inputValue.trim() || isLoading) return
-    append({ role: 'user', content: inputValue.trim() })
+    void sendMessage({ role: 'user', parts: [{ type: 'text', text: inputValue.trim() }] })
     setInputValue('')
   }
 

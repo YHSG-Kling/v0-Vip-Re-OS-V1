@@ -16,6 +16,7 @@ import {
   getCurrentBuyerState as getCurrentState,
   type FinancialVerificationResult,
   type BuyerState,
+  type FinancialVerificationEvent,
 } from '@/lib/buyer-lifecycle'
 
 export interface GovernanceCheckResult {
@@ -50,14 +51,14 @@ export async function checkBuyerGovernance(params: {
   const financialCheck = await checkFinancialVerification({ contactId })
   
   // 2a. Check expiration
-  if (financialCheck.isVerified && isVerificationExpired(financialCheck)) {
+  if (financialCheck.isVerified && isVerificationExpired(financialCheck as unknown as FinancialVerificationEvent & { created_at: string })) {
     return {
       allowed: false,
       blockerType: 'verification_expired',
       reason: 'Financial verification has expired and requires renewal',
       verification: financialCheck,
       requiresRollback: true,
-      rollbackTarget: 'BUYER_FINANCIAL_VERIFICATION_REQUIRED'
+      rollbackTarget: 'BUYER_CONTACT_CREATED'
     }
   }
 
@@ -320,7 +321,7 @@ export async function getDiagnosticGovernanceStatus(contactId: string): Promise<
     const verification = await checkFinancialVerification({ contactId })
     const isFrozen = currentState ? ['BUYER_UNDER_CONTRACT', 'BUYER_CLOSED', 'BUYER_LIFETIME'].includes(currentState) : false
     const isFinanciallyVerified = verification.isVerified
-    const isVerificationExpired = isFinanciallyVerified && isVerificationExpired(verification)
+    const isVerificationExpiredFlag = isFinanciallyVerified && isVerificationExpired(verification as unknown as FinancialVerificationEvent & { created_at: string })
 
     const searchCheck = await checkBuyerGovernance({ contactId, action: 'search' })
     const tourCheck = await checkBuyerGovernance({ contactId, action: 'tour' })
@@ -337,7 +338,7 @@ export async function getDiagnosticGovernanceStatus(contactId: string): Promise<
         currentState,
         isFrozen,
         isFinanciallyVerified,
-        isVerificationExpired,
+        isVerificationExpired: isVerificationExpiredFlag,
         canSearch: searchCheck.allowed,
         canTour: tourCheck.allowed,
         canOffer: offerCheck.allowed,

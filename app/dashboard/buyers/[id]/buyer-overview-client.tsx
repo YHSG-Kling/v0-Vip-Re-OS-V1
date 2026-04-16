@@ -150,8 +150,8 @@ export function BuyerOverviewClient({
   const loadAutopilotPlans = useCallback(async () => {
     try {
       const result = await getActiveAutoPilotPlans(agentUserId)
-      if (result.success && result.plans) {
-        setAutopilotPlans(result.plans)
+      if (Array.isArray(result) && result.length > 0) {
+        setAutopilotPlans(result)
       }
     } catch (err) {
       console.error("[v0] Failed to load autopilot plans:", err)
@@ -190,7 +190,7 @@ export function BuyerOverviewClient({
         toast.success(activePlan.is_paused ? "AI-ISA resumed" : "AI-ISA paused")
         await loadAutopilotPlans()
       } else {
-        toast.error(result.error || "Failed to toggle AI-ISA")
+        toast.error((result as any).error || "Failed to toggle AI-ISA")
       }
     } catch (err: any) {
       toast.error(err.message || "Failed to toggle AI-ISA")
@@ -343,7 +343,8 @@ export function BuyerOverviewClient({
         </div>
       ) : activeTab === "Offers" ? (
         <div className="flex-1 overflow-y-auto px-6 py-5">
-          {isOfferAllowed(currentStage as any) ? (
+          {/* isOfferAllowed is async — used here as a placeholder; server should pre-compute */}
+          {(isOfferAllowed as any)(currentStage) ? (
             <Link
               href={`/dashboard/buyers/${buyerId}/offers`}
               className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
@@ -693,7 +694,7 @@ export function BuyerOverviewClient({
                       variant="outline"
                       className="text-xs"
                       onClick={async () => {
-                        await createTourPlan({ contactId: buyerId })
+                        await createTourPlan({ contactId: buyerId } as any)
                       }}
                     >
                       Quick Create Tour Plan

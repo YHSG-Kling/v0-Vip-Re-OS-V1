@@ -1,1 +1,2 @@
-// Content utilities and shared components
+// Content utilities — add named exports here as components are created
+export {}

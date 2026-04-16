@@ -147,7 +147,7 @@ export function BrandSetupClient({
 
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [uploadingLogo, setUploadingLogo] = useState(false)
-  const debounceRef = useRef<NodeJS.Timeout>()
+  const debounceRef = useRef<NodeJS.Timeout | null>(null)
 
   // Determine completed steps
   const completedSteps = initialStatus?.completedSteps || []

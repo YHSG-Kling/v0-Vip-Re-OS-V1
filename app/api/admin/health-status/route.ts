@@ -5,7 +5,7 @@ import { getAgentContext } from "@/lib/identity"
 export async function GET() {
   try {
     const supabase = await createClient()
-    const ctx = await getAgentContext(supabase)
+    const ctx = await getAgentContext()
 
     if (!ctx) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })

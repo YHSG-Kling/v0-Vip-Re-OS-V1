@@ -75,7 +75,7 @@ export async function analyzeDocument(documentId: string) {
       .eq("id", documentId)
       .maybeSingle()
 
-    if (error || !data) throw error ?? new Error("Document not found")
+    if (error || !document) throw error ?? new Error("Document not found")
 
     // AI document analysis
     const { object: analysis } = await generateObject({
@@ -128,7 +128,7 @@ Provide detailed analysis including document type classification, key informatio
       status: "completed",
       entity_type: "transaction",
       transaction_id: document.transaction_id ?? null,
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true, analysis }
   } catch (error) {
@@ -204,7 +204,7 @@ export async function uploadDocument(
     notes: JSON.stringify({ action: "uploaded", document_source: "client_documents", performed_by_type: "client" }),
     status: "completed",
     entity_type: "contact",
-  }).catch(() => {})
+  }).then(() => {}, () => {})
 
   // Queue for AI processing (async)
   processDocumentWithAI(document.id, publicUrl, file.type).catch(console.error)
@@ -234,7 +234,7 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
       messages: [
         {
           role: "user",
-          content: [
+          content: ([
             {
               type: "text",
               text: `Analyze this real estate document. Return JSON with:
@@ -251,7 +251,7 @@ export async function processDocumentWithAI(documentId: string, fileUrl: string,
               type: "image",
               image: fileUrl,
             },
-          ],
+          ] as any),
         },
       ],
     })
@@ -320,7 +320,7 @@ Use simple language, avoid jargon, and be reassuring.`,
       notes: JSON.stringify({ action: "analyzed", document_source: "client_documents", performed_by_type: "ai" }),
       status: "completed",
       entity_type: "contact",
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return { success: true, classification, explanation: explanationResult.text }
   } catch (error) {
@@ -440,7 +440,7 @@ export async function getDocumentWithAnalysis(documentId: string) {
     notes: JSON.stringify({ action: "viewed", document_source: docSource, performed_by_type: "client" }),
     status: "completed",
     entity_type: "contact",
-  }).catch(() => {})
+  }).then(() => {}, () => {})
 
   return { document, extractionLog, educationalOverlay }
 }
@@ -756,7 +756,7 @@ Provide a clear, helpful answer in plain English. If you're not sure about somet
     entity_type: "document",
     entity_id: documentId,
     metadata: { action: "question_asked", performed_by_type: "client", notes: `Asked question: ${question.substring(0, 100)}` },
-  }).catch(() => {})
+  }).then(() => {}, () => {})
 
   return { answer: result.text }
 }

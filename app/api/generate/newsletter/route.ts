@@ -40,8 +40,8 @@ Generate a full newsletter with:
     const response = await generateAIResponse({
       prompt,
       metadata: {
-        userId: actorContext?.userId,
-        brokerageId: actorContext?.brokerageId,
+        userId: actorContext?.userId ?? "",
+        brokerageId: actorContext?.brokerageId ?? "",
         feature: "newsletter_generation",
       },
     })

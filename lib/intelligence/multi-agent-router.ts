@@ -52,7 +52,7 @@ async function checkHumanOverride(
  */
 function findAgentForCapability(capability: AgentCapability): AgentType | null {
   for (const [agentType, config] of Object.entries(AGENT_REGISTRY)) {
-    if (config.handles.includes(capability as any)) {
+    if ((config.handles as readonly string[]).includes(capability as string)) {
       return agentType as AgentType
     }
   }
@@ -129,7 +129,7 @@ export async function routeToAgent(request: RouteRequest): Promise<RouteResult> 
       brokerage_id: request.brokerageId,
       assigned_agent_id: request.agentId,
       status: 'active',
-      current_state: agentConfig.initialState,
+      current_state: (agentConfig as any).initialState ?? null,
       context: request.context || {},
       priority: request.priority || 'normal',
       started_at: new Date().toISOString(),
@@ -262,7 +262,7 @@ async function initiateHandoff(request: HandoffRequest): Promise<RouteResult> {
       entity_id: request.entityId,
       brokerage_id: request.brokerageId,
       status: 'active',
-      current_state: toAgentConfig.initialState,
+      current_state: (toAgentConfig as any).initialState ?? null,
       context: {
         ...request.context,
         handoff_from: request.fromAgentType,

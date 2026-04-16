@@ -315,7 +315,7 @@ export default function CRMPage() {
       .select("id, brokerage_id")
       .eq("user_id", user.id)
       .maybeSingle()
-      .then(({ data }) => {
+      .then(({ data }: { data: { id: string; brokerage_id: string } | null }) => {
         if (data) {
           setAgentId(data.id)
           setBrokerageId(data.brokerage_id)
@@ -326,7 +326,7 @@ export default function CRMPage() {
             .select("brokerage_id")
             .eq("id", user.id)
             .maybeSingle()
-            .then(({ data: userData }) => {
+            .then(({ data: userData }: { data: { brokerage_id: string } | null }) => {
               if (userData?.brokerage_id) setBrokerageId(userData.brokerage_id)
             })
             .catch(() => {})
@@ -369,8 +369,8 @@ export default function CRMPage() {
           await Promise.all([
             getContactById(contactId),
             detectClientChurn(contactId).catch(() => null),
-            getActiveAutoPilotPlans(agentId).catch(() => []),
-            aiSuggestFollowUp({ contactId, agentId }).catch(() => ({ suggestions: [] })),
+            getActiveAutoPilotPlans(agentId ?? "").catch(() => []),
+            aiSuggestFollowUp({ contactId, agentId: agentId ?? "" }).catch(() => ({ suggestions: [] })),
             getConversationIntelligence(contactId).catch(() => null),
           ])
 
@@ -401,7 +401,7 @@ export default function CRMPage() {
           .order("qualified_at", { ascending: false })
           .limit(1)
           .maybeSingle()
-          .then(({ data }) => {
+          .then(({ data }: { data: { qualification_score: any; qualification_result: any; qualification_signals: any; qualified_at: any; assigned_at: any } | null }) => {
             if (data) {
               setIsaHandoffContext({
                 qualificationScore: data.qualification_score ?? undefined,
@@ -417,7 +417,7 @@ export default function CRMPage() {
         setChurnRisk(churnResult)
         setAutopilotPlans(Array.isArray(autopilotResult) ? autopilotResult : [])
         setSuggestedActions(followUpResult?.suggestions || [])
-        setConversationIntelligence(convIntelResult && !convIntelResult.error ? convIntelResult : null)
+        setConversationIntelligence(Array.isArray(convIntelResult) && convIntelResult.length > 0 ? convIntelResult[0] : null)
       } catch (err) {
         console.error("Failed to load contact detail:", err)
       } finally {
@@ -503,7 +503,7 @@ export default function CRMPage() {
       .eq("contact_id", selectedContactId)
       .order("created_at", { ascending: false })
       .limit(50)
-      .then(({ data }) => setConversations(data || []))
+      .then(({ data }: { data: any[] | null }) => setConversations(data || []))
       .catch(() => setConversations([]))
   }, [selectedContactId])
 
@@ -592,7 +592,7 @@ export default function CRMPage() {
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle()
-      .then(({ data }) => {
+      .then(({ data }: { data: any | null }) => {
         setCopilotPlan(data ?? null)
         setLoadingPlan(false)
       })
@@ -618,7 +618,7 @@ export default function CRMPage() {
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle()
-        .then(({ data }) => setRelatedListing(data ?? null))
+        .then(({ data }: { data: any | null }) => setRelatedListing(data ?? null))
         .catch(() => setRelatedListing(null))
     }
 
@@ -630,7 +630,7 @@ export default function CRMPage() {
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle()
-      .then(({ data }) => setRelatedTransaction(data ?? null))
+      .then(({ data }: { data: any | null }) => setRelatedTransaction(data ?? null))
       .catch(() => setRelatedTransaction(null))
   }, [selectedContactId, selectedContact])
 
@@ -696,7 +696,7 @@ export default function CRMPage() {
       setAddDialogOpen(false)
       toast.success(`${addForm.first_name} ${addForm.last_name} added`)
       await loadContacts()
-      if (result.contact?.id) handleSelectContact(result.contact.id)
+      if (result.contact?.id) handleSelectContact(result.contact.id as string)
     } catch {
       setAddFormError("Unexpected error. Please try again.")
     } finally {
@@ -729,12 +729,22 @@ export default function CRMPage() {
     }
   }
 
-  const handleToggleAutopilot = async (planId: string, pause: boolean): Promise<void> => {
-    await toggleAutoPilot({ planId, pause })
-    if (agentId) {
-      const plans = await getActiveAutoPilotPlans(agentId)
-      setAutopilotPlans(plans)
-    }
+  const handleToggleAutopilot = async (planId: string, pause: boolean) => {
+    startTransition(async () => {
+      const result = await toggleAutoPilot(planId, pause)
+      if (!(result as any).success) {
+        toast.error((result as any).error ?? "Failed to update autopilot")
+        return
+      }
+      if (pause) {
+        setAutopilotPlans(prev => prev.filter(p => p.id !== planId))
+      }
+      if (agentId) {
+        const plans = await getActiveAutoPilotPlans(agentId)
+        setAutopilotPlans(Array.isArray(plans) ? plans : [])
+      }
+      toast.success(pause ? "AI Autopilot paused" : "AI Autopilot resumed")
+    })
   }
 
   const handleShareSocialPost = async () => {
@@ -873,6 +883,8 @@ export default function CRMPage() {
                 onEnableAutopilot={handleEnableAutopilot}
                 onToggleAutopilot={handleToggleAutopilot}
                 onShareSocialPost={handleShareSocialPost}
+                onChannelToggled={() => { if (selectedContactId) loadContactDetail(selectedContactId) }}
+                onAddNote={() => setActiveTab("comms")}
                 loading={isPending}
               />
             </div>

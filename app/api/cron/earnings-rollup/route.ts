@@ -71,7 +71,7 @@ export async function GET(req: NextRequest) {
                 },
                 { onConflict: "agent_id,month_year" }
               )
-              .catch(() => {})
+              .then(() => {}, () => {})
 
             processed++
           }

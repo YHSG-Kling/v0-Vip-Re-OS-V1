@@ -340,8 +340,8 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
         getBrandVoiceProfile(agentId),
       ])
 
-      if (favResult.favorites) setFavorites(favResult.favorites)
-      if (statsResult.stats) setUsageStats(statsResult.stats)
+      if (favResult) setFavorites(favResult as any)
+      if (statsResult) setUsageStats(statsResult as any)
       if (voiceResult) setBrandVoice(voiceResult)
     } catch (error) {
       console.error("Error loading AI tools data:", error)
@@ -364,7 +364,7 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
     const inputs = toolInputs[tool.id] || {}
 
     // Validate required inputs (skip inputs explicitly marked required: false)
-    const missingInputs = tool.inputs.filter((input) => input.required !== false && !inputs[input.name])
+    const missingInputs = tool.inputs.filter((input) => (input as any).required !== false && !inputs[input.name])
     if (missingInputs.length > 0) {
       return
     }
@@ -443,7 +443,7 @@ export function AIToolsClient({ agentId, userId, userRole }: AIToolsClientProps)
 
   async function handleToggleFavorite(toolId: string) {
     const result = await toggleToolFavorite(userId, toolId)
-    if (result.success) {
+    if (result) {
       setFavorites((prev) =>
         prev.includes(toolId) ? prev.filter((id) => id !== toolId) : [...prev, toolId]
       )
@@ -712,7 +712,7 @@ function ToolCard({
                   <SelectValue placeholder="Select..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {input.options?.map((option) => (
+                  {(input as any).options?.map((option: string) => (
                     <SelectItem key={option} value={option}>
                       {option.charAt(0).toUpperCase() + option.slice(1).replace(/-/g, " ")}
                     </SelectItem>

@@ -383,9 +383,9 @@ export async function scrapeSocialSignalsWithZenRows(location: {
   }
 }
 
-function parseNextdoorPosts(html: string, location: { city: string; state: string }) {
+function parseNextdoorPosts(html: string, location: { city: string; state: string }): any[] {
   // Simplified parser - in production would use cheerio or similar
-  const posts = []
+  const posts: any[] = []
 
   // Extract real estate related keywords
   const realEstateKeywords = [
@@ -538,13 +538,13 @@ async function enrichWithPeopleData(leadId: string, lead: Record<string, unknown
         employment_data: enrichedData.employment as Record<string, unknown> | null,
         financial_indicators: enrichedData.financial as Record<string, unknown> | null,
         life_events: enrichedData.lifeEvents as Record<string, unknown>[] | null,
-        social_presence: enrichedData.social as Record<string, unknown> | null,
+        social_presence: enrichedData.social as unknown as Record<string, unknown> | null,
         contact_enrichment: enrichedData.additionalContacts as Record<string, unknown>[] | null,
         data_source: "peopledata",
       })
 
       // Collect OSINT data from social profiles
-      const socialProfiles = enrichedData.social as Record<string, unknown> | null
+      const socialProfiles = enrichedData.social as unknown as Record<string, unknown> | null
       if (socialProfiles?.profiles) {
         for (const profile of (socialProfiles.profiles as Record<string, unknown>[])) {
           await supabase.from("lead_osint_data").insert({
@@ -632,7 +632,7 @@ async function searchOnlineActivity(leadId: string, lead: any) {
         num: 20,
       })
 
-      const detectedIntent = analyzeSearchIntent(results)
+      const detectedIntent = analyzeSearchIntent(results as unknown as any[])
 
       if (detectedIntent) {
         await supabase.from("google_search_activity").insert({
@@ -661,12 +661,10 @@ async function searchNextdoorActivity(leadId: string, lead: any) {
   const zenrows = new ZenrowsClient()
 
   try {
-    const nextdoorResults = await zenrows.scrapeNextdoor({
-      location: `${lead.city}, ${lead.state}`,
-      keywords: ["moving", "selling home", "buying house", "realtor recommendation", "home search"],
-    })
+    const nextdoorUrl = `https://nextdoor.com/search/?q=${encodeURIComponent(`${lead.city} ${lead.state} moving selling home`)}`
+    const { posts: nextdoorResults } = await zenrows.scrapeNextdoor(nextdoorUrl)
 
-    for (const activity of nextdoorResults) {
+    for (const activity of nextdoorResults as any[]) {
       const nameMatch = activity.content.toLowerCase().includes(`${lead.first_name} ${lead.last_name}`.toLowerCase())
 
       if (nameMatch || activity.relevance_score > 70) {
@@ -694,11 +692,8 @@ async function searchRealEstateSites(leadId: string, lead: any) {
 
   for (const site of sites) {
     try {
-      const searchResults = await zenrows.scrapeRealEstateSite({
-        site,
-        location: `${lead.city}, ${lead.state}`,
-        searchType: "user_activity",
-      })
+      const siteUrl = `https://www.${site === "realtor.com" ? "realtor.com" : site + ".com"}/homes-for-sale/${encodeURIComponent(lead.city + "-" + lead.state)}`
+      const searchResults = await zenrows.scrape(siteUrl) as any
 
       if (searchResults.properties?.length > 0) {
         await supabase.from("lead_property_searches").insert({
@@ -952,7 +947,7 @@ async function updateIntelligenceProfile(leadId: string, dataSources: string[]) 
   })
 
   const qualificationScore = calculateQualificationScore({
-    hasPropertyOwnership: propertyOwnership && propertyOwnership.length > 0,
+    hasPropertyOwnership: (propertyOwnership && propertyOwnership.length > 0) ?? false,
     engagementScore: engagementScores?.overall_score || 0,
     hasFinancialData: !!propertyOwnership?.[0]?.equity_estimate,
   })
@@ -1024,7 +1019,7 @@ function analyzeSearchIntent(results: any[]): string | null {
 
 export async function updateLeadProfile(profileId: string, updates: any) {
   try {
-    await requirePermission("edit:lead_intelligence")
+    await requirePermission("edit", "lead_intelligence", profileId)
     const supabase = createServiceClient()
 
     const { data, error } = await supabase
@@ -1109,7 +1104,7 @@ export async function analyzeGoogleSearchIntent(targetLocation: { id: string; ci
       const searchData = await zenrows.googleSearch(query, {
         location: `${targetLocation.city}, ${targetLocation.state}`,
         num: 20,
-      })
+      }) as any
 
       await supabase.from("google_search_intelligence").insert({
         search_query: query,
@@ -1177,15 +1172,18 @@ PROPERTY DATA: ${JSON.stringify(allSignals.property)}
     const intelligenceData = await generateAIJSON(prompt)
     const intelligence = intelligenceData.data
 
+    if (!intelligence) return { success: false, error: "No intelligence data returned" }
+
+    const intelligenceAny = intelligence as any
     await supabase
       .from("unified_lead_profile")
       .update({
-        confidence_score: intelligence.confidence_score,
-        intent_type: intelligence.unified_intent,
-        intent_strength: intelligence.intent_strength,
-        estimated_timeline: intelligence.estimated_timeline,
-        ready_for_outreach: intelligence.ready_for_outreach,
-        temperature: intelligence.confidence_score > 70 ? "hot" : intelligence.confidence_score > 40 ? "warm" : "cold",
+        confidence_score: intelligenceAny.confidence_score,
+        intent_type: intelligenceAny.unified_intent,
+        intent_strength: intelligenceAny.intent_strength,
+        estimated_timeline: intelligenceAny.estimated_timeline,
+        ready_for_outreach: intelligenceAny.ready_for_outreach,
+        temperature: intelligenceAny.confidence_score > 70 ? "hot" : intelligenceAny.confidence_score > 40 ? "warm" : "cold",
       })
       .eq("id", profile.id)
 
@@ -1435,7 +1433,7 @@ export async function fetchMotivatedSellers(targetLocation: { city: string; stat
     })
 
     // Search for foreclosure filings
-    const foreclosures = await osint.searchCourtRecords("", targetLocation.state)
+    const foreclosures = await (osint as any).searchCourtRecords("", targetLocation.state)
 
     // Scrape Nextdoor using Apify
     const nextdoorPosts = await apify.scrapeSocialMedia("nextdoor", `${targetLocation.city} moving selling house`)

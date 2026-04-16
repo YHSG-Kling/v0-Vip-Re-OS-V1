@@ -65,8 +65,8 @@ export default async function BrokerageFatiguePage() {
 
       <div className="px-6 py-6 max-w-6xl mx-auto">
         <BrokerageFatigueDashboard
-          buyers={buyersRes.success ? (buyersRes.buyers ?? []) : []}
-          alerts={alertsRes.success ? (alertsRes.alerts ?? []) : []}
+          buyers={buyersRes.success ? ((buyersRes as any).data ?? []) : []}
+          alerts={alertsRes.success ? ((alertsRes as any).data ?? []) : []}
           brokerageId={brokerageId}
         />
       </div>

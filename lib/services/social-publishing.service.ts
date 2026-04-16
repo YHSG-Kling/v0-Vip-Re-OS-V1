@@ -76,7 +76,8 @@ export async function publishToSocialMedia(params: PublishPostParams): Promise<{
       results
     }
   } catch (error) {
-    return handleError(error, "publishToSocialMedia")
+    const err = handleError(error, "publishToSocialMedia") as { success: false; error: string }
+    return { ...err, results: [] }
   }
 }
 

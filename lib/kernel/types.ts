@@ -24,6 +24,7 @@ export type EntityType =
   | "business_card"
   | "territory"
   | "contact"
+  | "agent_onboarding_machine"
 
 // ── Lead Lifecycle States (Layer 2, Track A) ──────────────────────────────
 export type LeadLifecycleStage =
@@ -244,7 +245,8 @@ export interface EvaluateOutboundParams {
   persona: Persona          // STRICT: Persona union
   messageType: MessageType  // STRICT: MessageType union (includes direct_mail as special case)
   content: string
-  contact: KernelContact    // STRICT: full KernelContact shape, not any
+  /** Specific contact being messaged. Omit for broadcast campaigns — DNC/TCPA gates are skipped. */
+  contact?: KernelContact
 }
 
 // ─── RESULT TYPES ─────────────────────────────────────────────────────────────

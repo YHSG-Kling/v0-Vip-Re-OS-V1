@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Mail, Video, FileText, Phone, MessageSquare, PlayCircle, PauseCircle, TestTube } from "lucide-react"
@@ -29,6 +30,7 @@ interface Props {
 }
 
 export function CampaignCard({ campaign, onStatusChange }: Props) {
+  const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [testLoading, setTestLoading] = useState(false)
   const [testResult, setTestResult] = useState<string | null>(null)
@@ -79,10 +81,17 @@ export function CampaignCard({ campaign, onStatusChange }: Props) {
         </span>
       </div>
 
-      {/* Channel icons */}
+      {/* Channel icons — clickable to open campaign settings for that channel */}
       <div className="flex items-center gap-2">
         {(campaign.channels ?? []).map((ch) => (
-          <span key={ch} title={ch}>{CHANNEL_ICON[ch] ?? null}</span>
+          <button
+            key={ch}
+            title={`Configure ${ch} channel`}
+            className="p-1 rounded hover:bg-accent transition-colors cursor-pointer"
+            onClick={() => router.push(`/dashboard/isa/campaigns/${campaign.id}?channel=${ch}`)}
+          >
+            {CHANNEL_ICON[ch] ?? null}
+          </button>
         ))}
       </div>
 

@@ -10,7 +10,7 @@ import { createClient } from "@/lib/supabase/server"
 
 // Helper to validate UUID is not null/undefined/"null"/"undefined"
 function isValidUUID(id: any): id is string {
-  return typeof id === "string" && id && id !== "null" && id !== "undefined"
+  return typeof id === "string" && Boolean(id) && id !== "null" && id !== "undefined"
 }
 
 // ─── Get Today's Briefing ─────────────────────────────────────────────────────
@@ -63,6 +63,8 @@ export async function generateBriefing(
     }
     
     const { agentId, brokerageId } = context
+
+    if (!brokerageId || !isValidUUID(brokerageId)) return { briefing: null, error: "Missing brokerage context" }
 
     const briefing = await generateDailyBriefing(agentId, brokerageId, forceRegenerate)
 

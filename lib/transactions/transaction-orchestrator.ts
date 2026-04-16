@@ -26,19 +26,11 @@ export class TransactionOrchestrator {
    * Validates permissions, checks blockers, updates stage
    */
   async advanceToStage(targetStage: TransactionStage, reason?: string) {
-    // Check role permission
-    const hasPermission = await assertUserHasRole(
-      this.params.userId,
+    // Check role permission (throws if not authorised)
+    await assertUserHasRole(
+      { userId: this.params.userId, role: this.params.userRole, brokerageId: this.params.brokerageId },
       ["admin", "broker", "tc", "agent"],
-      this.params.brokerageId
     )
-
-    if (!hasPermission) {
-      return {
-        success: false,
-        error: "User does not have permission to advance transaction stages"
-      }
-    }
 
     // Delegate to stage progression engine
     return advanceStage({

@@ -18,7 +18,7 @@ export async function createResourceAction(input: {
   brokerageId: string
 }) {
   const supabase = await createClient()
-  const { data: user } = await supabase.auth.getUser()
+  const { data: { user } } = await supabase.auth.getUser()
 
   if (!user) throw new Error("Unauthorized")
 

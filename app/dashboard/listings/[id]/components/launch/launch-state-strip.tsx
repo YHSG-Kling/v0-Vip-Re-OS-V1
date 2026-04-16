@@ -26,7 +26,7 @@ export function LaunchStateStrip({
 }: LaunchStateStripProps) {
   const readinessScore = [mediaReady, publishReady, marketingReady].filter(Boolean).length
   const isLaunchReady = readinessScore === 3 && blockers.length === 0
-  const canLaunch = currentStage === "ACTIVE_PREP" || currentStage === "COMING_SOON"
+  const canLaunch = (currentStage as string) === "ACTIVE_PREP" || (currentStage as string) === "COMING_SOON"
 
   const stageLabels: Record<string, string> = {
     LEAD: "Lead",

@@ -165,12 +165,14 @@ export async function inviteUser(params: InviteUserParams): Promise<InviteUserRe
       userType:     requestedRole,
       brokerageId:  resolvedBrokerageId,
       callerUserId: user.id,
-      event:    KernelEvent.USER_INVITED,
+      eventType:    KernelEvent.USER_INVITED,
+      metadata: {
         email:        params.email,
         invitedRole:  requestedRole,
         brokerageId:  resolvedBrokerageId,
         teamId:       resolvedTeamId,
         invitedBy:    user.id,
+      },
     })
   }
 

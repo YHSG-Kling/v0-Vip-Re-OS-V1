@@ -184,7 +184,7 @@ export function SettingsControlOSClient({
             providerType: p.providerType,
             status: p.status,
             lastError: p.lastError,
-          }))}
+          })) as any}
           onTestProvider={handleTestProvider}
           onReconnectProvider={handleReconnectProvider}
         />

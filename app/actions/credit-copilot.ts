@@ -349,6 +349,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
       // Send encouragement SMS
       if (account.contact.phone) {
         await sendSMS({
+          to: account.contact.phone,
           contactId: account.contact_id,
           message: `Hi ${account.contact.first_name}! Just checking in on your credit application. Let me know if you need any help completing it. I'm here to support you!`,
         })
@@ -375,6 +376,7 @@ async function triggerCreditFlowActions(accountId: string, stage: string, accoun
       // Send congratulations SMS
       if (account.contact.phone) {
         await sendSMS({
+          to: account.contact.phone,
           contactId: account.contact_id,
           message: `🎉 Great news ${account.contact.first_name}! Your credit application has been approved. Next steps coming soon!`,
         })

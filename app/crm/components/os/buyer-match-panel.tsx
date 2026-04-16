@@ -31,10 +31,11 @@ interface BuyerMatchPanelProps {
 interface PropertyMatch {
   listing_id: string
   address?: string
-  price?: number
+  price?: number | null
   match_score?: number
-  bedrooms?: number
-  bathrooms?: number
+  bedrooms?: number | null
+  bathrooms?: number | null
+  [key: string]: any
 }
 
 export function BuyerMatchPanel({
@@ -73,8 +74,8 @@ export function BuyerMatchPanel({
     setPreviewLoading(true)
     try {
       const result = await previewSearchIntent({ contactId, naturalLanguageQuery: query })
-      if (result.success) {
-        setPreviewIntent(result.intent)
+      if (result.success && 'preview' in result) {
+        setPreviewIntent(result.preview)
       }
     } catch (err) {
       console.error("Preview intent failed:", err)
@@ -92,8 +93,16 @@ export function BuyerMatchPanel({
         contactId,
         naturalLanguageQuery: query,
       })
-      if (result.success && result.matches) {
-        setMatches(result.matches)
+      if (result.success && 'results' in result && result.results) {
+        setMatches(result.results.map((r: any) => ({
+          listing_id: r.listing_id,
+          address: [r.city, r.state].filter(Boolean).join(", ") || r.listing_id,
+          price: r.price,
+          match_score: r.internal_match_score,
+          bedrooms: r.bedrooms,
+          bathrooms: r.bathrooms,
+          ...r,
+        })))
       }
     } catch (err) {
       console.error("Search failed:", err)
@@ -107,8 +116,16 @@ export function BuyerMatchPanel({
     setMatches([])
     try {
       const result = await generatePropertyMatches({ contactId, agentId, maxResults: 10 })
-      if (result.success && result.matches) {
-        setMatches(result.matches)
+      if (result.success && 'matches' in result && result.matches) {
+        setMatches((result.matches as any[]).map((m: any) => ({
+          listing_id: m.propertyId ?? m.listing_id ?? m.id ?? "",
+          address: m.address,
+          price: m.price,
+          match_score: m.matchScore ?? m.match_score,
+          bedrooms: m.bedrooms,
+          bathrooms: m.bathrooms,
+          ...m,
+        })))
       }
     } catch (err) {
       console.error("Generate matches failed:", err)
@@ -123,7 +140,14 @@ export function BuyerMatchPanel({
     try {
       const result = await explainPropertyMatchForBuyer({ contactId, listingId })
       if (result.success) {
-        setExplanation(result.explanation || "This property matches based on your criteria.")
+        const expl = (result as any).explanation
+        if (typeof expl === "string") {
+          setExplanation(expl)
+        } else if (expl && typeof expl === "object") {
+          setExplanation(expl.narrative ?? expl.headline ?? "This property matches based on your criteria.")
+        } else {
+          setExplanation("This property matches based on your criteria.")
+        }
       }
     } catch (err) {
       console.error("Explain match failed:", err)
@@ -134,7 +158,7 @@ export function BuyerMatchPanel({
 
   const handleFeedback = async (listingId: string, feedback: "liked" | "disliked") => {
     try {
-      await learnFromBuyerFeedback({ contactId, listingId, feedback })
+      await learnFromBuyerFeedback({ contactId, propertyId: listingId, feedback, agentId })
       // Update UI to show feedback was recorded
       setMatches((prev) =>
         prev.map((m) =>
@@ -155,7 +179,7 @@ export function BuyerMatchPanel({
         match.listing_id,
         match.address || "Property",
         { price: match.price, bedrooms: match.bedrooms },
-        [showingDate],
+        [{ date: showingDate.split("T")[0] ?? showingDate, time: showingDate.split("T")[1] ?? "10:00" }],
         showingNotes
       )
       setShowingForm(null)
@@ -188,7 +212,7 @@ export function BuyerMatchPanel({
     try {
       const result = await notifyNewMatches({ contactId, agentId, threshold: 85 })
       if (result.success) {
-        setNotifyResult({ notified: result.notifiedCount ?? result.count ?? 0 })
+        setNotifyResult({ notified: (result as any).notifiedCount ?? (result as any).matchCount ?? (result as any).count ?? 0 })
       }
     } catch (err) {
       console.error("Notify matches failed:", err)

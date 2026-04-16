@@ -41,7 +41,7 @@ export async function demoLogin(email: string) {
     // Try to sign in with the demo password
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email,
-      password: DEMO_CONFIG.DEMO_PASSWORD,
+      password: DEMO_CONFIG.PASSWORD,
     })
 
     if (authError) {

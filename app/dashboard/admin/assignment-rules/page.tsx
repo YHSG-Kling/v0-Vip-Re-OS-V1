@@ -282,7 +282,7 @@ export default function AssignmentRulesPage() {
                         ) : (
                           ruleAgents.slice(0, 3).map((a) => (
                             <Badge key={a.id} variant="outline" className="text-xs">
-                              {a.full_name ?? [a.users?.first_name, a.users?.last_name].filter(Boolean).join(" ") || a.id.slice(0, 8)}
+                              {(a.full_name ?? [a.users?.first_name, a.users?.last_name].filter(Boolean).join(" ")) || a.id.slice(0, 8)}
                             </Badge>
                           ))
                         )}
@@ -452,7 +452,7 @@ export default function AssignmentRulesPage() {
                       onChange={() => toggleAgentId(agent.id)}
                       className="rounded"
                     />
-                    {agent.full_name ?? [agent.users?.first_name, agent.users?.last_name].filter(Boolean).join(" ") || agent.id.slice(0, 12)}
+                    {(agent.full_name ?? [agent.users?.first_name, agent.users?.last_name].filter(Boolean).join(" ")) || agent.id.slice(0, 12)}
                   </label>
                 ))}
               </div>

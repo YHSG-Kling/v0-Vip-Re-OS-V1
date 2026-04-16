@@ -161,7 +161,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
         agentUserId: currentUserId,
       })
       if (result.success && result.result) {
-        setAiResult(result.result as Record<string, unknown>)
+        setAiResult(result.result as unknown as Record<string, unknown>)
         toast({ title: "AI comparison generated" })
       } else {
         toast({ title: "AI comparison failed", description: result.error, variant: "destructive" })
@@ -340,7 +340,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
     if (result.success) {
       setRepairsAdvisor(result)
     } else {
-      setRepairsAdvisorError(result.error ?? "Repairs advisor failed.")
+      setRepairsAdvisorError((result as any).error ?? "Repairs advisor failed.")
     }
     setRepairsAdvisorLoading(false)
   }

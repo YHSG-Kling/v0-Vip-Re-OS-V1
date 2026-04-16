@@ -85,8 +85,8 @@ export default async function AdminBillingPage() {
   // Calculate MRR
   const totalMrr = brokerages.reduce((sum, b) => {
     const sub = b.subscriptions?.[0]
-    if (sub?.status === "active" && sub.subscription_tiers?.monthly_price_cents) {
-      return sum + sub.subscription_tiers.monthly_price_cents
+    if (sub?.status === "active" && (sub.subscription_tiers as any)?.[0]?.monthly_price_cents) {
+      return sum + (sub.subscription_tiers as any)[0].monthly_price_cents
     }
     return sum
   }, 0)

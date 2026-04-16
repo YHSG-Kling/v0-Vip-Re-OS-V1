@@ -34,7 +34,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ ok: true }, { status: 200 })
   } catch (err) {
     console.error("[cron/onboarding-reminders] Failed:", err)
-    await recordCronFailureAction({ context_id: contextId, error: err, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: err as Error | string, stage: "main-processing" })
     return NextResponse.json({ ok: false, context_id: contextId }, { status: 500 })
   }
 }

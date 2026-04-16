@@ -133,10 +133,10 @@ export default async function LenderDashboardPage() {
           urgency: 'medium',
           actionRequired: false,
         }))} />
-        <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} />
+        <ExternalDocStatusPanel partnerType="lender" partnerId={lenderId} documents={[]} />
       </div>
 
-      <ExternalCommunicationPanel partnerType="lender" partnerId={lenderId} />
+      <ExternalCommunicationPanel partnerType="lender" partnerId={lenderId} messages={[]} />
     </div>
   )
 }

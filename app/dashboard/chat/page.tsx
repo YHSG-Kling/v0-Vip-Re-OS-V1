@@ -14,8 +14,8 @@ export default async function OfficeChatPage() {
   
   return (
     <OfficeChatClient
-      agentId={agentId}
-      brokerageId={brokerageId}
+      agentId={agentId ?? ""}
+      brokerageId={brokerageId ?? ""}
       userId={user.id}
       userRole={role || 'agent'}
     />

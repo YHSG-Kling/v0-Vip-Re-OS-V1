@@ -66,7 +66,7 @@ export async function GET(request: NextRequest) {
     // Process each transaction
     for (const tx of transactions) {
       try {
-        const result = await calculateDealHealth(tx.id, tx.brokerage_id)
+        const result = await calculateDealHealth({ transactionId: tx.id, brokerageId: tx.brokerage_id })
 
         // Log DEAL_HEALTH_SCORE_UPDATED event
         await supabase.from("lifecycle_events").insert({
@@ -155,7 +155,7 @@ export async function GET(request: NextRequest) {
     })
   } catch (error) {
     console.error("[deal-health-scan] Error:", error)
-    await recordCronFailureAction({ context_id: contextId, error, stage: "main-processing" })
+    await recordCronFailureAction({ context_id: contextId, error: error as Error | string, stage: "main-processing" })
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Internal server error", context_id: contextId },
       { status: 500 }
@@ -188,7 +188,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Calculate health score
-    const result = await calculateDealHealth(tx.id, tx.brokerage_id)
+    const result = await calculateDealHealth({ transactionId: tx.id, brokerageId: tx.brokerage_id })
 
     // Log DEAL_HEALTH_SCORE_UPDATED event
     await supabase.from("lifecycle_events").insert({

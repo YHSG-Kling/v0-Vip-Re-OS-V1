@@ -4,7 +4,7 @@ import type React from "react"
 import { useState } from "react"
 import { Sparkles, X, Mail, Home, Share2, FileText, Bot, ChevronRight } from "lucide-react"
 import { AIToolModal } from "./AIToolModal"
-import type { AIToolName, UserRole } from "../../types"
+import type { AIToolName, UserRole } from "@/types"
 
 interface FloatingAIAssistantProps {
   currentView?: string

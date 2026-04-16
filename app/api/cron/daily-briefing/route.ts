@@ -129,7 +129,7 @@ export async function GET(request: NextRequest) {
 
     await recordCronFailureAction({
       context_id: contextId,
-      error,
+      error: error as Error | string,
       stage: "main-processing",
     })
 

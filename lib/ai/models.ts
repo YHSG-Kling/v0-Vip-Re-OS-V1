@@ -150,7 +150,8 @@ export interface ComplianceContext {
 export interface AIRequest {
   model?: AIModel
   system?: string
-  prompt: string
+  prompt?: string
+  messages?: Array<{ role: string; content: unknown }>
   temperature?: number
   maxTokens?: number
   fallbackModel?: AIModel
@@ -236,13 +237,12 @@ async function checkCompliance(
     if (context.requiresFairHousingCheck) {
       try {
         const fairHousingResult = await evaluateContentCompliance({
-          context: content,
-          contentType: context.contentType || "internal",
-          userId: context.userId || "",
-          brokerageId: context.brokerageId || ""
+          raw_content: content,
+          content_type: context.contentType || "internal",
+          channel_intent: context.contentType || "internal",
         })
         
-        if (!fairHousingResult.passed && fairHousingResult.violations) {
+        if (fairHousingResult.compliance_status !== "pass" && fairHousingResult.violations) {
           for (const v of fairHousingResult.violations) {
             const violation: ComplianceViolation = {
               type: "fair_housing",
@@ -278,7 +278,7 @@ async function checkCompliance(
       try {
         const themFirstResult = await validateThemFirstContent(content, "email")
         
-        if (!themFirstResult.isValid || (themFirstResult as any).score < 0.6) {
+        if (!themFirstResult.passed || (themFirstResult as any).score < 0.6) {
           const score = (themFirstResult as any).score ?? 0
           const violation: ComplianceViolation = {
             type: "them_first",
@@ -418,7 +418,7 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
     executionResult = await executeModelCall(
       model,
       request.system,
-      request.prompt,
+      request.prompt ?? "",
       temperature,
       maxTokens
     )
@@ -431,7 +431,7 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
         executionResult = await executeModelCall(
           resolvedFallback,
           request.system,
-          request.prompt,
+          request.prompt ?? "",
           temperature,
           maxTokens
         )
@@ -463,9 +463,9 @@ export async function generateAIResponse(request: AIRequest): Promise<AIResponse
   // Log usage
   await logAIUsage({
     userId: request.metadata.userId,
-    brokerageId: request.metadata.brokerageId,
-    teamId: request.metadata.teamId,
-    agentId: request.metadata.agentId,
+    brokerageId: request.metadata.brokerageId ?? "",
+    teamId: request.metadata.teamId ?? "",
+    agentId: request.metadata.agentId ?? "",
     model: executionResult.modelUsed,
     inputTokens: executionResult.inputTokens,
     outputTokens: executionResult.outputTokens,

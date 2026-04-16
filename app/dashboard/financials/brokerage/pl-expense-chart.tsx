@@ -55,7 +55,7 @@ export function PLExpenseChart({
             outerRadius={90}
             paddingAngle={2}
             dataKey="value"
-            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+            label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
             labelLine={false}
           >
             {data.map((entry, index) => (
@@ -63,7 +63,7 @@ export function PLExpenseChart({
             ))}
           </Pie>
           <Tooltip
-            formatter={(value: number) => formatCurrency(value)}
+            formatter={((value: number) => formatCurrency(value)) as any}
             contentStyle={{
               backgroundColor: "hsl(var(--background))",
               border: "1px solid hsl(var(--border))",

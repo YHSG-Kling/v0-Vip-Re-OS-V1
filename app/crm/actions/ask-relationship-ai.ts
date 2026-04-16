@@ -40,7 +40,7 @@ export async function askRelationshipAI(params: {
       model,
       system: systemPrompt,
       prompt: question.trim(),
-      maxTokens: 400,
+      maxOutputTokens: 400,
     })
 
     return { success: true, answer: text.trim() }
@@ -55,7 +55,7 @@ export async function askRelationshipAI(params: {
           model: openai("gpt-4o-mini"),
           system: systemPrompt,
           prompt: question.trim(),
-          maxTokens: 400,
+          maxOutputTokens: 400,
         })
         return { success: true, answer: text.trim() }
       } catch (fallbackErr: any) {

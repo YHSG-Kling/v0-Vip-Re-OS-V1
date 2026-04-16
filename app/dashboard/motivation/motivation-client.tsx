@@ -139,7 +139,7 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
     setLoading(true)
     try {
       const [pointsResult, badgesResult, leaderboardResult, widgetResult] = await Promise.all([
-        getAgentPointsAndTier({ agentId }),
+        getAgentPointsAndTier(agentId),
         getAgentBadges(agentId),
         getLeaderboard({
           scope: selectedScope,
@@ -147,12 +147,12 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
           periodLabel: selectedPeriod,
           limit: 10,
         }),
-        getLeaderboardWidget({ agentId, brokerageId }),
+        getLeaderboardWidget({ agentId }),
       ])
 
-      setPointsData(pointsResult)
-      setBadges(badgesResult || [])
-      setLeaderboard(leaderboardResult || [])
+      setPointsData(pointsResult ? { points: pointsResult.points, tier: pointsResult.currentTier } : null)
+      setBadges((badgesResult as unknown as any[]) || [])
+      setLeaderboard((leaderboardResult as unknown as any[]) || [])
       setWidgetData(widgetResult)
 
       // Check for new badges
@@ -166,7 +166,7 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
           })
           // Reload badges
           const updatedBadges = await getAgentBadges(agentId)
-          setBadges(updatedBadges || [])
+          setBadges((updatedBadges as unknown as any[]) || [])
         }
       }
     } catch (error) {
@@ -185,7 +185,7 @@ export function MotivationClient({ agentId, brokerageId, userId }: MotivationCli
         periodLabel: selectedPeriod,
         limit: 10,
       })
-      setLeaderboard(result || [])
+      setLeaderboard((result as unknown as any[]) || [])
     } catch (error) {
       console.error("Error loading leaderboard:", error)
     } finally {

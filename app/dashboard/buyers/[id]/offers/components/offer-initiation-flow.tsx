@@ -808,7 +808,7 @@ export function OfferInitiationFlow({
                 if (result.success && result.contingencies) {
                   setContingencyResult(result.contingencies)
                   // Auto-select all critical recommended contingencies
-                  const criticals = result.contingencies.recommended
+                  const criticals = (result.contingencies as any).recommended
                     .filter((c: any) => c.critical)
                     .map((c: any) => c.type)
                   setSelectedContingencies(criticals)

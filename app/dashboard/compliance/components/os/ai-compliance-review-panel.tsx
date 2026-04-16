@@ -41,7 +41,7 @@ export function AIComplianceReviewPanel() {
       })
 
       if (result.success && result.verdict) {
-        setVerdict(result.verdict as ComplianceVerdict)
+        setVerdict(result.verdict as unknown as ComplianceVerdict)
       }
     })
   }

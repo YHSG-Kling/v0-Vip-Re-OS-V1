@@ -50,7 +50,7 @@ export function BillingSummaryCard({ agentId, brokerageId, initialBilling }: Bil
           billingPeriodStart: periodStart,
           billingPeriodEnd: periodEnd,
         })
-        setBilling(result as BillingRecord)
+        setBilling(result as unknown as BillingRecord)
         toast({ title: "Billing calculated", description: "Current period billing summary updated." })
       } catch {
         toast({ title: "Error", description: "Failed to calculate billing.", variant: "destructive" })

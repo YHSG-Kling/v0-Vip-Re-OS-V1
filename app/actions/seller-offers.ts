@@ -132,7 +132,7 @@ export async function acceptOffer(params: {
     brokerageId,
     entityType:  "listing_stage_machine",
     entityId:    listingId,
-    fromState:   null,
+    fromState:   "",
     toState:     "UNDER_CONTRACT",
     actorUserId: agentUserId,
     eventType:   "UNDER_CONTRACT",

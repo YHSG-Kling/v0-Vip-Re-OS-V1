@@ -258,16 +258,19 @@ export async function aiComposeEmail(params: AiComposeEmailParams) {
     // Apply brand voice
     const brandVoice = await applyBrandVoice({
       brokerageId: params.brokerageId,
-      agentId: params.agentId,
-      teamId: undefined,
+      actorUserId: params.agentId,
+      actorRole: "agent",
+      journeyType: "seller",
+      persona: "seller",
+      messageType: "email",
+      content: "",
     })
 
-    const tone = params.tone ?? brandVoice.tone ?? "professional"
+    const toneFromBrandVoice = brandVoice.notes?.find(n => n.toLowerCase().startsWith("target tone:"))?.replace(/^target tone:\s*/i, "").trim()
+    const tone = params.tone ?? toneFromBrandVoice ?? "professional"
     const audience = params.audience ?? "all"
 
     const systemPrompt = `You are a real estate email marketing expert. Write in a ${tone} tone.
-${brandVoice.customInstructions ? `Brand instructions: ${brandVoice.customInstructions}` : ""}
-${brandVoice.prohibitedWords?.length ? `Avoid: ${brandVoice.prohibitedWords.join(", ")}` : ""}
 Target audience: ${audience}.`
 
     const userPrompt = `Write a professional real estate email campaign about: "${params.topic}".

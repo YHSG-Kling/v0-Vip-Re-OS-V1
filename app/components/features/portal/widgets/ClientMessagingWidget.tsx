@@ -109,7 +109,7 @@ export function ClientMessagingWidget({
           table: "client_portal_messages",
           filter: `contact_id=eq.${contactId}`,
         },
-        (payload) => {
+        (payload: any) => {
           setMessages((prev) => [...prev, payload.new as Message])
         },
       )
@@ -142,7 +142,7 @@ export function ClientMessagingWidget({
 
       // Mark unread messages as read
       if (data && data.length > 0) {
-        const unreadIds = data.filter((m) => m.sender_type !== "client" && !m.read_at).map((m) => m.id)
+        const unreadIds = data.filter((m: any) => m.sender_type !== "client" && !m.read_at).map((m: any) => m.id)
 
         if (unreadIds.length > 0) {
           await supabase

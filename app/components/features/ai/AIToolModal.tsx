@@ -3,9 +3,9 @@
 import type React from "react"
 import { useState } from "react"
 import { X, Sparkles, Copy, Check, Save, Loader2, Bot, ShieldCheck, Zap } from "lucide-react"
-import type { AIToolName } from "../../types"
-import { workflowService } from "../../services/workflowService"
-import { supabaseService } from "../../services/supabaseService"
+import type { AIToolName } from "@/types"
+import { workflowService } from "@/services/workflowService"
+import { supabaseService } from "@/services/supabaseService"
 import { useAuth } from "@/lib/auth/client"
 import { toast } from "sonner"
 

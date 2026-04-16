@@ -305,7 +305,7 @@ export async function getUserOrganizations(userId?: string) {
 
     return (data || []).map((item) => ({
       id: item.organization_id,
-      name: item.brokerages?.name || item.teams?.name || "Unknown",
+      name: (item.brokerages as any)?.[0]?.name ?? (item.brokerages as any)?.name ?? (item.teams as any)?.[0]?.name ?? (item.teams as any)?.name ?? "Unknown",
       type: item.organization_type,
     }))
   } catch (error) {

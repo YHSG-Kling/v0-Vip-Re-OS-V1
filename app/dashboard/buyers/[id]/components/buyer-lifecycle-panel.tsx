@@ -180,6 +180,7 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
       authorityRole: userRole,
       userId:        agentId,
       sourceSystem:  "buyer-lifecycle-panel",
+      brokerageId,
       metadata:      notes.trim() ? { notes } : undefined,
     })
     setTransitioning(false)
@@ -348,10 +349,10 @@ export function BuyerLifecyclePanel({ contactId, agentId, brokerageId, userRole 
                   <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0" />
                   <p className="text-sm font-semibold text-amber-900">Property search restricted</p>
                 </div>
-                {canSearch.reason && (
+                {!!canSearch.reason && (
                   <p className="text-sm text-amber-800 pl-6">{canSearch.reason}</p>
                 )}
-                {"requiredStep" in canSearch && canSearch.requiredStep && (
+                {"requiredStep" in canSearch && !!canSearch.requiredStep && (
                   <p className="text-xs text-amber-700 pl-6">
                     Complete <span className="font-medium">{String(canSearch.requiredStep)}</span> first
                   </p>

@@ -67,9 +67,10 @@ export async function getTitleDashboard(titleUserId: string) {
 
   // Calculate dashboard stats
   const records = titleEscrowRecords || []
-  const activeCount = records.filter((r) =>
-    !["closed", "cancelled"].includes(r.transactions?.status || "")
-  ).length
+  const activeCount = records.filter((r) => {
+    const tx = Array.isArray(r.transactions) ? r.transactions[0] : r.transactions
+    return !["closed", "cancelled"].includes(tx?.status || "")
+  }).length
   const pendingEarnestMoney = records.filter((r) => r.earnest_money_status === "pending").length
   const titleIssuesCount = records.filter((r) => (r.title_issues?.length || 0) > 0).length
   const readyToClose = records.filter(
@@ -80,7 +81,8 @@ export async function getTitleDashboard(titleUserId: string) {
   const today = new Date()
   const weekFromNow = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000)
   const closingThisWeek = records.filter((r) => {
-    const closeDate = r.transactions?.close_date || r.transactions?.closing_date
+    const tx = Array.isArray(r.transactions) ? r.transactions[0] : r.transactions
+    const closeDate = tx?.close_date || tx?.closing_date
     if (!closeDate) return false
     const date = new Date(closeDate)
     return date >= today && date <= weekFromNow

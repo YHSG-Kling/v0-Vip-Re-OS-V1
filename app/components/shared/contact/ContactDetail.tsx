@@ -100,7 +100,7 @@ export function ContactDetail({
   const [newNote, setNewNote] = useState("")
   const [isaLoading, setIsaLoading] = useState<string | null>(null)
   const urgencyColors = getUrgencyColor(contact.timeline || "unknown")
-  const daysUntil = calculateDaysUntilTimeline(contact.timeline || "unknown")
+  const daysUntil = calculateDaysUntilTimeline(contact.timeline || "unknown") ?? 0
   const portalUrl = getPersonaDashboardRoute(contact.id, contact.contact_persona)
 
   // ── ISA action handlers ──────────────────────────────────────────────────
@@ -362,10 +362,10 @@ export function ContactDetail({
                 <p className={`text-2xl font-bold ${urgencyColors.text}`}>{daysUntil}</p>
               </div>
             </div>
-            {daysUntil <= 90 && (
-              <div className={`mt-3 p-2 rounded ${daysUntil <= 30 ? "bg-red-100" : "bg-amber-100"}`}>
-                <p className={`text-sm font-medium ${daysUntil <= 30 ? "text-red-800" : "text-amber-800"}`}>
-                  {daysUntil <= 30 ? "URGENT: Follow up immediately!" : "Priority contact - follow up soon"}
+            {(daysUntil ?? 0) <= 90 && (
+              <div className={`mt-3 p-2 rounded ${(daysUntil ?? 0) <= 30 ? "bg-red-100" : "bg-amber-100"}`}>
+                <p className={`text-sm font-medium ${(daysUntil ?? 0) <= 30 ? "text-red-800" : "text-amber-800"}`}>
+                  {(daysUntil ?? 0) <= 30 ? "URGENT: Follow up immediately!" : "Priority contact - follow up soon"}
                 </p>
               </div>
             )}
@@ -390,10 +390,10 @@ export function ContactDetail({
                   </span>
                 </div>
               )}
-              {contact.property_interest.desired_neighborhoods?.length > 0 && (
+              {(contact.property_interest.desired_neighborhoods?.length ?? 0) > 0 && (
                 <div className="flex items-start gap-2">
                   <Target className="w-4 h-4 text-slate-400 mt-0.5" />
-                  <span>Areas: {contact.property_interest.desired_neighborhoods.join(", ")}</span>
+                  <span>Areas: {contact.property_interest.desired_neighborhoods!.join(", ")}</span>
                 </div>
               )}
               {contact.property_interest.current_home_value && (

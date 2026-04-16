@@ -192,7 +192,7 @@ export function PricingIntelligenceTab({ listing, data }: Props) {
                   width={56}
                 />
                 <Tooltip
-                  formatter={(value: number) => [fmt(value), "Price"]}
+                  formatter={((value: number) => [fmt(value), "Price"]) as any}
                   contentStyle={{ fontSize: 12 }}
                 />
                 {mlsActivePoint && (

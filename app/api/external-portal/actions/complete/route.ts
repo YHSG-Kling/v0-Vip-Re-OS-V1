@@ -49,7 +49,7 @@ export async function POST(request: NextRequest) {
           completed_at: new Date().toISOString(),
         },
       })
-      .catch((err) => {
+      .then(() => {}, (err) => {
         console.error("[v0] Failed to log audit entry:", err)
         // Don't fail the request if audit logging fails
       })

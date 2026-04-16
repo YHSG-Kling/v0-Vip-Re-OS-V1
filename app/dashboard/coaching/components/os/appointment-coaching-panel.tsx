@@ -32,19 +32,21 @@ interface ShowRateIssue {
 }
 
 interface AppointmentCoachingPanelProps {
-  metrics: AppointmentMetric[]
-  showRateIssues: ShowRateIssue[]
-  overallShowRate: number
-  appointmentsSet: number
-  appointmentsKept: number
+  metrics?: AppointmentMetric[]
+  showRateIssues?: ShowRateIssue[]
+  overallShowRate?: number
+  appointmentsSet?: number
+  appointmentsKept?: number
+  agentId?: string
+  brokerageId?: string
 }
 
 export function AppointmentCoachingPanel({
-  metrics,
-  showRateIssues,
-  overallShowRate,
-  appointmentsSet,
-  appointmentsKept,
+  metrics = [],
+  showRateIssues = [],
+  overallShowRate = 0,
+  appointmentsSet = 0,
+  appointmentsKept = 0,
 }: AppointmentCoachingPanelProps) {
   const showRateColor =
     overallShowRate >= 80 ? "text-green-600" : overallShowRate >= 60 ? "text-amber-600" : "text-red-600"

@@ -115,7 +115,7 @@ export async function validateOnHoldRecovery(
 
   return {
     allowed: false,
-    recoveryPath: `ON_HOLD_TO_${targetState.replace("BUYER_", "")}` as RecoveryPath,
+    recoveryPath: `ON_HOLD_TO_${(targetState as string).replace("BUYER_", "")}` as RecoveryPath,
     reason: "Invalid target state for ON_HOLD recovery",
   }
 }

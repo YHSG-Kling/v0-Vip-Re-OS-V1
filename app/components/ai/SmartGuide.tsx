@@ -55,7 +55,7 @@ const SmartGuide: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "model",
-      text: `Hello! I am your Smart Guide. I'm currently tracking your ${role === UserRole.BUYER ? "Home Purchase" : role === UserRole.SELLER ? "Listing Sale" : "Database"} progress. How can I assist you right now?`,
+      text: `Hello! I am your Smart Guide. I'm currently tracking your ${String(role) === "buyer" ? "Home Purchase" : String(role) === "seller" ? "Listing Sale" : "Database"} progress. How can I assist you right now?`,
     },
   ])
   const [input, setInput] = useState("")
@@ -123,7 +123,7 @@ Always be helpful, professional, and data-driven.`
               <Sparkles size={16} />
             </div>
             <p className="text-xs font-bold text-slate-700">
-              Hi! I'm the Smart Guide. Need help with your {role === UserRole.BUYER ? "purchase" : "listing"} steps?
+              Hi! I'm the Smart Guide. Need help with your {String(role) === "buyer" ? "purchase" : "listing"} steps?
             </p>
             <button onClick={() => setShowPrompt(false)} className="text-slate-300 hover:text-slate-500">
               <X size={14} />

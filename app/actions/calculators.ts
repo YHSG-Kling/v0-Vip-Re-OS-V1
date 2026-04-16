@@ -561,8 +561,8 @@ export async function calculateHomeValue(address: string, visitorId?: string) {
   try {
     // Get property details and comparables
     const [property, comps, propertyData] = await Promise.all([
-      idxClient.getProperties(params),
-      idxClient.getProperties(params),
+      idxClient.searchProperties(address),
+      (idxClient.getProperties as any)({ status: "sold", address, proximity: true }),
       batchData.searchByAddress(address, "", ""),
     ])
 
@@ -753,7 +753,7 @@ export async function calculateRentVsBuy(data: {
 
   // Get brokerage commission structure for selling scenario
   const commissionStructure = await getDefaultCommissionStructure(data.brokerageId)
-  const totalCommissionRate = commissionStructure.totalBuyerSideRate + commissionStructure.totalListingSideRate
+  const totalCommissionRate = (commissionStructure.agentBuyerSideRate + commissionStructure.brokerageBuyerSideRate) + (commissionStructure.agentListingSideRate + commissionStructure.brokerageListingSideRate)
 
   const appreciationRate = data.annualAppreciation || 0.03 // 3% default (market appreciation, not brokerage config)
   const propertyTaxRate = 0.0125

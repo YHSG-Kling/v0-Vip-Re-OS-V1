@@ -119,7 +119,7 @@ export async function getLeadInsights(contactId: string) {
   try {
     const supabase = await createClient()
 
-    const { data: contact, error: contactError } = await supabase
+    const { data: rawContact, error: contactError } = await supabase
       .from("contacts")
       .select(`
         *,
@@ -127,20 +127,21 @@ export async function getLeadInsights(contactId: string) {
       `)
       .eq("id", contactId)
       .single()
+    const contact = rawContact as any
 
     if (contactError) throw contactError
 
     return {
       success: true,
       currentScore: {
-        overall: contact.lead_score || 0,
-        engagement: contact.engagement_score || 0,
-        intent: contact.intent_score || 0,
-        qualification: contact.qualification_score || 0,
-        motivation: contact.motivation_score || 0,
-        readiness: contact.readiness_level || "cold",
+        overall: contact?.lead_score || 0,
+        engagement: contact?.engagement_score || 0,
+        intent: contact?.intent_score || 0,
+        qualification: contact?.qualification_score || 0,
+        motivation: contact?.motivation_score || 0,
+        readiness: contact?.readiness_level || "cold",
       },
-      history: contact.lead_score_history || [],
+      history: contact?.lead_score_history || [],
       contact,
     }
   } catch (error) {

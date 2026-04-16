@@ -83,7 +83,7 @@ export async function POST(req: Request) {
       .select("id")
       .maybeSingle()
 
-    const resolvedUserId = upsertedUser?.data?.id ?? newUserId
+    const resolvedUserId = upsertedUser?.id ?? newUserId
 
     // Create agents row
     let agentId: string | null = null
@@ -105,7 +105,7 @@ export async function POST(req: Request) {
         )
         .select("id")
         .maybeSingle()
-      agentId = agentRow?.data?.id ?? null
+      agentId = agentRow?.id ?? null
 
       // Default commission profile
       if (agentId) {
@@ -120,7 +120,7 @@ export async function POST(req: Request) {
             created_at: new Date().toISOString(),
           },
           { onConflict: "agent_id" }
-        ).catch(() => {})
+        ).then(() => {}, () => {})
       }
 
       // Onboarding state
@@ -135,7 +135,7 @@ export async function POST(req: Request) {
           updated_at: new Date().toISOString(),
         },
         { onConflict: "user_id" }
-      ).catch(() => {})
+      ).then(() => {}, () => {})
     }
 
     // Mark recruit as provisioned
@@ -155,7 +155,7 @@ export async function POST(req: Request) {
       notes: JSON.stringify({ recruit_id: recruitId, new_user_id: resolvedUserId, agent_id: agentId }),
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    }).catch(() => {})
+    }).then(() => {}, () => {})
 
     return NextResponse.json({
       success: true,

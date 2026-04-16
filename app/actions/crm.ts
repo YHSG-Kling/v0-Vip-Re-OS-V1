@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { revalidatePath } from "next/cache"
-import { 
+import {
   createContact as createContactService,
   updateContact as updateContactService,
   deleteContact as deleteContactService,
@@ -12,6 +12,7 @@ import {
 } from "@/lib/services/contact-management.service"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 
 /**
  * CRM-specific actions - uses consolidated contact service
@@ -29,7 +30,7 @@ export async function updateContactStage(params: {
     const result = await updateContactService({
       contactId: params.contactId,
       agentId: params.agentId,
-      updates: { stage: params.newStage }
+      updates: { stage: params.newStage } as any
     })
 
     if (!result.success) {
@@ -97,7 +98,9 @@ export async function getContacts(agentId: string, filters?: { status?: string; 
 }
 
 export async function getContactById(contactId: string) {
-  return getContact(contactId)
+  const { agentId } = await getAgentContext()
+  if (!agentId) return { success: false, error: "Not authenticated" }
+  return getContact(contactId, agentId)
 }
 
 export async function searchContacts(params: { agentId: string; query: string }) {

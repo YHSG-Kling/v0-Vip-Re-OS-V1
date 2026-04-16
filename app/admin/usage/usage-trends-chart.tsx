@@ -77,7 +77,7 @@ export function UsageTrendsChart({ data }: UsageTrendsChartProps) {
             }}
             labelStyle={{ color: "hsl(var(--foreground))" }}
             labelFormatter={(label: React.ReactNode) => formatMonth(String(label))}
-            formatter={(value: number | undefined, name: string) => {
+            formatter={((value: number | undefined, name: string) => {
               const v = value ?? 0
               const labels: Record<string, string> = {
                 ai_call: "AI Calls",
@@ -86,7 +86,7 @@ export function UsageTrendsChart({ data }: UsageTrendsChartProps) {
                 video: "Video Minutes",
               }
               return [v.toLocaleString(), labels[name] || name]
-            }}
+            }) as any}
           />
           <Legend 
             formatter={(value) => {

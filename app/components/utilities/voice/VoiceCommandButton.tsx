@@ -3,7 +3,7 @@
 import type React from "react"
 import { useState, useRef } from "react"
 import { Mic, Square, Loader2, CheckCircle2, AlertCircle } from "lucide-react"
-import { executeWorkflow } from "../../app/actions/workflows"
+import { executeWorkflow } from "@/app/actions/workflows"
 import { useAuth } from "@/lib/auth/client"
 import { toast } from "sonner"
 

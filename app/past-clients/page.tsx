@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -144,9 +144,20 @@ function getTouchpointIcon(type: string) {
 export default function LifetimeCustomersPage() {
   const [isPending, startTransition] = useTransition()
   const router = useRouter()
+  const searchParams = useSearchParams()
 
-  // Tab state
-  const [activeTab, setActiveTab] = useState("feed")
+  // Tab state — supports ?tab= URL param for deep-linking (e.g. from redirects)
+  const VALID_TABS = ["feed", "intelligence", "radar", "portal", "reputation", "referrals", "reviews", "gifting"]
+  const tabParam = searchParams.get("tab")
+  const TAB_ALIAS: Record<string, string> = {
+    referrals: "radar",
+    reviews: "reputation",
+    gifting: "intelligence",
+  }
+  const resolvedTab = tabParam
+    ? TAB_ALIAS[tabParam] ?? (VALID_TABS.includes(tabParam) ? tabParam : "feed")
+    : "feed"
+  const [activeTab, setActiveTab] = useState(resolvedTab)
 
   // Data state
   const [clients, setClients] = useState<PastClient[]>([])
@@ -224,8 +235,9 @@ export default function LifetimeCustomersPage() {
     for (const client of targets) {
       try {
         const draftResult = await generateTouchpoint({ contactId: client.id, touchpointType: "market_update" })
-        if (draftResult.success && draftResult.message) {
-          await sendMarketUpdate({ contactId: client.id, messageBody: draftResult.message })
+        const draftMessage = draftResult.success && 'data' in draftResult && draftResult.data ? (draftResult.data as any).message : undefined
+        if (draftMessage) {
+          await sendMarketUpdate({ contactId: client.id, messageBody: draftMessage })
         }
       } catch {
         // continue — don't abort bulk on single failure
@@ -261,7 +273,7 @@ export default function LifetimeCustomersPage() {
           setClients(clientsResult.clients)
         }
         if (anniversariesResult.success && anniversariesResult.anniversaries) {
-          setAnniversaries(anniversariesResult.anniversaries)
+          setAnniversaries(anniversariesResult.anniversaries as unknown as Anniversary[])
         }
       } catch (e) {
         console.error("Error loading data:", e)
@@ -332,8 +344,9 @@ export default function LifetimeCustomersPage() {
     setTouchpointContactId(contactId)
     startTransition(async () => {
       const result = await generateTouchpoint({ contactId, touchpointType: type })
-      if (result.success && result.message) {
-        setTouchpointDraft(result.message)
+      const genMessage = result.success && 'data' in result && result.data ? (result.data as any).message : undefined
+      if (genMessage) {
+        setTouchpointDraft(genMessage)
         setTouchpointDialogTitle(title || `AI ${type.replace('_', ' ')} Message`)
         setTouchpointDialogOpen(true)
       }
@@ -343,8 +356,9 @@ export default function LifetimeCustomersPage() {
   async function handleOptimizeReferral(contactId: string) {
     startTransition(async () => {
       const result = await optimizeReferralAsk(contactId)
-      if (result.success && result.message) {
-        setTouchpointDraft(result.message)
+      const refMessage = result.success && 'data' in result && result.data ? (result.data as any).message ?? (result.data as any).askScript : undefined
+      if (refMessage) {
+        setTouchpointDraft(refMessage)
         setTouchpointDialogTitle("Optimized Referral Ask")
         setTouchpointDialogOpen(true)
       }
@@ -374,8 +388,9 @@ export default function LifetimeCustomersPage() {
     startTransition(async () => {
       // Generate a market update draft then immediately send it to the portal
       const draftResult = await generateTouchpoint({ contactId, touchpointType: "market_update" })
-      if (draftResult.success && draftResult.message) {
-        const sendResult = await sendMarketUpdate({ contactId, messageBody: draftResult.message })
+      const mktMessage = draftResult.success && 'data' in draftResult && draftResult.data ? (draftResult.data as any).message : undefined
+      if (mktMessage) {
+        const sendResult = await sendMarketUpdate({ contactId, messageBody: mktMessage })
         if (sendResult.success) {
           toast.success(`Market update sent to ${firstName}`)
         } else {
@@ -422,9 +437,10 @@ export default function LifetimeCustomersPage() {
   async function handleLoadMilestones() {
     startTransition(async () => {
       const result = await getUpcomingMilestones(30)
-      if (result.success && result.milestones) {
-        setMilestones(result.milestones)
-        toast.success(`Found ${result.milestones.length} milestones`)
+      if (result.success && 'data' in result && result.data) {
+        const milestonesData = result.data as any[]
+        setMilestones(milestonesData)
+        toast.success(`Found ${milestonesData.length} milestones`)
       }
     })
   }
@@ -519,7 +535,7 @@ export default function LifetimeCustomersPage() {
         {/* Header */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-foreground">Lifetime Customers</h1>
+            <h1 className="text-2xl font-bold text-foreground">Sphere of Influence</h1>
             <p className="text-sm text-muted-foreground mt-1">
               Your relationship intelligence engine
             </p>

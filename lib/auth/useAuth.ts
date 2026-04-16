@@ -218,9 +218,9 @@ export function useAuth(): AuthState {
       if (!mounted) return
     })
 
-    const { data: { subscription } } = client.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = client.auth.onAuthStateChange((_event: unknown, session: unknown) => {
       if (!mounted) return
-      if (!session?.user) {
+      if (!(session as any)?.user) {
         setUser(null)
         setUserContext(null)
         setUserPersona(null)

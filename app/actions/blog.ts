@@ -58,9 +58,13 @@ export async function generateBlogPost(
   // ── 3. Apply brand voice ────────────────────────────────────────────────────
   const brandVoice = await applyBrandVoice({
     brokerageId: params.brokerageId,
-    agentId: params.agentUserId,
-    teamId: undefined,
-  })
+    actorUserId: params.agentUserId,
+    actorRole: "agent",
+    journeyType: "buyer",
+    persona: "first_time",
+    messageType: "email",
+    content: params.keywords.join(", "),
+  }) as any
 
   const toneDescription = params.tone || brandVoice.tone || "professional and helpful"
   const topicKeywords = params.keywords.join(", ")
@@ -254,14 +258,13 @@ export async function updateBlogPost(
       const complianceResult = await checkBrandCompliance({
         brokerageId: existingPost.brokerage_id,
         contentType: "blog_post",
-        content: fullPost.content,
-        agentId: undefined,
+        contentId: postId,
       })
 
       if (!complianceResult.passed) {
         return {
           success: false,
-          error: `Brand compliance failed: ${complianceResult.issues?.join(", ")}`,
+          error: `Brand compliance failed: ${complianceResult.violations?.join(", ")}`,
         }
       }
     }

@@ -121,14 +121,16 @@ export async function submitForSignature(params: SubmitForSignatureParams) {
   // Fire notification to the buyer contact so they know to expect the signature request
   if (offer.contact_id) {
     await logEventAndTrigger({
+      brokerage_id: offer.brokerage_id,
       event_type: "buyer.offer.signature.sent_to_contact",
-      user_id:    offer.contact_id,
+      user_id:    userId,
       payload: {
         offerId,
+        contact_id:  offer.contact_id,
         signerCount: signers.length,
         provider:    credential?.platform ?? null,
       },
-      source:     "action",
+      source:     "ui",
       dedupe_key: `offer-sig-sent-${offerId}-${Date.now()}`,
     }).catch(() => {})
   }

@@ -86,14 +86,10 @@ export function ReferralPipelinePanel({
     e.preventDefault()
     startTransition(async () => {
       await createReferral({
-        agentId,
-        brokerageId,
-        referredName: formData.referred_name,
-        referredEmail: formData.referred_email || undefined,
-        referredPhone: formData.referred_phone || undefined,
+        referralName: formData.referred_name,
         notes: formData.notes || undefined,
-        potentialValue: formData.potential_value ? Number(formData.potential_value) : undefined,
-      })
+        valueEstimate: formData.potential_value ? Number(formData.potential_value) : undefined,
+      } as any)
       setCreateOpen(false)
       setFormData({ referred_name: "", referred_email: "", referred_phone: "", notes: "", potential_value: "" })
     })

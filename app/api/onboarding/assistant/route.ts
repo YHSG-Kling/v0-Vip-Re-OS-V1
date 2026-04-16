@@ -22,7 +22,10 @@ export async function POST(request: Request) {
     // Extract the user's latest query for KB search
     const userMessages = messages.filter((m) => m.role === 'user')
     const latestQuery = userMessages.length > 0
-      ? String(userMessages[userMessages.length - 1].content)
+      ? userMessages[userMessages.length - 1].parts
+          .filter((p: any) => p.type === 'text')
+          .map((p: any) => p.text)
+          .join(' ')
       : ''
 
     // Knowledge base search using vector similarity

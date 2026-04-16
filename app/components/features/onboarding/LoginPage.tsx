@@ -3,12 +3,12 @@
 import React from "react"
 
 import { useState } from "react"
-import { UserRole } from "../../types"
-import { Button } from "./ui/button"
-import { Input } from "./ui/input"
-import { Label } from "./ui/label"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select"
+import { UserRole } from "@/types"
+import { Button } from "../../ui/button"
+import { Input } from "../../ui/input"
+import { Label } from "../../ui/label"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../ui/card"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../ui/select"
 
 interface LoginPageProps {
   onLogin: (role: string, email: string, persona?: string) => void
@@ -61,7 +61,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 type="email"
                 placeholder="Enter your email"
                 value={email}
-                onChange={(e) => setEmail(e.target.value)}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
                 required
               />
             </div>

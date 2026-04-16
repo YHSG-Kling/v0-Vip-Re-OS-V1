@@ -28,7 +28,7 @@ export function YearlyRevenueChart({ data }: Props) {
         <CartesianGrid strokeDasharray="3 3" />
         <XAxis dataKey="recruit" fontSize={12} />
         <YAxis label={{ value: "Revenue ($K)", angle: -90, position: "insideLeft" }} />
-        <Tooltip formatter={(value) => `$${(value * 1000).toLocaleString()}`} />
+        <Tooltip formatter={((value: number) => `$${(value * 1000).toLocaleString()}`) as any} />
         <Legend />
         <Bar dataKey="year1" fill="#3b82f6" name="Year 1" />
         <Bar dataKey="year2" fill="#10b981" name="Year 2" />

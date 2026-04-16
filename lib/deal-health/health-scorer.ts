@@ -951,8 +951,8 @@ async function generateDealHealthNarrative(params: {
   let contextNote = ""
   if (previousRiskLevel && previousRiskLevel !== riskLevel) {
     contextNote = `Risk level changed from ${previousRiskLevel.toUpperCase()} to ${riskLevel.toUpperCase()}.`
-  } else if (previousOverallScore !== null && (previousOverallScore - overallScore) >= 10) {
-    contextNote = `Score dropped ${previousOverallScore - overallScore} points from ${previousOverallScore} to ${overallScore}.`
+  } else if (previousOverallScore != null && ((previousOverallScore ?? 0) - overallScore) >= 10) {
+    contextNote = `Score dropped ${(previousOverallScore ?? 0) - overallScore} points from ${previousOverallScore ?? 0} to ${overallScore}.`
   } else {
     contextNote = "This is the first health score for this deal."
   }
@@ -1002,4 +1002,4 @@ Write a concise, actionable summary for the agent/broker. Focus on what needs at
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
-export { CATEGORY_WEIGHTS, type RiskLevel, type DealHealthOutput }
+export { CATEGORY_WEIGHTS }

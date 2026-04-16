@@ -54,8 +54,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       content: result.content,
-      quality: result.qualityScore,
-      id: result.contentId,
+      id: result.content?.id,
     })
   } catch (error) {
     console.error("[v0] Error generating email:", error)

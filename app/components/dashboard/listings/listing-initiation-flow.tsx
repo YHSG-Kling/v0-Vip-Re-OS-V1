@@ -211,7 +211,7 @@ export function ListingInitiationFlow({
         address:         form.address,
         city:            form.city,
         state:           form.state,
-        zip:             form.zip             || undefined,
+        zip:             form.zip             || "",
         listPrice:       form.listPrice       ? Number(form.listPrice)  : undefined,
         bedrooms:        form.bedrooms        ? Number(form.bedrooms)   : undefined,
         bathrooms:       form.bathrooms       ? Number(form.bathrooms)  : undefined,

@@ -129,7 +129,7 @@ export default async function MobileAssistantPage() {
 
       <main className="px-4 py-4 space-y-6">
         {/* Mobile OS Command Strip */}
-        <MobileCommandStrip agentId={agentId} activeSection="assistant" />
+        <MobileCommandStrip agentId={agentId ?? ""} />
 
         {/* Section 1: Daily Briefing */}
         <section>
@@ -141,7 +141,7 @@ export default async function MobileAssistantPage() {
         </section>
 
         {/* Mobile OS Field Quick Actions */}
-        <FieldQuickActions agentId={agentId} />
+        <FieldQuickActions agentId={agentId ?? ""} />
 
         {/* Section 2: Quick Actions Grid */}
         <section>
@@ -159,9 +159,9 @@ export default async function MobileAssistantPage() {
           </div>
 
           {/* Mobile OS Showing & Open House Panels */}
-          <ShowingDayPanel agentId={agentId} />
+          <ShowingDayPanel showings={[]} />
           <div className="mt-4">
-            <OpenHousePanel agentId={agentId} />
+            <OpenHousePanel events={[]} />
           </div>
         </section>
 
@@ -172,7 +172,7 @@ export default async function MobileAssistantPage() {
         </section>
 
         {/* Mobile OS Follow-up Panel */}
-        <MobileFollowupPanel agentId={agentId} />
+        <MobileFollowupPanel tasks={[]} />
 
         {/* Section 5: Active Listings Strip */}
         <section>

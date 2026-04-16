@@ -166,7 +166,13 @@ export async function calculateLeadScore(params: LeadScoringParams): Promise<Lea
       recommendations,
     }
   } catch (error) {
-    return handleError(error, "calculateLeadScore")
+    handleError(error, "calculateLeadScore")
+    return {
+      score: 0,
+      temperature: "cold",
+      factors: { engagement: 0, recency: 0, intent: 0, fit: 0, responsiveness: 0 },
+      recommendations: [],
+    }
   }
 }
 

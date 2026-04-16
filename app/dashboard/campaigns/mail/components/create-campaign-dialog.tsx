@@ -93,7 +93,7 @@ export function CreateCampaignDialog({
   // Load session IDs on mount
   useEffect(() => {
     const supabase = createClient()
-    supabase.auth.getUser().then(async ({ data: { user } }) => {
+    supabase.auth.getUser().then(async ({ data: { user } }: { data: { user: any } }) => {
       if (!user) return
       setAgentId(user.id)
       const { data } = await supabase
@@ -146,7 +146,7 @@ export function CreateCampaignDialog({
         setAiDesignSuggestion(result.design)
         toast.success("Design suggestion ready")
       } else {
-        toast.error(result.error ?? "Failed to suggest design")
+        toast.error((result as any).error ?? "Failed to suggest design")
       }
     } catch {
       toast.error("Design suggestion failed")

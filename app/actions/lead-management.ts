@@ -45,7 +45,8 @@ export async function getLeadsAdmin(params?: {
     }
 
     const { agentId, brokerageId } = await getAgentContext()
-    const result = await serviceGetLeads(agentId, brokerageId, params)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context", leads: [], total: 0, page: 1, limit: 10, totalPages: 0 }
+    const result = await serviceGetLeads((agentId ?? null) as any, brokerageId, params as any)
     return { success: true, ...result }
   } catch (error) {
     return { success: false, error: String(error), leads: [], total: 0, page: 1, limit: 10, totalPages: 0 }
@@ -56,7 +57,8 @@ export async function getLead(id: string) {
   try {
     if (!id) return { success: false, error: "ID is required", lead: null }
     const { agentId, brokerageId } = await getAgentContext()
-    const lead = await serviceGetLead(agentId, brokerageId, id)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context", lead: null }
+    const lead = await serviceGetLead((agentId ?? null) as any, brokerageId, id)
     return { success: true, lead }
   } catch (error) {
     return { success: false, error: String(error), lead: null }
@@ -67,24 +69,21 @@ export async function enrichLead(leadId: string) {
   try {
     if (!leadId) return { success: false, error: "Lead ID is required" }
     const { agentId, brokerageId } = await getAgentContext()
-    const lead = await serviceEnrichLead(agentId, brokerageId, leadId)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context" }
+    const lead = await serviceEnrichLead((agentId ?? null) as any, brokerageId, leadId)
     return { success: true, lead }
   } catch (error) {
     return { success: false, error: String(error) }
   }
 }
 
-export async function convertLeadToContact(params: { leadId: string; agentId?: string; brokerageId?: string }) {
+export async function convertLeadToContact(leadId: string) {
   try {
-    const { leadId, agentId: providedAgentId, brokerageId: providedBrokerageId } = params
     if (!leadId) return { success: false, error: "Lead ID is required" }
-    
-    const context = await getAgentContext()
-    const agentId = providedAgentId || context.agentId
-    const brokerageId = providedBrokerageId || context.brokerageId
-    
-    const contact = await serviceConvertLeadToContact(agentId, brokerageId, leadId)
-    return { success: true, contact, contactId: contact?.id }
+    const { agentId, brokerageId } = await getAgentContext()
+    if (!brokerageId) return { success: false, error: "Missing brokerage context" }
+    const contact = await serviceConvertLeadToContact((agentId ?? null) as any, brokerageId, leadId)
+    return { success: true, contact }
   } catch (error) {
     return { success: false, error: String(error) }
   }
@@ -94,7 +93,8 @@ export async function rejectLead(leadId: string, reason?: string) {
   try {
     if (!leadId) return { success: false, error: "Lead ID is required" }
     const { agentId, brokerageId } = await getAgentContext()
-    const lead = await serviceRejectLead(agentId, brokerageId, leadId, reason)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context" }
+    const lead = await serviceRejectLead((agentId ?? null) as any, brokerageId, leadId, reason)
     return { success: true, lead }
   } catch (error) {
     return { success: false, error: String(error) }
@@ -105,7 +105,8 @@ export async function importLeads(leads: Partial<Lead>[]) {
   try {
     if (!leads?.length) return { success: false, error: "No leads provided", imported: 0 }
     const { agentId, brokerageId } = await getAgentContext()
-    const imported = await serviceImportLeads(agentId, brokerageId, leads)
+    if (!brokerageId) return { success: false, error: "Missing brokerage context", imported: 0 }
+    const imported = await serviceImportLeads((agentId ?? null) as any, brokerageId, leads as any)
     return { success: true, imported }
   } catch (error) {
     return { success: false, error: String(error), imported: 0 }

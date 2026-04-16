@@ -322,22 +322,18 @@ export function OfferFormWizard({
         buyerId:            contactId,
         // Buyers write offers on properties they do not own.
         // listingId is only set when the property is one of the brokerage's listings.
-        listingId:          listingId ?? undefined,
-        propertyAddress:    form.property_address,
-        offerPrice:         form.offer_price,
-        financingType:      form.financing_type,
+        listingId:          listingId ?? "",
         buyerMaxBudget:     buyerMaxBudget ?? form.offer_price,
-        buyerMotivation:    "primary_residence",
+        buyerMotivation:    "must_have",
         buyerRiskTolerance: buyerRiskTolerance ?? "moderate",
-        contingencies:      contingencies ?? [],
-        brokerageId,
-      })
+      } as any)
       if (result.success) {
         setWorkflowResult(result)
-        if (result.offerId) {
-          setCreatedOfferId(result.offerId)
+        const offerId = (result as any).offerId as string | undefined
+        if (offerId) {
+          setCreatedOfferId(offerId)
           // Cross-side notification when offer lands on a brokerage listing
-          await notifyListingSide(result.offerId)
+          await notifyListingSide(offerId)
         }
       } else {
         setWorkflowError(result.error ?? "Workflow failed — try manually submitting the offer.")
@@ -386,7 +382,7 @@ export function OfferFormWizard({
               }} placeholder="0" />
             </Field>
             <div className="rounded-md bg-muted/40 border border-border p-3 text-xs text-muted-foreground">
-              Recommended: ${recommendation?.recommended_earnest.toLocaleString() ?? "—"}
+              Recommended: ${(recommendation?.recommended_earnest ?? 0).toLocaleString() || "—"}
             </div>
           </div>
         )

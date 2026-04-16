@@ -42,8 +42,8 @@ export function DeductionReadinessPanel({
   const loadTaxCategories = async () => {
     try {
       const result = await getTaxCategories(brokerageId)
-      if (result.categories) {
-        setTaxCategories(result.categories)
+      if (Array.isArray(result)) {
+        setTaxCategories(result)
       }
     } catch (error) {
       console.error("Error loading tax categories:", error)
@@ -84,9 +84,13 @@ export function DeductionReadinessPanel({
         includeProjections: false,
       })
 
-      if (result.report) {
+      const resultAny = result as any
+      if (resultAny.success && resultAny.report) {
         // Copy to clipboard
-        await navigator.clipboard.writeText(result.report)
+        const reportText = typeof resultAny.report === "string"
+          ? resultAny.report
+          : JSON.stringify(resultAny.report, null, 2)
+        await navigator.clipboard.writeText(reportText)
         toast.success("P&L Report copied to clipboard", {
           description: "Ready for your tax preparer",
         })

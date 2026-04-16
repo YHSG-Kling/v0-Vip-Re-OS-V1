@@ -64,7 +64,7 @@ export function EventDayTab({ listingId, data, onRefresh, agentId, userId }: Pro
 
   async function loadVisitors(eventId: string) {
     const res = await getOpenHouseVisitors(eventId).catch(() => null)
-    setVisitors(res?.visitors ?? [])
+    setVisitors((res as any)?.visitors ?? [])
   }
 
   useEffect(() => {

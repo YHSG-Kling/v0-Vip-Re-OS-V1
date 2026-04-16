@@ -20,7 +20,8 @@ import {
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { dispatchSms, dispatchEmail } from "@/lib/providers/dispatch"
-import { supabaseService } from "@/services/supabaseService"
+import { supabaseService as _supabaseService } from "@/services/supabaseService"
+const supabaseService = _supabaseService as any
 import { checkSuppression } from "@/lib/kernel/compliance/check-suppression"
 
 // =====================================================

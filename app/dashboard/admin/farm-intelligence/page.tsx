@@ -398,7 +398,7 @@ export default function FarmIntelligencePage() {
                             ? `${(((m[metricKey] as number) ?? 0) * 100).toFixed(1)}%`
                             : metricKey === "roi"
                             ? `${(((m[metricKey] as number) ?? 0) * 100).toFixed(0)}%`
-                            : metricKey === "total_cost" || metricKey === "cost_per_lead"
+                            : metricKey === "total_cost" || (metricKey as string) === "cost_per_lead"
                             ? `$${((m[metricKey] as number) ?? 0).toFixed(2)}`
                             : ((m[metricKey] as number) ?? 0).toFixed(1)}
                         </td>

@@ -55,12 +55,12 @@ export function AvailableLeadsSheet({
         limit: 20,
         leadStage: "available",
       })
-      setLeads(result.leads as Lead[])
+      setLeads(result.leads as unknown as Lead[])
     } catch {
       // If no leads with stage "available" exist, fall back to all unassigned leads
       try {
         const fallback = await listUnassignedLeads({ brokerageId, limit: 20 })
-        setLeads(fallback.leads as Lead[])
+        setLeads(fallback.leads as unknown as Lead[])
       } catch {
         setLeads([])
       }

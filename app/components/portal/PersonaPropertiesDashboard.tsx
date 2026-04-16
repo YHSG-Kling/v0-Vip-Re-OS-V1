@@ -689,12 +689,11 @@ export default function PersonaPropertiesDashboard({
                       startTransition(async () => {
                         try {
                           await requestShowing({
-                            listingId: listing.id,
+                            propertyId: listing.id,
                             contactId,
-                            requestedDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-                            requestedStartTime: "10:00",
-                            requestedEndTime: "11:00",
-                            message: "Coming soon interest — requesting early showing access.",
+                            propertyAddress: `${listing.address}, ${listing.city}`,
+                            preferredDates: [{ date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10), time: "10:00" }],
+                            clientNotes: "Coming soon interest — requesting early showing access.",
                           })
                           toast({ title: "Showing requested!", description: "Your agent will confirm timing." })
                         } catch {

@@ -148,7 +148,12 @@ export default async function VendorDashboardPage() {
         />
       </div>
 
-      <ExternalBillingEarningsPanel partnerType="vendor" partnerId={vendorId} />
+      <ExternalBillingEarningsPanel
+        partnerType="vendor"
+        partnerId={vendorId}
+        earnings={[]}
+        totals={{ pending: 0, paid: 0, mtd: 0, ytd: 0 }}
+      />
     </div>
   )
 }

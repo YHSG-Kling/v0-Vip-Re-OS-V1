@@ -115,9 +115,12 @@ export function AgentLifetimeCustomersPanel({
                 {lifeChanges.slice(0, 2).map((change) => (
                   <div key={change.id} className="flex items-center justify-between">
                     <LifeSignalBadge
-                      changeType={change.change_type}
-                      detectedAt={change.detected_at}
-                      contactName={change.contacts ? `${change.contacts.first_name} ${change.contacts.last_name}` : undefined}
+                      signal={{
+                        id: change.id,
+                        change_type: change.change_type,
+                        detected_at: change.detected_at,
+                        contacts: change.contacts,
+                      }}
                     />
                     {change.contacts && (
                       <Link href={`/contacts/${change.contacts.id}`} className="text-xs text-primary hover:underline">

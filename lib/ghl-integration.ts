@@ -223,7 +223,7 @@ export class GHLIntegration {
 
       // Send message to GHL
       const ghlMessage: GHLConversation = {
-        contactId: contact.ghl_contact_id,
+        contactId: contact?.ghl_contact_id ?? "",
         locationId: process.env.GHL_LOCATION_ID || "",
         type: "SMS", // Can be configured based on channel
         message: message.message,

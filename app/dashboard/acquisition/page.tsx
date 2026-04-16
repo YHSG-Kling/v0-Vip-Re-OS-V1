@@ -256,7 +256,7 @@ export default async function AcquisitionPage() {
 
         {/* Card 3 — Open House (client component for inline quick-create) */}
         <AcquisitionOpenHouseCard
-          openHouseLeads={openHouseLeads}
+          openHouseLeads={openHouseLeads as any}
           openHouseCount={openHouseCount}
           agentId={agentId}
           activeListings={activeListings}

@@ -130,7 +130,7 @@ export async function executePipeline(params: {
     // Generate content for each output format
     for (const format of pipeline.output_formats) {
       try {
-        const config = OUTPUT_FORMAT_CONFIG[format]
+        const config = OUTPUT_FORMAT_CONFIG[format as OutputFormat]
         
         // Generate platform-specific content using AI
         const aiResponse = await generateAIResponse({

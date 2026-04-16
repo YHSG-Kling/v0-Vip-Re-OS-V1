@@ -43,9 +43,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Use agent.id directly instead of separate resolveAgentId call
-    const agentId = userRole?.toLowerCase() === "agent" 
-      ? agent?.id 
-      : body.agent_id || agent?.id
+    const agentId = agent?.id
     if (!agentId) {
       return NextResponse.json({ success: false, error: "Agent profile not found" }, { status: 403 })
     }
@@ -59,14 +57,12 @@ export async function POST(request: NextRequest) {
       phone: body.phone,
       source: body.source,
       status: body.status || "new",
-      contactType: body.contact_type,
-      persona: body.contact_persona,
-      timeline: body.timeline,
       notes: body.notes,
     })
 
     if (!result.success || !result.contact) {
-      return NextResponse.json({ success: false, error: result.error || "Failed to create contact" }, { status: 500 })
+      const errMsg = (result as { success: false; error: string }).error || "Failed to create contact"
+      return NextResponse.json({ success: false, error: errMsg }, { status: 500 })
     }
 
     const contact = result.contact

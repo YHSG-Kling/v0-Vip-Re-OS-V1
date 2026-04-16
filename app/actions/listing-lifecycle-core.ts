@@ -289,7 +289,7 @@ export async function executeListingTransition(params: {
   }
   
   // Log successful transition
-  await logStageTransition(supabase, {
+  await logStageTransition({
     listingId: params.listingId,
     agentId: listing.agent_id,
     brokerageId: listing.brokerage_id,

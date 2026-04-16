@@ -36,10 +36,7 @@ export function CreateReferralSheet() {
     
     try {
       const result = await createReferral({
-        referrer_name: formData.referrer_name,
-        contact_email: formData.contact_email,
-        contact_phone: formData.contact_phone,
-        status: formData.status,
+        referralName: formData.referrer_name,
         notes: formData.notes,
       })
       

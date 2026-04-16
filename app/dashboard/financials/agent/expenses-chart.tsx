@@ -47,7 +47,7 @@ export function ExpensesDonutChart({ data }: ExpensesDonutChartProps) {
             outerRadius={80}
             paddingAngle={2}
             dataKey="value"
-            label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+            label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
             labelLine={false}
           >
             {chartData.map((entry, index) => (

@@ -74,10 +74,9 @@ export async function createReferral(params: CreateReferralParams): Promise<{ id
     const { firstName, lastName, email, phone } = params.referredPerson
     if (email || phone) {
       const result = await captureContact({
-        brokerageId,
-        agentId,
-        firstName: firstName ?? null,
-        lastName: lastName ?? null,
+        brokerageId: brokerageId ?? "",
+        first_name: firstName ?? null,
+        last_name: lastName ?? null,
         email: email ?? null,
         phone: phone ?? null,
         source: "referral",

@@ -79,7 +79,7 @@ export default async function HomeValueResultPage({ params }: PageProps) {
           </CardHeader>
           <CardContent>
             <div className="prose prose-sm max-w-none text-muted-foreground">
-              {estimate.aiNarrative.split("\n\n").map((paragraph, i) => (
+              {estimate.aiNarrative.split("\n\n").map((paragraph: string, i: number) => (
                 <p key={i}>{paragraph}</p>
               ))}
             </div>
@@ -111,13 +111,13 @@ export default async function HomeValueResultPage({ params }: PageProps) {
                 <div className="grid grid-cols-3 gap-4 text-center">
                   <div className="p-4 rounded-lg bg-muted/50">
                     <p className="text-2xl font-bold text-foreground">
-                      ${Math.round(estimate.comps.reduce((sum, c) => sum + c.price_per_sqft, 0) / estimate.comps.length)}
+                      ${Math.round(estimate.comps.reduce((sum: number, c: any) => sum + c.price_per_sqft, 0) / estimate.comps.length)}
                     </p>
                     <p className="text-sm text-muted-foreground">Avg $/Sq Ft</p>
                   </div>
                   <div className="p-4 rounded-lg bg-muted/50">
                     <p className="text-2xl font-bold text-foreground">
-                      {Math.round(estimate.comps.reduce((sum, c) => sum + c.distance_miles, 0) / estimate.comps.length * 10) / 10} mi
+                      {Math.round(estimate.comps.reduce((sum: number, c: any) => sum + c.distance_miles, 0) / estimate.comps.length * 10) / 10} mi
                     </p>
                     <p className="text-sm text-muted-foreground">Avg Distance</p>
                   </div>
