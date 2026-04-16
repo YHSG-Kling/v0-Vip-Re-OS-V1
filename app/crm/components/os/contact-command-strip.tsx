@@ -46,6 +46,7 @@ interface ContactCommandStripProps {
   onToggleAutopilot: (planId: string, pause: boolean) => Promise<void>
   onShareSocialPost?: () => void | Promise<void>
   onChannelToggled?: () => void
+  onAddNote?: () => void
   loading?: boolean
 }
 
@@ -77,6 +78,7 @@ export function ContactCommandStrip({
   onToggleAutopilot,
   onShareSocialPost,
   onChannelToggled,
+  onAddNote,
   loading = false,
 }: ContactCommandStripProps) {
   const [autopilotLoading, setAutopilotLoading] = useState(false)
@@ -178,7 +180,7 @@ export function ContactCommandStrip({
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button size="sm" variant="ghost" className="text-white hover:bg-white/20">
+                <Button size="sm" variant="ghost" className="text-white hover:bg-white/20" onClick={() => onAddNote?.()}>
                   <FileText className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>

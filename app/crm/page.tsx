@@ -727,11 +727,19 @@ export default function CRMPage() {
 
   const handleToggleAutopilot = async (planId: string, pause: boolean) => {
     startTransition(async () => {
-      await toggleAutoPilot({ planId, pause })
+      const result = await toggleAutoPilot({ planId, pause })
+      if ((result as any)?.success === false) {
+        toast.error((result as any).error ?? "Failed to update autopilot")
+        return
+      }
+      if (pause) {
+        setAutopilotPlans(prev => prev.filter(p => p.id !== planId))
+      }
       if (agentId) {
         const plans = await getActiveAutoPilotPlans(agentId)
-        setAutopilotPlans(plans)
+        setAutopilotPlans(Array.isArray(plans) ? plans : [])
       }
+      toast.success(pause ? "AI Autopilot paused" : "AI Autopilot resumed")
     })
   }
 
@@ -871,6 +879,8 @@ export default function CRMPage() {
                 onEnableAutopilot={handleEnableAutopilot}
                 onToggleAutopilot={handleToggleAutopilot}
                 onShareSocialPost={handleShareSocialPost}
+                onChannelToggled={() => { if (selectedContactId) loadContactDetail(selectedContactId) }}
+                onAddNote={() => setActiveTab("comms")}
                 loading={isPending}
               />
             </div>

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useTransition } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -144,9 +144,14 @@ function getTouchpointIcon(type: string) {
 export default function LifetimeCustomersPage() {
   const [isPending, startTransition] = useTransition()
   const router = useRouter()
+  const searchParams = useSearchParams()
 
-  // Tab state
-  const [activeTab, setActiveTab] = useState("feed")
+  // Tab state — supports ?tab= URL param for deep-linking (e.g. from redirects)
+  const VALID_TABS = ["feed", "intelligence", "radar", "portal", "reputation"]
+  const tabParam = searchParams.get("tab")
+  const [activeTab, setActiveTab] = useState(
+    tabParam && VALID_TABS.includes(tabParam) ? tabParam : "feed"
+  )
 
   // Data state
   const [clients, setClients] = useState<PastClient[]>([])

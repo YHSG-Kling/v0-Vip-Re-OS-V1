@@ -264,7 +264,9 @@ export function MarketingTab({ listingId, data, onRefresh }: Props) {
           {timingResult && timingResult.recommended_times && (
             <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/30 p-3">
               <span className="text-xs font-medium">AI Timing Recommendations</span>
-              {timingResult.recommended_times.slice(0, 2).map((rec: any, idx: number) => (
+              {timingResult.recommended_times
+                .filter((rec: any) => new Date(rec.date) >= new Date())
+                .slice(0, 2).map((rec: any, idx: number) => (
                 <div key={idx} className="flex items-start justify-between gap-2">
                   <div className="flex flex-col gap-0.5">
                     <span className="text-sm font-medium">{rec.date} · {rec.time}</span>

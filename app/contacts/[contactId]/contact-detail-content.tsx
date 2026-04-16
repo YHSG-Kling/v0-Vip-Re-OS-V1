@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -28,6 +29,7 @@ interface ContactDetailContentProps {
 }
 
 export default function ContactDetailContent({ contact }: ContactDetailContentProps) {
+  const router = useRouter()
   const [creditAccounts, setCreditAccounts] = useState<any[]>([])
   const [videos, setVideos] = useState<any[]>([])
   const [transactions, setTransactions] = useState<any[]>([])
@@ -228,6 +230,7 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                         title={suggestion.title}
                         description={suggestion.description}
                         action="Take Action"
+                        onAction={() => router.push(`/crm?contactId=${contact.id}&tab=comms`)}
                       />
                     ))
                   )}
@@ -245,7 +248,11 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                     {creditAccounts.length === 0 ? (
                       <div className="p-4 border rounded-lg text-center">
                         <p className="text-sm text-muted-foreground mb-2">No active credit accounts</p>
-                        <Button size="sm" variant="outline">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => router.push(`/dashboard/credit-pipeline?contactId=${contact.id}`)}
+                        >
                           Add to Credit Pipeline
                         </Button>
                       </div>
@@ -427,11 +434,13 @@ function CopilotSuggestion({
   title,
   description,
   action,
+  onAction,
 }: {
   priority: string
   title: string
   description: string
   action: string
+  onAction?: () => void
 }) {
   const colors = {
     high: "border-red-500",
@@ -449,7 +458,7 @@ function CopilotSuggestion({
           </div>
           <p className="text-sm text-muted-foreground">{description}</p>
         </div>
-        <Button size="sm">{action}</Button>
+        <Button size="sm" onClick={onAction}>{action}</Button>
       </div>
     </div>
   )

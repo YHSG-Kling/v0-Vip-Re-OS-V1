@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition } from "react"
+import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,6 +21,7 @@ export function SellerUpdateReadinessCard({
   hasPendingDraft,
   lastSentAt,
 }: SellerUpdateReadinessCardProps) {
+  const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [draft, setDraft] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -107,7 +109,11 @@ export function SellerUpdateReadinessCard({
             {draft ? "Regenerate" : "Generate Draft"}
           </Button>
           {draft && (
-            <Button size="sm" className="text-xs">
+            <Button
+              size="sm"
+              className="text-xs"
+              onClick={() => router.push(`/dashboard/listings/${listingId}/seller-updates`)}
+            >
               <Send className="h-3.5 w-3.5 mr-1.5" />
               Review & Send
             </Button>
