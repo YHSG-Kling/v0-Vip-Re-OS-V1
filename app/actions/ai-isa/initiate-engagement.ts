@@ -434,7 +434,7 @@ async function dispatchToChannel(
           ...(callContext.voiceConfig?.voiceId
             ? {
                 voice: {
-                  provider:        (callContext.voiceConfig.provider ?? 'elevenlabs') as "elevenlabs" | "playht" | "deepgram" | "openai" | "azure",
+                  provider:        (callContext.voiceConfig.provider ?? 'elevenlabs') as any,
                   voiceId:         callContext.voiceConfig.voiceId,
                   stability:       callContext.voiceConfig.stability        ?? 0.7,
                   similarityBoost: callContext.voiceConfig.similarityBoost  ?? 0.8,
