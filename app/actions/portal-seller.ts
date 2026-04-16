@@ -316,9 +316,17 @@ export async function getSellerDocuments(contactId: string, transactionId: strin
 export async function emitSellerPortalViewed(contactId: string) {
   const supabase = await createClient()
 
+  const { data: contact } = await supabase
+    .from("contacts")
+    .select("brokerage_id")
+    .eq("id", contactId)
+    .maybeSingle()
+  const brokerageId = contact?.brokerage_id
+  if (!brokerageId) return
+
   await processKernelEvent({
     event: KernelEvent.PORTAL_MODULE_VIEWED,
-    brokerageId: "",
+    brokerageId,
     entityType: "contact",
     entityId: contactId,
   }).catch(() => {})

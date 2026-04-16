@@ -96,7 +96,8 @@ export async function getContacts(agentId: string, filters?: { status?: string; 
   return getContactsService(agentId, filters)
 }
 
-export async function getContactById(contactId: string, agentId: string = "") {
+export async function getContactById(contactId: string, agentId?: string) {
+  if (!agentId) return { success: false, error: "Not authenticated" }
   return getContact(contactId, agentId)
 }
 

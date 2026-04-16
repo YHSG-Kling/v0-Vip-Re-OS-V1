@@ -122,6 +122,7 @@ export async function runImport(params: {
   if (authError || !user) throw new Error('Unauthorized')
 
   const { brokerageId } = await getAgentContext()
+  if (!brokerageId) throw new Error("Missing brokerage context")
 
   // Remap rows using the user-defined field map
   const remapped = params.rows.map((row) => {
@@ -133,7 +134,7 @@ export async function runImport(params: {
   })
 
   return processImportRows({
-    brokerageId: brokerageId ?? "",
+    brokerageId,
     agentUserId: user.id,
     importId: params.importId,
     rows: remapped,

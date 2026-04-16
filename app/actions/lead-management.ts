@@ -83,7 +83,8 @@ export async function convertLeadToContact(params: { leadId: string; agentId?: s
     const agentId = providedAgentId || context.agentId
     const brokerageId = providedBrokerageId || context.brokerageId
 
-    const contact = await serviceConvertLeadToContact(agentId ?? "", brokerageId ?? "", leadId)
+    if (!agentId || !brokerageId) return { success: false, error: "Missing agent context" }
+    const contact = await serviceConvertLeadToContact(agentId, brokerageId, leadId)
     return { success: true, contact, contactId: contact?.id }
   } catch (error) {
     return { success: false, error: String(error) }
@@ -105,7 +106,8 @@ export async function importLeads(leads: Partial<Lead>[]) {
   try {
     if (!leads?.length) return { success: false, error: "No leads provided", imported: 0 }
     const { agentId, brokerageId } = await getAgentContext()
-    const imported = await serviceImportLeads(agentId ?? "", brokerageId ?? "", leads as any)
+    if (!agentId || !brokerageId) return { success: false, error: "Missing agent context", imported: 0 }
+    const imported = await serviceImportLeads(agentId, brokerageId, leads as any)
     return { success: true, imported }
   } catch (error) {
     return { success: false, error: String(error), imported: 0 }

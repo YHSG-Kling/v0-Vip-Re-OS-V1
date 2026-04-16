@@ -266,7 +266,8 @@ export async function aiComposeEmail(params: AiComposeEmailParams) {
       content: "",
     })
 
-    const tone = params.tone ?? brandVoice.notes[0] ?? "professional"
+    const toneFromBrandVoice = brandVoice.notes?.find(n => n.toLowerCase().startsWith("target tone:"))?.replace(/^target tone:\s*/i, "").trim()
+    const tone = params.tone ?? toneFromBrandVoice ?? "professional"
     const audience = params.audience ?? "all"
 
     const systemPrompt = `You are a real estate email marketing expert. Write in a ${tone} tone.

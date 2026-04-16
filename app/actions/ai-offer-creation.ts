@@ -224,7 +224,12 @@ Balance buyer protection with competitiveness.
 
 Respond with JSON only: { "recommended": [{ "type": string, "duration": number, "critical": boolean, "reasoning": string }], "notRecommended": [{ "type": string, "reasoning": string }], "riskAnalysis": { "overallRisk": "low"|"medium"|"high", "buyerProtection": number, "competitiveness": number }, "suggestions": string[] }`,
     })
-    const contingencies = JSON.parse(contingencyResult.text)
+    let contingencies: unknown
+    try {
+      contingencies = JSON.parse(contingencyResult.text)
+    } catch {
+      return { success: false, error: "AI response was not valid JSON" }
+    }
 
     return { success: true, contingencies }
   } catch (error) {
@@ -471,7 +476,12 @@ Analyze the gap and recommend next move with reasoning.
 
 Respond with JSON only: { "recommendedResponse": "accept"|"counter"|"walk_away", "suggestedCounterPrice": number|null, "suggestedTerms": string[], "reasoning": string, "negotiationTactics": string[], "riskOfLosingDeal": number, "estimatedFinalPrice": number, "nextMoveTimeline": string }`,
     })
-    const strategy = JSON.parse(strategyResult.text)
+    let strategy: unknown
+    try {
+      strategy = JSON.parse(strategyResult.text)
+    } catch {
+      return { success: false, error: "AI response was not valid JSON" }
+    }
 
     return { success: true, strategy }
   } catch (error) {

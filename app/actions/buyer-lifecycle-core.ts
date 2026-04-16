@@ -329,6 +329,25 @@ export async function recordBuyerFinancialVerification(params: {
     return { success: false, error: "User ID required" }
   }
 
+  // emitFinancialVerificationEvent uses a typed metadata schema (FinancialVerificationEventMetadata)
+  // rather than a generic Record<string, unknown>. Caller-provided metadata fields are spread into
+  // the known typed fields below. Fields that don't map to a typed param (e.g. arbitrary caller
+  // keys) cannot be forwarded without a schema change — they are preserved in verificationNotes as
+  // a JSON string so no caller data is silently dropped.
+  const knownMetadataFields = {
+    maxBudget: metadata?.max_budget as number | undefined,
+    documentId: metadata?.document_id as string | undefined,
+    lenderName: metadata?.lender_name as string | undefined,
+    preApprovalAmount: metadata?.pre_approval_amount as number | undefined,
+  }
+
+  const reservedKeys = new Set(["max_budget", "document_id", "lender_name", "pre_approval_amount", "expires_at", "verification_type"])
+  const extraMetadata = metadata
+    ? Object.fromEntries(Object.entries(metadata).filter(([k]) => !reservedKeys.has(k)))
+    : {}
+  const verificationNotes =
+    Object.keys(extraMetadata).length > 0 ? JSON.stringify(extraMetadata) : undefined
+
   return await emitFinancialVerificationEvent({
     contactId,
     verificationType,
@@ -337,6 +356,8 @@ export async function recordBuyerFinancialVerification(params: {
     status: "verified",
     verifiedBy: "agent",
     source: "manual",
+    ...knownMetadataFields,
+    ...(verificationNotes ? { verificationNotes } : {}),
   })
 }
 

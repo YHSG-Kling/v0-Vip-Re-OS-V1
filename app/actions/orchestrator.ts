@@ -107,7 +107,7 @@ export async function orchestrateEventById(eventId: string) {
     }
 
     const handler = await handlerLoader()
-    const result = await (handler as (e: typeof eventAsEvent) => Promise<any>)(eventAsEvent)
+    const result = await (handler as (payload: Record<string, any>) => Promise<any>)(eventAsEvent.payload)
 
     await supabase
       .from("lifecycle_events")

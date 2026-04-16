@@ -171,6 +171,17 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
     // Resolve agent identity
     const agentId = await resolveAgentId(supabase, user.id)
 
+    // Resolve brokerage_id from contact record for kernel event scoping
+    const { data: contact } = await supabase
+      .from("contacts")
+      .select("brokerage_id")
+      .eq("id", contactId)
+      .maybeSingle()
+    const brokerageId = contact?.brokerage_id
+    if (!brokerageId) {
+      return { success: false, error: "Contact not found" }
+    }
+
     // Update unread messages
     const { data, error: updateError } = await supabase
       .from("client_portal_messages")
@@ -190,7 +201,7 @@ export async function markMessagesRead(params: MarkReadParams): Promise<{
       event: KernelEvent.PORTAL_MODULE_VIEWED,
       entityType: "contact",
       entityId: contactId,
-      brokerageId: "",
+      brokerageId,
     }).catch(() => {})
 
     return { success: true, count: data?.length || 0 }

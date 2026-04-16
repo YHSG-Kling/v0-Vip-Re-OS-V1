@@ -2,19 +2,14 @@
 
 import { createServiceClient } from "@/lib/supabase/service"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { listLeadMagnets } from "@/lib/kernel/lead-magnets"
 
 export async function listLeadMagnetsAction(options?: { brokerageId?: string; agentId?: string }) {
   try {
-    const supabase = createServiceClient()
     const ctx = await getAgentContext()
-    const bId = options?.brokerageId ?? ctx.brokerageId
-    const { data, error } = await supabase
-      .from("lead_magnets")
-      .select("*")
-      .eq("brokerage_id", bId)
-      .order("created_at", { ascending: false })
-    if (error) return { success: false as const, error: error.message }
-    return { success: true as const, magnets: data ?? [] }
+    const bId = ctx.brokerageId
+    if (!bId) return { success: false as const, error: "Not authenticated" }
+    return listLeadMagnets({ brokerageId: bId, agentId: options?.agentId })
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to list magnets" }
   }
