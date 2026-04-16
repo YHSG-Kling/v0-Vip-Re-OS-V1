@@ -274,6 +274,7 @@ export async function getFormFieldsAction(formId: string): Promise<{
     .from("brokerage_forms")
     .select("field_schema, form_category")
     .eq("id", formId)
+    .or(`brokerage_id.eq.${ctx.brokerage_id},brokerage_id.is.null`)
     .maybeSingle()
 
   if (!form) return { success: false, error: "Form not found" }
