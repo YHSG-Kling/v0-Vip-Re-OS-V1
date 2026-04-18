@@ -44,6 +44,7 @@ export default async function ListingMediaPage({ params }: PageProps) {
       listingId={listingId}
       listing={listing}
       brokerageId={ctx.brokerageId}
+      agentId={ctx.agentId ?? ""}
       userRole={userRole}
       initialMedia={mediaResult.data ?? []}
       initialVideos={videosResult.data ?? []}
