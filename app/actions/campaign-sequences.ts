@@ -68,18 +68,50 @@ export interface SequenceEnrollment {
   contact?: { first_name: string | null; last_name: string | null; email: string | null }
 }
 
+// ─── Sequence type categories ─────────────────────────────────────────────────
+
+export const MARKETING_SEQUENCE_TYPES = [
+  "listing_launch",
+  "price_reduction",
+  "just_sold",
+  "open_house",
+  "ad_campaign",
+] as const
+
+export const NURTURE_SEQUENCE_TYPES = [
+  "buyer_nurture",
+  "seller_nurture",
+  "lead_followup",
+  "post_close",
+  "sphere_touchpoint",
+  "credit_journey",
+] as const
+
+export type SequenceCategory = "marketing" | "nurture"
+
 // ─── List sequences ───────────────────────────────────────────────────────────
 
-export async function listCampaignSequences(brokerageId: string): Promise<{
+export async function listCampaignSequences(
+  brokerageId: string,
+  category?: SequenceCategory
+): Promise<{
   sequences: CampaignSequence[]
   error?: string
 }> {
   const service = createServiceClient()
-  const { data, error } = await service
+  let query = service
     .from("campaign_sequences")
     .select("*")
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
+
+  if (category === "marketing") {
+    query = query.in("sequence_type", MARKETING_SEQUENCE_TYPES as unknown as string[])
+  } else if (category === "nurture") {
+    query = query.in("sequence_type", NURTURE_SEQUENCE_TYPES as unknown as string[])
+  }
+
+  const { data, error } = await query
 
   if (error) return { sequences: [], error: error.message }
   return { sequences: (data ?? []) as CampaignSequence[] }

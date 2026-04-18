@@ -34,7 +34,17 @@ export default async function SequencesPage({
   const agentId = await resolveAgentId(service, user.id)
   if (!agentId) redirect("/dashboard/onboarding")
 
-  // Fetch existing campaign sequences for this brokerage
+  // Nurture sequence types — buyer/seller journeys, lead follow-up, post-close, sphere
+  const NURTURE_SEQUENCE_TYPES = [
+    "buyer_nurture",
+    "seller_nurture",
+    "lead_followup",
+    "post_close",
+    "sphere_touchpoint",
+    "credit_journey",
+  ]
+
+  // Fetch existing nurture sequences for this brokerage
   // Table: campaign_sequences (NOT drip_campaigns — that table does not exist)
   const [campaignsRes, contactRes] = await Promise.all([
     service
@@ -53,6 +63,7 @@ export default async function SequencesPage({
         updated_at
       `)
       .eq("brokerage_id", brokerageId)
+      .in("sequence_type", NURTURE_SEQUENCE_TYPES)
       .order("created_at", { ascending: false })
       .limit(50),
 
