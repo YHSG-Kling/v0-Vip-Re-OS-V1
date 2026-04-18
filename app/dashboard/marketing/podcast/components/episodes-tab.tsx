@@ -78,7 +78,7 @@ export function EpisodesTab({ episodes, loading, onRefresh, channels }: Episodes
       if (result.success) {
         onRefresh()
       } else {
-        console.error("Failed to generate audio:", result.error)
+        console.error("[Podcast] Audio generation failed:", result.error)
       }
     } finally {
       setProcessingId(null)
