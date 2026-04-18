@@ -249,7 +249,7 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
             {cwLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
             Write Newsletter Content
           </Button>
-          {cwResult && (
+          {cwResult ? (
             <div className="space-y-2 pt-1">
               {cwResult.subject && (
                 <div className="flex items-center gap-2">
@@ -258,9 +258,14 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
                 </div>
               )}
               <div className="relative rounded-md border bg-muted/30 p-3 max-h-64 overflow-y-auto">
-                <pre className="text-xs text-foreground whitespace-pre-wrap font-sans">
-                  {cwResult.content ?? cwResult.body ?? JSON.stringify(cwResult, null, 2)}
-                </pre>
+                {cwResult.content || cwResult.body ? (
+                  <div
+                    className="text-xs text-foreground prose prose-sm max-w-none"
+                    dangerouslySetInnerHTML={{ __html: cwResult.content ?? cwResult.body ?? "" }}
+                  />
+                ) : (
+                  <p className="text-xs text-muted-foreground italic">No content generated.</p>
+                )}
                 <Button
                   variant="ghost"
                   size="icon"
@@ -271,6 +276,10 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
                 </Button>
               </div>
             </div>
+          ) : (
+            <p className="text-xs text-muted-foreground text-center py-2">
+              Click &ldquo;Write Newsletter Content&rdquo; to generate your newsletter
+            </p>
           )}
         </CardContent>
       </Card>
