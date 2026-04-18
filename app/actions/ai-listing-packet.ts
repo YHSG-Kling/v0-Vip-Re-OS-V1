@@ -85,7 +85,7 @@ export async function generateListingPacket(config: ListingPacketConfig) {
       const { data: agent } = await service
         .from("agents")
         .select("first_name, last_name, email, phone, license_number")
-        .eq("user_id", listing.agent_id)
+        .eq("id", listing.agent_id)
         .single()
       agentData = agent
     }

@@ -117,6 +117,12 @@ export async function getContactCopilotSuggestions(contactId: string) {
     return { suggestions: [], error: "No brokerage context" }
   }
 
+  // Guard: service client bypasses RLS, so we must filter by agentId when available
+  if (!agentId) {
+    // Without an agentId we cannot safely scope suggestions — return empty
+    return { suggestions: [], error: null }
+  }
+
   let query = supabase
     .from("smart_assistant_suggestions")
     .select("*")
@@ -125,9 +131,7 @@ export async function getContactCopilotSuggestions(contactId: string) {
     .eq("status", "pending")
     .eq("brokerage_id", brokerageId)
 
-  if (agentId) {
-    query = query.eq("agent_id", agentId)
-  }
+  query = query.eq("agent_id", agentId)
 
   const { data, error } = await query
     .order("priority", { ascending: false })

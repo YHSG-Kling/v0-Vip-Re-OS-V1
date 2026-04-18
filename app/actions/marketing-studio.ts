@@ -1058,6 +1058,13 @@ export async function getMarketingStudioDashboard() {
       campaignsByStatus[status] = (campaignsByStatus[status] ?? 0) + 1
     }
 
+    if (agentAssetsResult.error) {
+      console.error("[marketing-studio] agentAssetsResult error:", agentAssetsResult.error.message)
+    }
+    if (brokerageAssetsResult.error) {
+      console.error("[marketing-studio] brokerageAssetsResult error:", brokerageAssetsResult.error.message)
+    }
+
     // Merge the two asset sets
     const allAssets = [
       ...(agentAssetsResult.data ?? []),

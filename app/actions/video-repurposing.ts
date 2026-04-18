@@ -186,18 +186,12 @@ export async function createVideoSnippet(data: {
     .replace(/\s+/g, "_") as PlatformTarget
 
   if (!ALLOWED_PLATFORMS.includes(normalizedPlatform)) {
-    return {
-      success: false,
-      error: `Invalid platform "${data.platformTarget}". Must be one of: ${ALLOWED_PLATFORMS.join(", ")}`,
-    }
+    throw new Error(`Invalid platform "${data.platformTarget}". Must be one of: ${ALLOWED_PLATFORMS.join(", ")}`)
   }
 
   // Validate start/end seconds (DB enforces end_seconds > start_seconds)
   if (data.endSeconds <= data.startSeconds) {
-    return {
-      success: false,
-      error: `End time (${data.endSeconds}s) must be greater than start time (${data.startSeconds}s).`,
-    }
+    throw new Error(`End time (${data.endSeconds}s) must be greater than start time (${data.startSeconds}s).`)
   }
 
   // Auto-determine aspect ratio if not provided

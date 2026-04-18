@@ -27,7 +27,7 @@ export default async function CampaignSequencesPage({
 
   if (!profile?.brokerage_id) redirect("/dashboard/onboarding")
 
-  const { sequences } = await listCampaignSequences(profile.brokerage_id, "marketing")
+  const { sequences } = await listCampaignSequences(profile.brokerage_id)
   const params = await searchParams
   const openCreate = params.action === "create"
 

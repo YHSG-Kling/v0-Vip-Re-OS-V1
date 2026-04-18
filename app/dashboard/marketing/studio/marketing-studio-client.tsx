@@ -176,7 +176,8 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   const [assets, setAssets] = useState<Asset[]>([])
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([])
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null)
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date())
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined)
+  const [calendarViewDate, setCalendarViewDate] = useState(new Date())
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
 
@@ -278,6 +279,10 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     if (activeTab === "mail")        loadMailData()
   }, [activeTab, statusFilter])
 
+  useEffect(() => {
+    if (activeTab === "calendar") loadCalendarEvents()
+  }, [calendarViewDate])
+
   async function loadInitialData() {
     setIsLoading(true)
     try {
@@ -314,8 +319,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   }
 
   async function loadCalendarEvents() {
+    const start = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth(), 1)
+    const end = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 0)
     const result = await getCalendarEvents({
-      startDate: selectedDate ? format(selectedDate, "yyyy-MM-dd") : undefined,
+      startDate: format(start, "yyyy-MM-dd"),
+      endDate: format(end, "yyyy-MM-dd"),
     })
     if (result.success) setCalendarEvents(result.events)
   }
@@ -1415,8 +1423,8 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             {(() => {
               // Build month grid entirely in-component — no calendar library needed.
               const today = new Date()
-              const viewYear = selectedDate ? selectedDate.getFullYear() : today.getFullYear()
-              const viewMonth = selectedDate ? selectedDate.getMonth() : today.getMonth()
+              const viewYear = calendarViewDate.getFullYear()
+              const viewMonth = calendarViewDate.getMonth()
 
               // First day of the month (0=Sun … 6=Sat) and total days
               const firstOfMonth = new Date(viewYear, viewMonth, 1)
@@ -1445,11 +1453,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
               const prevMonth = () => {
                 const d = new Date(viewYear, viewMonth - 1, 1)
-                setSelectedDate(d)
+                setCalendarViewDate(d)
+                setSelectedDate(undefined)
               }
               const nextMonth = () => {
                 const d = new Date(viewYear, viewMonth + 1, 1)
-                setSelectedDate(d)
+                setCalendarViewDate(d)
+                setSelectedDate(undefined)
               }
 
               const selectedKey = selectedDate ? format(selectedDate, "yyyy-MM-dd") : null
@@ -1501,7 +1511,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                           variant="outline"
                           size="sm"
                           className="text-xs h-7"
-                          onClick={() => setSelectedDate(new Date())}
+                          onClick={() => { setCalendarViewDate(new Date()); setSelectedDate(undefined) }}
                         >
                           Today
                         </Button>
@@ -1608,7 +1618,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                           <button
                             key={cellKey}
                             type="button"
-                            onClick={() => setSelectedDate(new Date(viewYear, viewMonth, day))}
+                            onClick={() => {
+                              const d = new Date(viewYear, viewMonth, day)
+                              setSelectedDate(d)
+                              setCalendarViewDate(d)
+                            }}
                             className={cn(
                               "h-20 border-b border-r last:border-r-0 p-1.5 text-left align-top transition-colors hover:bg-violet-50 dark:hover:bg-violet-950/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500",
                               isSelected && "bg-violet-100 dark:bg-violet-900/30",
@@ -1676,7 +1690,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                     variant="ghost"
                     size="sm"
                     className="text-xs h-7"
-                    onClick={() => setSelectedDate(new Date())}
+                    onClick={() => setSelectedDate(undefined)}
                   >
                     Clear filter
                   </Button>
@@ -1691,8 +1705,8 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   if (!eventsByDate2[key]) eventsByDate2[key] = []
                   eventsByDate2[key].push(ev)
                 }
-                const filtered = selectedKey && eventsByDate2[selectedKey]
-                  ? eventsByDate2[selectedKey]
+                const filtered = selectedKey
+                  ? (eventsByDate2[selectedKey] ?? [])
                   : calendarEvents
 
                 if (filtered.length === 0) {

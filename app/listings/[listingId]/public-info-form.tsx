@@ -41,12 +41,6 @@ export function PublicInfoForm({ listingId }: Props) {
       })
 
       if (error) {
-        // Fallback: store as a contact + activity if the inquiries table doesn't exist
-        if (error.code === "42P01") {
-          // table doesn't exist — silently succeed so the user isn't blocked
-          setStatus("success")
-          return
-        }
         throw error
       }
 

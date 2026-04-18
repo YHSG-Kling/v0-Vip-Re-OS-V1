@@ -175,7 +175,7 @@ export function VoiceCloneClient({
       toast.success("Voice profile created! Now record 3 voice samples to train your clone.")
     } catch (error: any) {
       console.error("Error creating profile:", error)
-      toast.error("Failed to create profile: " + (error?.message ?? "Unknown error"))
+      toast.error("Failed to create voice profile. Please try again.")
     } finally {
       setIsCreating(false)
     }

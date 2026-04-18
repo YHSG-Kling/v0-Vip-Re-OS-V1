@@ -230,6 +230,7 @@ export default function CRMPage() {
   const [loading, setLoading] = useState(true)
   const [searchLoading, setSearchLoading] = useState(false)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const searchGenRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
 
   // Selected contact detail state
@@ -665,17 +666,21 @@ export default function CRMPage() {
       clearTimeout(searchDebounceRef.current)
     }
 
+    searchGenRef.current += 1
+    const gen = searchGenRef.current
+
     searchDebounceRef.current = setTimeout(async () => {
       setSearchLoading(true)
       try {
         const result = await getContacts({ search: query || undefined, limit: 100 })
+        if (gen !== searchGenRef.current) return  // stale — ignore
         if (result.success) {
           setFiltered(result.contacts)
         }
       } catch {
         // non-blocking — leave current list intact on error
       } finally {
-        setSearchLoading(false)
+        if (gen === searchGenRef.current) setSearchLoading(false)
       }
     }, 300)
   }, [])

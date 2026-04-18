@@ -49,6 +49,10 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
   const [suggestions, setSuggestions] = useState<any[]>([])
   const [activity, setActivity] = useState<any[]>([])
   const [buyerStage, setBuyerStage] = useState<string>(contact.buyer_stage ?? "lead")
+
+  useEffect(() => {
+    setBuyerStage(contact.buyer_stage ?? "lead")
+  }, [contact.id])
   const [stageUpdating, setStageUpdating] = useState(false)
 
   useEffect(() => {

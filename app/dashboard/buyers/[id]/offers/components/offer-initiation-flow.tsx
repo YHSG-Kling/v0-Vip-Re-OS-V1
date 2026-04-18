@@ -89,7 +89,6 @@ export function OfferInitiationFlow({
   const [suggestions, setSuggestions]   = useState<{ id: string; address: string; city: string; state: string; zip: string; list_price: number }[]>([])
   const [nominatimSuggestions, setNominatimSuggestions] = useState<{ display_name: string; address: { house_number?: string; road?: string; city?: string; town?: string; village?: string; state?: string; postcode?: string } }[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
-  const nominatimDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [formSrc, setFormSrc]     = useState<ResolvedFormSource | null>(null)
   const [recommendation, setRecommendation] = useState<StrategyRecommendation | null>(null)
   const [isLoadingAddress, startAddressLoad] = useTransition()
@@ -182,7 +181,6 @@ export function OfferInitiationFlow({
   const onAddressChange = useCallback((value: string) => {
     setAddressInput(value)
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    if (nominatimDebounceRef.current) clearTimeout(nominatimDebounceRef.current)
     if (value.length < 3) {
       setSuggestions([])
       setNominatimSuggestions([])
@@ -190,30 +188,28 @@ export function OfferInitiationFlow({
       return
     }
 
-    debounceRef.current = setTimeout(() => {
-      startAddressLoad(async () => {
-        const results = await searchListingsByAddress(value, brokerageId)
-        setSuggestions(results)
-        setShowDropdown(results.length > 0 || value.length >= 3)
-      })
-    }, 500)
+    debounceRef.current = setTimeout(async () => {
+      const results = await searchListingsByAddress(value, brokerageId)
+      setSuggestions(results)
+      setShowDropdown(results.length > 0 || value.length >= 3)
 
-    // Nominatim fires after 400ms — only if fewer than 2 internal results expected
-    nominatimDebounceRef.current = setTimeout(async () => {
-      try {
-        const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(value)}`
-        const response = await fetch(nominatimUrl, {
-          headers: { 'User-Agent': 'KernelOS-RealEstate/1.0' }
-        })
-        if (response.ok) {
-          const nominatimResults = await response.json()
-          setNominatimSuggestions(nominatimResults ?? [])
-          setShowDropdown(true)
+      // Only call Nominatim when internal results are insufficient
+      if (results.length < 2) {
+        try {
+          const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(value)}`
+          const response = await fetch(nominatimUrl, {
+            headers: { 'User-Agent': 'KernelOS-RealEstate/1.0' }
+          })
+          if (response.ok) {
+            const nominatimResults = await response.json()
+            setNominatimSuggestions(nominatimResults ?? [])
+            setShowDropdown(true)
+          }
+        } catch {
+          // Nominatim failure is silent — internal results still shown
         }
-      } catch {
-        // Nominatim failure is silent — internal results still shown
       }
-    }, 400)
+    }, 500)
   }, [brokerageId])
 
   function selectListing(s: typeof suggestions[0]) {

@@ -325,7 +325,7 @@ export function BuyerMatchPanel({
                   {previewIntent.bathrooms != null && (
                     <span>{previewIntent.bedrooms != null ? ", " : ""}{previewIntent.bathrooms}+ bath</span>
                   )}
-                  {previewIntent.price != null && `, max $${previewIntent.price.toLocaleString()}`}
+                  {previewIntent.price != null && `${previewIntent.bedrooms != null || previewIntent.bathrooms != null ? ", " : ""}max $${previewIntent.price.toLocaleString()}`}
                   {previewIntent.areas?.length > 0 && `, in ${previewIntent.areas.join(", ")}`}
                   {previewIntent.keywords?.length > 0 && `, ${previewIntent.keywords.join(", ")}`}
                 </p>

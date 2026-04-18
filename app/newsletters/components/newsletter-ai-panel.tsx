@@ -20,6 +20,13 @@ import {
   aiAnalyzeNewsletterPerformance,
 } from "@/app/actions/ai-newsletter"
 
+function sanitizeNewsletterHtml(html: string): string {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "")
+    .replace(/javascript\s*:/gi, "")
+}
+
 interface NewsletterAIPanelProps {
   agentId: string
   brokerageId: string
@@ -261,7 +268,7 @@ export function NewsletterAIPanel({ agentId, brokerageId }: NewsletterAIPanelPro
                 {cwResult.content || cwResult.body ? (
                   <div
                     className="text-xs text-foreground prose prose-sm max-w-none"
-                    dangerouslySetInnerHTML={{ __html: cwResult.content ?? cwResult.body ?? "" }}
+                    dangerouslySetInnerHTML={{ __html: sanitizeNewsletterHtml(cwResult.content ?? cwResult.body ?? "") }}
                   />
                 ) : (
                   <p className="text-xs text-muted-foreground italic">No content generated.</p>

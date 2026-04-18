@@ -73,8 +73,10 @@ export async function getContacts(params?: {
     // Server-side search across name, email, and phone — avoids the 100-record client cap
     if (params?.search && params.search.trim().length > 0) {
       const term = params.search.trim()
+      // Strip PostgREST-breaking chars; escape SQL LIKE wildcards
+      const safeTerm = term.replace(/[(),%]/g, "").replace(/_/g, "\\_")
       query = query.or(
-        `first_name.ilike.%${term}%,last_name.ilike.%${term}%,email.ilike.%${term}%,phone.ilike.%${term}%`
+        `first_name.ilike.%${safeTerm}%,last_name.ilike.%${safeTerm}%,email.ilike.%${safeTerm}%,phone.ilike.%${safeTerm}%`
       )
     }
 

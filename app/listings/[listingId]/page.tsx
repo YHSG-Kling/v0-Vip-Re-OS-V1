@@ -24,6 +24,7 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
     .from("listings")
     .select("address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description")
     .eq("id", listingId)
+    .in("status", ["active", "pending", "coming_soon", "sold", "under_contract"])
     .single()
 
   if (!listing) {
@@ -63,6 +64,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
       "id, address, city, state, zip, list_price, bedrooms, bathrooms, sqft, description, property_type, year_built, mls_number, status, agent_id, brokerage_id, created_at"
     )
     .eq("id", listingId)
+    .in("status", ["active", "pending", "coming_soon", "sold", "under_contract"])
     .single()
 
   if (listingError || !listing) {
@@ -76,7 +78,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
     .eq("listing_id", listingId)
     .order("display_order", { ascending: true })
 
-  const photos = (mediaRows ?? []).filter((m) => m.media_type === "photo")
+  const photos = (mediaRows ?? []).filter((m) => m.media_type === "photo" && (m.file_url || m.thumbnail_url))
   const heroPhoto = photos[0]
 
   // Fetch agent info via the agents + users join

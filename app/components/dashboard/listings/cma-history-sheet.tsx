@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Loader2, FileBarChart, ExternalLink, BarChart2, Sparkles } from "lucide-react"
 import Link from "next/link"
 import { getCMAReports, updateCMAReport, generateAICMA } from "@/app/actions/ai-cma"
+import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/hooks/use-toast"
 
 interface CmaHistorySheetProps {
@@ -78,22 +79,36 @@ export function CmaHistorySheet({ listingId, agentId, listingAddress }: CmaHisto
   async function handleGenerateCMA() {
     setGenerating(true)
     try {
-      // Parse address into components for the CMA generator
+      // Parse address into components as a fallback
       const addressParts = listingAddress.split(",").map((s) => s.trim())
-      const propertyAddress = addressParts[0] ?? listingAddress
-      const propertyCity = addressParts[1] ?? ""
-      const propertyState = addressParts[2]?.split(" ")[0] ?? ""
+
+      // Fetch real listing data for accurate CMA
+      const supabase = createClient()
+      const { data: listingData } = await supabase
+        .from("listings")
+        .select("address, city, state, zip, bedrooms, bathrooms, sqft, property_type")
+        .eq("id", listingId)
+        .maybeSingle()
+
+      const propertyAddress = listingData?.address ?? addressParts[0] ?? listingAddress
+      const propertyCity = listingData?.city ?? addressParts[1] ?? ""
+      const propertyState = listingData?.state ?? addressParts[2]?.split(" ")[0] ?? ""
+      const propertyZip = listingData?.zip ?? ""
+      const bedrooms = listingData?.bedrooms ?? 3
+      const bathrooms = listingData?.bathrooms ?? 2
+      const squareFeet = listingData?.sqft ?? 1500
+      const propertyType = listingData?.property_type ?? "single_family"
 
       const res = await generateAICMA({
         agentId,
         propertyAddress,
         propertyCity,
         propertyState,
-        propertyZip: "",
-        propertyType: "single_family",
-        bedrooms: 3,
-        bathrooms: 2,
-        squareFeet: 1500,
+        propertyZip,
+        propertyType,
+        bedrooms,
+        bathrooms,
+        squareFeet,
         listingType: "seller",
         listingId,
       })

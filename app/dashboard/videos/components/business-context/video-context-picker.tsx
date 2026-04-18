@@ -101,6 +101,17 @@ export function VideoContextPicker({
     loadContextOptions()
   }, [brokerageId, agentId, requiredContext, supabase])
 
+  // Sync selectedListing from selectedContextId prop
+  useEffect(() => {
+    if (!selectedContextId || selectedContextType !== "listing") {
+      setSelectedListing(null)
+      return
+    }
+    // Find the listing in the already-loaded listings array
+    const found = listings.find(l => l.id === selectedContextId)
+    if (found) setSelectedListing(found)
+  }, [selectedContextId, selectedContextType, listings])
+
   // Close combobox on outside click
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
