@@ -39,6 +39,7 @@ import {
   StarIcon,
   Trash2Icon,
   UploadIcon,
+  ImageIcon,
   Loader2,
 } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
@@ -91,35 +92,71 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
 
   // File upload state
   const [fileUploading, setFileUploading] = useState(false)
-  const [fileUploadProgress, setFileUploadProgress] = useState<string | null>(null)
+  const [fileUploadError, setFileUploadError] = useState<string | null>(null)
+  const [fileUploadSuccess, setFileUploadSuccess] = useState(false)
+  const [isDragOver, setIsDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-
+  async function uploadFile(file: File) {
     setFileUploading(true)
-    setFileUploadProgress("Uploading...")
+    setFileUploadError(null)
+    setFileUploadSuccess(false)
 
     try {
       const supabase = createClient()
       const ext = file.name.split(".").pop() ?? "jpg"
-      const path = `${listingId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+      // Path: brokerageId/listingId/timestamp-random.ext for clean bucket organisation
+      const path = `${brokerageId}/${listingId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
 
       const { error: uploadError } = await supabase.storage
         .from("listing-media")
         .upload(path, file, { upsert: false })
 
-      if (uploadError) throw uploadError
+      if (uploadError) {
+        const message = uploadError.message ?? "Upload failed"
+        setFileUploadError(message)
+        toast({ title: "File upload failed", description: message, variant: "destructive" })
+        return
+      }
 
       const { data: urlData } = supabase.storage.from("listing-media").getPublicUrl(path)
       setForm(f => ({ ...f, fileUrl: urlData.publicUrl }))
-      setFileUploadProgress("File uploaded — URL filled in below")
+      setFileUploadSuccess(true)
     } catch (err: any) {
-      setFileUploadProgress(`Upload failed: ${err?.message ?? "Unknown error"}`)
+      const message = err?.message ?? "Unknown error"
+      setFileUploadError(message)
+      toast({ title: "File upload failed", description: message, variant: "destructive" })
     } finally {
       setFileUploading(false)
     }
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    await uploadFile(file)
+  }
+
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!fileUploading) setIsDragOver(true)
+  }
+
+  function handleDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+  }
+
+  async function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+    if (fileUploading) return
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    await uploadFile(file)
   }
 
   const handleUpload = () => {
@@ -145,7 +182,15 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
       onMediaChange(updated.data ?? [])
       setUploadOpen(false)
       setForm({ fileUrl: "", thumbnailUrl: "", caption: "", altText: "", mediaType: "photo", isPrimary: false })
-      toast({ title: "Media uploaded", description: result.data?.compliance?.passed ? "Brand compliance passed." : "Compliance check flagged issues." })
+      setFileUploadSuccess(false)
+      setFileUploadError(null)
+      toast({
+        title: "Media uploaded",
+        description: result.data?.compliance?.passed
+          ? "Brand compliance passed."
+          : "Uploaded — compliance check flagged some issues.",
+        variant: result.data?.compliance?.passed ? "default" : "destructive",
+      })
     })
   }
 
@@ -218,10 +263,19 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
 
       {/* Grid */}
       {media.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 border-2 border-dashed border-border rounded-lg gap-3">
-          <p className="text-muted-foreground text-sm">No media uploaded yet.</p>
-          <Button size="sm" variant="outline" onClick={() => setUploadOpen(true)}>
-            Add first file
+        <div className="flex flex-col items-center justify-center py-16 border-2 border-dashed border-border rounded-lg gap-4">
+          <div className="rounded-full bg-muted p-4">
+            <ImageIcon className="w-8 h-8 text-muted-foreground" />
+          </div>
+          <div className="flex flex-col items-center gap-1 text-center">
+            <p className="text-sm font-medium">No media uploaded yet</p>
+            <p className="text-muted-foreground text-sm max-w-xs">
+              Upload photos and videos to showcase this property — drag and drop or click to browse.
+            </p>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => setUploadOpen(true)} className="flex items-center gap-2">
+            <UploadIcon className="w-3.5 h-3.5" />
+            Upload first file
           </Button>
         </div>
       ) : (
@@ -326,7 +380,9 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
       <Dialog open={uploadOpen} onOpenChange={open => {
         setUploadOpen(open)
         if (!open) {
-          setFileUploadProgress(null)
+          setFileUploadError(null)
+          setFileUploadSuccess(false)
+          setIsDragOver(false)
           if (fileInputRef.current) fileInputRef.current.value = ""
         }
       }}>
@@ -359,19 +415,37 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
               </TabsList>
               <TabsContent value="upload" className="mt-2 space-y-2">
                 <div
-                  className="border-2 border-dashed border-border rounded-lg p-4 text-center cursor-pointer hover:bg-muted/30 transition-colors"
-                  onClick={() => fileInputRef.current?.click()}
+                  className={[
+                    "border-2 border-dashed rounded-lg p-6 text-center transition-colors",
+                    fileUploading
+                      ? "border-border cursor-not-allowed opacity-70"
+                      : isDragOver
+                      ? "border-primary bg-primary/5 cursor-copy"
+                      : "border-border cursor-pointer hover:bg-muted/30",
+                  ].join(" ")}
+                  onClick={() => !fileUploading && fileInputRef.current?.click()}
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
                 >
                   {fileUploading ? (
                     <div className="flex flex-col items-center gap-2">
                       <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                      <p className="text-xs text-muted-foreground">Uploading…</p>
+                      <p className="text-xs text-muted-foreground">Uploading to storage…</p>
+                    </div>
+                  ) : fileUploadSuccess ? (
+                    <div className="flex flex-col items-center gap-1">
+                      <CheckCircleIcon className="h-6 w-6 text-green-600" />
+                      <p className="text-xs font-medium text-green-600">File uploaded successfully</p>
+                      <p className="text-[10px] text-muted-foreground">Click or drop to replace</p>
                     </div>
                   ) : (
                     <div className="flex flex-col items-center gap-1">
                       <UploadIcon className="h-6 w-6 text-muted-foreground" />
-                      <p className="text-xs font-medium">Click to choose a file</p>
-                      <p className="text-[10px] text-muted-foreground">JPG, PNG, PDF, MP4</p>
+                      <p className="text-xs font-medium">
+                        {isDragOver ? "Drop to upload" : "Drag & drop or click to browse"}
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">JPG, PNG, PDF, MP4 supported</p>
                     </div>
                   )}
                 </div>
@@ -381,15 +455,17 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
                   accept="image/*,video/*,application/pdf"
                   className="hidden"
                   onChange={handleFileSelect}
+                  disabled={fileUploading}
                 />
-                {fileUploadProgress && (
-                  <p className={`text-xs ${fileUploadProgress.startsWith("Upload failed") ? "text-destructive" : "text-green-600"}`}>
-                    {fileUploadProgress}
+                {fileUploadError && (
+                  <p className="text-xs text-destructive flex items-start gap-1">
+                    <XCircleIcon className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                    {fileUploadError}
                   </p>
                 )}
-                {form.fileUrl && (
+                {form.fileUrl && !fileUploadError && (
                   <p className="text-xs text-muted-foreground truncate">
-                    URL: {form.fileUrl}
+                    Stored at: {form.fileUrl}
                   </p>
                 )}
               </TabsContent>
@@ -444,9 +520,17 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setUploadOpen(false)}>Cancel</Button>
-            <Button onClick={handleUpload} disabled={isPending || !form.fileUrl.trim()}>
-              {isPending ? "Uploading..." : "Upload"}
+            <Button variant="outline" onClick={() => setUploadOpen(false)} disabled={isPending || fileUploading}>
+              Cancel
+            </Button>
+            <Button onClick={handleUpload} disabled={isPending || fileUploading || !form.fileUrl.trim()}>
+              {isPending ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Saving…</>
+              ) : fileUploading ? (
+                <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Uploading file…</>
+              ) : (
+                "Save Media"
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
