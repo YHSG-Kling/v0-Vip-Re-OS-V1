@@ -87,7 +87,9 @@ export function OfferInitiationFlow({
     getConnectedEsignProvider(brokerageId).then(setConnectedProvider).catch(() => setConnectedProvider(null))
   }, [brokerageId])
   const [suggestions, setSuggestions]   = useState<{ id: string; address: string; city: string; state: string; zip: string; list_price: number }[]>([])
+  const [nominatimSuggestions, setNominatimSuggestions] = useState<{ display_name: string; address: { house_number?: string; road?: string; city?: string; town?: string; village?: string; state?: string; postcode?: string } }[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
+  const nominatimDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [formSrc, setFormSrc]     = useState<ResolvedFormSource | null>(null)
   const [recommendation, setRecommendation] = useState<StrategyRecommendation | null>(null)
   const [isLoadingAddress, startAddressLoad] = useTransition()
@@ -180,21 +182,45 @@ export function OfferInitiationFlow({
   const onAddressChange = useCallback((value: string) => {
     setAddressInput(value)
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    if (value.length < 3) { setSuggestions([]); setShowDropdown(false); return }
+    if (nominatimDebounceRef.current) clearTimeout(nominatimDebounceRef.current)
+    if (value.length < 3) {
+      setSuggestions([])
+      setNominatimSuggestions([])
+      setShowDropdown(false)
+      return
+    }
 
     debounceRef.current = setTimeout(() => {
       startAddressLoad(async () => {
         const results = await searchListingsByAddress(value, brokerageId)
         setSuggestions(results)
-        setShowDropdown(results.length > 0)
+        setShowDropdown(results.length > 0 || value.length >= 3)
       })
     }, 500)
+
+    // Nominatim fires after 400ms — only if fewer than 2 internal results expected
+    nominatimDebounceRef.current = setTimeout(async () => {
+      try {
+        const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(value)}`
+        const response = await fetch(nominatimUrl, {
+          headers: { 'User-Agent': 'KernelOS-RealEstate/1.0' }
+        })
+        if (response.ok) {
+          const nominatimResults = await response.json()
+          setNominatimSuggestions(nominatimResults ?? [])
+          setShowDropdown(true)
+        }
+      } catch {
+        // Nominatim failure is silent — internal results still shown
+      }
+    }, 400)
   }, [brokerageId])
 
   function selectListing(s: typeof suggestions[0]) {
     setAddressInput(s.address)
     setShowDropdown(false)
     setSuggestions([])
+    setNominatimSuggestions([])
     setProperty({
       address:         s.address,
       city:            s.city ?? "",
@@ -202,6 +228,28 @@ export function OfferInitiationFlow({
       zip:             s.zip ?? "",
       listingId:       s.id,
       listPrice:       s.list_price,
+      aiFilledAddress: false,
+    })
+  }
+
+  function selectNominatimResult(result: typeof nominatimSuggestions[0]) {
+    const addr = result.address
+    const street = [addr.house_number, addr.road].filter(Boolean).join(" ")
+    const city = addr.city ?? addr.town ?? addr.village ?? ""
+    const state = addr.state ?? ""
+    const zip = addr.postcode ?? ""
+    const fullAddress = street || result.display_name
+    setAddressInput(fullAddress)
+    setShowDropdown(false)
+    setSuggestions([])
+    setNominatimSuggestions([])
+    setProperty({
+      address:         fullAddress,
+      city,
+      state,
+      zip,
+      listingId:       null,
+      listPrice:       null,
       aiFilledAddress: false,
     })
   }
@@ -1008,21 +1056,44 @@ export function OfferInitiationFlow({
                 <div className="w-4 h-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
               </div>
             )}
-            {showDropdown && suggestions.length > 0 && (
+            {showDropdown && (suggestions.length > 0 || nominatimSuggestions.length > 0) && (
               <div className="absolute top-full left-0 right-0 z-20 mt-1 rounded-md border border-border bg-popover shadow-md overflow-hidden">
-                {suggestions.map(s => (
-                  <button
-                    key={s.id}
-                    onClick={() => selectListing(s)}
-                    className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors border-b border-border/50 last:border-0"
-                  >
-                    <span className="font-medium">{s.address}</span>
-                    <span className="text-muted-foreground ml-2 text-xs">
-                      {s.city}, {s.state} {s.zip}
-                      {s.list_price ? ` — $${Number(s.list_price).toLocaleString()}` : ""}
-                    </span>
-                  </button>
-                ))}
+                {suggestions.length > 0 && (
+                  <>
+                    <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/40 border-b border-border/50">
+                      Your Listings
+                    </div>
+                    {suggestions.map(s => (
+                      <button
+                        key={s.id}
+                        onClick={() => selectListing(s)}
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors border-b border-border/50 last:border-0"
+                      >
+                        <span className="font-medium">{s.address}</span>
+                        <span className="text-muted-foreground ml-2 text-xs">
+                          {s.city}, {s.state} {s.zip}
+                          {s.list_price ? ` — $${Number(s.list_price).toLocaleString()}` : ""}
+                        </span>
+                      </button>
+                    ))}
+                  </>
+                )}
+                {nominatimSuggestions.length > 0 && (
+                  <>
+                    <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground bg-muted/40 border-b border-border/50">
+                      Address Search
+                    </div>
+                    {nominatimSuggestions.map((n, i) => (
+                      <button
+                        key={i}
+                        onClick={() => selectNominatimResult(n)}
+                        className="w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors border-b border-border/50 last:border-0"
+                      >
+                        <span className="text-foreground">{n.display_name}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
               </div>
             )}
           </div>

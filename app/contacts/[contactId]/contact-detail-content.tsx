@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Phone, Mail, MessageSquare, Video, DollarSign, Lightbulb, TrendingUp, Bot } from "lucide-react"
 import {
   getContactCreditAccounts,
@@ -23,6 +24,18 @@ import {
   OriginalLeadAccessCard,
   ConversionCoachingCard,
 } from "@/app/dashboard/agent/components/conversion"
+import { logActivity } from "@/app/actions/activities"
+import { updateContact } from "@/app/actions/contacts"
+import { toast } from "sonner"
+
+const BUYER_STAGES = [
+  { value: "lead", label: "Lead" },
+  { value: "hot_lead", label: "Hot Lead" },
+  { value: "active_client", label: "Active Client" },
+  { value: "nurture", label: "Nurture" },
+  { value: "post_close", label: "Post Close" },
+  { value: "past_client", label: "Past Client" },
+]
 
 interface ContactDetailContentProps {
   contact: any
@@ -35,6 +48,8 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
   const [transactions, setTransactions] = useState<any[]>([])
   const [suggestions, setSuggestions] = useState<any[]>([])
   const [activity, setActivity] = useState<any[]>([])
+  const [buyerStage, setBuyerStage] = useState<string>(contact.buyer_stage ?? "lead")
+  const [stageUpdating, setStageUpdating] = useState(false)
 
   useEffect(() => {
     async function loadData() {
@@ -60,6 +75,27 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
     loadData()
   }, [contact.id])
 
+  const handleStageChange = async (newStage: string) => {
+    const previousStage = buyerStage
+    setBuyerStage(newStage) // optimistic update
+    setStageUpdating(true)
+    try {
+      const result = await updateContact(contact.id, { buyer_stage: newStage })
+      if (result.success) {
+        const label = BUYER_STAGES.find((s) => s.value === newStage)?.label ?? newStage
+        toast.success(`Stage updated to ${label}`)
+      } else {
+        setBuyerStage(previousStage) // revert on error
+        toast.error(result.error ?? "Failed to update stage")
+      }
+    } catch {
+      setBuyerStage(previousStage) // revert on exception
+      toast.error("Failed to update stage")
+    } finally {
+      setStageUpdating(false)
+    }
+  }
+
   const initials = `${contact.first_name?.[0] || ""}${contact.last_name?.[0] || ""}`.toUpperCase()
 
   return (
@@ -82,7 +118,26 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                     <div className="flex items-center gap-2 mt-1">
                       <Badge>{contact.contact_persona || contact.contact_type}</Badge>
                       <Badge variant="outline">Lead Score: {contact.lead_score || 50}</Badge>
-                      <Badge variant="secondary">{contact.stage}</Badge>
+                      {contact.buyer_stage !== undefined && contact.buyer_stage !== null ? (
+                        <Select
+                          value={buyerStage}
+                          onValueChange={handleStageChange}
+                          disabled={stageUpdating}
+                        >
+                          <SelectTrigger className="h-6 text-xs px-2 py-0 w-auto min-w-[110px] border-0 bg-secondary text-secondary-foreground rounded-full font-medium">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {BUYER_STAGES.map((s) => (
+                              <SelectItem key={s.value} value={s.value} className="text-xs">
+                                {s.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Badge variant="secondary">{contact.stage}</Badge>
+                      )}
                     </div>
                     <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
                       {contact.email && (
@@ -101,20 +156,57 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <Button size="sm" asChild>
-                    <a href={`/dashboard/voice?contactId=${contact.id}`}>
-                      <Phone className="h-4 w-4" />
-                    </a>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      logActivity({
+                        brokerageId: contact.brokerage_id ?? "",
+                        agentId: contact.agent_id ?? "",
+                        contactId: contact.id,
+                        activityType: "call_initiated",
+                        title: `Call initiated with ${contact.first_name} ${contact.last_name}`,
+                        status: "completed",
+                      }).catch(console.error)
+                      router.push(`/dashboard/voice?contactId=${contact.id}`)
+                    }}
+                  >
+                    <Phone className="h-4 w-4" />
                   </Button>
-                  <Button size="sm" asChild>
-                    <a href={contact.email ? `mailto:${contact.email}` : `/dashboard/inbox?compose=1&contactId=${contact.id}`}>
-                      <Mail className="h-4 w-4" />
-                    </a>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      logActivity({
+                        brokerageId: contact.brokerage_id ?? "",
+                        agentId: contact.agent_id ?? "",
+                        contactId: contact.id,
+                        activityType: "email_sent",
+                        title: `Email initiated to ${contact.first_name} ${contact.last_name}`,
+                        status: "completed",
+                      }).catch(console.error)
+                      if (contact.email) {
+                        window.location.href = `mailto:${contact.email}`
+                      } else {
+                        router.push(`/dashboard/inbox?compose=1&contactId=${contact.id}`)
+                      }
+                    }}
+                  >
+                    <Mail className="h-4 w-4" />
                   </Button>
-                  <Button size="sm" asChild>
-                    <a href={`/dashboard/inbox?contactId=${contact.id}`}>
-                      <MessageSquare className="h-4 w-4" />
-                    </a>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      logActivity({
+                        brokerageId: contact.brokerage_id ?? "",
+                        agentId: contact.agent_id ?? "",
+                        contactId: contact.id,
+                        activityType: "sms_sent",
+                        title: `Message initiated with ${contact.first_name} ${contact.last_name}`,
+                        status: "completed",
+                      }).catch(console.error)
+                      router.push(`/dashboard/inbox?contactId=${contact.id}`)
+                    }}
+                  >
+                    <MessageSquare className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
