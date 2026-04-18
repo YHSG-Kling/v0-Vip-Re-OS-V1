@@ -43,7 +43,7 @@ export async function generatePropertyMatches(params: {
 
   try {
     // Get contact and buyer preferences from property_preferences table (correct schema)
-    const [{ data: contact }, { data: preferences }] = await Promise.all([
+    const [{ data: contact }, { data: preferencesRaw }] = await Promise.all([
       supabase
         .from("contacts")
         .select("*")
@@ -63,6 +63,8 @@ export async function generatePropertyMatches(params: {
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }
+
+    const preferences = preferencesRaw as Record<string, any> | null
 
     // Merge explicit preferences with inferred ones (explicit takes priority)
     const prefs = {

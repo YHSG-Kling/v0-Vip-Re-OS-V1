@@ -2127,6 +2127,7 @@ export async function detectClientChurn(leadId: string) {
     .eq("id", leadId)
     .maybeSingle()
 
+  let resolvedLead: Record<string, any> | null = lead ?? null
   if (error || !lead) {
     // Try contacts table as fallback
     const { data: contact } = await supabase
@@ -2138,6 +2139,7 @@ export async function detectClientChurn(leadId: string) {
     if (!contact) {
       throw new Error("Lead not found")
     }
+    resolvedLead = contact
   }
 
   const daysInPipeline = Math.floor((Date.now() - new Date(lead.created_at).getTime()) / (1000 * 60 * 60 * 24))
@@ -2203,7 +2205,7 @@ Detect churn risk and provide save strategy:
         entity_type: "lead",
         entity_id: leadId,
         insight_title: "CLIENT CHURN RISK - Act Now",
-        insight_description: `${resolvedLead.first_name} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
+        insight_description: `${resolvedLead?.first_name ?? "Client"} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
         actionable_steps: result.saveStrategy?.immediate || [],
         priority: "critical",
         estimated_impact: {
