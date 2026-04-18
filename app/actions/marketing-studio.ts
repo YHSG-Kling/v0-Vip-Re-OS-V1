@@ -968,71 +968,123 @@ export async function createQrCodeAction(params: {
 }
 
 export async function getMarketingStudioDashboard() {
-  const { agentId, brokerageId } = await getAgentContext()
-  const supabase = await createClient()
+  try {
+    const { agentId, brokerageId } = await getAgentContext()
+    const supabase = await createClient()
 
-  // Parallel queries for dashboard data
-  const [
-    campaignsResult,
-    assetsResult,
-    upcomingEventsResult,
-    pendingTasksResult,
-  ] = await Promise.all([
-    // Campaign counts by status
-    supabase
-      .from("marketing_campaigns")
-      .select("status")
-      .eq("brokerage_id", brokerageId)
-      .or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`),
-    // Asset counts by approval status
-    supabase
-      .from("marketing_assets")
-      .select("approval_status")
-      .eq("brokerage_id", brokerageId)
-      .or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`),
-    // Upcoming calendar events (next 7 days)
-    supabase
-      .from("campaign_calendar")
-      .select("id, title, scheduled_at, event_type")
-      .eq("brokerage_id", brokerageId)
-      .eq("status", "scheduled")
-      .gte("scheduled_at", new Date().toISOString())
-      .lte("scheduled_at", new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString())
-      .order("scheduled_at", { ascending: true })
-      .limit(10),
-    // Pending tasks
-    supabase
-      .from("marketing_campaign_tasks")
-      .select("id, title, due_at, campaign:marketing_campaigns(campaign_name)")
-      .eq("brokerage_id", brokerageId)
-      .eq("status", "pending")
-      .order("due_at", { ascending: true, nullsFirst: false })
-      .limit(10),
-  ])
+    // Run two separate campaign queries (agent-owned + brokerage-visible) to
+    // avoid Supabase OR-filter ambiguity that can silently return 0 rows.
+    const now = new Date().toISOString()
+    const weekOut = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
 
-  // Aggregate campaign status counts
-  const campaignsByStatus: Record<string, number> = {}
-  for (const c of campaignsResult.data ?? []) {
-    const status = c.status ?? "unknown"
-    campaignsByStatus[status] = (campaignsByStatus[status] ?? 0) + 1
-  }
+    const [
+      agentCampaignsResult,
+      brokerageCampaignsResult,
+      agentAssetsResult,
+      brokerageAssetsResult,
+      upcomingEventsResult,
+      pendingTasksResult,
+    ] = await Promise.all([
+      // Campaigns owned by this agent
+      supabase
+        .from("marketing_campaigns")
+        .select("status")
+        .eq("brokerage_id", brokerageId)
+        .eq("agent_user_id", agentId),
+      // Brokerage-scoped campaigns (visible to all agents in brokerage)
+      supabase
+        .from("marketing_campaigns")
+        .select("status")
+        .eq("brokerage_id", brokerageId)
+        .eq("visibility_scope", "brokerage")
+        .neq("agent_user_id", agentId), // avoid double-counting agent's own brokerage-scope campaigns
+      // Assets owned by this agent
+      supabase
+        .from("marketing_assets")
+        .select("approval_status")
+        .eq("brokerage_id", brokerageId)
+        .eq("agent_user_id", agentId),
+      // Brokerage-scoped assets
+      supabase
+        .from("marketing_assets")
+        .select("approval_status")
+        .eq("brokerage_id", brokerageId)
+        .eq("visibility_scope", "brokerage")
+        .neq("agent_user_id", agentId),
+      // Upcoming calendar events (next 7 days)
+      supabase
+        .from("campaign_calendar")
+        .select("id, title, scheduled_at, event_type")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "scheduled")
+        .gte("scheduled_at", now)
+        .lte("scheduled_at", weekOut)
+        .order("scheduled_at", { ascending: true })
+        .limit(10),
+      // Pending tasks
+      supabase
+        .from("marketing_campaign_tasks")
+        .select("id, title, due_at, campaign:marketing_campaigns(campaign_name)")
+        .eq("brokerage_id", brokerageId)
+        .eq("status", "pending")
+        .order("due_at", { ascending: true, nullsFirst: false })
+        .limit(10),
+    ])
 
-  // Aggregate asset approval counts
-  const assetsByApproval: Record<string, number> = {}
-  for (const a of assetsResult.data ?? []) {
-    const status = a.approval_status ?? "unknown"
-    assetsByApproval[status] = (assetsByApproval[status] ?? 0) + 1
-  }
+    // Surface query errors as a graceful failure rather than a crash
+    if (agentCampaignsResult.error) {
+      console.error("[marketing-studio] agentCampaignsResult error:", agentCampaignsResult.error.message)
+    }
+    if (brokerageCampaignsResult.error) {
+      console.error("[marketing-studio] brokerageCampaignsResult error:", brokerageCampaignsResult.error.message)
+    }
+    if (upcomingEventsResult.error) {
+      console.error("[marketing-studio] upcomingEventsResult error:", upcomingEventsResult.error.message)
+    }
+    if (pendingTasksResult.error) {
+      console.error("[marketing-studio] pendingTasksResult error:", pendingTasksResult.error.message)
+    }
 
-  return {
-    success: true,
-    dashboard: {
-      campaignsByStatus,
-      totalCampaigns: campaignsResult.data?.length ?? 0,
-      assetsByApproval,
-      totalAssets: assetsResult.data?.length ?? 0,
-      upcomingEvents: upcomingEventsResult.data ?? [],
-      pendingTasks: pendingTasksResult.data ?? [],
-    },
+    // Merge the two campaign sets
+    const allCampaigns = [
+      ...(agentCampaignsResult.data ?? []),
+      ...(brokerageCampaignsResult.data ?? []),
+    ]
+
+    // Aggregate campaign status counts
+    const campaignsByStatus: Record<string, number> = {}
+    for (const c of allCampaigns) {
+      const status = c.status ?? "unknown"
+      campaignsByStatus[status] = (campaignsByStatus[status] ?? 0) + 1
+    }
+
+    // Merge the two asset sets
+    const allAssets = [
+      ...(agentAssetsResult.data ?? []),
+      ...(brokerageAssetsResult.data ?? []),
+    ]
+
+    // Aggregate asset approval counts
+    const assetsByApproval: Record<string, number> = {}
+    for (const a of allAssets) {
+      const status = a.approval_status ?? "unknown"
+      assetsByApproval[status] = (assetsByApproval[status] ?? 0) + 1
+    }
+
+    return {
+      success: true,
+      dashboard: {
+        campaignsByStatus,
+        totalCampaigns: allCampaigns.length,
+        assetsByApproval,
+        totalAssets: allAssets.length,
+        upcomingEvents: upcomingEventsResult.data ?? [],
+        pendingTasks: pendingTasksResult.data ?? [],
+      },
+    }
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : "Failed to load dashboard"
+    console.error("[marketing-studio] getMarketingStudioDashboard error:", message)
+    return { success: false, error: message }
   }
 }

@@ -170,6 +170,7 @@ interface MarketingStudioClientProps {
 export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole }: MarketingStudioClientProps) {
   const [activeTab, setActiveTab] = useState("overview")
   const [isLoading, setIsLoading] = useState(true)
+  const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [assets, setAssets] = useState<Asset[]>([])
@@ -284,7 +285,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         getMarketingStudioDashboard(),
         getCampaigns({ status: statusFilter !== "all" ? (statusFilter as CampaignStatus) : undefined }),
       ])
-      if (dashboardResult.success) setDashboard((dashboardResult as any).dashboard)
+      if (dashboardResult.success) {
+        setDashboard((dashboardResult as any).dashboard)
+        setDashboardError(null)
+      } else {
+        setDashboardError((dashboardResult as any).error ?? "Failed to load dashboard metrics")
+      }
       if (campaignsResult.success) setCampaigns(campaignsResult.campaigns)
     } catch (error) {
       console.error("[v0] Failed to load marketing studio data:", error)
@@ -782,62 +788,97 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         </Card>
 
         {/* Quick Stats */}
-        {dashboard && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Active Campaigns</p>
-                    <p className="text-2xl font-bold">{dashboard.campaignsByStatus.live ?? 0}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
-                    <Play className="h-6 w-6 text-green-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Pending Approval</p>
-                    <p className="text-2xl font-bold">{dashboard.assetsByApproval.pending ?? 0}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
-                    <Clock className="h-6 w-6 text-yellow-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Total Assets</p>
-                    <p className="text-2xl font-bold">{dashboard.totalAssets}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
-                    <Image className="h-6 w-6 text-blue-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Upcoming Events</p>
-                    <p className="text-2xl font-bold">{dashboard.upcomingEvents.length}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
-                    <CalendarIcon className="h-6 w-6 text-violet-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+        {dashboardError && (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20 dark:border-yellow-800 px-4 py-3 flex items-center gap-3 text-sm text-yellow-800 dark:text-yellow-200">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>Dashboard metrics could not be loaded: {dashboardError}. Other Studio features are still available.</span>
           </div>
         )}
+        {dashboard && (() => {
+          const activeCampaigns = dashboard.campaignsByStatus.live ?? 0
+          const pendingApproval = dashboard.assetsByApproval.pending ?? 0
+          const totalAssets = dashboard.totalAssets
+          const upcomingEventsCount = dashboard.upcomingEvents.length
+          const isEmpty = dashboard.totalCampaigns === 0 && totalAssets === 0
+
+          return (
+            <>
+              {isEmpty && (
+                <div className="rounded-xl border-2 border-dashed border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-950/10 p-8 text-center space-y-3">
+                  <Rocket className="h-10 w-10 text-violet-400 mx-auto" />
+                  <h3 className="font-semibold text-lg text-foreground">Your studio is ready for launch</h3>
+                  <p className="text-muted-foreground text-sm max-w-sm mx-auto">
+                    Create your first campaign and upload assets to start tracking performance here.
+                  </p>
+                  <Button
+                    className="bg-violet-600 hover:bg-violet-700 mt-2"
+                    onClick={() => setIsCreateCampaignOpen(true)}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create First Campaign
+                  </Button>
+                </div>
+              )}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Active Campaigns</p>
+                        <p className="text-2xl font-bold">{activeCampaigns}</p>
+                        {dashboard.totalCampaigns > 0 && activeCampaigns === 0 && (
+                          <p className="text-xs text-muted-foreground mt-0.5">{dashboard.totalCampaigns} total</p>
+                        )}
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+                        <Play className="h-6 w-6 text-green-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Pending Approval</p>
+                        <p className="text-2xl font-bold">{pendingApproval}</p>
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
+                        <Clock className="h-6 w-6 text-yellow-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Assets</p>
+                        <p className="text-2xl font-bold">{totalAssets}</p>
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
+                        <Image className="h-6 w-6 text-blue-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Upcoming Events</p>
+                        <p className="text-2xl font-bold">{upcomingEventsCount}</p>
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
+                        <CalendarIcon className="h-6 w-6 text-violet-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </>
+          )
+        })()}
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
