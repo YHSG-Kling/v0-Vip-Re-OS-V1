@@ -1,6 +1,8 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity"
 
 export async function getContactDetails(contactId: string) {
   const supabase = await createClient()
@@ -106,14 +108,28 @@ export async function getContactTransactions(contactId: string) {
 }
 
 export async function getContactCopilotSuggestions(contactId: string) {
-  const supabase = await createClient()
+  // Use service client to bypass RLS on smart_assistant_suggestions.
+  // Explicit tenant filters (brokerage_id + agent_id) maintain isolation.
+  const supabase = createServiceClient()
+  const { agentId, brokerageId } = await getAgentContext()
 
-  const { data, error } = await supabase
+  if (!brokerageId) {
+    return { suggestions: [], error: "No brokerage context" }
+  }
+
+  let query = supabase
     .from("smart_assistant_suggestions")
     .select("*")
     .eq("context_id", contactId)
     .eq("context_type", "contact")
     .eq("status", "pending")
+    .eq("brokerage_id", brokerageId)
+
+  if (agentId) {
+    query = query.eq("agent_id", agentId)
+  }
+
+  const { data, error } = await query
     .order("priority", { ascending: false })
     .limit(10)
 
