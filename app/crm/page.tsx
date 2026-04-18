@@ -257,6 +257,9 @@ export default function CRMPage() {
   /** Lifted AI draft text — passed to CommunicationHealthPanel to pre-fill compose */
   const [pendingDraftText, setPendingDraftText] = useState<string | null>(null)
 
+  // Contact activity feed (notes, calls, etc.) — shown in the Communications tab
+  const [contactActivities, setContactActivities] = useState<any[]>([])
+
   // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
   const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
 
@@ -505,6 +508,23 @@ export default function CRMPage() {
       .limit(50)
       .then(({ data }: { data: any[] | null }) => setConversations(data || []))
       .catch(() => setConversations([]))
+  }, [selectedContactId])
+
+  // Load recent activities (notes, calls, etc.) for the selected contact
+  useEffect(() => {
+    if (!selectedContactId) {
+      setContactActivities([])
+      return
+    }
+    const supabase = createClient()
+    supabase
+      .from("activities")
+      .select("id, activity_type, title, description, notes, created_at, contact_id")
+      .eq("contact_id", selectedContactId)
+      .order("created_at", { ascending: false })
+      .limit(20)
+      .then(({ data }: { data: any[] | null }) => setContactActivities(data || []))
+      .catch(() => setContactActivities([]))
   }, [selectedContactId])
 
   // Lazy-load Journey & Team tab data
@@ -800,6 +820,16 @@ export default function CRMPage() {
       const result = await addContactNote(selectedContactId, note)
       if (result.success) {
         toast.success("Note saved")
+        // Optimistic update — push new note to the top of the activity feed
+        setContactActivities(prev => [{
+          id: Date.now().toString(), // temp ID until next refetch
+          activity_type: "note",
+          title: "Note",
+          description: note,
+          notes: note,
+          created_at: new Date().toISOString(),
+          contact_id: selectedContactId,
+        }, ...prev])
       } else {
         toast.error(result.error ?? "Failed to save note")
       }
