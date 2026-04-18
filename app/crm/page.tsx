@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback, useTransition } from "react"
+import { useEffect, useState, useCallback, useTransition, useRef } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote } from "@/app/actions/contacts"
@@ -228,6 +228,8 @@ export default function CRMPage() {
   const [filtered, setFiltered] = useState<Contact[]>([])
   const [search, setSearch] = useState("")
   const [loading, setLoading] = useState(true)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   // Selected contact detail state
@@ -654,21 +656,29 @@ export default function CRMPage() {
       .catch(() => setRelatedTransaction(null))
   }, [selectedContactId, selectedContact])
 
-  useEffect(() => {
-    const q = search.toLowerCase()
-    setFiltered(
-      contacts.filter(
-        (c) =>
-          `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
-          (c.email ?? "").toLowerCase().includes(q) ||
-          (c.phone ?? "").includes(q) ||
-          (c.city ?? "").toLowerCase().includes(q) ||
-          (c.state ?? "").toLowerCase().includes(q) ||
-          (c.status ?? "").toLowerCase().includes(q) ||
-          (c.contact_type ?? "").toLowerCase().includes(q)
-      )
-    )
-  }, [search, contacts])
+  // Server-side search: debounce input and call getContacts with the search term.
+  // This replaces the old client-side .filter() that was capped at the 100 loaded records.
+  const handleSearchChange = useCallback((query: string) => {
+    setSearch(query)
+
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current)
+    }
+
+    searchDebounceRef.current = setTimeout(async () => {
+      setSearchLoading(true)
+      try {
+        const result = await getContacts({ search: query || undefined, limit: 100 })
+        if (result.success) {
+          setFiltered(result.contacts)
+        }
+      } catch {
+        // non-blocking — leave current list intact on error
+      } finally {
+        setSearchLoading(false)
+      }
+    }, 300)
+  }, [])
 
   // ── Add Contact dialog state ────────────────────────────────────────────────
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -1776,9 +1786,12 @@ export default function CRMPage() {
         <Input
           placeholder="Search by name, email, phone, or city..."
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-10"
+          onChange={(e) => handleSearchChange(e.target.value)}
+          className="pl-10 pr-10"
         />
+        {searchLoading && (
+          <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-gray-400" />
+        )}
       </div>
 
       {/* AI Priority Contacts Strip */}
@@ -1931,7 +1944,7 @@ export default function CRMPage() {
 
       {/* Contact list */}
       {!loading && filtered.length > 0 && (
-        <div className="grid gap-3">
+        <div className={cn("grid gap-3", searchLoading && "opacity-60 pointer-events-none")}>
           {filtered.map((contact) => (
             <Card
               key={contact.id}

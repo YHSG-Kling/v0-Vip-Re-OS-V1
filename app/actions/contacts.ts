@@ -34,6 +34,7 @@ export async function getContacts(params?: {
   status?: string
   contact_type?: string
   limit?: number
+  offset?: number
   search?: string
 }) {
   try {
@@ -43,6 +44,9 @@ export async function getContacts(params?: {
     if (!brokerageId) {
       return { success: true, contacts: [] }
     }
+
+    const limit = params?.limit ?? 100
+    const offset = params?.offset ?? 0
 
     let query = supabase
       .from("contacts")
@@ -66,9 +70,15 @@ export async function getContacts(params?: {
       query = query.eq("contact_type", params.contact_type)
     }
 
-    if (params?.limit) {
-      query = query.limit(params.limit)
+    // Server-side search across name, email, and phone — avoids the 100-record client cap
+    if (params?.search && params.search.trim().length > 0) {
+      const term = params.search.trim()
+      query = query.or(
+        `first_name.ilike.%${term}%,last_name.ilike.%${term}%,email.ilike.%${term}%,phone.ilike.%${term}%`
+      )
     }
+
+    query = query.range(offset, offset + limit - 1)
 
     const { data, error } = await query
 
