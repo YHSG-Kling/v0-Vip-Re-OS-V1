@@ -75,14 +75,20 @@ export default async function TransactionsPage() {
   }, {} as Record<string, { overall_score: number; risk_level: string }>)
 
   // Calculate stats
-  const activeDeals = transactions.filter(t => t.status === "active" || t.status === "pending")
+  const activeDeals = transactions.filter(t => {
+    const s = (t.status ?? "").toLowerCase()
+    return s === "active" || s === "pending" || s === "in_progress"
+  })
   const closedThisYear = transactions.filter(t => {
-    if (t.status !== "closed" || !t.close_date) return false
+    if ((t.status ?? "").toLowerCase() !== "closed" || !t.close_date) return false
     return new Date(t.close_date).getFullYear() === new Date().getFullYear()
   })
   const totalActiveVolume = activeDeals.reduce((sum, t) => sum + (t.purchase_price || 0), 0)
   const atRiskDeals = activeDeals.filter(t => {
-    return t.health_score != null && t.health_score < 50
+    const health = healthByTxId[t.id]
+    if (!health) return false
+    const rl = (health.risk_level ?? "").toLowerCase()
+    return rl === "high" || rl === "critical" || rl === "medium" || rl === "at_risk" || health.overall_score < 60
   })
 
   // Calculate days to close for active deals
@@ -219,7 +225,7 @@ export default async function TransactionsPage() {
                 <tbody className="divide-y divide-border">
                   {transactions.length > 0 ? (
                     transactions.map((tx) => {
-                      const statusConfig = STATUS_CONFIG[tx.status] || STATUS_CONFIG.active
+                      const statusConfig = STATUS_CONFIG[(tx.status ?? "").toLowerCase()] || STATUS_CONFIG.active
                       // Health scores fetched separately above and keyed by transaction_id
                       const health = healthByTxId[tx.id]
                       const healthScore = health?.overall_score
