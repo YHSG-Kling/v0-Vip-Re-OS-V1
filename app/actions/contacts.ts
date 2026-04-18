@@ -21,6 +21,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { syncContactToCRM } from "@/lib/crm/sync"
+import { revalidatePath } from "next/cache"
 import {
   createContactManually,
   updateContactRecord,
@@ -296,6 +297,9 @@ export async function addContactNote(contactId: string, noteText: string) {
     if (error) {
       return { success: false, error: error.message }
     }
+
+    revalidatePath("/crm")
+    revalidatePath("/dashboard")
 
     return { success: true }
   } catch (error: any) {

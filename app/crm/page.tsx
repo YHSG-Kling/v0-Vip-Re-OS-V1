@@ -1621,6 +1621,40 @@ export default function CRMPage() {
                       onSaveNote={handleSaveNote}
                       saving={noteSaving}
                     />
+
+                    {/* Activity feed — updates optimistically after note save */}
+                    {contactActivities.length > 0 && (
+                      <Card>
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm flex items-center gap-2">
+                            <FileText className="h-4 w-4 text-gray-500" />
+                            Recent Activity
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                          {contactActivities.map((item: any) => (
+                            <div key={item.id} className="flex gap-3 pb-3 border-b last:border-0">
+                              <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
+                              <div className="flex-1 space-y-0.5">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-medium text-xs capitalize text-foreground">
+                                    {(item.activity_type ?? "activity").replace(/_/g, " ")}
+                                  </span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {item.created_at ? format(new Date(item.created_at), "MMM d, h:mm a") : ""}
+                                  </span>
+                                </div>
+                                {(item.description || item.notes || item.title) && (
+                                  <p className="text-xs text-muted-foreground line-clamp-2">
+                                    {item.description || item.notes || item.title}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </CardContent>
+                      </Card>
+                    )}
                   </TabsContent>
 
                   {/* ── PORTAL TAB ── */}

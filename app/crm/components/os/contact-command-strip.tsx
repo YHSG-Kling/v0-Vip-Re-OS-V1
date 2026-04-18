@@ -19,6 +19,7 @@ import { Phone, MessageSquare, ExternalLink, FileText, AlertTriangle, Zap, Pause
 import Link from "next/link"
 import { processOptOut } from "@/app/actions/ai-isa/process-opt-out"
 import { createClient } from "@/lib/supabase/client"
+import { logActivity } from "@/app/actions/activities"
 
 interface ContactCommandStripProps {
   contact: {
@@ -141,10 +142,23 @@ export function ContactCommandStrip({
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button size="sm" variant="ghost" className="text-white hover:bg-white/20" asChild>
-                    <a href={`tel:${contact.phone}`}>
-                      <Phone className="h-4 w-4" />
-                    </a>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-white hover:bg-white/20"
+                    onClick={() => {
+                      logActivity({
+                        brokerageId,
+                        agentId,
+                        contactId: contact.id,
+                        activityType: "call_initiated",
+                        title: `Call initiated with ${contact.first_name} ${contact.last_name}`,
+                        status: "completed",
+                      }).catch(console.error)
+                      window.location.href = `tel:${contact.phone}`
+                    }}
+                  >
+                    <Phone className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Call</TooltipContent>
@@ -155,10 +169,23 @@ export function ContactCommandStrip({
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button size="sm" variant="ghost" className="text-white hover:bg-white/20" asChild>
-                    <a href={`sms:${contact.phone}`}>
-                      <MessageSquare className="h-4 w-4" />
-                    </a>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-white hover:bg-white/20"
+                    onClick={() => {
+                      logActivity({
+                        brokerageId,
+                        agentId,
+                        contactId: contact.id,
+                        activityType: "sms_sent",
+                        title: `SMS initiated with ${contact.first_name} ${contact.last_name}`,
+                        status: "completed",
+                      }).catch(console.error)
+                      window.location.href = `sms:${contact.phone}`
+                    }}
+                  >
+                    <MessageSquare className="h-4 w-4" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Text</TooltipContent>
