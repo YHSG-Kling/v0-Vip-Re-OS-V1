@@ -128,9 +128,9 @@ export function VideoContextPicker({
     if (!listingQuery.trim()) return true
     const q = listingQuery.toLowerCase()
     return (
-      l.address?.toLowerCase().includes(q) ||
-      l.city?.toLowerCase().includes(q) ||
-      l.state?.toLowerCase().includes(q)
+      l.address?.toLowerCase()?.includes(q) ||
+      l.city?.toLowerCase()?.includes(q) ||
+      l.state?.toLowerCase()?.includes(q)
     )
   })
 

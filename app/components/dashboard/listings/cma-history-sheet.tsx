@@ -90,14 +90,24 @@ export function CmaHistorySheet({ listingId, agentId, listingAddress }: CmaHisto
         .eq("id", listingId)
         .maybeSingle()
 
-      const propertyAddress = listingData?.address ?? addressParts[0] ?? listingAddress
-      const propertyCity = listingData?.city ?? addressParts[1] ?? ""
-      const propertyState = listingData?.state ?? addressParts[2]?.split(" ")[0] ?? ""
-      const propertyZip = listingData?.zip ?? ""
-      const bedrooms = listingData?.bedrooms ?? 3
-      const bathrooms = listingData?.bathrooms ?? 2
-      const squareFeet = listingData?.sqft ?? 1500
-      const propertyType = listingData?.property_type ?? "single_family"
+      if (!listingData) {
+        toast({ title: "Cannot generate CMA — listing details not found", variant: "destructive" })
+        return
+      }
+
+      const propertyAddress = listingData.address ?? addressParts[0] ?? listingAddress
+      const propertyCity = listingData.city ?? ""
+      const propertyState = listingData.state ?? ""
+      const propertyZip = listingData.zip ?? ""
+      const bedrooms = listingData.bedrooms
+      const bathrooms = listingData.bathrooms
+      const squareFeet = listingData.sqft
+      const propertyType = listingData.property_type ?? "single_family"
+
+      if (bedrooms == null || bathrooms == null || squareFeet == null) {
+        toast({ title: "Cannot generate CMA — listing is missing beds, baths, or square footage", variant: "destructive" })
+        return
+      }
 
       const res = await generateAICMA({
         agentId,

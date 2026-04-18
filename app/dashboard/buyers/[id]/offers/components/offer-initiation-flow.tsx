@@ -188,27 +188,30 @@ export function OfferInitiationFlow({
       return
     }
 
-    debounceRef.current = setTimeout(async () => {
-      const results = await searchListingsByAddress(value, brokerageId)
-      setSuggestions(results)
-      setShowDropdown(results.length > 0 || value.length >= 3)
+    setNominatimSuggestions([])
+    debounceRef.current = setTimeout(() => {
+      startAddressLoad(async () => {
+        const results = await searchListingsByAddress(value, brokerageId)
+        setSuggestions(results)
+        setShowDropdown(results.length > 0 || value.length >= 3)
 
-      // Only call Nominatim when internal results are insufficient
-      if (results.length < 2) {
-        try {
-          const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(value)}`
-          const response = await fetch(nominatimUrl, {
-            headers: { 'User-Agent': 'KernelOS-RealEstate/1.0' }
-          })
-          if (response.ok) {
-            const nominatimResults = await response.json()
-            setNominatimSuggestions(nominatimResults ?? [])
-            setShowDropdown(true)
+        // Only call Nominatim when internal results are insufficient
+        if (results.length < 2) {
+          try {
+            const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(value)}`
+            const response = await fetch(nominatimUrl, {
+              headers: { 'User-Agent': 'KernelOS-RealEstate/1.0' }
+            })
+            if (response.ok) {
+              const nominatimResults = await response.json()
+              setNominatimSuggestions(nominatimResults ?? [])
+              setShowDropdown(true)
+            }
+          } catch {
+            // Nominatim failure is silent — internal results still shown
           }
-        } catch {
-          // Nominatim failure is silent — internal results still shown
         }
-      }
+      })
     }, 500)
   }, [brokerageId])
 

@@ -55,13 +55,13 @@ export default async function PortalPage() {
   // We try global_settings for any brokerage contact info to surface to the user
   const { data: branding } = await supabase
     .from('global_settings')
-    .select('brokerage_name, support_email, support_phone, app_name')
+    .select('app_name')
     .limit(1)
     .maybeSingle()
 
-  const brokerageName = branding?.brokerage_name ?? branding?.app_name ?? null
-  const supportEmail = branding?.support_email ?? null
-  const supportPhone = branding?.support_phone ?? null
+  const brokerageName = branding?.app_name ?? null
+  const supportEmail: string | null = null
+  const supportPhone: string | null = null
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">

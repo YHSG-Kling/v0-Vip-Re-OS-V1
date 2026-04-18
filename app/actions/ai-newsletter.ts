@@ -1,5 +1,14 @@
 "use server"
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -306,10 +315,10 @@ Include clear CTAs where appropriate.`,
       .map(
         (s: any) =>
           `<section style="margin-bottom:1.5rem">` +
-          `<h2 style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">${s.title}</h2>` +
-          `<div style="line-height:1.6">${s.content.replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</div>` +
+          `<h2 style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">${escapeHtml(s.title)}</h2>` +
+          `<div style="line-height:1.6">${escapeHtml(s.content).replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</div>` +
           (s.ctaText
-            ? `<p style="margin-top:0.75rem"><strong>${s.ctaText}</strong></p>`
+            ? `<p style="margin-top:0.75rem"><strong>${escapeHtml(s.ctaText)}</strong></p>`
             : "") +
           `</section>`
       )

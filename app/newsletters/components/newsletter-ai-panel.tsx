@@ -21,10 +21,17 @@ import {
 } from "@/app/actions/ai-newsletter"
 
 function sanitizeNewsletterHtml(html: string): string {
-  return html
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
-    .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, "")
-    .replace(/javascript\s*:/gi, "")
+  if (typeof window === "undefined") return ""
+  const doc = new DOMParser().parseFromString(html, "text/html")
+  doc.querySelectorAll("script, iframe, object, embed, form").forEach(el => el.remove())
+  doc.querySelectorAll("*").forEach(el => {
+    Array.from(el.attributes).forEach(attr => {
+      if (attr.name.startsWith("on") || attr.value.toLowerCase().includes("javascript:")) {
+        el.removeAttribute(attr.name)
+      }
+    })
+  })
+  return doc.body.innerHTML
 }
 
 interface NewsletterAIPanelProps {

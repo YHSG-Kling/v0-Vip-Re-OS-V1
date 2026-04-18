@@ -146,8 +146,8 @@ export function ContactCommandStrip({
                     size="sm"
                     variant="ghost"
                     className="text-white hover:bg-white/20"
-                    onClick={() => {
-                      logActivity({
+                    onClick={async () => {
+                      await logActivity({
                         brokerageId,
                         agentId,
                         contactId: contact.id,
@@ -173,8 +173,8 @@ export function ContactCommandStrip({
                     size="sm"
                     variant="ghost"
                     className="text-white hover:bg-white/20"
-                    onClick={() => {
-                      logActivity({
+                    onClick={async () => {
+                      await logActivity({
                         brokerageId,
                         agentId,
                         contactId: contact.id,

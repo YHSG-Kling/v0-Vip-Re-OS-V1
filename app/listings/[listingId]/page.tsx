@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation"
-import { createServiceClient } from "@/lib/supabase/service"
+import { createClient } from "@/lib/supabase/server"
 import type { Metadata } from "next"
 import Image from "next/image"
 import { Button } from "@/components/ui/button"
@@ -18,7 +18,7 @@ interface ListingPageProps {
 
 export async function generateMetadata({ params }: ListingPageProps): Promise<Metadata> {
   const { listingId } = await params
-  const service = createServiceClient()
+  const service = await createClient()
 
   const { data: listing } = await service
     .from("listings")
@@ -55,7 +55,7 @@ export async function generateMetadata({ params }: ListingPageProps): Promise<Me
 
 export default async function PublicListingPage({ params }: ListingPageProps) {
   const { listingId } = await params
-  const service = createServiceClient()
+  const service = await createClient()
 
   // Fetch listing (no auth required — service client reads publicly relevant data)
   const { data: listing, error: listingError } = await service
@@ -136,6 +136,8 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
       ? "Sold"
       : listing.status === "coming_soon"
       ? "Coming Soon"
+      : listing.status === "under_contract"
+      ? "Under Contract"
       : listing.status ?? "Active"
 
   const statusColor =
@@ -169,9 +171,9 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
 
       {/* Hero — full-width photo */}
       <div className="relative w-full bg-gray-900" style={{ height: "min(60vh, 540px)" }}>
-        {heroPhoto?.file_url ? (
+        {heroPhoto?.file_url || heroPhoto?.thumbnail_url ? (
           <Image
-            src={heroPhoto.file_url}
+            src={heroPhoto.file_url || heroPhoto.thumbnail_url}
             alt={`${listing.address} — hero photo`}
             fill
             className="object-cover"

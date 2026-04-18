@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { NURTURE_SEQUENCE_TYPES } from "@/app/actions/campaign-sequences"
 import SequencesClient from "./SequencesClient"
 
 export const metadata = {
@@ -33,16 +34,6 @@ export default async function SequencesPage({
 
   const agentId = await resolveAgentId(service, user.id)
   if (!agentId) redirect("/dashboard/onboarding")
-
-  // Nurture sequence types — buyer/seller journeys, lead follow-up, post-close, sphere
-  const NURTURE_SEQUENCE_TYPES = [
-    "buyer_nurture",
-    "seller_nurture",
-    "lead_followup",
-    "post_close",
-    "sphere_touchpoint",
-    "credit_journey",
-  ]
 
   // Fetch existing nurture sequences for this brokerage
   // Table: campaign_sequences (NOT drip_campaigns — that table does not exist)

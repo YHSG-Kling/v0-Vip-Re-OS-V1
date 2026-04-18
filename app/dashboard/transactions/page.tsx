@@ -230,7 +230,8 @@ export default async function TransactionsPage() {
                       const health = healthByTxId[tx.id]
                       const healthScore = health?.overall_score
                       const riskLevel = health?.risk_level
-                      const isAtRisk = riskLevel === "high" || riskLevel === "critical" || riskLevel === "medium" || riskLevel === "at_risk"
+                      const normalizedRisk = riskLevel?.toLowerCase()
+                      const isAtRisk = normalizedRisk === "high" || normalizedRisk === "critical" || normalizedRisk === "medium" || normalizedRisk === "at_risk"
 
                       return (
                         <tr key={tx.id} className="hover:bg-muted/50 group">
@@ -262,15 +263,15 @@ export default async function TransactionsPage() {
                                   <TooltipTrigger asChild>
                                     <div className="flex items-center gap-1.5 cursor-help w-fit">
                                       <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${
-                                        riskLevel === "low" || riskLevel === "healthy" ? "bg-green-100 text-green-700" :
-                                        isAtRisk && !(riskLevel === "critical" || riskLevel === "high") ? "bg-amber-100 text-amber-700" :
-                                        (riskLevel === "critical" || riskLevel === "high") ? "bg-red-100 text-red-700" :
+                                        normalizedRisk === "low" || normalizedRisk === "healthy" ? "bg-green-100 text-green-700" :
+                                        isAtRisk && !(normalizedRisk === "critical" || normalizedRisk === "high") ? "bg-amber-100 text-amber-700" :
+                                        (normalizedRisk === "critical" || normalizedRisk === "high") ? "bg-red-100 text-red-700" :
                                         "bg-gray-100 text-gray-600"
                                       }`}>
                                         {healthScore}
                                       </div>
                                       {isAtRisk && (
-                                        <AlertTriangle className={`h-3 w-3 ${(riskLevel === "critical" || riskLevel === "high") ? "text-red-500" : "text-amber-500"}`} />
+                                        <AlertTriangle className={`h-3 w-3 ${(normalizedRisk === "critical" || normalizedRisk === "high") ? "text-red-500" : "text-amber-500"}`} />
                                       )}
                                     </div>
                                   </TooltipTrigger>

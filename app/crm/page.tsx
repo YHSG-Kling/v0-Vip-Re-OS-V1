@@ -231,6 +231,7 @@ export default function CRMPage() {
   const [searchLoading, setSearchLoading] = useState(false)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searchGenRef = useRef(0)
+  const activitiesGenRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
 
   // Selected contact detail state
@@ -519,6 +520,8 @@ export default function CRMPage() {
       setContactActivities([])
       return
     }
+    activitiesGenRef.current += 1
+    const gen = activitiesGenRef.current
     const supabase = createClient()
     supabase
       .from("activities")
@@ -526,8 +529,14 @@ export default function CRMPage() {
       .eq("contact_id", selectedContactId)
       .order("created_at", { ascending: false })
       .limit(20)
-      .then(({ data }: { data: any[] | null }) => setContactActivities(data || []))
-      .catch(() => setContactActivities([]))
+      .then(({ data }: { data: any[] | null }) => {
+        if (gen !== activitiesGenRef.current) return  // stale
+        setContactActivities(data || [])
+      })
+      .catch(() => {
+        if (gen !== activitiesGenRef.current) return
+        setContactActivities([])
+      })
   }, [selectedContactId])
 
   // Lazy-load Journey & Team tab data

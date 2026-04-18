@@ -326,8 +326,12 @@ export function BuyerMatchPanel({
                     <span>{previewIntent.bedrooms != null ? ", " : ""}{previewIntent.bathrooms}+ bath</span>
                   )}
                   {previewIntent.price != null && `${previewIntent.bedrooms != null || previewIntent.bathrooms != null ? ", " : ""}max $${previewIntent.price.toLocaleString()}`}
-                  {previewIntent.areas?.length > 0 && `, in ${previewIntent.areas.join(", ")}`}
-                  {previewIntent.keywords?.length > 0 && `, ${previewIntent.keywords.join(", ")}`}
+                  {previewIntent.areas?.length > 0 && (
+                    `${previewIntent.bedrooms != null || previewIntent.bathrooms != null || previewIntent.price != null ? ", " : ""}in ${previewIntent.areas.join(", ")}`
+                  )}
+                  {previewIntent.keywords?.length > 0 && (
+                    `${previewIntent.bedrooms != null || previewIntent.bathrooms != null || previewIntent.price != null || (previewIntent.areas?.length > 0) ? ", " : ""}${previewIntent.keywords.join(", ")}`
+                  )}
                 </p>
               )}
             </div>

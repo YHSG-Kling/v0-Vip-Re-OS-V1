@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -180,6 +180,16 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   const [calendarViewDate, setCalendarViewDate] = useState(new Date())
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
+
+  const eventsByDate = useMemo(() => {
+    const map: Record<string, CalendarEvent[]> = {}
+    for (const ev of calendarEvents) {
+      const key = format(new Date(ev.scheduled_at), "yyyy-MM-dd")
+      if (!map[key]) map[key] = []
+      map[key].push(ev)
+    }
+    return map
+  }, [calendarEvents])
 
   // Dialog states
   const [isCreateCampaignOpen, setIsCreateCampaignOpen] = useState(false)
@@ -1433,13 +1443,8 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
               // Build a Set of "YYYY-MM-DD" strings that have events
               const eventDateSet = new Set<string>()
-              const eventsByDate: Record<string, CalendarEvent[]> = {}
-              for (const ev of calendarEvents) {
-                const d = new Date(ev.scheduled_at)
-                const key = format(d, "yyyy-MM-dd")
+              for (const key of Object.keys(eventsByDate)) {
                 eventDateSet.add(key)
-                if (!eventsByDate[key]) eventsByDate[key] = []
-                eventsByDate[key].push(ev)
               }
 
               // Also mark scheduled sends from newsletter state
@@ -1619,9 +1624,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                             key={cellKey}
                             type="button"
                             onClick={() => {
-                              const d = new Date(viewYear, viewMonth, day)
-                              setSelectedDate(d)
-                              setCalendarViewDate(d)
+                              setSelectedDate(new Date(viewYear, viewMonth, day))
                             }}
                             className={cn(
                               "h-20 border-b border-r last:border-r-0 p-1.5 text-left align-top transition-colors hover:bg-violet-50 dark:hover:bg-violet-950/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500",
@@ -1699,14 +1702,8 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
               {(() => {
                 const selectedKey = selectedDate ? format(selectedDate, "yyyy-MM-dd") : null
-                const eventsByDate2: Record<string, CalendarEvent[]> = {}
-                for (const ev of calendarEvents) {
-                  const key = format(new Date(ev.scheduled_at), "yyyy-MM-dd")
-                  if (!eventsByDate2[key]) eventsByDate2[key] = []
-                  eventsByDate2[key].push(ev)
-                }
                 const filtered = selectedKey
-                  ? (eventsByDate2[selectedKey] ?? [])
+                  ? (eventsByDate[selectedKey] ?? [])
                   : calendarEvents
 
                 if (filtered.length === 0) {

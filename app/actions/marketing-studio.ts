@@ -997,7 +997,7 @@ export async function getMarketingStudioDashboard() {
         .select("status")
         .eq("brokerage_id", brokerageId)
         .eq("visibility_scope", "brokerage")
-        .neq("agent_user_id", agentId), // avoid double-counting agent's own brokerage-scope campaigns
+        .or(`agent_user_id.neq.${agentId},agent_user_id.is.null`), // exclude agent's own; include null-owner campaigns
       // Assets owned by this agent
       supabase
         .from("marketing_assets")

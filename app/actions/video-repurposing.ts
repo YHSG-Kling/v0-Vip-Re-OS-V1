@@ -177,10 +177,7 @@ export async function createVideoSnippet(data: {
   const supabase = await createClient()
 
   // Normalize and validate platform_target
-  const ALLOWED_PLATFORMS: PlatformTarget[] = [
-    "instagram_reels", "instagram_story", "instagram_post",
-    "tiktok", "youtube_shorts", "facebook_reels", "linkedin", "twitter",
-  ]
+  const ALLOWED_PLATFORMS = Object.keys(PLATFORM_CONFIGS) as PlatformTarget[]
   const normalizedPlatform = (data.platformTarget as string)
     .toLowerCase()
     .replace(/\s+/g, "_") as PlatformTarget
@@ -242,7 +239,7 @@ export async function createVideoSnippet(data: {
     event_type: KernelEvent.SNIPPET_CREATED,
     actor_user_id: data.createdBy ?? null,
     metadata: {
-      platform_target: data.platformTarget,
+      platform_target: normalizedPlatform,
       duration: duration,
       source_project_id: data.videoProjectId,
     },

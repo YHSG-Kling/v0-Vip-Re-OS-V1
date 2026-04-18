@@ -45,8 +45,8 @@ export async function getContacts(params?: {
       return { success: true, contacts: [] }
     }
 
-    const limit = params?.limit ?? 100
-    const offset = params?.offset ?? 0
+    const limit = Math.min(Math.max(Math.floor(params?.limit ?? 100), 1), 500)
+    const offset = Math.max(Math.floor(params?.offset ?? 0), 0)
 
     let query = supabase
       .from("contacts")

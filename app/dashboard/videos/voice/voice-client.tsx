@@ -172,7 +172,7 @@ export function VoiceCloneClient({
       setActiveTab("record")
       setCreateDialogOpen(false)
       setNewProfileName("")
-      toast.success("Voice profile created! Now record 3 voice samples to train your clone.")
+      toast.success("Voice profile created! Now record 5 voice samples to train your clone.")
     } catch (error: any) {
       console.error("Error creating profile:", error)
       toast.error("Failed to create voice profile. Please try again.")
