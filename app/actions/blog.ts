@@ -5,6 +5,7 @@
 // Kernel gates: canAccessFeature('seo_blog_engine'), applyBrandVoice, evaluateOutbound, checkBrandCompliance
 
 import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { evaluateOutbound } from "@/lib/kernel/compliance"
@@ -773,4 +774,293 @@ export async function toggleKeywordActive(
   }
 
   return { success: true }
+}
+
+// ─── saveBlogPost (manual create) ────────────────────────────────────────────
+//
+// Creates a blank/manual blog post — no AI generation.
+// Uses getAgentContext() per architecture rules.
+
+export interface SaveBlogPostParams {
+  title: string
+  slug?: string
+  excerpt?: string
+  content?: string
+  featuredImageUrl?: string
+  category?: string
+  callToAction?: string
+  publishStatus?: "draft" | "pending_review" | "approved" | "published"
+  keywords?: string[]
+}
+
+export async function saveBlogPost(
+  params: SaveBlogPostParams
+): Promise<{ success: boolean; postId?: string; error?: string }> {
+  // ── 1. Auth via getAgentContext ──────────────────────────────────────────────
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  const supabase = await createClient()
+
+  // ── 2. Build slug from title if not supplied ────────────────────────────────
+  const slug =
+    params.slug ||
+    params.title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .slice(0, 80)
+
+  // ── 3. Insert blog_posts ────────────────────────────────────────────────────
+  const insertData: Record<string, unknown> = {
+    brokerage_id: ctx.brokerageId,
+    agent_user_id: ctx.userId,
+    created_by: ctx.userId,
+    title: params.title,
+    slug,
+    excerpt: params.excerpt || null,
+    content: params.content || null,
+    featured_image_url: params.featuredImageUrl || null,
+    publish_status: params.publishStatus || "draft",
+    visibility_scope: "agent",
+    compliance_approved: false,
+  }
+
+  // Store category and call_to_action in content_metadata JSON column if it exists,
+  // otherwise fall back to storing in excerpt/content fields.
+  if (params.category) {
+    insertData.category = params.category
+  }
+
+  const { data: post, error: insertError } = await supabase
+    .from("blog_posts")
+    .insert(insertData)
+    .select("id")
+    .maybeSingle()
+
+  if (insertError || !post) {
+    console.error("[saveBlogPost] Insert failed:", insertError)
+    return { success: false, error: "Failed to save blog post" }
+  }
+
+  // ── 4. Link keywords if provided ────────────────────────────────────────────
+  if (params.keywords?.length) {
+    for (let i = 0; i < params.keywords.length; i++) {
+      const keyword = params.keywords[i]
+      const isPrimary = i === 0
+
+      const { data: existingKw } = await supabase
+        .from("seo_keywords")
+        .select("id")
+        .eq("brokerage_id", ctx.brokerageId)
+        .eq("keyword", keyword)
+        .maybeSingle()
+
+      let seoKeywordId: string
+
+      if (existingKw) {
+        seoKeywordId = existingKw.id
+      } else {
+        const { data: newKw, error: kwErr } = await supabase
+          .from("seo_keywords")
+          .insert({
+            brokerage_id: ctx.brokerageId,
+            keyword,
+            keyword_type: isPrimary ? "primary" : "secondary",
+            search_intent: "informational",
+            visibility_scope: "agent",
+            created_by: ctx.userId,
+            is_active: true,
+          })
+          .select("id")
+          .maybeSingle()
+
+        if (kwErr || !newKw) continue
+        seoKeywordId = newKw.id
+      }
+
+      await supabase.from("blog_post_keywords").insert({
+        brokerage_id: ctx.brokerageId,
+        blog_post_id: post.id,
+        seo_keyword_id: seoKeywordId,
+        is_primary: isPrimary,
+      })
+    }
+  }
+
+  return { success: true, postId: post.id }
+}
+
+// ─── generateTopicIdeas ───────────────────────────────────────────────────────
+//
+// Returns 5 real estate blog topic suggestions based on the agent's market.
+// Uses getAgentContext() — no userId param needed.
+
+export interface TopicIdea {
+  title: string
+  category: string
+  keywords: string[]
+  rationale: string
+}
+
+export async function generateTopicIdeas(): Promise<{
+  success: boolean
+  ideas?: TopicIdea[]
+  error?: string
+}> {
+  // ── 1. Auth ──────────────────────────────────────────────────────────────────
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  // ── 2. Feature gate ──────────────────────────────────────────────────────────
+  const accessCheck = await canAccessFeature(ctx.userId, "seo_blog_engine")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
+  }
+
+  const supabase = await createClient()
+
+  // ── 3. Fetch brokerage context ───────────────────────────────────────────────
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("name, city, state")
+    .eq("id", ctx.brokerageId)
+    .maybeSingle()
+
+  const territory = brokerage?.city && brokerage?.state
+    ? `${brokerage.city}, ${brokerage.state}`
+    : "a local real estate market"
+
+  // ── 4. Fetch recent existing posts to avoid duplicates ───────────────────────
+  const { data: recentPosts } = await supabase
+    .from("blog_posts")
+    .select("title")
+    .eq("brokerage_id", ctx.brokerageId)
+    .order("created_at", { ascending: false })
+    .limit(10)
+
+  const recentTitles = recentPosts?.map((p) => p.title).join("; ") || ""
+
+  // ── 5. Generate via AI ───────────────────────────────────────────────────────
+  const systemPrompt = `You are a real estate content strategist. Generate timely, SEO-rich blog topic ideas for a real estate brokerage. Return structured JSON only.`
+
+  const userPrompt = `Generate 5 blog topic ideas for a real estate brokerage in ${territory}.
+
+Categories to choose from: Market Update, Buyer Tips, Seller Tips, Neighborhood Guide, Investment Tips, Company News
+
+${recentTitles ? `Avoid these already-written topics: ${recentTitles}` : ""}
+
+Return ONLY valid JSON (no markdown, no code blocks):
+{
+  "ideas": [
+    {
+      "title": "5 Things Every First-Time Buyer Should Know About ${territory}",
+      "category": "Buyer Tips",
+      "keywords": ["first-time buyer", "home buying guide", "${territory} real estate"],
+      "rationale": "High search volume for first-time buyer content in this market"
+    }
+  ]
+}`
+
+  try {
+    const { text } = await generateText({
+      feature: "blog_generation",
+      system: systemPrompt,
+      prompt: userPrompt,
+      temperature: 0.8,
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+    })
+
+    const cleaned = text.replace(/```json\n?|\n?```/g, "").trim()
+    const parsed = JSON.parse(cleaned) as { ideas: TopicIdea[] }
+    return { success: true, ideas: parsed.ideas || [] }
+  } catch (err) {
+    console.error("[generateTopicIdeas] AI failed:", err)
+    return { success: false, error: "Failed to generate topic ideas" }
+  }
+}
+
+// ─── suggestSEOKeywords ───────────────────────────────────────────────────────
+//
+// Given a blog title and partial content, suggests relevant SEO keywords.
+// Uses getAgentContext() — no userId param needed.
+
+export async function suggestSEOKeywords(params: {
+  title: string
+  content?: string
+}): Promise<{
+  success: boolean
+  keywords?: Array<{ keyword: string; type: "primary" | "secondary" | "long_tail" }>
+  error?: string
+}> {
+  // ── 1. Auth ──────────────────────────────────────────────────────────────────
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.userId || !ctx.brokerageId) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  // ── 2. Feature gate ──────────────────────────────────────────────────────────
+  const accessCheck = await canAccessFeature(ctx.userId, "seo_blog_engine")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
+  }
+
+  const supabase = await createClient()
+
+  // ── 3. Fetch territory context ───────────────────────────────────────────────
+  const { data: brokerage } = await supabase
+    .from("brokerages")
+    .select("city, state")
+    .eq("id", ctx.brokerageId)
+    .maybeSingle()
+
+  const territory = brokerage?.city && brokerage?.state
+    ? `${brokerage.city}, ${brokerage.state}`
+    : "local area"
+
+  // ── 4. Generate keyword suggestions via AI ───────────────────────────────────
+  const systemPrompt = `You are an SEO specialist for real estate content. Suggest relevant, high-value SEO keywords. Return structured JSON only.`
+
+  const contentSnippet = params.content
+    ? params.content.slice(0, 500)
+    : ""
+
+  const userPrompt = `Suggest 8-10 SEO keywords for this real estate blog post in ${territory}.
+
+Title: ${params.title}
+${contentSnippet ? `Content preview: ${contentSnippet}` : ""}
+
+Return ONLY valid JSON (no markdown, no code blocks):
+{
+  "keywords": [
+    { "keyword": "homes for sale in ${territory}", "type": "primary" },
+    { "keyword": "real estate tips", "type": "secondary" },
+    { "keyword": "how to buy a home in ${territory} 2025", "type": "long_tail" }
+  ]
+}`
+
+  try {
+    const { text } = await generateText({
+      feature: "blog_generation",
+      system: systemPrompt,
+      prompt: userPrompt,
+      temperature: 0.3,
+      brokerageId: ctx.brokerageId,
+      userId: ctx.userId,
+    })
+
+    const cleaned = text.replace(/```json\n?|\n?```/g, "").trim()
+    const parsed = JSON.parse(cleaned) as {
+      keywords: Array<{ keyword: string; type: "primary" | "secondary" | "long_tail" }>
+    }
+    return { success: true, keywords: parsed.keywords || [] }
+  } catch (err) {
+    console.error("[suggestSEOKeywords] AI failed:", err)
+    return { success: false, error: "Failed to suggest keywords" }
+  }
 }
