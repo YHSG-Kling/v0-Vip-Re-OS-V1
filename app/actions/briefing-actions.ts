@@ -283,3 +283,161 @@ export async function getActiveTransactions(): Promise<{
     return { transactions: [], error: err instanceof Error ? err.message : "Unknown error" }
   }
 }
+
+// ─── Get Pipeline Summary ──────────────────────────────────────────────────────
+
+export async function getPipelineSummary(): Promise<{
+  activeCount: number
+  approachingClose: { id: string; property_address: string; close_date: string } | null
+  error?: string
+}> {
+  try {
+    const context = await getAgentContext()
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
+      return { activeCount: 0, approachingClose: null, error: "Agent context not available" }
+    }
+
+    const { agentId } = context
+    const supabase = await createClient()
+
+    const { data, error } = await supabase
+      .from("transactions")
+      .select("id, property_address, close_date, stage")
+      .eq("agent_id", agentId)
+      .not("stage", "in", '("closed","cancelled")')
+      .order("close_date", { ascending: true })
+      .limit(20)
+
+    if (error) {
+      return { activeCount: 0, approachingClose: null, error: error.message }
+    }
+
+    const txList = data || []
+    const activeCount = txList.length
+
+    // Find the deal with the nearest close date that is within 14 days
+    const twoWeeksOut = new Date()
+    twoWeeksOut.setDate(twoWeeksOut.getDate() + 14)
+    const today = new Date().toISOString().split("T")[0]
+
+    const approaching = txList.find((t) => {
+      if (!t.close_date) return false
+      const closeDate = t.close_date
+      return closeDate >= today && closeDate <= twoWeeksOut.toISOString().split("T")[0]
+    })
+
+    return {
+      activeCount,
+      approachingClose: approaching
+        ? {
+            id: approaching.id,
+            property_address: approaching.property_address || "Unknown address",
+            close_date: approaching.close_date,
+          }
+        : null,
+    }
+  } catch (err) {
+    console.error("[BriefingActions] getPipelineSummary failed:", err)
+    return {
+      activeCount: 0,
+      approachingClose: null,
+      error: err instanceof Error ? err.message : "Unknown error",
+    }
+  }
+}
+
+// ─── Get Buyer Matches ─────────────────────────────────────────────────────────
+
+export async function getBuyerMatchCount(): Promise<{
+  matchCount: number
+  error?: string
+}> {
+  try {
+    const context = await getAgentContext()
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
+      return { matchCount: 0, error: "Agent context not available" }
+    }
+
+    const { agentId } = context
+    const supabase = await createClient()
+
+    // Count buyer contacts who have an active search criteria and an active listing to match
+    // We approximate this by counting contacts tagged as buyer with active/hot status
+    // who have a min_price / max_price set (search criteria)
+    const { count, error } = await supabase
+      .from("contacts")
+      .select("id", { count: "exact", head: true })
+      .eq("agent_id", agentId)
+      .in("lead_type", ["buyer", "Buyer"])
+      .in("status", ["active", "hot", "nurture"])
+      .not("max_price", "is", null)
+
+    if (error) {
+      return { matchCount: 0, error: error.message }
+    }
+
+    return { matchCount: count ?? 0 }
+  } catch (err) {
+    console.error("[BriefingActions] getBuyerMatchCount failed:", err)
+    return {
+      matchCount: 0,
+      error: err instanceof Error ? err.message : "Unknown error",
+    }
+  }
+}
+
+// ─── Get Churn Risk Contacts ───────────────────────────────────────────────────
+
+export async function getChurnRiskContacts(): Promise<{
+  contacts: Array<{
+    id: string
+    first_name: string | null
+    last_name: string | null
+    last_contact_date: string | null
+    lead_stage: string | null
+  }>
+  totalCount: number
+  error?: string
+}> {
+  try {
+    const context = await getAgentContext()
+    if (!context?.agentId || !isValidUUID(context.agentId)) {
+      return { contacts: [], totalCount: 0, error: "Agent context not available" }
+    }
+
+    const { agentId } = context
+    const supabase = await createClient()
+
+    // Contacts not touched in 30+ days that are still in active pipeline stages
+    const thirtyDaysAgo = new Date()
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+    const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split("T")[0]
+
+    const { data, count, error } = await supabase
+      .from("contacts")
+      .select("id, first_name, last_name, last_contact_date, lead_stage", {
+        count: "exact",
+      })
+      .eq("agent_id", agentId)
+      .in("lead_stage", ["new", "nurture", "active", "qualified"])
+      .or(`last_contact_date.is.null,last_contact_date.lte.${thirtyDaysAgoStr}`)
+      .order("last_contact_date", { ascending: true, nullsFirst: true })
+      .limit(5)
+
+    if (error) {
+      return { contacts: [], totalCount: 0, error: error.message }
+    }
+
+    return {
+      contacts: data || [],
+      totalCount: count ?? 0,
+    }
+  } catch (err) {
+    console.error("[BriefingActions] getChurnRiskContacts failed:", err)
+    return {
+      contacts: [],
+      totalCount: 0,
+      error: err instanceof Error ? err.message : "Unknown error",
+    }
+  }
+}
