@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback, useTransition } from "react"
+import { useEffect, useState, useCallback, useTransition, useRef } from "react"
 import { useAuth } from "@/lib/auth/client"
 import { useSearchParams, useRouter } from "next/navigation"
 import { getContacts, getContactById, createContact, addContactNote } from "@/app/actions/contacts"
@@ -228,6 +228,11 @@ export default function CRMPage() {
   const [filtered, setFiltered] = useState<Contact[]>([])
   const [search, setSearch] = useState("")
   const [loading, setLoading] = useState(true)
+  const [searchLoading, setSearchLoading] = useState(false)
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const searchGenRef = useRef(0)
+  const searchQueryRef = useRef("")
+  const activitiesGenRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
 
   // Selected contact detail state
@@ -256,6 +261,9 @@ export default function CRMPage() {
   const [noteSaving, setNoteSaving] = useState(false)
   /** Lifted AI draft text — passed to CommunicationHealthPanel to pre-fill compose */
   const [pendingDraftText, setPendingDraftText] = useState<string | null>(null)
+
+  // Contact activity feed (notes, calls, etc.) — shown in the Communications tab
+  const [contactActivities, setContactActivities] = useState<any[]>([])
 
   // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
   const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
@@ -342,7 +350,14 @@ export default function CRMPage() {
       const result = await getContacts({ limit: 100 })
       if (result.success) {
         setContacts(result.contacts)
-        setFiltered(result.contacts)
+        if (searchQueryRef.current) {
+          // Search is active — re-fetch with current term so filtered reflects fresh data
+          getContacts({ search: searchQueryRef.current, limit: 100 })
+            .then((r) => { if (r.success) setFiltered(r.contacts) })
+            .catch(() => {/* non-blocking */})
+        } else {
+          setFiltered(result.contacts)
+        }
         // Lead scores are loaded lazily per-contact when a contact is selected
         // to avoid firing 20 simultaneous AI/DB server actions that crash the browser.
       } else {
@@ -507,6 +522,32 @@ export default function CRMPage() {
       .catch(() => setConversations([]))
   }, [selectedContactId])
 
+  // Load recent activities (notes, calls, etc.) for the selected contact
+  useEffect(() => {
+    if (!selectedContactId) {
+      setContactActivities([])
+      return
+    }
+    setContactActivities([])
+    activitiesGenRef.current += 1
+    const gen = activitiesGenRef.current
+    const supabase = createClient()
+    supabase
+      .from("activities")
+      .select("id, activity_type, title, description, notes, created_at, contact_id")
+      .eq("contact_id", selectedContactId)
+      .order("created_at", { ascending: false })
+      .limit(20)
+      .then(({ data }: { data: any[] | null }) => {
+        if (gen !== activitiesGenRef.current) return  // stale
+        setContactActivities(data || [])
+      })
+      .catch(() => {
+        if (gen !== activitiesGenRef.current) return
+        setContactActivities([])
+      })
+  }, [selectedContactId])
+
   // Lazy-load Journey & Team tab data
   const loadJourneyTeam = useCallback(async (contactId: string) => {
     if (journeyTeamLoaded || journeyTeamLoading) return
@@ -634,21 +675,34 @@ export default function CRMPage() {
       .catch(() => setRelatedTransaction(null))
   }, [selectedContactId, selectedContact])
 
-  useEffect(() => {
-    const q = search.toLowerCase()
-    setFiltered(
-      contacts.filter(
-        (c) =>
-          `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
-          (c.email ?? "").toLowerCase().includes(q) ||
-          (c.phone ?? "").includes(q) ||
-          (c.city ?? "").toLowerCase().includes(q) ||
-          (c.state ?? "").toLowerCase().includes(q) ||
-          (c.status ?? "").toLowerCase().includes(q) ||
-          (c.contact_type ?? "").toLowerCase().includes(q)
-      )
-    )
-  }, [search, contacts])
+  // Server-side search: debounce input and call getContacts with the search term.
+  // This replaces the old client-side .filter() that was capped at the 100 loaded records.
+  const handleSearchChange = useCallback((query: string) => {
+    setSearch(query)
+    searchQueryRef.current = query
+
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current)
+    }
+
+    searchGenRef.current += 1
+    const gen = searchGenRef.current
+
+    searchDebounceRef.current = setTimeout(async () => {
+      setSearchLoading(true)
+      try {
+        const result = await getContacts({ search: query || undefined, limit: 100 })
+        if (gen !== searchGenRef.current) return  // stale — ignore
+        if (result.success) {
+          setFiltered(result.contacts)
+        }
+      } catch {
+        // non-blocking — leave current list intact on error
+      } finally {
+        if (gen === searchGenRef.current) setSearchLoading(false)
+      }
+    }, 300)
+  }, [])
 
   // ── Add Contact dialog state ────────────────────────────────────────────────
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -795,11 +849,23 @@ export default function CRMPage() {
 
   const handleSaveNote = async (note: string) => {
     if (!selectedContactId) return
+    const noteContactId = selectedContactId
     setNoteSaving(true)
     try {
-      const result = await addContactNote(selectedContactId, note)
+      const result = await addContactNote(noteContactId, note)
       if (result.success) {
         toast.success("Note saved")
+        // Only update activity feed if the same contact is still selected
+        if (selectedContactId !== noteContactId) return
+        setContactActivities(prev => [{
+          id: Date.now().toString(),
+          activity_type: "note",
+          title: "Note",
+          description: note,
+          notes: note,
+          created_at: new Date().toISOString(),
+          contact_id: noteContactId,
+        }, ...prev])
       } else {
         toast.error(result.error ?? "Failed to save note")
       }
@@ -1591,6 +1657,40 @@ export default function CRMPage() {
                       onSaveNote={handleSaveNote}
                       saving={noteSaving}
                     />
+
+                    {/* Activity feed — updates optimistically after note save */}
+                    {contactActivities.length > 0 && (
+                      <Card>
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm flex items-center gap-2">
+                            <FileText className="h-4 w-4 text-gray-500" />
+                            Recent Activity
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent className="space-y-3">
+                          {contactActivities.map((item: any) => (
+                            <div key={item.id} className="flex gap-3 pb-3 border-b last:border-0">
+                              <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
+                              <div className="flex-1 space-y-0.5">
+                                <div className="flex items-center justify-between">
+                                  <span className="font-medium text-xs capitalize text-foreground">
+                                    {(item.activity_type ?? "activity").replace(/_/g, " ")}
+                                  </span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {item.created_at ? format(new Date(item.created_at), "MMM d, h:mm a") : ""}
+                                  </span>
+                                </div>
+                                {(item.description || item.notes || item.title) && (
+                                  <p className="text-xs text-muted-foreground line-clamp-2">
+                                    {item.description || item.notes || item.title}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </CardContent>
+                      </Card>
+                    )}
                   </TabsContent>
 
                   {/* ── PORTAL TAB ── */}
@@ -1712,9 +1812,12 @@ export default function CRMPage() {
         <Input
           placeholder="Search by name, email, phone, or city..."
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-10"
+          onChange={(e) => handleSearchChange(e.target.value)}
+          className="pl-10 pr-10"
         />
+        {searchLoading && (
+          <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-gray-400" />
+        )}
       </div>
 
       {/* AI Priority Contacts Strip */}
@@ -1867,7 +1970,7 @@ export default function CRMPage() {
 
       {/* Contact list */}
       {!loading && filtered.length > 0 && (
-        <div className="grid gap-3">
+        <div className={cn("grid gap-3", searchLoading && "opacity-60 pointer-events-none")}>
           {filtered.map((contact) => (
             <Card
               key={contact.id}

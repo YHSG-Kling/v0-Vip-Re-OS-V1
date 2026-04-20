@@ -42,15 +42,39 @@ export async function generatePropertyMatches(params: {
   const supabase = await createClient()
 
   try {
-    // Get buyer preferences
-    const { data: contact } = await supabase
-      .from("contacts")
-      .select("*, buyer_preferences:contact_preferences(*)")
-      .eq("id", params.contactId)
-      .single()
+    // Get contact and buyer preferences from property_preferences table (correct schema)
+    const [{ data: contact }, { data: preferencesRaw }] = await Promise.all([
+      supabase
+        .from("contacts")
+        .select("*")
+        .eq("id", params.contactId)
+        .single(),
+      supabase
+        .from("property_preferences")
+        .select(
+          "preferred_price_min, preferred_price_max, preferred_bedrooms, preferred_bathrooms, " +
+          "preferred_cities, preferred_features, inferred_min_price, inferred_max_price, " +
+          "inferred_beds_min, inferred_baths_min, inferred_cities, inferred_property_types"
+        )
+        .eq("contact_id", params.contactId)
+        .maybeSingle(),
+    ])
 
     if (!contact) {
       return { success: false, error: "Contact not found" }
+    }
+
+    const preferences = preferencesRaw as Record<string, any> | null
+
+    // Merge explicit preferences with inferred ones (explicit takes priority)
+    const prefs = {
+      min_price:      preferences?.preferred_price_min ?? preferences?.inferred_min_price ?? null,
+      max_price:      preferences?.preferred_price_max ?? preferences?.inferred_max_price ?? null,
+      min_beds:       preferences?.preferred_bedrooms  ?? preferences?.inferred_beds_min  ?? null,
+      min_baths:      preferences?.preferred_bathrooms ?? preferences?.inferred_baths_min ?? null,
+      cities:         preferences?.preferred_cities    ?? preferences?.inferred_cities    ?? [],
+      property_types: preferences?.inferred_property_types ?? [],
+      features:       preferences?.preferred_features ?? [],
     }
 
     // Get buyer's viewing history and saved properties
@@ -67,23 +91,22 @@ export async function generatePropertyMatches(params: {
       .eq("contact_id", params.contactId)
 
     // Get available listings matching basic criteria
-    const preferences = contact.buyer_preferences?.[0] || {}
     let listingsQuery = supabase
       .from("listings")
       .select("*")
       .eq("status", "active")
 
-    if (preferences.min_price) {
-      listingsQuery = listingsQuery.gte("price", preferences.min_price)
+    if (prefs.min_price) {
+      listingsQuery = listingsQuery.gte("price", prefs.min_price)
     }
-    if (preferences.max_price) {
-      listingsQuery = listingsQuery.lte("price", preferences.max_price)
+    if (prefs.max_price) {
+      listingsQuery = listingsQuery.lte("price", prefs.max_price)
     }
-    if (preferences.min_beds) {
-      listingsQuery = listingsQuery.gte("bedrooms", preferences.min_beds)
+    if (prefs.min_beds) {
+      listingsQuery = listingsQuery.gte("bedrooms", prefs.min_beds)
     }
-    if (preferences.cities?.length > 0) {
-      listingsQuery = listingsQuery.in("city", preferences.cities)
+    if (prefs.cities?.length > 0) {
+      listingsQuery = listingsQuery.in("city", prefs.cities)
     }
 
     const { data: listings } = await listingsQuery.limit(100)
@@ -104,14 +127,12 @@ export async function generatePropertyMatches(params: {
 
 BUYER PROFILE:
 - Name: ${contact.first_name} ${contact.last_name}
-- Budget: $${preferences.min_price || 0} - $${preferences.max_price || "No max"}
-- Bedrooms: ${preferences.min_beds || "Any"}+
-- Bathrooms: ${preferences.min_baths || "Any"}+
-- Preferred Areas: ${preferences.cities?.join(", ") || "Any"}
-- Property Types: ${preferences.property_types?.join(", ") || "Any"}
-- Must-Have Features: ${preferences.must_haves?.join(", ") || "None specified"}
-- Nice-to-Have Features: ${preferences.nice_to_haves?.join(", ") || "None specified"}
-- Deal Breakers: ${preferences.deal_breakers?.join(", ") || "None specified"}
+- Budget: $${prefs.min_price || 0} - $${prefs.max_price || "No max"}
+- Bedrooms: ${prefs.min_beds || "Any"}+
+- Bathrooms: ${prefs.min_baths || "Any"}+
+- Preferred Areas: ${prefs.cities?.join(", ") || "Any"}
+- Property Types: ${prefs.property_types?.join(", ") || "Any"}
+- Preferred Features: ${prefs.features?.join(", ") || "None specified"}
 - Timeline: ${contact.timeline || "Not specified"}
 - Notes: ${contact.notes || "None"}
 
@@ -178,23 +199,30 @@ export async function analyzePropertyForBuyer(params: {
   const supabase = await createClient()
 
   try {
-    const [{ data: contact }, { data: property }] = await Promise.all([
-      supabase.from("contacts").select("*, buyer_preferences:contact_preferences(*)").eq("id", params.contactId).single(),
+    const [{ data: contact }, { data: property }, { data: buyerPrefs }] = await Promise.all([
+      supabase.from("contacts").select("*").eq("id", params.contactId).single(),
       supabase.from("listings").select("*").eq("id", params.propertyId).single(),
+      supabase
+        .from("property_preferences")
+        .select("preferred_price_max, preferred_features, inferred_max_price")
+        .eq("contact_id", params.contactId)
+        .maybeSingle(),
     ])
 
     if (!contact || !property) {
       return { success: false, error: "Contact or property not found" }
     }
 
+    const maxBudget = buyerPrefs?.preferred_price_max ?? buyerPrefs?.inferred_max_price
+    const preferredFeatures = buyerPrefs?.preferred_features ?? []
+
     const { text: analysis } = await generateText({
       model: resolveModel("openai/gpt-4o"),
       prompt: `Analyze this property for the buyer and provide a comprehensive assessment:
 
 BUYER: ${contact.first_name} ${contact.last_name}
-- Budget: $${contact.buyer_preferences?.[0]?.max_price || "Not set"}
-- Must-haves: ${contact.buyer_preferences?.[0]?.must_haves?.join(", ") || "None"}
-- Deal breakers: ${contact.buyer_preferences?.[0]?.deal_breakers?.join(", ") || "None"}
+- Budget: $${maxBudget || "Not set"}
+- Preferred Features: ${preferredFeatures.join(", ") || "None"}
 
 PROPERTY: ${property.address}
 - Price: $${property.price?.toLocaleString()}

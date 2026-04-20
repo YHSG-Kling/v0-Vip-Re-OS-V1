@@ -4,9 +4,10 @@ import { useState } from "react"
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, FileBarChart, ExternalLink } from "lucide-react"
+import { Loader2, FileBarChart, ExternalLink, BarChart2, Sparkles } from "lucide-react"
 import Link from "next/link"
-import { getCMAReports, updateCMAReport } from "@/app/actions/ai-cma"
+import { getCMAReports, updateCMAReport, generateAICMA } from "@/app/actions/ai-cma"
+import { createClient } from "@/lib/supabase/client"
 import { useToast } from "@/hooks/use-toast"
 
 interface CmaHistorySheetProps {
@@ -33,6 +34,7 @@ export function CmaHistorySheet({ listingId, agentId, listingAddress }: CmaHisto
   const [loading, setLoading] = useState(false)
   const [reports, setReports] = useState<any[]>([])
   const [toggling, setToggling] = useState<string | null>(null)
+  const [generating, setGenerating] = useState(false)
   const { toast } = useToast()
 
   async function loadReports() {
@@ -74,6 +76,70 @@ export function CmaHistorySheet({ listingId, agentId, listingAddress }: CmaHisto
     }
   }
 
+  async function handleGenerateCMA() {
+    setGenerating(true)
+    try {
+      // Parse address into components as a fallback
+      const addressParts = listingAddress.split(",").map((s) => s.trim())
+
+      // Fetch real listing data for accurate CMA
+      const supabase = createClient()
+      const { data: listingData } = await supabase
+        .from("listings")
+        .select("address, city, state, zip, bedrooms, bathrooms, sqft, property_type")
+        .eq("id", listingId)
+        .maybeSingle()
+
+      if (!listingData) {
+        toast({ title: "Cannot generate CMA — listing details not found", variant: "destructive" })
+        return
+      }
+
+      const propertyAddress = listingData.address ?? addressParts[0] ?? listingAddress
+      const propertyCity = listingData.city ?? addressParts[1] ?? ""
+      const propertyState = listingData.state ?? addressParts[2]?.split(" ")[0] ?? ""
+      const propertyZip = listingData.zip ?? addressParts[2]?.split(" ")[1] ?? ""
+      const bedrooms = listingData.bedrooms
+      const bathrooms = listingData.bathrooms
+      const squareFeet = listingData.sqft
+      const propertyType = listingData.property_type ?? "single_family"
+
+      if (bedrooms == null || bathrooms == null || squareFeet == null) {
+        toast({ title: "Cannot generate CMA — listing is missing beds, baths, or square footage", variant: "destructive" })
+        return
+      }
+
+      const res = await generateAICMA({
+        agentId,
+        propertyAddress,
+        propertyCity,
+        propertyState,
+        propertyZip,
+        propertyType,
+        bedrooms,
+        bathrooms,
+        squareFeet,
+        listingType: "seller",
+        listingId,
+      })
+
+      if (res.success) {
+        toast({ title: "CMA generated successfully" })
+        const fetchRes = await getCMAReports(agentId)
+        if (fetchRes.success) {
+          const filtered = (fetchRes.reports ?? []).filter((r: any) => r.listing_id === listingId)
+          setReports(filtered)
+        }
+      } else {
+        toast({ title: (res as any).error ?? "Failed to generate CMA", variant: "destructive" })
+      }
+    } catch {
+      toast({ title: "Failed to generate CMA", variant: "destructive" })
+    } finally {
+      setGenerating(false)
+    }
+  }
+
   return (
     <Sheet open={open} onOpenChange={(o) => { setOpen(o); if (o) loadReports() }}>
       <SheetTrigger asChild>
@@ -93,20 +159,59 @@ export function CmaHistorySheet({ listingId, agentId, listingAddress }: CmaHisto
           <p className="text-xs text-muted-foreground truncate">{listingAddress}</p>
         </SheetHeader>
 
+        {/* Generate New CMA button — always visible at top */}
+        <div className="mb-5">
+          <Button
+            onClick={handleGenerateCMA}
+            disabled={generating || loading}
+            className="w-full gap-2"
+            size="sm"
+          >
+            {generating ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Analyzing comparable sales…
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-3.5 w-3.5" />
+                Generate New CMA
+              </>
+            )}
+          </Button>
+        </div>
+
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           </div>
         ) : reports.length === 0 ? (
           <div className="py-10 text-center space-y-3">
-            <FileBarChart className="h-8 w-8 mx-auto text-muted-foreground/40" />
-            <p className="text-sm text-muted-foreground">No CMAs generated for this listing yet.</p>
-            <Link href={`/listings/${listingId}`}>
-              <Button size="sm" variant="outline" className="gap-1.5">
-                <ExternalLink className="h-3 w-3" />
-                Open Workbench
-              </Button>
-            </Link>
+            <BarChart2 className="h-8 w-8 mx-auto text-muted-foreground/40" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-foreground">No CMA created yet</p>
+              <p className="text-xs text-muted-foreground max-w-xs mx-auto">
+                Generate a Comparative Market Analysis to price this listing competitively and build seller confidence.
+              </p>
+            </div>
+            <Button
+              onClick={handleGenerateCMA}
+              disabled={generating}
+              size="sm"
+              className="gap-2"
+            >
+              {generating ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Analyzing comparable sales…
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-3.5 w-3.5" />
+                  Generate New CMA
+                </>
+              )}
+            </Button>
           </div>
         ) : (
           <div className="space-y-3">

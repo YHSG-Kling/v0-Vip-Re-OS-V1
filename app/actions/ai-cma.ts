@@ -90,6 +90,21 @@ export async function generateAICMA(params: CMAParams) {
 
   const supabase = await createClient()
 
+  // Validate that the caller owns this agentId
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const { data: agentRow } = await supabase
+    .from("agents")
+    .select("id")
+    .eq("id", params.agentId)
+    .eq("user_id", user.id)
+    .maybeSingle()
+  if (!agentRow) {
+    return { success: false, error: "Unauthorized: agentId does not match authenticated user" }
+  }
+
   try {
     // 1. Fetch comparable properties from database/MLS
     const comparables = await fetchComparableProperties(params)

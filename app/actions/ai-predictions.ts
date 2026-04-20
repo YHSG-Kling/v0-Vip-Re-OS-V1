@@ -2127,6 +2127,7 @@ export async function detectClientChurn(leadId: string) {
     .eq("id", leadId)
     .maybeSingle()
 
+  let resolvedLead: Record<string, any> | null = lead ?? null
   if (error || !lead) {
     // Try contacts table as fallback
     const { data: contact } = await supabase
@@ -2138,28 +2139,31 @@ export async function detectClientChurn(leadId: string) {
     if (!contact) {
       throw new Error("Lead not found")
     }
+    resolvedLead = contact
   }
 
-  const daysInPipeline = Math.floor((Date.now() - new Date(lead.created_at).getTime()) / (1000 * 60 * 60 * 24))
+  if (!resolvedLead) throw new Error("Lead not found")
+
+  const daysInPipeline = Math.floor((Date.now() - new Date(resolvedLead.created_at).getTime()) / (1000 * 60 * 60 * 24))
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
 
-  const recentCommunications = (lead.communications || []).filter(
+  const recentCommunications = (resolvedLead.communications || []).filter(
     (c: any) => new Date(c.created_at).getTime() > thirtyDaysAgo,
   )
-  const recentBehavior = (lead.lead_behavioral_data || []).filter(
+  const recentBehavior = (resolvedLead.lead_behavioral_data || []).filter(
     (b: any) => new Date(b.occurred_at).getTime() > thirtyDaysAgo && b.event_type === "property_view",
   )
 
   const prompt = `You are an AI churn detection expert. Analyze client engagement:
 
-Lead: ${lead.first_name} ${lead.last_name}
+Lead: ${resolvedLead.first_name} ${resolvedLead.last_name}
 Days in Pipeline: ${daysInPipeline}
 
 Recent Activity (30 days):
 - Communications: ${recentCommunications.length}
 - Property Views: ${recentBehavior.length}
-- Last Contact: ${lead.last_contact_date || "Never"}
-- Showings: ${lead.showings?.length || 0}
+- Last Contact: ${resolvedLead.last_contact_date || "Never"}
+- Showings: ${resolvedLead.showings?.length || 0}
 
 Detect churn risk and provide save strategy:
 
@@ -2203,7 +2207,7 @@ Detect churn risk and provide save strategy:
         entity_type: "lead",
         entity_id: leadId,
         insight_title: "CLIENT CHURN RISK - Act Now",
-        insight_description: `${resolvedLead.first_name} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
+        insight_description: `${resolvedLead?.first_name ?? "Client"} showing signs of disengagement. ${result.timeToChurn} to potential churn.`,
         actionable_steps: result.saveStrategy?.immediate || [],
         priority: "critical",
         estimated_impact: {

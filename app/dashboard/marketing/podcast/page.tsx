@@ -19,9 +19,9 @@ export default async function PodcastPage() {
 
   try {
     const ctx = await getAgentContext()
-    agentId = ctx.agentId ?? ""
-    brokerageId = ctx.brokerageId ?? ""
-    userType = ctx.userType
+    agentId = ctx?.agentId ?? ""
+    brokerageId = ctx?.brokerageId ?? ""
+    userType = ctx?.userType ?? "agent"
 
     const [episodesResult, supabase] = await Promise.all([
       getPodcastEpisodes(),
@@ -42,8 +42,8 @@ export default async function PodcastPage() {
         .eq("event_type", "play")
       totalPlays = count ?? 0
     }
-  } catch {
-    // Not authenticated or no context — PodcastDashboard will handle gracefully
+  } catch (error) {
+    console.error("[Podcast] Failed to load initial data:", error)
   }
 
   return (

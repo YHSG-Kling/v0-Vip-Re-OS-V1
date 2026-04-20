@@ -258,8 +258,14 @@ async function generateScriptFromKeywords(keywords: string[], category?: string)
       }),
     })
 
+    if (!response.ok) {
+      throw new Error(`Script API request failed: ${response.status} ${response.statusText}`)
+    }
     const data = await response.json()
-    return data.choices[0]?.message?.content || ""
+    if (!data.choices?.[0]?.message?.content) {
+      throw new Error("Invalid API response: missing content")
+    }
+    return data.choices[0].message.content
   } catch (error) {
     console.error("[v0] Error generating script:", error)
     throw new Error("Failed to generate script from keywords")
@@ -524,6 +530,9 @@ async function synthesizeVoice(
 // Get all podcast episodes for agent
 export async function getPodcastEpisodes(filters?: { status?: string; category?: string }) {
   const { agentId, brokerageId } = await getAgentContext()
+  if (!agentId || !brokerageId) {
+    return { success: false, error: "Missing agent context", episodes: [] }
+  }
   const supabase = await createClient()
 
   try {
@@ -635,7 +644,7 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
       const channelConfig = distributionChannels?.find(c => c.channel_name === channel)
       
       // Insert distribution log entry
-      const { data: logEntry } = await supabase
+      const { data: logEntry, error: logError } = await supabase
         .from("podcast_distribution_log")
         .insert({
           brokerage_id: brokerageId,
@@ -645,13 +654,17 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
         })
         .select()
         .single()
+      if (logError || !logEntry) {
+        distributionResults.push({ channel, success: false, error: logError?.message ?? "Failed to create log entry" })
+        continue
+      }
 
       if (channelConfig) {
         // Attempt distribution (actual implementation would call external APIs)
         try {
           // Simulate distribution attempt
           const externalEpisodeId = `ext_${episodeId}_${channel}_${Date.now()}`
-          
+
           // Update log entry as published
           await supabase
             .from("podcast_distribution_log")
@@ -661,7 +674,7 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
               external_episode_id: externalEpisodeId,
               provider_response: { status: "success", timestamp: new Date().toISOString() },
             })
-            .eq("id", logEntry?.id)
+            .eq("id", logEntry.id)
 
           distributionResults.push({ channel, success: true })
 
@@ -683,7 +696,7 @@ export async function publishPodcastEpisode(episodeId: string, channels: string[
               distribution_status: "failed",
               error_message: distError.message,
             })
-            .eq("id", logEntry?.id)
+            .eq("id", logEntry.id)
 
           distributionResults.push({ channel, success: false, error: distError.message })
 

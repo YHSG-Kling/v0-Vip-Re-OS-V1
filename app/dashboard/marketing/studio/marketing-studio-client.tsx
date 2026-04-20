@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -170,14 +170,26 @@ interface MarketingStudioClientProps {
 export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole }: MarketingStudioClientProps) {
   const [activeTab, setActiveTab] = useState("overview")
   const [isLoading, setIsLoading] = useState(true)
+  const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [assets, setAssets] = useState<Asset[]>([])
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([])
   const [selectedCampaign, setSelectedCampaign] = useState<Campaign | null>(null)
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date())
+  const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined)
+  const [calendarViewDate, setCalendarViewDate] = useState(new Date())
   const [searchQuery, setSearchQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState<string>("all")
+
+  const eventsByDate = useMemo(() => {
+    const map: Record<string, CalendarEvent[]> = {}
+    for (const ev of calendarEvents) {
+      const key = format(new Date(ev.scheduled_at), "yyyy-MM-dd")
+      if (!map[key]) map[key] = []
+      map[key].push(ev)
+    }
+    return map
+  }, [calendarEvents])
 
   // Dialog states
   const [isCreateCampaignOpen, setIsCreateCampaignOpen] = useState(false)
@@ -277,6 +289,10 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     if (activeTab === "mail")        loadMailData()
   }, [activeTab, statusFilter])
 
+  useEffect(() => {
+    if (activeTab === "calendar") loadCalendarEvents()
+  }, [calendarViewDate])
+
   async function loadInitialData() {
     setIsLoading(true)
     try {
@@ -284,7 +300,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         getMarketingStudioDashboard(),
         getCampaigns({ status: statusFilter !== "all" ? (statusFilter as CampaignStatus) : undefined }),
       ])
-      if (dashboardResult.success) setDashboard((dashboardResult as any).dashboard)
+      if (dashboardResult.success) {
+        setDashboard((dashboardResult as any).dashboard)
+        setDashboardError(null)
+      } else {
+        setDashboardError((dashboardResult as any).error ?? "Failed to load dashboard metrics")
+      }
       if (campaignsResult.success) setCampaigns(campaignsResult.campaigns)
     } catch (error) {
       console.error("[v0] Failed to load marketing studio data:", error)
@@ -308,8 +329,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   }
 
   async function loadCalendarEvents() {
+    const start = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth(), 1)
+    const end = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 0)
     const result = await getCalendarEvents({
-      startDate: selectedDate ? format(selectedDate, "yyyy-MM-dd") : undefined,
+      startDate: format(start, "yyyy-MM-dd"),
+      endDate: format(end, "yyyy-MM-dd"),
     })
     if (result.success) setCalendarEvents(result.events)
   }
@@ -782,62 +806,97 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         </Card>
 
         {/* Quick Stats */}
-        {dashboard && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Active Campaigns</p>
-                    <p className="text-2xl font-bold">{dashboard.campaignsByStatus.live ?? 0}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
-                    <Play className="h-6 w-6 text-green-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Pending Approval</p>
-                    <p className="text-2xl font-bold">{dashboard.assetsByApproval.pending ?? 0}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
-                    <Clock className="h-6 w-6 text-yellow-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Total Assets</p>
-                    <p className="text-2xl font-bold">{dashboard.totalAssets}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
-                    <Image className="h-6 w-6 text-blue-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Upcoming Events</p>
-                    <p className="text-2xl font-bold">{dashboard.upcomingEvents.length}</p>
-                  </div>
-                  <div className="h-12 w-12 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
-                    <CalendarIcon className="h-6 w-6 text-violet-600" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+        {dashboardError && (
+          <div className="rounded-lg border border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20 dark:border-yellow-800 px-4 py-3 flex items-center gap-3 text-sm text-yellow-800 dark:text-yellow-200">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span>Dashboard metrics could not be loaded: {dashboardError}. Other Studio features are still available.</span>
           </div>
         )}
+        {dashboard && (() => {
+          const activeCampaigns = dashboard.campaignsByStatus.live ?? 0
+          const pendingApproval = dashboard.assetsByApproval.pending ?? 0
+          const totalAssets = dashboard.totalAssets
+          const upcomingEventsCount = dashboard.upcomingEvents.length
+          const isEmpty = dashboard.totalCampaigns === 0 && totalAssets === 0
+
+          return (
+            <>
+              {isEmpty && (
+                <div className="rounded-xl border-2 border-dashed border-violet-200 dark:border-violet-800 bg-violet-50/50 dark:bg-violet-950/10 p-8 text-center space-y-3">
+                  <Rocket className="h-10 w-10 text-violet-400 mx-auto" />
+                  <h3 className="font-semibold text-lg text-foreground">Your studio is ready for launch</h3>
+                  <p className="text-muted-foreground text-sm max-w-sm mx-auto">
+                    Create your first campaign and upload assets to start tracking performance here.
+                  </p>
+                  <Button
+                    className="bg-violet-600 hover:bg-violet-700 mt-2"
+                    onClick={() => setIsCreateCampaignOpen(true)}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create First Campaign
+                  </Button>
+                </div>
+              )}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Active Campaigns</p>
+                        <p className="text-2xl font-bold">{activeCampaigns}</p>
+                        {dashboard.totalCampaigns > 0 && activeCampaigns === 0 && (
+                          <p className="text-xs text-muted-foreground mt-0.5">{dashboard.totalCampaigns} total</p>
+                        )}
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-green-100 dark:bg-green-900/30 flex items-center justify-center">
+                        <Play className="h-6 w-6 text-green-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Pending Approval</p>
+                        <p className="text-2xl font-bold">{pendingApproval}</p>
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-yellow-100 dark:bg-yellow-900/30 flex items-center justify-center">
+                        <Clock className="h-6 w-6 text-yellow-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Total Assets</p>
+                        <p className="text-2xl font-bold">{totalAssets}</p>
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center">
+                        <Image className="h-6 w-6 text-blue-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardContent className="pt-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm text-muted-foreground">Upcoming Events</p>
+                        <p className="text-2xl font-bold">{upcomingEventsCount}</p>
+                      </div>
+                      <div className="h-12 w-12 rounded-lg bg-violet-100 dark:bg-violet-900/30 flex items-center justify-center">
+                        <CalendarIcon className="h-6 w-6 text-violet-600" />
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            </>
+          )
+        })()}
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
@@ -1369,118 +1428,335 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
           </TabsContent>
 
           {/* Calendar Tab */}
-          <TabsContent value="calendar" className="space-y-4">
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button variant="outline" className="w-[280px] justify-start text-left font-normal">
-                    <CalendarIcon className="mr-2 h-4 w-4" />
-                    {selectedDate ? format(selectedDate, "PPP") : <span>Pick a date</span>}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0">
-                  <Calendar mode="single" selected={selectedDate} onSelect={setSelectedDate} initialFocus />
-                </PopoverContent>
-              </Popover>
-              <Dialog open={isCreateEventOpen} onOpenChange={setIsCreateEventOpen}>
-                <DialogTrigger asChild>
-                  <Button className="bg-violet-600 hover:bg-violet-700">
-                    <Plus className="mr-2 h-4 w-4" />
-                    Add Event
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Create Calendar Event</DialogTitle>
-                    <DialogDescription>Schedule a marketing event</DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-4 py-4">
-                    <div className="space-y-2">
-                      <Label>Event Title</Label>
-                      <Input
-                        value={newEvent.title}
-                        onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
-                        placeholder="Social Post Go-Live"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Event Type</Label>
-                      <Select
-                        value={newEvent.eventType}
-                        onValueChange={(v) => setNewEvent({ ...newEvent, eventType: v as any })}
-                      >
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="publish">Publish</SelectItem>
-                          <SelectItem value="review">Review</SelectItem>
-                          <SelectItem value="deadline">Deadline</SelectItem>
-                          <SelectItem value="meeting">Meeting</SelectItem>
-                          <SelectItem value="go_live">Go Live</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Date & Time</Label>
-                      <Input
-                        type="datetime-local"
-                        value={newEvent.scheduledAt}
-                        onChange={(e) => setNewEvent({ ...newEvent, scheduledAt: e.target.value })}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Notes</Label>
-                      <Textarea
-                        value={newEvent.notes}
-                        onChange={(e) => setNewEvent({ ...newEvent, notes: e.target.value })}
-                        placeholder="Additional details..."
-                        rows={3}
-                      />
-                    </div>
-                    <Button onClick={handleCreateCalendarEvent} className="w-full bg-violet-600 hover:bg-violet-700">
-                      Create Event
-                    </Button>
-                  </div>
-                </DialogContent>
-              </Dialog>
-            </div>
+          <TabsContent value="calendar" className="space-y-6">
+            {/* ── Calendar Grid ──────────────────────────────────────────────── */}
+            {(() => {
+              // Build month grid entirely in-component — no calendar library needed.
+              const today = new Date()
+              const viewYear = calendarViewDate.getFullYear()
+              const viewMonth = calendarViewDate.getMonth()
 
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {calendarEvents.map((event) => (
-                <Card key={event.id}>
-                  <CardContent className="pt-6">
-                    <div className="flex items-start justify-between mb-2">
-                      <Badge variant="outline" className="capitalize">
-                        {event.event_type.replace("_", " ")}
-                      </Badge>
-                      <Badge className={event.status === "scheduled" ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}>
-                        {event.status}
-                      </Badge>
-                    </div>
-                    <h4 className="font-semibold mb-1">{event.title}</h4>
-                    <p className="text-sm text-muted-foreground mb-2">
-                      {format(new Date(event.scheduled_at), "MMM d, yyyy 'at' h:mm a")}
-                    </p>
-                    {event.campaign && (
-                      <p className="text-sm text-muted-foreground">Campaign: {event.campaign.campaign_name}</p>
-                    )}
-                    {event.notes && <p className="text-sm text-muted-foreground mt-2">{event.notes}</p>}
-                    {event.status === "scheduled" && (
-                      <div className="flex gap-2 mt-4">
+              // First day of the month (0=Sun … 6=Sat) and total days
+              const firstOfMonth = new Date(viewYear, viewMonth, 1)
+              const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate()
+              const startDow = firstOfMonth.getDay() // 0-6
+
+              // Build a Set of "YYYY-MM-DD" strings that have events
+              const eventDateSet = new Set<string>()
+              for (const key of Object.keys(eventsByDate)) {
+                eventDateSet.add(key)
+              }
+
+              // Also mark scheduled sends from newsletter state
+              for (const s of scheduledSends) {
+                const sentAt = s.sent_at || s.scheduled_at
+                if (sentAt) {
+                  const key = format(new Date(sentAt), "yyyy-MM-dd")
+                  eventDateSet.add(key)
+                }
+              }
+
+              const prevMonth = () => {
+                const d = new Date(viewYear, viewMonth - 1, 1)
+                setCalendarViewDate(d)
+                setSelectedDate(undefined)
+              }
+              const nextMonth = () => {
+                const d = new Date(viewYear, viewMonth + 1, 1)
+                setCalendarViewDate(d)
+                setSelectedDate(undefined)
+              }
+
+              const selectedKey = selectedDate ? format(selectedDate, "yyyy-MM-dd") : null
+              const todayKey = format(today, "yyyy-MM-dd")
+
+              // Build cell array: nulls for leading blanks, then 1..daysInMonth
+              const cells: (number | null)[] = [
+                ...Array(startDow).fill(null),
+                ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+              ]
+              // Pad to full weeks
+              while (cells.length % 7 !== 0) cells.push(null)
+
+              const DOW_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+              // Determine which events to show in the list below:
+              // If a date is selected, show only events on that date; else all.
+              const filteredEvents = selectedKey && eventsByDate[selectedKey]
+                ? eventsByDate[selectedKey]
+                : calendarEvents
+
+              return (
+                <Card className="overflow-hidden shadow-sm">
+                  <CardHeader className="pb-3 border-b">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
                         <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => updateCalendarEventStatus(event.id, "completed")}
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={prevMonth}
+                          aria-label="Previous month"
                         >
-                          <CheckCircle className="h-4 w-4 mr-1" />
-                          Complete
+                          <ChevronRight className="h-4 w-4 rotate-180" />
+                        </Button>
+                        <h2 className="text-lg font-semibold min-w-[160px] text-center">
+                          {format(firstOfMonth, "MMMM yyyy")}
+                        </h2>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8"
+                          onClick={nextMonth}
+                          aria-label="Next month"
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-xs h-7"
+                          onClick={() => { setCalendarViewDate(new Date()); setSelectedDate(undefined) }}
+                        >
+                          Today
                         </Button>
                       </div>
-                    )}
+
+                      {/* Add Event inline button */}
+                      <Dialog open={isCreateEventOpen} onOpenChange={setIsCreateEventOpen}>
+                        <DialogTrigger asChild>
+                          <Button size="sm" className="bg-violet-600 hover:bg-violet-700">
+                            <Plus className="mr-1.5 h-3.5 w-3.5" />
+                            Add Event
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Create Calendar Event</DialogTitle>
+                            <DialogDescription>Schedule a marketing event</DialogDescription>
+                          </DialogHeader>
+                          <div className="space-y-4 py-4">
+                            <div className="space-y-2">
+                              <Label>Event Title</Label>
+                              <Input
+                                value={newEvent.title}
+                                onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
+                                placeholder="Social Post Go-Live"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Event Type</Label>
+                              <Select
+                                value={newEvent.eventType}
+                                onValueChange={(v) => setNewEvent({ ...newEvent, eventType: v as any })}
+                              >
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="publish">Publish</SelectItem>
+                                  <SelectItem value="review">Review</SelectItem>
+                                  <SelectItem value="deadline">Deadline</SelectItem>
+                                  <SelectItem value="meeting">Meeting</SelectItem>
+                                  <SelectItem value="go_live">Go Live</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Date & Time</Label>
+                              <Input
+                                type="datetime-local"
+                                value={newEvent.scheduledAt}
+                                onChange={(e) => setNewEvent({ ...newEvent, scheduledAt: e.target.value })}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label>Notes</Label>
+                              <Textarea
+                                value={newEvent.notes}
+                                onChange={(e) => setNewEvent({ ...newEvent, notes: e.target.value })}
+                                placeholder="Additional details..."
+                                rows={3}
+                              />
+                            </div>
+                            <Button onClick={handleCreateCalendarEvent} className="w-full bg-violet-600 hover:bg-violet-700">
+                              Create Event
+                            </Button>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                    </div>
+                  </CardHeader>
+
+                  <CardContent className="p-0">
+                    {/* Day-of-week header */}
+                    <div className="grid grid-cols-7 border-b">
+                      {DOW_LABELS.map((d) => (
+                        <div
+                          key={d}
+                          className="py-2 text-center text-xs font-semibold text-muted-foreground tracking-wide uppercase"
+                        >
+                          {d}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Date cells grid */}
+                    <div className="grid grid-cols-7">
+                      {cells.map((day, idx) => {
+                        if (day === null) {
+                          return (
+                            <div
+                              key={`blank-${idx}`}
+                              className="h-20 border-b border-r last:border-r-0 bg-muted/20"
+                            />
+                          )
+                        }
+
+                        const cellKey = format(new Date(viewYear, viewMonth, day), "yyyy-MM-dd")
+                        const isToday = cellKey === todayKey
+                        const isSelected = cellKey === selectedKey
+                        const hasEvents = eventDateSet.has(cellKey)
+                        const cellEvents = eventsByDate[cellKey] ?? []
+
+                        return (
+                          <button
+                            key={cellKey}
+                            type="button"
+                            onClick={() => {
+                              setSelectedDate(new Date(viewYear, viewMonth, day))
+                            }}
+                            className={cn(
+                              "h-20 border-b border-r last:border-r-0 p-1.5 text-left align-top transition-colors hover:bg-violet-50 dark:hover:bg-violet-950/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500",
+                              isSelected && "bg-violet-100 dark:bg-violet-900/30",
+                              idx % 7 === 6 && "border-r-0", // last column no right border
+                            )}
+                          >
+                            {/* Day number */}
+                            <span
+                              className={cn(
+                                "inline-flex h-6 w-6 items-center justify-center rounded-full text-sm font-medium",
+                                isToday && "bg-violet-600 text-white font-bold",
+                                isSelected && !isToday && "ring-2 ring-violet-500 text-violet-700 dark:text-violet-300",
+                                !isToday && !isSelected && "text-foreground",
+                              )}
+                            >
+                              {day}
+                            </span>
+
+                            {/* Event dots / pills */}
+                            {hasEvents && (
+                              <div className="mt-1 flex flex-wrap gap-0.5">
+                                {cellEvents.slice(0, 2).map((ev) => {
+                                  const dotColor =
+                                    ev.event_type === "deadline" ? "bg-red-500" :
+                                    ev.event_type === "go_live" ? "bg-green-500" :
+                                    ev.event_type === "meeting" ? "bg-blue-500" :
+                                    ev.event_type === "review" ? "bg-yellow-500" :
+                                    "bg-violet-500"
+                                  return (
+                                    <span
+                                      key={ev.id}
+                                      className={cn("block truncate rounded px-1 text-[10px] leading-4 font-medium text-white max-w-full", dotColor)}
+                                      title={ev.title}
+                                    >
+                                      {ev.title.length > 10 ? ev.title.slice(0, 9) + "…" : ev.title}
+                                    </span>
+                                  )
+                                })}
+                                {cellEvents.length > 2 && (
+                                  <span className="text-[10px] text-muted-foreground leading-4">
+                                    +{cellEvents.length - 2} more
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
                   </CardContent>
                 </Card>
-              ))}
+              )
+            })()}
+
+            {/* ── Event cards below the grid ────────────────────────────────── */}
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-base">
+                  {selectedDate
+                    ? `Events on ${format(selectedDate, "MMMM d, yyyy")}`
+                    : "All Scheduled Events"}
+                </h3>
+                {selectedDate && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-7"
+                    onClick={() => setSelectedDate(undefined)}
+                  >
+                    Clear filter
+                  </Button>
+                )}
+              </div>
+
+              {(() => {
+                const selectedKey = selectedDate ? format(selectedDate, "yyyy-MM-dd") : null
+                const filtered = selectedKey
+                  ? (eventsByDate[selectedKey] ?? [])
+                  : calendarEvents
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="rounded-xl border-2 border-dashed border-muted py-12 text-center text-muted-foreground">
+                      <CalendarIcon className="h-8 w-8 mx-auto mb-3 opacity-40" />
+                      <p className="font-medium">
+                        {selectedDate ? "No events on this date" : "No scheduled events yet"}
+                      </p>
+                      <p className="text-sm mt-1">Click Add Event to schedule a marketing activity</p>
+                    </div>
+                  )
+                }
+
+                return (
+                  <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filtered.map((event) => (
+                      <Card key={event.id}>
+                        <CardContent className="pt-6">
+                          <div className="flex items-start justify-between mb-2">
+                            <Badge variant="outline" className="capitalize">
+                              {event.event_type.replace(/_/g, " ")}
+                            </Badge>
+                            <Badge className={event.status === "scheduled" ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}>
+                              {event.status}
+                            </Badge>
+                          </div>
+                          <h4 className="font-semibold mb-1">{event.title}</h4>
+                          <p className="text-sm text-muted-foreground mb-2">
+                            {format(new Date(event.scheduled_at), "MMM d, yyyy 'at' h:mm a")}
+                          </p>
+                          {event.campaign && (
+                            <p className="text-sm text-muted-foreground">Campaign: {event.campaign.campaign_name}</p>
+                          )}
+                          {event.notes && <p className="text-sm text-muted-foreground mt-2">{event.notes}</p>}
+                          {event.status === "scheduled" && (
+                            <div className="flex gap-2 mt-4">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => updateCalendarEventStatus(event.id, "completed")}
+                              >
+                                <CheckCircle className="h-4 w-4 mr-1" />
+                                Complete
+                              </Button>
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )
+              })()}
             </div>
           </TabsContent>
 

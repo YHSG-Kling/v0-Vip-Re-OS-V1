@@ -1,5 +1,14 @@
 "use server"
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
 import { createClient } from "@/lib/supabase/server"
 import { generateObject } from "@/lib/ai/generate"
 import { resolveModel } from "@/lib/ai/resolve-model"
@@ -92,6 +101,30 @@ export async function aiGenerateSubjectLines(params: {
       return { success: false, error: access.reason || "Feature not available" }
     }
 
+    const supabase = await createClient()
+
+    // Fetch brokerage and agent data for template variable substitution
+    const [{ data: brokerageData }, { data: agentData }] = await Promise.all([
+      supabase
+        .from("brokerages")
+        .select("city, state, name")
+        .eq("id", params.brokerageId)
+        .maybeSingle(),
+      supabase
+        .from("agents")
+        .select("first_name, last_name, full_name")
+        .eq("user_id", params.agentId)
+        .maybeSingle(),
+    ])
+
+    const city = brokerageData?.city ?? brokerageData?.state ?? "your area"
+    const brokerageName = brokerageData?.name ?? "our brokerage"
+    const agentName =
+      agentData?.full_name ??
+      (agentData?.first_name
+        ? `${agentData.first_name} ${agentData.last_name ?? ""}`.trim()
+        : "your agent")
+
     const { object: subjectLines } = await generateObject({
       model: resolveModel("openai/gpt-4o-mini"),
       schema: z.object({
@@ -119,6 +152,9 @@ Topic: ${params.newsletterTopic}
 Audience: ${params.audience ?? "all"}
 Tone: ${params.tone ?? "professional"}
 Include Emoji: ${params.includeEmoji ?? false}
+City / Market: ${city}
+Agent Name: ${agentName}
+Brokerage: ${brokerageName}
 
 Create:
 1. A primary subject line with preheader text
@@ -128,11 +164,38 @@ Create:
 Best practices:
 - Keep under 50 characters
 - Create urgency or curiosity
-- Personalization tokens allowed: {{first_name}}, {{city}}
+- Use the real city name (${city}) instead of placeholder tokens where appropriate
+- Personalization token allowed for recipient first name: {{first_name}}
 - Avoid spam trigger words`,
     })
 
-    return { success: true, subjectLines }
+    /** Substitute any remaining template variables with real values */
+    function substituteVars(text: string): string {
+      return text
+        .replace(/\{\{city\}\}/gi, city)
+        .replace(/\{\{agent_name\}\}/gi, agentName)
+        .replace(/\{\{brokerage_name\}\}/gi, brokerageName)
+    }
+
+    const resolvedSubjectLines = {
+      primary: {
+        ...subjectLines.primary,
+        subject: substituteVars(subjectLines.primary.subject),
+        preheader: substituteVars(subjectLines.primary.preheader),
+      },
+      variants: subjectLines.variants.map((v) => ({
+        ...v,
+        subject: substituteVars(v.subject),
+        preheader: substituteVars(v.preheader),
+      })),
+      abTestRecommendation: {
+        ...subjectLines.abTestRecommendation,
+        variantA: substituteVars(subjectLines.abTestRecommendation.variantA),
+        variantB: substituteVars(subjectLines.abTestRecommendation.variantB),
+      },
+    }
+
+    return { success: true, subjectLines: resolvedSubjectLines }
   } catch (error) {
     console.error("[AI Newsletter] Subject line error:", error)
     return handleError(error, "aiGenerateSubjectLines")
@@ -247,10 +310,19 @@ Include clear CTAs where appropriate.`,
 
     await incrementFeatureUsage(params.agentId, "newsletter_engine")
 
-    // Build a flat markdown string from sections for simple display
+    // Build a flat HTML string from sections for display with dangerouslySetInnerHTML
     const flatContent = brandedSections
-      .map((s: any) => `## ${s.title}\n\n${s.content}${s.ctaText ? `\n\n**${s.ctaText}**` : ""}`)
-      .join("\n\n---\n\n")
+      .map(
+        (s: any) =>
+          `<section style="margin-bottom:1.5rem">` +
+          `<h2 style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">${escapeHtml(s.title)}</h2>` +
+          `<div style="line-height:1.6"><p>${escapeHtml(s.content).replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</p></div>` +
+          (s.ctaText
+            ? `<p style="margin-top:0.75rem"><strong>${escapeHtml(s.ctaText)}</strong></p>`
+            : "") +
+          `</section>`
+      )
+      .join('<hr style="margin:1.5rem 0;border-color:#e5e7eb">')
 
     return {
       success: true,

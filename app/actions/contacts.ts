@@ -21,6 +21,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 import { syncContactToCRM } from "@/lib/crm/sync"
+import { revalidatePath } from "next/cache"
 import {
   createContactManually,
   updateContactRecord,
@@ -33,6 +34,7 @@ export async function getContacts(params?: {
   status?: string
   contact_type?: string
   limit?: number
+  offset?: number
   search?: string
 }) {
   try {
@@ -43,6 +45,9 @@ export async function getContacts(params?: {
       return { success: true, contacts: [] }
     }
 
+    const limit = Math.min(Math.max(Math.floor(params?.limit ?? 100), 1), 500)
+    const offset = Math.max(Math.floor(params?.offset ?? 0), 0)
+
     let query = supabase
       .from("contacts")
       .select(
@@ -51,6 +56,7 @@ export async function getContacts(params?: {
       .eq("brokerage_id", brokerageId)
       .is("deleted_at", null)
       .order("last_contacted_at", { ascending: false, nullsFirst: false })
+      .order("id", { ascending: false })
 
     // Agents only see their own contacts — contacts.agent_id → agents.id
     if (userType === "agent" && agentId) {
@@ -65,9 +71,17 @@ export async function getContacts(params?: {
       query = query.eq("contact_type", params.contact_type)
     }
 
-    if (params?.limit) {
-      query = query.limit(params.limit)
+    // Server-side search across name, email, and phone — avoids the 100-record client cap
+    if (params?.search && params.search.trim().length > 0) {
+      const term = params.search.trim()
+      // Strip PostgREST-breaking chars; escape SQL LIKE wildcards
+      const safeTerm = term.replace(/[(),%]/g, "").replace(/_/g, "\\_")
+      query = query.or(
+        `first_name.ilike.%${safeTerm}%,last_name.ilike.%${safeTerm}%,email.ilike.%${safeTerm}%,phone.ilike.%${safeTerm}%`
+      )
     }
+
+    query = query.range(offset, offset + limit - 1)
 
     const { data, error } = await query
 
@@ -296,6 +310,9 @@ export async function addContactNote(contactId: string, noteText: string) {
     if (error) {
       return { success: false, error: error.message }
     }
+
+    revalidatePath("/crm")
+    revalidatePath("/dashboard")
 
     return { success: true }
   } catch (error: any) {

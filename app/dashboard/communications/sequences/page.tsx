@@ -2,6 +2,7 @@ import { redirect } from "next/navigation"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 import { resolveAgentId } from "@/lib/kernel/agent-identity"
+import { NURTURE_SEQUENCE_TYPES } from "@/app/actions/campaign-sequences"
 import SequencesClient from "./SequencesClient"
 
 export const metadata = {
@@ -34,7 +35,7 @@ export default async function SequencesPage({
   const agentId = await resolveAgentId(service, user.id)
   if (!agentId) redirect("/dashboard/onboarding")
 
-  // Fetch existing campaign sequences for this brokerage
+  // Fetch existing nurture sequences for this brokerage
   // Table: campaign_sequences (NOT drip_campaigns — that table does not exist)
   const [campaignsRes, contactRes] = await Promise.all([
     service
@@ -53,6 +54,7 @@ export default async function SequencesPage({
         updated_at
       `)
       .eq("brokerage_id", brokerageId)
+      .or(`sequence_type.in.(${NURTURE_SEQUENCE_TYPES.join(",")}),campaign_type.in.(${NURTURE_SEQUENCE_TYPES.join(",")})`)
       .order("created_at", { ascending: false })
       .limit(50),
 

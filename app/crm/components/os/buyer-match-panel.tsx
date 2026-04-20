@@ -310,12 +310,30 @@ export function BuyerMatchPanel({
           {previewIntent && (
             <div className="p-3 bg-blue-50 rounded-lg text-sm">
               <p className="font-medium text-blue-800 mb-1">AI Understanding:</p>
-              <p className="text-blue-700">
-                Looking for: {previewIntent.bedrooms}+ bed
-                {previewIntent.price && `, max $${previewIntent.price.toLocaleString()}`}
-                {previewIntent.areas?.length > 0 && `, in ${previewIntent.areas.join(", ")}`}
-                {previewIntent.keywords?.length > 0 && `, ${previewIntent.keywords.join(", ")}`}
-              </p>
+              {previewIntent.bedrooms == null &&
+               previewIntent.bathrooms == null &&
+               previewIntent.price == null &&
+               !(previewIntent.areas?.length > 0) &&
+               !(previewIntent.keywords?.length > 0) ? (
+                <p className="text-blue-700">Type a description above to preview AI property matching</p>
+              ) : (
+                <p className="text-blue-700">
+                  Looking for:{" "}
+                  {previewIntent.bedrooms != null && (
+                    <span>{previewIntent.bedrooms}+ bed</span>
+                  )}
+                  {previewIntent.bathrooms != null && (
+                    <span>{previewIntent.bedrooms != null ? ", " : ""}{previewIntent.bathrooms}+ bath</span>
+                  )}
+                  {previewIntent.price != null && `${previewIntent.bedrooms != null || previewIntent.bathrooms != null ? ", " : ""}max $${previewIntent.price.toLocaleString()}`}
+                  {previewIntent.areas?.length > 0 && (
+                    `${previewIntent.bedrooms != null || previewIntent.bathrooms != null || previewIntent.price != null ? ", " : ""}in ${previewIntent.areas.join(", ")}`
+                  )}
+                  {previewIntent.keywords?.length > 0 && (
+                    `${previewIntent.bedrooms != null || previewIntent.bathrooms != null || previewIntent.price != null || (previewIntent.areas?.length > 0) ? ", " : ""}${previewIntent.keywords.join(", ")}`
+                  )}
+                </p>
+              )}
             </div>
           )}
         </div>
