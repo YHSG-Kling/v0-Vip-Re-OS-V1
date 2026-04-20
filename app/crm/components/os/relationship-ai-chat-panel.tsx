@@ -21,8 +21,8 @@ import {
   checkThemFirstCompliance,
   getChatTemplates,
 } from "@/app/actions/ai-chat"
-import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
+import { askRelationshipAI } from "@/app/crm/actions/ask-relationship-ai"
 
 interface RelationshipAiChatPanelProps {
   contactId: string
@@ -74,19 +74,31 @@ export function RelationshipAiChatPanel({
     setLoading(true)
     setComplianceCheck(null)
     try {
-      const result = await generateSmartResponse({
-        incomingMessage: input || `Draft a ${purpose.replace(/_/g, " ")} message for ${contactName}`,
-        contactId,
-        agentId,
-        brokerageId: "",
-        channel: selectedChannel,
-        tone: brandVoice?.tone || "professional",
+      // Build a context-rich question for the AI
+      const channelInstructions =
+        selectedChannel === "sms"
+          ? "Keep it concise, under 160 characters."
+          : selectedChannel === "email"
+          ? "Write a well-structured email with a clear subject and call to action."
+          : "Write a short, conversational message."
+
+      const question = input
+        ? `${input}\n\nContext: This is for a ${selectedChannel} to ${contactName}. ${channelInstructions}`
+        : `Draft a ${purpose.replace(/_/g, " ")} ${selectedChannel} for ${contactName}. Use a ${brandVoice?.tone || "professional"} tone. ${channelInstructions} Address it directly to ${contactName}.`
+
+      const result = await askRelationshipAI({
+        question,
+        contactName,
+        contactPersona,
       })
-      if (result.success && 'draft' in result && result.draft) {
-        setDraft(result.draft)
+
+      if (result.success && result.answer) {
+        setDraft(result.answer)
         // Run compliance check
-        const compliance = await checkThemFirstCompliance(result.draft)
+        const compliance = await checkThemFirstCompliance(result.answer)
         setComplianceCheck(compliance)
+      } else {
+        console.error("Draft generation failed:", result.error)
       }
     } catch (err) {
       console.error("Draft generation failed:", err)

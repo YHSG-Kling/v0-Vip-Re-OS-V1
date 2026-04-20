@@ -242,6 +242,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   const [isCreateQrOpen, setIsCreateQrOpen] = useState(false)
   const [newQr, setNewQr] = useState<{ label: string; targetUrl: string; purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture" }>({ label: "", targetUrl: "", purpose: "general" })
   const [isCreatingQr, setIsCreatingQr] = useState(false)
+  const [qrError, setQrError] = useState<string | null>(null)
 
   // Ad OS state
   const [listings, setListings] = useState<Array<{ id: string; address: string; city: string; zip?: string; list_price?: number }>>([])
@@ -2504,7 +2505,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         </Dialog>
 
         {/* Create QR Code Dialog */}
-        <Dialog open={isCreateQrOpen} onOpenChange={setIsCreateQrOpen}>
+        <Dialog open={isCreateQrOpen} onOpenChange={(open) => { setIsCreateQrOpen(open); if (!open) setQrError(null) }}>
           <DialogContent className="sm:max-w-[440px]">
             <DialogHeader>
               <DialogTitle>New QR Code</DialogTitle>
@@ -2547,6 +2548,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   <option value="campaign">Campaign</option>
                 </select>
               </div>
+              {qrError && (
+                <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {qrError}
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setIsCreateQrOpen(false)}>
@@ -2557,10 +2564,22 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 disabled={isCreatingQr || !newQr.label.trim() || !newQr.targetUrl.trim()}
                 onClick={async () => {
                   setIsCreatingQr(true)
+                  setQrError(null)
                   try {
                     const { createQrCodeAction } = await import("@/app/actions/marketing-studio")
-                    const resolvedBrokerageId = brokerageIdProp || brokerageId
-                    const resolvedAgentId = agentId
+                    // Resolve brokerageId and agentId — fall back to user context if props not available
+                    let resolvedBrokerageId = brokerageIdProp || brokerageId
+                    let resolvedAgentId = agentId
+                    if (!resolvedBrokerageId || !resolvedAgentId) {
+                      const { getUserContextForPrediction } = await import("@/app/actions/content-prediction")
+                      const ctx = await getUserContextForPrediction()
+                      if (ctx.success && ctx.brokerageId) resolvedBrokerageId = resolvedBrokerageId || ctx.brokerageId
+                      if (ctx.success && ctx.userId) resolvedAgentId = resolvedAgentId || ctx.userId
+                    }
+                    if (!resolvedBrokerageId || !resolvedAgentId) {
+                      setQrError("Could not determine your account context. Please refresh and try again.")
+                      return
+                    }
                     const result = await createQrCodeAction({
                       brokerageId: resolvedBrokerageId,
                       agentId: resolvedAgentId,
@@ -2571,7 +2590,10 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                     if (result.success) {
                       setIsCreateQrOpen(false)
                       setNewQr({ label: "", targetUrl: "", purpose: "general" })
+                      setQrError(null)
                       await loadQrCodes()
+                    } else {
+                      setQrError((result as any).error ?? "Failed to create QR code.")
                     }
                   } finally {
                     setIsCreatingQr(false)

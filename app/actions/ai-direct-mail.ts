@@ -66,7 +66,16 @@ export async function aiWritePostcardCopy(params: {
   teamId?: string
   templateType: string
   propertyData?: any
-  targetAudience: "homeowners" | "renters" | "investors" | "expired" | "fsbo"
+  targetAudience:
+    | "homeowners"
+    | "renters"
+    | "fsbo"
+    | "expired"
+    | "divorce_probate"
+    | "investors"
+    | "past_clients"
+    | "geographic_farm"
+    | "new_movers"
   callToAction: "call" | "scan_qr" | "visit_website" | "text"
 }) {
   try {

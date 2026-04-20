@@ -11,18 +11,27 @@ export const metadata = {
 }
 
 export default async function DirectMailPage() {
-  const supabase = await createClient()
+  let brokerageId = ""
 
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
+  try {
+    const supabase = await createClient()
 
-  const { data: profile } = await supabase
-    .from("users")
-    .select("brokerage_id")
-    .eq("id", user.id)
-    .maybeSingle()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) redirect("/login")
 
-  const brokerageId = profile?.brokerage_id ?? ""
+    const { data: profile } = await supabase
+      .from("users")
+      .select("brokerage_id")
+      .eq("id", user.id)
+      .maybeSingle()
+
+    brokerageId = profile?.brokerage_id ?? ""
+  } catch (err) {
+    // Non-fatal — render dashboard in degraded state; the client will retry
+    console.error("[DirectMailPage] Failed to load brokerage context:", err)
+  }
 
   return (
     <div className="flex flex-col h-full">
