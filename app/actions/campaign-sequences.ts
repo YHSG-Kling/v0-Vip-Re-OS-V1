@@ -570,3 +570,56 @@ export async function batchArchiveSequences(sequenceIds: string[]): Promise<{ su
   revalidatePath("/dashboard/campaigns/sequences")
   return { success: true, count: sequenceIds.length }
 }
+
+// ─── Sequence Step Builder ────────────────────────────────────────────────────
+
+export interface SequenceBuilderStep {
+  id?: string
+  step_number: number
+  step_type: "email" | "sms" | "voice_drop" | "wait" | "ai_call" | "direct_mail"
+  delay_days: number
+  delay_hours: number
+  subject?: string | null
+  body: string | null
+  is_active: boolean
+}
+
+export async function getSequenceSteps(sequenceId: string): Promise<{ steps: SequenceBuilderStep[]; error?: string }> {
+  try {
+    const service = createServiceClient()
+    const { data, error } = await service
+      .from("campaign_sequence_steps")
+      .select("id, step_number, step_type, delay_days, delay_hours, subject, body, is_active")
+      .eq("sequence_id", sequenceId)
+      .order("step_number", { ascending: true })
+    if (error) return { steps: [], error: error.message }
+    return { steps: (data ?? []) as SequenceBuilderStep[] }
+  } catch (e: any) {
+    return { steps: [], error: e.message }
+  }
+}
+
+export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuilderStep[]): Promise<{ success: boolean; error?: string }> {
+  try {
+    const service = createServiceClient()
+    await service.from("campaign_sequence_steps").delete().eq("sequence_id", sequenceId)
+    if (steps.length > 0) {
+      const rows = steps.map((s, i) => ({
+        sequence_id: sequenceId,
+        step_number: i + 1,
+        step_type: s.step_type,
+        delay_days: s.delay_days ?? 0,
+        delay_hours: s.delay_hours ?? 0,
+        subject: s.subject ?? null,
+        body: s.body ?? "",
+        is_active: s.is_active ?? true,
+      }))
+      const { error } = await service.from("campaign_sequence_steps").insert(rows)
+      if (error) return { success: false, error: error.message }
+    }
+    revalidatePath("/dashboard/campaigns/sequences")
+    return { success: true }
+  } catch (e: any) {
+    return { success: false, error: e.message }
+  }
+}
