@@ -1949,14 +1949,24 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
               </CardHeader>
               <CardContent>
                 <div className="flex items-center gap-4 mb-6">
-                  <Button onClick={loadRegistry} variant="outline">
+                  <Input
+                    placeholder="Search registry..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="max-w-xs h-9 text-sm"
+                  />
+                  <Button onClick={loadRegistry} variant="outline" size="sm">
                     <Search className="mr-2 h-4 w-4" />
-                    Search Content Registry
+                    {registryItems.length === 0 ? "Load Registry" : "Refresh"}
                   </Button>
                 </div>
                 {registryItems.length > 0 && (
                   <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {registryItems.map((item) => (
+                    {registryItems.filter((item) => {
+                      if (!searchQuery.trim()) return true
+                      const q = searchQuery.toLowerCase()
+                      return item.title?.toLowerCase().includes(q) || item.previewText?.toLowerCase().includes(q) || item.sourceTable?.toLowerCase().includes(q)
+                    }).map((item) => (
                       <Card key={`${item.sourceTable}-${item.id}`} className="bg-muted/30">
                         <CardContent className="pt-4">
                           <div className="flex items-start justify-between mb-2">

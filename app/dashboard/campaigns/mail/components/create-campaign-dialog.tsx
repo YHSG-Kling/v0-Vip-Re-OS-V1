@@ -487,6 +487,65 @@ export function CreateCampaignDialog({
               )}
             </div>
 
+            {/* Postcard Preview */}
+            {(formData.copyText || aiCopyGenerated || aiDesignSuggestion) && (
+              <div className="grid gap-2">
+                <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Postcard Preview</Label>
+                <div className="rounded-lg border bg-muted/20 p-2">
+                  <div
+                    className="relative w-full rounded-md overflow-hidden flex"
+                    style={{ minHeight: 160, background: aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af" }}
+                  >
+                    {/* Front — left 60% */}
+                    <div className="flex-1 p-4 flex flex-col justify-between" style={{ background: aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af" }}>
+                      <div>
+                        <p className="text-white/60 text-[9px] uppercase tracking-widest mb-1">
+                          {formData.templateType?.replace(/_/g, " ") ?? "Direct Mail"}
+                        </p>
+                        <p className="text-white font-bold text-sm leading-tight line-clamp-2">
+                          {formData.campaignName || "Your Campaign Headline"}
+                        </p>
+                        {formData.copyText && (
+                          <p className="text-white/80 text-[10px] mt-1.5 line-clamp-3">
+                            {formData.copyText}
+                          </p>
+                        )}
+                      </div>
+                      <div className="mt-2">
+                        <span
+                          className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded"
+                          style={{ background: aiDesignSuggestion?.colorScheme?.accent ?? "#f59e0b", color: "#fff" }}
+                        >
+                          Call or Scan QR →
+                        </span>
+                      </div>
+                    </div>
+                    {/* Back — right 40% */}
+                    <div className="w-2/5 bg-white/95 p-3 flex flex-col justify-between border-l border-white/20">
+                      <div>
+                        <div className="w-8 h-8 rounded bg-muted/40 mb-1.5 flex items-center justify-center">
+                          <span className="text-[8px] text-muted-foreground font-mono">QR</span>
+                        </div>
+                        <p className="text-[8px] text-muted-foreground leading-tight">Scan for details</p>
+                      </div>
+                      <div className="mt-auto">
+                        <div className="h-3 w-16 rounded bg-muted/60 mb-0.5" />
+                        <div className="h-2 w-24 rounded bg-muted/40 mb-0.5" />
+                        <div className="h-2 w-20 rounded bg-muted/40" />
+                        <p className="text-[8px] text-muted-foreground mt-1">Return Address</p>
+                        <div className="mt-1.5 border-t border-dashed border-muted pt-1">
+                          <div className="h-2 w-28 rounded bg-muted/50 mb-0.5" />
+                          <div className="h-2 w-20 rounded bg-muted/30" />
+                          <p className="text-[8px] text-muted-foreground mt-0.5">Recipient Address</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground text-center mt-1.5">4×6 postcard preview — design adjusts based on AI suggestions</p>
+                </div>
+              </div>
+            )}
+
             {/* AI SECTION — Audience */}
             <div className="grid gap-2">
               <div className="flex items-center justify-between">

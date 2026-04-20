@@ -1285,9 +1285,26 @@ export default function CRMPage() {
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
                         <span className="ml-2 text-sm text-muted-foreground">Loading deal data...</span>
                       </div>
-                    ) : !journeyTeamData ? (
-                      <div className="text-sm text-muted-foreground text-center py-8">
-                        No transaction found for this contact.
+                    ) : !journeyTeamData || (journeyTeamData.milestones.length === 0 && journeyTeamData.dealTeam.length === 0 && journeyTeamData.lenders.length === 0 && journeyTeamData.vendors.length === 0 && journeyTeamData.timeline.length === 0) ? (
+                      <div className="py-8 text-center space-y-3">
+                        <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center mx-auto">
+                          <Users className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium">No active transaction</p>
+                          <p className="text-xs text-muted-foreground max-w-xs mx-auto">
+                            Journey &amp; team details will appear here once a transaction is started for this contact — milestones, deal team, lenders, and vendors.
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            if (selectedContactId) window.location.href = `/dashboard/transactions/new?contactId=${selectedContactId}`
+                          }}
+                        >
+                          Start a Transaction
+                        </Button>
                       </div>
                     ) : (
                       <>
