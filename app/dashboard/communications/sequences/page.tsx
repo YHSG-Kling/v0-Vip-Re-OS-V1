@@ -54,7 +54,7 @@ export default async function SequencesPage({
         updated_at
       `)
       .eq("brokerage_id", brokerageId)
-      .in("sequence_type", NURTURE_SEQUENCE_TYPES)
+      .or(`sequence_type.in.(${NURTURE_SEQUENCE_TYPES.join(",")}),campaign_type.in.(${NURTURE_SEQUENCE_TYPES.join(",")})`)
       .order("created_at", { ascending: false })
       .limit(50),
 

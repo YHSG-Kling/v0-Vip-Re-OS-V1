@@ -316,7 +316,7 @@ Include clear CTAs where appropriate.`,
         (s: any) =>
           `<section style="margin-bottom:1.5rem">` +
           `<h2 style="font-size:1.1rem;font-weight:600;margin-bottom:0.5rem">${escapeHtml(s.title)}</h2>` +
-          `<div style="line-height:1.6">${escapeHtml(s.content).replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</div>` +
+          `<div style="line-height:1.6"><p>${escapeHtml(s.content).replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>")}</p></div>` +
           (s.ctaText
             ? `<p style="margin-top:0.75rem"><strong>${escapeHtml(s.ctaText)}</strong></p>`
             : "") +

@@ -156,6 +156,11 @@ export function MediaGrid({ listingId, brokerageId, media, canApprove, onMediaCh
     if (fileUploading) return
     const file = e.dataTransfer.files?.[0]
     if (!file) return
+    const allowed = ["image/", "video/", "application/pdf"]
+    if (!allowed.some((prefix) => file.type.startsWith(prefix))) {
+      toast({ title: "Unsupported file type", description: "Please upload an image, video, or PDF.", variant: "destructive" })
+      return
+    }
     await uploadFile(file)
   }
 

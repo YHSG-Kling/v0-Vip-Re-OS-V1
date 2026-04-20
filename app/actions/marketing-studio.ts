@@ -997,7 +997,7 @@ export async function getMarketingStudioDashboard() {
         .select("status")
         .eq("brokerage_id", brokerageId)
         .eq("visibility_scope", "brokerage")
-        .or(`agent_user_id.neq.${agentId},agent_user_id.is.null`), // exclude agent's own; include null-owner campaigns
+        .or(`agent_user_id.neq.${agentId},agent_user_id.is.null`), // exclude agent's own brokerage campaigns; include null-owner brokerage assets
       // Assets owned by this agent
       supabase
         .from("marketing_assets")
@@ -1010,7 +1010,7 @@ export async function getMarketingStudioDashboard() {
         .select("approval_status")
         .eq("brokerage_id", brokerageId)
         .eq("visibility_scope", "brokerage")
-        .neq("agent_user_id", agentId),
+        .or(`agent_user_id.neq.${agentId},agent_user_id.is.null`),
       // Upcoming calendar events (next 7 days)
       supabase
         .from("campaign_calendar")
@@ -1031,13 +1031,17 @@ export async function getMarketingStudioDashboard() {
         .limit(10),
     ])
 
-    // Surface query errors as a graceful failure rather than a crash
-    if (agentCampaignsResult.error) {
-      console.error("[marketing-studio] agentCampaignsResult error:", agentCampaignsResult.error.message)
+    // Campaign or asset query failures yield incomplete KPIs — surface as error
+    const criticalError =
+      agentCampaignsResult.error ??
+      brokerageCampaignsResult.error ??
+      agentAssetsResult.error ??
+      brokerageAssetsResult.error
+    if (criticalError) {
+      console.error("[marketing-studio] critical query failure:", criticalError.message)
+      return { success: false, error: criticalError.message }
     }
-    if (brokerageCampaignsResult.error) {
-      console.error("[marketing-studio] brokerageCampaignsResult error:", brokerageCampaignsResult.error.message)
-    }
+
     if (upcomingEventsResult.error) {
       console.error("[marketing-studio] upcomingEventsResult error:", upcomingEventsResult.error.message)
     }
@@ -1056,13 +1060,6 @@ export async function getMarketingStudioDashboard() {
     for (const c of allCampaigns) {
       const status = c.status ?? "unknown"
       campaignsByStatus[status] = (campaignsByStatus[status] ?? 0) + 1
-    }
-
-    if (agentAssetsResult.error) {
-      console.error("[marketing-studio] agentAssetsResult error:", agentAssetsResult.error.message)
-    }
-    if (brokerageAssetsResult.error) {
-      console.error("[marketing-studio] brokerageAssetsResult error:", brokerageAssetsResult.error.message)
     }
 
     // Merge the two asset sets

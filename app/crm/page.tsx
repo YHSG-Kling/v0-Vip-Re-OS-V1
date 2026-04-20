@@ -231,6 +231,7 @@ export default function CRMPage() {
   const [searchLoading, setSearchLoading] = useState(false)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searchGenRef = useRef(0)
+  const searchQueryRef = useRef("")
   const activitiesGenRef = useRef(0)
   const [error, setError] = useState<string | null>(null)
 
@@ -349,7 +350,10 @@ export default function CRMPage() {
       const result = await getContacts({ limit: 100 })
       if (result.success) {
         setContacts(result.contacts)
-        setFiltered(result.contacts)
+        // Only reset filtered when no search is active — otherwise the search debounce manages filtered
+        if (!searchQueryRef.current) {
+          setFiltered(result.contacts)
+        }
         // Lead scores are loaded lazily per-contact when a contact is selected
         // to avoid firing 20 simultaneous AI/DB server actions that crash the browser.
       } else {
@@ -520,6 +524,7 @@ export default function CRMPage() {
       setContactActivities([])
       return
     }
+    setContactActivities([])
     activitiesGenRef.current += 1
     const gen = activitiesGenRef.current
     const supabase = createClient()
@@ -670,6 +675,7 @@ export default function CRMPage() {
   // This replaces the old client-side .filter() that was capped at the 100 loaded records.
   const handleSearchChange = useCallback((query: string) => {
     setSearch(query)
+    searchQueryRef.current = query
 
     if (searchDebounceRef.current) {
       clearTimeout(searchDebounceRef.current)

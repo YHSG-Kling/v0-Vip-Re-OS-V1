@@ -96,9 +96,9 @@ export function CmaHistorySheet({ listingId, agentId, listingAddress }: CmaHisto
       }
 
       const propertyAddress = listingData.address ?? addressParts[0] ?? listingAddress
-      const propertyCity = listingData.city ?? ""
-      const propertyState = listingData.state ?? ""
-      const propertyZip = listingData.zip ?? ""
+      const propertyCity = listingData.city ?? addressParts[1] ?? ""
+      const propertyState = listingData.state ?? addressParts[2]?.split(" ")[0] ?? ""
+      const propertyZip = listingData.zip ?? addressParts[2]?.split(" ")[1] ?? ""
       const bedrooms = listingData.bedrooms
       const bathrooms = listingData.bathrooms
       const squareFeet = listingData.sqft

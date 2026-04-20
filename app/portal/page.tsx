@@ -60,8 +60,6 @@ export default async function PortalPage() {
     .maybeSingle()
 
   const brokerageName = branding?.app_name ?? null
-  const supportEmail: string | null = null
-  const supportPhone: string | null = null
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -75,36 +73,10 @@ export default async function PortalPage() {
         <p className="text-sm text-gray-500 mb-6">
           If you believe this is an error, please reach out to your agent directly.
         </p>
-        {(supportEmail || supportPhone) && (
-          <div className="mb-6 p-4 bg-gray-50 rounded-lg text-sm text-gray-700 space-y-1">
-            {supportEmail && (
-              <p>
-                Email:{' '}
-                <a href={`mailto:${supportEmail}`} className="text-blue-600 hover:underline">
-                  {supportEmail}
-                </a>
-              </p>
-            )}
-            {supportPhone && (
-              <p>
-                Phone:{' '}
-                <a href={`tel:${supportPhone}`} className="text-blue-600 hover:underline">
-                  {supportPhone}
-                </a>
-              </p>
-            )}
-          </div>
-        )}
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
           <a
-            href="mailto:?subject=Portal%20Access%20Request"
-            className="inline-flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            Contact Your Agent
-          </a>
-          <a
             href="/login"
-            className="inline-flex items-center justify-center px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
+            className="inline-flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
             Return to Login
           </a>

@@ -71,57 +71,47 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
     notFound()
   }
 
-  // Fetch listing media (photos)
-  const { data: mediaRows } = await service
-    .from("listing_media")
-    .select("id, file_url, thumbnail_url, media_type, display_order")
-    .eq("listing_id", listingId)
-    .order("display_order", { ascending: true })
+  // Fetch media, agent info, and brokerage in parallel
+  const [mediaResult, agentInfo, brokerageResult] = await Promise.all([
+    service
+      .from("listing_media")
+      .select("id, file_url, thumbnail_url, media_type, display_order")
+      .eq("listing_id", listingId)
+      .order("display_order", { ascending: true }),
 
-  const photos = (mediaRows ?? []).filter((m) => m.media_type === "photo" && (m.file_url || m.thumbnail_url))
-  const heroPhoto = photos[0]
-
-  // Fetch agent info via the agents + users join
-  let agentName: string | null = null
-  let agentPhone: string | null = null
-  let agentEmail: string | null = null
-  let agentPhoto: string | null = null
-
-  if (listing.agent_id) {
-    const { data: agentRow } = await service
-      .from("agents")
-      .select("user_id, phone, profile_photo_url")
-      .eq("user_id", listing.agent_id)
-      .maybeSingle()
-
-    if (agentRow) {
-      agentPhone = agentRow.phone ?? null
-      agentPhoto = agentRow.profile_photo_url ?? null
-
+    (async () => {
+      if (!listing.agent_id) return null
+      const { data: agentRow } = await service
+        .from("agents")
+        .select("user_id, phone, profile_photo_url")
+        .eq("user_id", listing.agent_id)
+        .maybeSingle()
+      if (!agentRow) return null
       const { data: userRow } = await service
         .from("users")
         .select("name, email, avatar_url")
         .eq("id", agentRow.user_id ?? listing.agent_id)
         .maybeSingle()
+      return { agentRow, userRow }
+    })(),
 
-      if (userRow) {
-        agentName = userRow.name ?? null
-        agentEmail = userRow.email ?? null
-        agentPhoto = agentPhoto ?? userRow.avatar_url ?? null
-      }
-    }
-  }
+    listing.brokerage_id
+      ? service.from("brokerages").select("name").eq("id", listing.brokerage_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+  ])
 
-  // Fetch brokerage name
-  let brokerageName: string | null = null
-  if (listing.brokerage_id) {
-    const { data: brokerage } = await service
-      .from("brokerages")
-      .select("name")
-      .eq("id", listing.brokerage_id)
-      .maybeSingle()
-    brokerageName = brokerage?.name ?? null
-  }
+  const photos = (mediaResult.data ?? []).filter(
+    (m) => m.media_type === "photo" && (m.file_url || m.thumbnail_url)
+  )
+  const heroPhoto = photos[0]
+
+  const agentName: string | null = agentInfo?.userRow?.name ?? null
+  const agentPhone: string | null = agentInfo?.agentRow?.phone ?? null
+  const agentEmail: string | null = agentInfo?.userRow?.email ?? null
+  const agentPhoto: string | null =
+    agentInfo?.agentRow?.profile_photo_url ?? agentInfo?.userRow?.avatar_url ?? null
+
+  const brokerageName: string | null = (brokerageResult as any)?.data?.name ?? null
 
   const price = listing.list_price
     ? `$${Number(listing.list_price).toLocaleString()}`
@@ -143,7 +133,7 @@ export default async function PublicListingPage({ params }: ListingPageProps) {
   const statusColor =
     listing.status === "active"
       ? "bg-green-100 text-green-800 border-green-200"
-      : listing.status === "pending"
+      : listing.status === "pending" || listing.status === "under_contract"
       ? "bg-yellow-100 text-yellow-800 border-yellow-200"
       : listing.status === "sold"
       ? "bg-gray-100 text-gray-800 border-gray-200"

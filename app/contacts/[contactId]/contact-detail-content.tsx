@@ -163,14 +163,16 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                   <Button
                     size="sm"
                     onClick={() => {
-                      logActivity({
-                        brokerageId: contact.brokerage_id ?? "",
-                        agentId: contact.agent_id ?? "",
-                        contactId: contact.id,
-                        activityType: "call_initiated",
-                        title: `Call initiated with ${contact.first_name} ${contact.last_name}`,
-                        status: "completed",
-                      }).catch(console.error)
+                      if (contact.brokerage_id && contact.agent_id) {
+                        logActivity({
+                          brokerageId: contact.brokerage_id,
+                          agentId: contact.agent_id,
+                          contactId: contact.id,
+                          activityType: "call_initiated",
+                          title: `Call initiated with ${contact.first_name} ${contact.last_name}`,
+                          status: "completed",
+                        }).catch(console.error)
+                      }
                       router.push(`/dashboard/voice?contactId=${contact.id}`)
                     }}
                   >
@@ -179,14 +181,16 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                   <Button
                     size="sm"
                     onClick={() => {
-                      logActivity({
-                        brokerageId: contact.brokerage_id ?? "",
-                        agentId: contact.agent_id ?? "",
-                        contactId: contact.id,
-                        activityType: "email_sent",
-                        title: `Email initiated to ${contact.first_name} ${contact.last_name}`,
-                        status: "completed",
-                      }).catch(console.error)
+                      if (contact.brokerage_id && contact.agent_id) {
+                        logActivity({
+                          brokerageId: contact.brokerage_id,
+                          agentId: contact.agent_id,
+                          contactId: contact.id,
+                          activityType: "email_sent",
+                          title: `Email initiated to ${contact.first_name} ${contact.last_name}`,
+                          status: "completed",
+                        }).catch(console.error)
+                      }
                       if (contact.email) {
                         window.location.href = `mailto:${contact.email}`
                       } else {
@@ -199,14 +203,16 @@ export default function ContactDetailContent({ contact }: ContactDetailContentPr
                   <Button
                     size="sm"
                     onClick={() => {
-                      logActivity({
-                        brokerageId: contact.brokerage_id ?? "",
-                        agentId: contact.agent_id ?? "",
-                        contactId: contact.id,
-                        activityType: "sms_sent",
-                        title: `Message initiated with ${contact.first_name} ${contact.last_name}`,
-                        status: "completed",
-                      }).catch(console.error)
+                      if (contact.brokerage_id && contact.agent_id) {
+                        logActivity({
+                          brokerageId: contact.brokerage_id,
+                          agentId: contact.agent_id,
+                          contactId: contact.id,
+                          activityType: "sms_sent",
+                          title: `Message initiated with ${contact.first_name} ${contact.last_name}`,
+                          status: "completed",
+                        }).catch(console.error)
+                      }
                       router.push(`/dashboard/inbox?contactId=${contact.id}`)
                     }}
                   >
