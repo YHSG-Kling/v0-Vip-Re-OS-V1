@@ -350,8 +350,12 @@ export default function CRMPage() {
       const result = await getContacts({ limit: 100 })
       if (result.success) {
         setContacts(result.contacts)
-        // Only reset filtered when no search is active — otherwise the search debounce manages filtered
-        if (!searchQueryRef.current) {
+        if (searchQueryRef.current) {
+          // Search is active — re-fetch with current term so filtered reflects fresh data
+          getContacts({ search: searchQueryRef.current, limit: 100 })
+            .then((r) => { if (r.success) setFiltered(r.contacts) })
+            .catch(() => {/* non-blocking */})
+        } else {
           setFiltered(result.contacts)
         }
         // Lead scores are loaded lazily per-contact when a contact is selected
@@ -845,20 +849,22 @@ export default function CRMPage() {
 
   const handleSaveNote = async (note: string) => {
     if (!selectedContactId) return
+    const noteContactId = selectedContactId
     setNoteSaving(true)
     try {
-      const result = await addContactNote(selectedContactId, note)
+      const result = await addContactNote(noteContactId, note)
       if (result.success) {
         toast.success("Note saved")
-        // Optimistic update — push new note to the top of the activity feed
+        // Only update activity feed if the same contact is still selected
+        if (selectedContactId !== noteContactId) return
         setContactActivities(prev => [{
-          id: Date.now().toString(), // temp ID until next refetch
+          id: Date.now().toString(),
           activity_type: "note",
           title: "Note",
           description: note,
           notes: note,
           created_at: new Date().toISOString(),
-          contact_id: selectedContactId,
+          contact_id: noteContactId,
         }, ...prev])
       } else {
         toast.error(result.error ?? "Failed to save note")

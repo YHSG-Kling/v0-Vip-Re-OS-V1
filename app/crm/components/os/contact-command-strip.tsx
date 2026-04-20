@@ -174,6 +174,7 @@ export function ContactCommandStrip({
                     variant="ghost"
                     className="text-white hover:bg-white/20"
                     onClick={() => {
+                      const smsPhone = contact.phone!
                       logActivity({
                         brokerageId,
                         agentId,
@@ -182,7 +183,8 @@ export function ContactCommandStrip({
                         title: `SMS initiated with ${contact.first_name} ${contact.last_name}`,
                         status: "completed",
                       }).catch(console.error)
-                      window.location.href = `sms:${contact.phone}`
+                      // Delay navigation slightly so the fetch can initiate before the sms: URL triggers a page unload
+                      setTimeout(() => { window.location.href = `sms:${smsPhone}` }, 100)
                     }}
                   >
                     <MessageSquare className="h-4 w-4" />

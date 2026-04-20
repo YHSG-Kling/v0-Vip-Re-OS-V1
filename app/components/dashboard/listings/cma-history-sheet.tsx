@@ -125,8 +125,6 @@ export function CmaHistorySheet({ listingId, agentId, listingAddress }: CmaHisto
 
       if (res.success) {
         toast({ title: "CMA generated successfully" })
-        // Refresh reports — reset cache so loadReports re-fetches
-        setReports([])
         const fetchRes = await getCMAReports(agentId)
         if (fetchRes.success) {
           const filtered = (fetchRes.reports ?? []).filter((r: any) => r.listing_id === listingId)

@@ -56,6 +56,7 @@ export async function getContacts(params?: {
       .eq("brokerage_id", brokerageId)
       .is("deleted_at", null)
       .order("last_contacted_at", { ascending: false, nullsFirst: false })
+      .order("id", { ascending: false })
 
     // Agents only see their own contacts — contacts.agent_id → agents.id
     if (userType === "agent" && agentId) {

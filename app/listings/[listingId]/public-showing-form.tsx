@@ -29,14 +29,9 @@ export function PublicShowingForm({ listingId }: Props) {
         listingId,
         firstName: String(fd.get("first_name") ?? ""),
         lastName: String(fd.get("last_name") ?? ""),
-        phone: String(fd.get("phone") ?? ""),
+        phone: String(fd.get("phone") ?? "").trim(),
         email: String(fd.get("email") ?? ""),
-        preferredDateTime: (() => {
-          const raw = String(fd.get("preferred_date") ?? "")
-          if (!raw) return ""
-          const d = new Date(raw)
-          return isNaN(d.getTime()) ? raw : d.toISOString()
-        })(),
+        preferredDateTime: String(fd.get("preferred_date") ?? ""),
         notes: String(fd.get("notes") ?? "") || undefined,
         sessionToken: crypto.randomUUID(),
         tcpaConsent: fd.get("tcpa_consent") === "on",

@@ -110,6 +110,7 @@ export function VideoContextPicker({
     // Find the listing in the already-loaded listings array
     const found = listings.find(l => l.id === selectedContextId)
     if (found) setSelectedListing(found)
+    else setSelectedListing(null)
   }, [selectedContextId, selectedContextType, listings])
 
   // Close combobox on outside click

@@ -16,7 +16,8 @@ export default async function ListingMediaPage({ params }: PageProps) {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
   if (!ctx.brokerageId) redirect("/dashboard")
-  if (!ctx.agentId) redirect("/dashboard/onboarding")
+  // Agents must have an agentId; brokers/admins can access without one
+  if (!ctx.agentId && ctx.userType === "agent") redirect("/dashboard/onboarding")
 
   // toCanonicalRoleOrDefault handles legacy DB values (TC → tc etc.)
   const userRole = toCanonicalRoleOrDefault(ctx.userType, "agent")
@@ -45,7 +46,7 @@ export default async function ListingMediaPage({ params }: PageProps) {
       listingId={listingId}
       listing={listing}
       brokerageId={ctx.brokerageId}
-      agentId={ctx.agentId}
+      agentId={ctx.agentId ?? ""}
       userRole={userRole}
       initialMedia={mediaResult.data ?? []}
       initialVideos={videosResult.data ?? []}
