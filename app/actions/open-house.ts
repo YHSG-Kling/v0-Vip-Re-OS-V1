@@ -96,6 +96,17 @@ export async function createOpenHouse(params: {
 
     const service = createServiceClient()
 
+    // Verify listing belongs to caller's brokerage
+    const { data: listing } = await service
+      .from("listings")
+      .select("brokerage_id")
+      .eq("id", params.listingId)
+      .maybeSingle()
+
+    if (!listing || listing.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Listing not found or not authorized" }
+    }
+
     const { data: event, error } = await service
       .from("open_house_events")
       .insert({
@@ -418,14 +429,25 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
 
     if (!event) return { success: false, error: "Event not found" }
 
+    if (event.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     // Find buyer contacts with active searches in brokerage
-    const { data: contacts } = await service
+    // When caller is an agent, scope to their own contacts only
+    let contactsQuery = service
       .from("contacts")
       .select("id, first_name, last_name, email")
       .eq("brokerage_id", ctx.brokerageId)
       .eq("contact_type", "buyer")
       .not("email", "is", null)
       .limit(100)
+
+    if (ctx.agentId) {
+      contactsQuery = contactsQuery.eq("agent_id", ctx.agentId)
+    }
+
+    const { data: contacts } = await contactsQuery
 
     if (!contacts || contacts.length === 0) return { success: true, sent: 0 }
 

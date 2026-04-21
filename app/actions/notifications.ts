@@ -143,6 +143,23 @@ export async function createNotification(params: {
 
   const supabase = createServiceClient()
 
+  // Caller authorization: if an authenticated session exists, verify the caller
+  // is either targeting their own agent account or is a broker-admin in the same
+  // brokerage. Background/system calls (no session) are allowed through.
+  const ctx = await getAgentContext()
+  if (ctx.isAuthenticated) {
+    if (ctx.agentId && ctx.agentId !== agentId) {
+      const { data: callerAgent } = await supabase
+        .from("agents")
+        .select("brokerage_id")
+        .eq("id", ctx.agentId)
+        .maybeSingle()
+      if (callerAgent && callerAgent.brokerage_id !== brokerageId) {
+        return { success: false, error: "Unauthorized" }
+      }
+    }
+  }
+
   // Resolve the user_id and brokerage_id from the agents table
   const { data: agent, error: agentError } = await supabase
     .from("agents")
