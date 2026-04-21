@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -182,6 +182,12 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
   const [excerpt, setExcerpt] = useState(post.excerpt || "")
   const [content, setContent] = useState(post.content || "")
   const [featuredImageUrl, setFeaturedImageUrl] = useState(post.featured_image_url || "")
+  const [imageLoadError, setImageLoadError] = useState(false)
+
+  useEffect(() => {
+    setImageLoadError(false)
+  }, [featuredImageUrl])
+
   const [callToAction, setCallToAction] = useState((post as any).call_to_action || "")
   const [category, setCategory] = useState((post as any).category || "")
   const [publishStatus, setPublishStatus] = useState(post.publish_status)
@@ -587,15 +593,13 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
                   onChange={(e) => setFeaturedImageUrl(e.target.value)}
                   placeholder="https://..."
                 />
-                {featuredImageUrl && (
+                {featuredImageUrl && !imageLoadError && (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={featuredImageUrl}
                     alt="Hero preview"
                     className="w-full h-32 object-cover rounded-md border"
-                    onError={(e) => {
-                      ;(e.target as HTMLImageElement).style.display = "none"
-                    }}
+                    onError={() => setImageLoadError(true)}
                   />
                 )}
               </div>
