@@ -653,6 +653,16 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       .select("*")
       .eq("sequence_id", sequenceId)
 
+    // Validate all steps BEFORE any DB mutation so an invalid channel
+    // cannot erase existing steps and then fail.
+    if (steps.length > 0) {
+      for (const s of steps) {
+        if (s.step_type && !VALID_STEP_TYPES.has(s.step_type as any)) {
+          return { success: false, error: `Invalid step channel: ${s.step_type}` }
+        }
+      }
+    }
+
     const { error: deleteError } = await service
       .from("campaign_sequence_steps")
       .delete()
@@ -660,11 +670,6 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
     if (deleteError) return { success: false, error: `Failed to clear existing steps: ${deleteError.message}` }
 
     if (steps.length > 0) {
-      for (const s of steps) {
-        if (s.step_type && !VALID_STEP_TYPES.has(s.step_type as any)) {
-          return { success: false, error: `Invalid step channel: ${s.step_type}` }
-        }
-      }
 
       const rows = steps.map((s, i) => ({
         sequence_id: sequenceId,

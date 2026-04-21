@@ -63,6 +63,7 @@ export interface SubmitVideoGenerationJobInput {
   scriptText: string
   voiceProfileId: string
   avatarStyle: string
+  avatarId?: string
   estimatedDurationSeconds: number
 }
 
@@ -297,7 +298,7 @@ export async function submitVideoGenerationJob(
   const heygenJobId = await submitToHeyGen({
     script: input.scriptText,
     voiceProfileId: input.voiceProfileId,
-    avatarId: input.avatarStyle,
+    avatarId: input.avatarId ?? input.avatarStyle,
     estimatedDurationSeconds: input.estimatedDurationSeconds,
   })
 
@@ -648,11 +649,8 @@ async function submitToHeyGen(params: {
   avatarId: string
   estimatedDurationSeconds: number
 }): Promise<string> {
-  // avatarId must be a real HeyGen avatar/template ID (UUID-like or slash-separated path),
-  // not a UI style label like "Professional" or "Casual".
-  const isValidAvatarId = /^[a-zA-Z0-9_\-\/]{8,}$/.test(params.avatarId) && !/^(professional|casual|luxury|executive)$/i.test(params.avatarId)
-  if (!isValidAvatarId) {
-    throw new Error(`avatarId must be a valid HeyGen avatar ID, not a style label (got: "${params.avatarId}")`)
+  if (!params.avatarId || params.avatarId.trim().length < 1) {
+    throw new Error("avatarId is required to submit a HeyGen video job")
   }
   const result = await dispatchVideo({
     brokerageId: "system",

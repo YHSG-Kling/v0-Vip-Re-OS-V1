@@ -618,6 +618,7 @@ export async function sendCampaign(params: SendCampaignParams) {
     // ── Call Lob API via dispatchDirectMail() for each recipient ──
     let firstSuccessfulMessageId: string | undefined
     let successCount = 0
+    const failedRecipientIds: string[] = []
     for (const recipient of recipients) {
       const lobResult = await dispatchDirectMail({
         brokerageId: params.brokerageId,
@@ -627,6 +628,7 @@ export async function sendCampaign(params: SendCampaignParams) {
         systemSource: "direct_mail_campaign",
         recipientName: `${recipient.first_name} ${recipient.last_name}`.trim(),
         mailingAddress: recipient.address_line1,
+        mailingAddress2: recipient.address_line2 ?? undefined,
         city: recipient.city,
         state: recipient.state,
         zip: recipient.zip,
@@ -637,6 +639,8 @@ export async function sendCampaign(params: SendCampaignParams) {
       if (lobResult.success && lobResult.messageId) {
         if (!firstSuccessfulMessageId) firstSuccessfulMessageId = lobResult.messageId
         successCount++
+      } else {
+        failedRecipientIds.push(recipient.id)
       }
     }
 
@@ -644,8 +648,13 @@ export async function sendCampaign(params: SendCampaignParams) {
       return { success: false, error: "Direct mail failed: no pieces dispatched via Lob" }
     }
 
-    if (successCount < recipients.length) {
-      console.warn(`[DirectMail] Partial success: ${successCount}/${recipients.length} pieces dispatched for campaign ${params.campaignId}`)
+    // Mark failed recipients so they aren't silently treated as mailed
+    if (failedRecipientIds.length > 0) {
+      console.warn(`[DirectMail] Partial success: ${successCount}/${recipients.length} dispatched for campaign ${params.campaignId}`)
+      await supabase
+        .from("direct_mail_recipients")
+        .update({ delivery_status: "failed" })
+        .in("id", failedRecipientIds)
     }
 
     const lobOrderId = firstSuccessfulMessageId ?? `lob_${Date.now()}`
