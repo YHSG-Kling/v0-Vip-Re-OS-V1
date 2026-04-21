@@ -188,7 +188,9 @@ export async function getOpenHouses(): Promise<{
       .order("event_date", { ascending: true })
       .order("start_time", { ascending: true })
 
-    if (ctx.userType === "agent" && ctx.agentId) {
+    if (ctx.userType === "agent" && !ctx.agentId) {
+      return { success: false, error: "Agent identity required" }
+    } else if (ctx.userType === "agent" && ctx.agentId) {
       query = query.eq("agent_id", ctx.agentId)
     } else if (ctx.brokerageId) {
       query = query.eq("brokerage_id", ctx.brokerageId)
@@ -334,6 +336,9 @@ export async function getOpenHouseFeedback(openHouseId: string): Promise<{
     if (ctx.brokerageId && eventCheck.brokerage_id !== ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
+    if (ctx.userType === "agent" && !ctx.agentId) {
+      return { success: false, error: "Agent identity required" }
+    }
     if (ctx.userType === "agent" && ctx.agentId && eventCheck.agent_id !== ctx.agentId) {
       return { success: false, error: "Unauthorized" }
     }
@@ -437,6 +442,10 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
 
     // Find buyer contacts with active searches in brokerage
     // When caller is an agent, scope to their own contacts only
+    if (ctx.userType === "agent" && !ctx.agentId) {
+      return { success: false, error: "Agent identity required" }
+    }
+
     let contactsQuery = service
       .from("contacts")
       .select("id, first_name, last_name, email")
