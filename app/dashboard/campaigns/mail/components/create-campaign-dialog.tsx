@@ -99,6 +99,14 @@ const EST_RESPONSE_RATE_BY_SEGMENT: Record<AudienceSegment, number> = {
   new_movers: 0.014,
 }
 
+function sanitizeCssColor(value: string): string {
+  // Only allow safe color values — hex, rgb/rgba, hsl/hsla, or named colors
+  if (/^(#[0-9a-fA-F]{3,8}|rgb[a]?\([^)]+\)|hsl[a]?\([^)]+\)|[a-zA-Z]+)$/.test(value.trim())) {
+    return value.trim()
+  }
+  return "#000000" // safe fallback
+}
+
 export function CreateCampaignDialog({
   open,
   onOpenChange,
@@ -494,10 +502,10 @@ export function CreateCampaignDialog({
                 <div className="rounded-lg border bg-muted/20 p-2">
                   <div
                     className="relative w-full rounded-md overflow-hidden flex"
-                    style={{ minHeight: 160, background: aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af" }}
+                    style={{ minHeight: 160, backgroundColor: sanitizeCssColor(aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af") }}
                   >
                     {/* Front — left 60% */}
-                    <div className="flex-1 p-4 flex flex-col justify-between" style={{ background: aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af" }}>
+                    <div className="flex-1 p-4 flex flex-col justify-between" style={{ backgroundColor: sanitizeCssColor(aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af") }}>
                       <div>
                         <p className="text-white/60 text-[9px] uppercase tracking-widest mb-1">
                           {formData.templateType?.replace(/_/g, " ") ?? "Direct Mail"}
@@ -514,7 +522,7 @@ export function CreateCampaignDialog({
                       <div className="mt-2">
                         <span
                           className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded"
-                          style={{ background: aiDesignSuggestion?.colorScheme?.accent ?? "#f59e0b", color: "#fff" }}
+                          style={{ backgroundColor: sanitizeCssColor(aiDesignSuggestion?.colorScheme?.accent ?? "#f59e0b"), color: "#fff" }}
                         >
                           Call or Scan QR →
                         </span>

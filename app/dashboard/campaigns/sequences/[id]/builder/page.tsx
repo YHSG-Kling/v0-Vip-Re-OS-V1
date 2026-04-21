@@ -1,7 +1,10 @@
+import { cache } from "react"
 import { redirect, notFound } from "next/navigation"
 import { getCampaignSequence, type SequenceBuilderStep } from "@/app/actions/campaign-sequences"
 import { getAgentContext } from "@/lib/identity"
 import SequenceStepBuilderClient from "./sequence-builder-client"
+
+const getCampaignSequenceCached = cache(getCampaignSequence)
 
 interface Props {
   params: Promise<{ id: string }>
@@ -13,7 +16,7 @@ export async function generateMetadata({ params }: Props) {
   if (!ctx.isAuthenticated || !ctx.brokerageId) {
     return { title: "Sequence Builder" }
   }
-  const { sequence } = await getCampaignSequence(id)
+  const { sequence } = await getCampaignSequenceCached(id)
   if (!sequence || sequence.brokerage_id !== ctx.brokerageId) {
     return { title: "Sequence Builder" }
   }
@@ -30,7 +33,7 @@ export default async function SequenceBuilderPage({ params }: Props) {
   if (!ctx.isAuthenticated) redirect("/login")
   if (!ctx.brokerageId) redirect("/dashboard/onboarding")
 
-  const { sequence, steps: rawSteps, error } = await getCampaignSequence(id)
+  const { sequence, steps: rawSteps, error } = await getCampaignSequenceCached(id)
 
   if (error || !sequence) notFound()
   if (sequence.brokerage_id !== ctx.brokerageId) notFound()
