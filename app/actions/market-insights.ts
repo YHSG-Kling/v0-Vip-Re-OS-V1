@@ -42,9 +42,9 @@ export async function generateMarketInsights(): Promise<{
       return { insights: null, error: "Not authenticated" }
     }
 
-    const { agentId, brokerageId } = context
+    const { agentId } = context
 
-    if (!isValidUUID(agentId) || !isValidUUID(brokerageId)) {
+    if (!isValidUUID(agentId)) {
       return { insights: null, error: "Agent context not available" }
     }
 
@@ -248,15 +248,20 @@ Generate insights that help this agent take action today.`
       aiResult.marketTemperature = "Balanced Market"
     }
 
-    // Ensure actionItems is an array of exactly 3 strings
-    if (!Array.isArray(aiResult.actionItems) || aiResult.actionItems.length === 0) {
-      aiResult.actionItems = [
-        "Review your active listings for pricing opportunities",
-        "Follow up with active buyer contacts",
-        "Update your CMA for current market conditions",
-      ]
+    // Ensure actionItems is an array padded to exactly 3 strings
+    const FALLBACK_ACTION_ITEMS = [
+      "Follow up with your 3 most recent leads this week",
+      "Schedule a market update call with your active clients",
+      "Review your listing strategy for properties over 30 days on market",
+    ]
+    if (!Array.isArray(aiResult.actionItems)) {
+      aiResult.actionItems = []
     }
-    aiResult.actionItems = aiResult.actionItems.slice(0, 3)
+    const parsedItems = aiResult.actionItems.slice(0, 3)
+    aiResult.actionItems = [
+      ...parsedItems,
+      ...FALLBACK_ACTION_ITEMS.slice(parsedItems.length),
+    ].slice(0, 3)
 
     const result: MarketInsightResult = {
       marketTemperature: aiResult.marketTemperature,

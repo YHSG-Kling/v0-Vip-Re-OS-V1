@@ -300,34 +300,41 @@ export async function getPipelineSummary(): Promise<{
     const { agentId } = context
     const supabase = await createClient()
 
-    const { data, error } = await supabase
+    // Use a count query for accurate total — never capped by .limit()
+    const { count: totalActive, error: countError } = await supabase
       .from("transactions")
-      .select("id, property_address, close_date, stage")
+      .select("*", { count: "exact", head: true })
       .eq("agent_id", agentId)
       .not("stage", "in", '("closed","cancelled")')
-      .order("close_date", { ascending: true })
-      .limit(20)
 
-    if (error) {
-      return { activeCount: 0, approachingClose: null, error: error.message }
+    if (countError) {
+      return { activeCount: 0, approachingClose: null, error: countError.message }
     }
 
-    const txList = data || []
-    const activeCount = txList.length
-
-    // Find the deal with the nearest close date that is within 14 days
+    // Separately fetch the soonest-closing transaction within 14 days (limit 1)
     const twoWeeksOut = new Date()
     twoWeeksOut.setDate(twoWeeksOut.getDate() + 14)
     const today = new Date().toISOString().split("T")[0]
 
-    const approaching = txList.find((t) => {
-      if (!t.close_date) return false
-      const closeDate = t.close_date
-      return closeDate >= today && closeDate <= twoWeeksOut.toISOString().split("T")[0]
-    })
+    const { data: nearestData, error: nearestError } = await supabase
+      .from("transactions")
+      .select("id, property_address, close_date, stage")
+      .eq("agent_id", agentId)
+      .not("stage", "in", '("closed","cancelled")')
+      .not("close_date", "is", null)
+      .gte("close_date", today)
+      .lte("close_date", twoWeeksOut.toISOString().split("T")[0])
+      .order("close_date", { ascending: true })
+      .limit(1)
+
+    if (nearestError) {
+      return { activeCount: totalActive ?? 0, approachingClose: null, error: nearestError.message }
+    }
+
+    const approaching = nearestData?.[0] ?? null
 
     return {
-      activeCount,
+      activeCount: totalActive ?? 0,
       approachingClose: approaching
         ? {
             id: approaching.id,

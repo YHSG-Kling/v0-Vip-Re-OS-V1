@@ -143,10 +143,10 @@ export async function createNotification(params: {
 
   const supabase = createServiceClient()
 
-  // Resolve the user_id from the agents table
+  // Resolve the user_id and brokerage_id from the agents table
   const { data: agent, error: agentError } = await supabase
     .from("agents")
-    .select("user_id")
+    .select("user_id, brokerage_id")
     .eq("id", agentId)
     .maybeSingle()
 
@@ -155,11 +155,17 @@ export async function createNotification(params: {
     return { success: false, error: "Agent not found" }
   }
 
+  // Validate caller-provided brokerageId against agent's actual brokerage to prevent cross-tenant writes
+  if (agent.brokerage_id && agent.brokerage_id !== brokerageId) {
+    console.warn("[notifications] brokerageId mismatch — using agent's brokerage_id")
+  }
+  const resolvedBrokerageId = agent.brokerage_id ?? brokerageId
+
   const { data, error } = await supabase
     .from("notifications")
     .insert({
       user_id: agent.user_id,
-      brokerage_id: brokerageId,
+      brokerage_id: resolvedBrokerageId,
       title,
       body,
       type,
