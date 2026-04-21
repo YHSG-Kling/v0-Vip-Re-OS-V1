@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -38,6 +38,9 @@ import {
   Monitor,
   Smartphone,
   Square,
+  Upload,
+  Camera,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
@@ -127,6 +130,12 @@ const BACKGROUND_STYLES = [
     color: "modern",
     previewStyle: { background: "linear-gradient(135deg, #e8e0d5 0%, #d4c5b0 50%, #b8a898 100%)" },
   },
+  {
+    id: "custom",
+    label: "Custom Upload",
+    color: "#e8f4fd",
+    previewStyle: { background: "repeating-conic-gradient(#e8f4fd 0% 25%, #c7e1f5 0% 50%) 0 0 / 10px 10px" },
+  },
 ]
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
@@ -180,6 +189,15 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   const [qualityPreset, setQualityPreset] = useState<string>("1080p")
   const [outputOrientation, setOutputOrientation] = useState<string>("landscape")
   const [brandingPresetId, setBrandingPresetId] = useState<string>("")
+
+  // Step 3: Custom background upload / webcam capture
+  const [customBgUrl, setCustomBgUrl] = useState<string>("")
+  const [isUploadingBg, setIsUploadingBg] = useState(false)
+  const [showWebcamCapture, setShowWebcamCapture] = useState(false)
+  const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const bgFileInputRef = useRef<HTMLInputElement>(null)
 
   // Data from DB
   const [scripts, setScripts] = useState<any[]>([])
@@ -366,10 +384,12 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           quality_preset: qualityPreset,
           output_orientation: outputOrientation,
           aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect || "16:9",
-          background: {
-            type: backgroundStyle.startsWith("linear") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
-            value: BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.color || "#ffffff",
-          },
+          background: backgroundStyle === "custom" && customBgUrl
+            ? { type: "image", value: customBgUrl }
+            : {
+                type: backgroundStyle.startsWith("linear") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
+                value: BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.color ?? "#ffffff",
+              },
         }),
       })
 
@@ -441,6 +461,89 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
     setRepurposeDestinations((prev) =>
       prev.includes(dest) ? prev.filter((d) => d !== dest) : [...prev, dest]
     )
+  }
+
+  // ─── Custom Background Handlers ────────────────────────────────────────────
+
+  const stopWebcam = useCallback(() => {
+    if (webcamStream) {
+      webcamStream.getTracks().forEach((t) => t.stop())
+      setWebcamStream(null)
+    }
+    setShowWebcamCapture(false)
+  }, [webcamStream])
+
+  // Cleanup webcam on unmount
+  useEffect(() => () => { webcamStream?.getTracks().forEach((t) => t.stop()) }, [webcamStream])
+
+  const handleBgFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith("image/")) {
+      setError("Please select an image file (JPG, PNG, WebP)")
+      return
+    }
+    setIsUploadingBg(true)
+    try {
+      const ext = file.name.split(".").pop() ?? "jpg"
+      const path = `video-backgrounds/${user?.id ?? "anon"}/${Date.now()}.${ext}`
+      const { error: uploadError } = await supabase.storage
+        .from("listing-media")
+        .upload(path, file, { upsert: true, contentType: file.type })
+      if (uploadError) throw uploadError
+      const { data: { publicUrl } } = supabase.storage.from("listing-media").getPublicUrl(path)
+      setCustomBgUrl(publicUrl)
+      setBackgroundStyle("custom")
+    } catch (err: any) {
+      setError(`Background upload failed: ${err.message}`)
+    } finally {
+      setIsUploadingBg(false)
+      if (bgFileInputRef.current) bgFileInputRef.current.value = ""
+    }
+  }
+
+  const startWebcam = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } })
+      setWebcamStream(stream)
+      setShowWebcamCapture(true)
+      // Assign stream after state update so the video element is rendered
+      setTimeout(() => {
+        if (videoRef.current) videoRef.current.srcObject = stream
+      }, 50)
+    } catch {
+      setError("Camera access denied. Allow camera access to capture a background photo.")
+    }
+  }
+
+  const captureWebcamPhoto = async () => {
+    if (!videoRef.current || !canvasRef.current) return
+    const video = videoRef.current
+    const canvas = canvasRef.current
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+    ctx.drawImage(video, 0, 0)
+    stopWebcam()
+    setIsUploadingBg(true)
+    try {
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Capture failed"))), "image/jpeg", 0.92)
+      })
+      const path = `video-backgrounds/${user?.id ?? "anon"}/${Date.now()}.jpg`
+      const { error: uploadError } = await supabase.storage
+        .from("listing-media")
+        .upload(path, blob, { upsert: true, contentType: "image/jpeg" })
+      if (uploadError) throw uploadError
+      const { data: { publicUrl } } = supabase.storage.from("listing-media").getPublicUrl(path)
+      setCustomBgUrl(publicUrl)
+      setBackgroundStyle("custom")
+    } catch (err: any) {
+      setError(`Background capture failed: ${err.message}`)
+    } finally {
+      setIsUploadingBg(false)
+    }
   }
 
   // Generate script from Step 0 context — calls Claude via server action
@@ -1055,6 +1158,100 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                     ))}
                   </div>
                 </div>
+
+                {/* Custom Background Upload (shown when "Custom Upload" is selected) */}
+                {backgroundStyle === "custom" && (
+                  <div className="space-y-3 p-4 rounded-lg border bg-muted/30">
+                    <Label className="text-sm font-medium">Upload or Capture Your Background</Label>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => bgFileInputRef.current?.click()}
+                        disabled={isUploadingBg}
+                        className="gap-2"
+                      >
+                        {isUploadingBg ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                        Upload Image
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={showWebcamCapture ? stopWebcam : startWebcam}
+                        disabled={isUploadingBg}
+                        className="gap-2"
+                      >
+                        {showWebcamCapture ? <X className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
+                        {showWebcamCapture ? "Cancel Webcam" : "Use Webcam"}
+                      </Button>
+                      {customBgUrl && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => { setCustomBgUrl(""); setBackgroundStyle("white") }}
+                          className="gap-2 text-destructive hover:text-destructive"
+                        >
+                          <X className="h-4 w-4" /> Clear
+                        </Button>
+                      )}
+                    </div>
+
+                    {/* Hidden file input */}
+                    <input
+                      ref={bgFileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="hidden"
+                      onChange={handleBgFileUpload}
+                    />
+
+                    {/* Live webcam feed */}
+                    {showWebcamCapture && (
+                      <div className="space-y-2">
+                        <video
+                          ref={videoRef}
+                          autoPlay
+                          muted
+                          playsInline
+                          className="w-full max-h-52 rounded-lg object-cover border"
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={captureWebcamPhoto}
+                          disabled={isUploadingBg}
+                          className="w-full gap-2"
+                        >
+                          {isUploadingBg ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                          Capture as Background
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Off-screen canvas for frame capture */}
+                    <canvas ref={canvasRef} className="hidden" />
+
+                    {/* Preview uploaded/captured image */}
+                    {customBgUrl && (
+                      <div className="relative w-full h-28 rounded-lg overflow-hidden border">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={customBgUrl} alt="Custom background preview" className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                          <Badge className="bg-primary text-primary-foreground">Custom Background Active</Badge>
+                        </div>
+                      </div>
+                    )}
+
+                    {!customBgUrl && !showWebcamCapture && !isUploadingBg && (
+                      <p className="text-xs text-muted-foreground">
+                        Upload a JPG, PNG, or WebP image to use as your video background, or use your webcam to capture a photo.
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {/* Output Orientation */}
                 <div className="space-y-3">
