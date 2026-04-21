@@ -144,47 +144,59 @@ export async function createNotification(params: {
   const supabase = createServiceClient()
 
   // Caller authorization: if an authenticated session exists, verify the caller
-  // is either targeting their own agent account or is a broker-admin in the same
-  // brokerage. Background/system calls (no session) are allowed through.
+  // is either targeting their own agent account or is in the same brokerage as
+  // the target agent (comparison uses DB-sourced brokerage IDs only — never the
+  // caller-supplied brokerageId param, which cannot be trusted).
+  // Background/system calls (no session) are allowed through.
   const ctx = await getAgentContext()
-  if (ctx.isAuthenticated) {
-    if (ctx.agentId && ctx.agentId !== agentId) {
-      const { data: callerAgent } = await supabase
-        .from("agents")
-        .select("brokerage_id")
-        .eq("id", ctx.agentId)
-        .maybeSingle()
-      if (callerAgent && callerAgent.brokerage_id !== brokerageId) {
-        return { success: false, error: "Unauthorized" }
-      }
-    }
-  }
 
-  // Resolve the user_id and brokerage_id from the agents table
-  const { data: agent, error: agentError } = await supabase
+  // Always fetch the target agent (user_id + brokerage_id) — needed both for
+  // auth and for the insert below.
+  const targetAgentQuery = supabase
     .from("agents")
     .select("user_id, brokerage_id")
     .eq("id", agentId)
     .maybeSingle()
 
-  if (agentError || !agent?.user_id) {
-    console.warn("[notifications] createNotification: agent lookup failed", agentError?.message)
-    return { success: false, error: "Agent not found" }
+  let targetAgent: { user_id: string | null; brokerage_id: string | null } | null = null
+
+  if (ctx.isAuthenticated && ctx.agentId && ctx.agentId !== agentId) {
+    // Fetch both agents in parallel so we can compare brokerage IDs from the DB.
+    const [{ data: callerAgent }, { data: ta, error: agentError }] = await Promise.all([
+      supabase.from("agents").select("brokerage_id").eq("id", ctx.agentId).maybeSingle(),
+      targetAgentQuery,
+    ])
+    if (agentError || !ta?.user_id) {
+      console.warn("[notifications] createNotification: agent lookup failed", agentError?.message)
+      return { success: false, error: "Agent not found" }
+    }
+    targetAgent = ta
+    if (!callerAgent || callerAgent.brokerage_id !== targetAgent.brokerage_id) {
+      return { success: false, error: "Unauthorized" }
+    }
+  } else {
+    // No cross-agent auth needed — fetch target agent on its own.
+    const { data: ta, error: agentError } = await targetAgentQuery
+    if (agentError || !ta?.user_id) {
+      console.warn("[notifications] createNotification: agent lookup failed", agentError?.message)
+      return { success: false, error: "Agent not found" }
+    }
+    targetAgent = ta
   }
 
-  if (!agent.brokerage_id) {
+  if (!targetAgent.brokerage_id) {
     console.warn("[notifications] createNotification: agent has no brokerage_id, cannot create notification")
     return { success: false, error: "Agent has no brokerage context" }
   }
-  if (agent.brokerage_id !== brokerageId) {
+  if (targetAgent.brokerage_id !== brokerageId) {
     console.warn("[notifications] brokerageId mismatch — using agent's brokerage_id")
   }
-  const resolvedBrokerageId = agent.brokerage_id
+  const resolvedBrokerageId = targetAgent.brokerage_id
 
   const { data, error } = await supabase
     .from("notifications")
     .insert({
-      user_id: agent.user_id,
+      user_id: targetAgent.user_id,
       brokerage_id: resolvedBrokerageId,
       title,
       body,
