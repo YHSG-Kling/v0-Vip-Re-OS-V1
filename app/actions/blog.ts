@@ -843,6 +843,10 @@ export async function saveBlogPost(
     insertData.category = params.category
   }
 
+  if (params.callToAction) {
+    insertData.call_to_action = params.callToAction
+  }
+
   const { data: post, error: insertError } = await supabase
     .from("blog_posts")
     .insert(insertData)
