@@ -260,7 +260,7 @@ export function NewslettersClient({
                 Start a new newsletter campaign. Use AI to compose the content.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 py-2 overflow-y-auto flex-1">
+            <div className="space-y-4 py-2 overflow-y-auto flex-1 min-h-0">
               {/* AI Compose */}
               <div className="rounded-lg border bg-muted/40 p-4 space-y-3">
                 <p className="text-sm font-medium flex items-center gap-1.5">
