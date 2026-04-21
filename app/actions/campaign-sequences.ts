@@ -614,7 +614,7 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
   try {
     const service = createServiceClient()
     const { error: deleteError } = await service.from("campaign_sequence_steps").delete().eq("sequence_id", sequenceId)
-    if (deleteError) return { success: false, error: deleteError.message }
+    if (deleteError) return { success: false, error: `Failed to clear existing steps: ${deleteError.message}` }
     if (steps.length > 0) {
       const rows = steps.map((s, i) => ({
         sequence_id: sequenceId,
@@ -627,7 +627,10 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
         is_active: s.is_active ?? true,
       }))
       const { error } = await service.from("campaign_sequence_steps").insert(rows)
-      if (error) return { success: false, error: error.message }
+      if (error) {
+        console.error(`[saveSequenceSteps] insert failed after delete for sequence ${sequenceId} (${steps.length} steps):`, error.message)
+        return { success: false, error: error.message }
+      }
     }
     revalidatePath("/dashboard/campaigns/sequences")
     return { success: true }

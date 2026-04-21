@@ -9,10 +9,17 @@ interface Props {
 
 export async function generateMetadata({ params }: Props) {
   const { id } = await params
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated || !ctx.brokerageId) {
+    return { title: "Sequence Builder" }
+  }
   const { sequence } = await getCampaignSequence(id)
+  if (!sequence || sequence.brokerage_id !== ctx.brokerageId) {
+    return { title: "Sequence Builder" }
+  }
   return {
-    title: sequence ? `Build: ${sequence.name} | Sequence Builder` : "Sequence Builder",
-    description: "Build multi-step campaign sequences with drag-and-drop step management.",
+    title: `Build: ${sequence.name} | Sequence Builder`,
+    description: "Build multi-step campaign sequences.",
   }
 }
 
@@ -23,13 +30,16 @@ export default async function SequenceBuilderPage({ params }: Props) {
   if (!ctx.isAuthenticated) redirect("/login")
   if (!ctx.brokerageId) redirect("/dashboard/onboarding")
 
-  const [{ sequence, error }, { steps: builderSteps }] = await Promise.all([
+  const [{ sequence, error }, { steps: builderSteps, error: stepsError }] = await Promise.all([
     getCampaignSequence(id),
     getSequenceSteps(id),
   ])
 
   if (error || !sequence) notFound()
   if (sequence.brokerage_id !== ctx.brokerageId) notFound()
+  if (stepsError) {
+    redirect(`/dashboard/campaigns/sequences?error=steps_load_failed`)
+  }
 
   return (
     <SequenceStepBuilderClient

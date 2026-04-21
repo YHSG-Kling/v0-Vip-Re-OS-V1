@@ -204,7 +204,10 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
                       type="number"
                       min={0}
                       value={selected.delay_days}
-                      onChange={(e) => updateStep(selectedIdx!, { delay_days: Number(e.target.value) })}
+                      onChange={(e) => {
+                        const val = Number(e.target.value)
+                        updateStep(selectedIdx!, { delay_days: isNaN(val) ? 0 : Math.max(0, Math.floor(val)) })
+                      }}
                       className="h-8 text-sm mt-1"
                     />
                   </div>
@@ -215,7 +218,10 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
                       min={0}
                       max={23}
                       value={selected.delay_hours}
-                      onChange={(e) => updateStep(selectedIdx!, { delay_hours: Number(e.target.value) })}
+                      onChange={(e) => {
+                        const val = Number(e.target.value)
+                        updateStep(selectedIdx!, { delay_hours: isNaN(val) ? 0 : Math.min(23, Math.max(0, Math.floor(val))) })
+                      }}
                       className="h-8 text-sm mt-1"
                     />
                   </div>
