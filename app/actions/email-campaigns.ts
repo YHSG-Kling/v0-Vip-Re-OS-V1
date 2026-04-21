@@ -11,7 +11,6 @@
  */
 
 import { createClient } from "@/lib/supabase/server"
-import { createServiceClient } from "@/lib/supabase/service"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
@@ -115,7 +114,7 @@ export async function getEmailCampaigns(brokerageId: string, agentId?: string) {
       return { success: false, error: "Invalid brokerage ID" }
     }
 
-    const supabase = createServiceClient()
+    const supabase = await createClient()
 
     let query = supabase
       .from("newsletter_campaigns")

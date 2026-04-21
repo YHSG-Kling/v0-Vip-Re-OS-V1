@@ -150,6 +150,12 @@ export async function createNotification(params: {
   // Background/system calls (no session) are allowed through.
   const ctx = await getAgentContext()
 
+  // Deny authenticated callers who have no agent identity and are not a
+  // broker/admin/superadmin — they cannot be authorized to create notifications.
+  if (ctx.isAuthenticated && !ctx.agentId && !["broker", "admin", "superadmin"].includes(ctx.userType)) {
+    return { success: false, error: "Agent identity required" }
+  }
+
   // Always fetch the target agent (user_id + brokerage_id) — needed both for
   // auth and for the insert below.
   const targetAgentQuery = supabase

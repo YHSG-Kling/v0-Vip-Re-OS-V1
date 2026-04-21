@@ -158,6 +158,15 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
   const handleSend = async () => {
     const message = draft
     if (!message?.trim()) return
+
+    // Re-run Them First compliance on the current draft before sending,
+    // since the message may have been edited after the initial check.
+    const compliance = await checkThemFirstCompliance(message)
+    if ((compliance as any).score < 50) {
+      toast.warning("Message may not meet Them-First standards. Please revise before sending.")
+      return
+    }
+
     setSending(true)
     try {
       const result = await sendPortalMessage({
