@@ -377,7 +377,7 @@ export async function getBuyerMatchCount(): Promise<{
       .eq("agent_id", agentId)
       .in("lead_type", ["buyer", "Buyer"])
       .in("status", ["active", "hot", "nurture"])
-      .not("max_price", "is", null)
+      .or("min_price.not.is.null,max_price.not.is.null")
 
     if (error) {
       return { matchCount: 0, error: error.message }
