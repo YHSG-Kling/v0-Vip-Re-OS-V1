@@ -32,7 +32,6 @@ export default async function DirectMailPage() {
     // Non-fatal — render dashboard in degraded state; the client will retry
     console.error("[DirectMailPage] Failed to load brokerage context:", err)
   }
-  }
 
   return (
     <div className="flex flex-col h-full">
