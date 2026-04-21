@@ -301,6 +301,7 @@ export default function CRMPage() {
   } | null>(null)
   const [journeyTeamLoading, setJourneyTeamLoading] = useState(false)
   const [journeyTeamLoaded, setJourneyTeamLoaded] = useState(false)
+  const [journeyTeamError, setJourneyTeamError] = useState<string | null>(null)
 
   // Active CRM tab
   const [activeTab, setActiveTab] = useState("overview")
@@ -472,6 +473,7 @@ export default function CRMPage() {
       setPortalInviteData(null)
       setJourneyTeamData(null)
       setJourneyTeamLoaded(false)
+      setJourneyTeamError(null)
       setActiveTab("overview")
       return
     }
@@ -612,8 +614,10 @@ export default function CRMPage() {
         vendors:     vendorsRes.data ?? [],
         timeline:    timelineRes.data ?? [],
       })
-    } catch {/* non-blocking */}
-    finally {
+    } catch (e: any) {
+      console.error("[CRM] loadJourneyTeam error:", e)
+      setJourneyTeamError("Failed to load deal data. Please try again.")
+    } finally {
       setJourneyTeamLoading(false)
       setJourneyTeamLoaded(true)
     }
@@ -1286,6 +1290,13 @@ export default function CRMPage() {
                       <div className="flex items-center justify-center py-12">
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
                         <span className="ml-2 text-sm text-muted-foreground">Loading deal data...</span>
+                      </div>
+                    ) : journeyTeamError ? (
+                      <div className="py-8 text-center space-y-2">
+                        <p className="text-sm text-destructive">{journeyTeamError}</p>
+                        <Button size="sm" variant="outline" onClick={() => { setJourneyTeamLoaded(false); setJourneyTeamError(null); if (selectedContactId) loadJourneyTeam(selectedContactId) }}>
+                          Retry
+                        </Button>
                       </div>
                     ) : !journeyTeamData || journeyTeamData.transactionId === null ? (
                       <div className="py-8 text-center space-y-3">
