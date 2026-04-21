@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useMemo } from "react"
+import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -168,6 +169,7 @@ interface MarketingStudioClientProps {
 }
 
 export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole }: MarketingStudioClientProps) {
+  const { toast } = useToast()
   const [activeTab, setActiveTab] = useState("overview")
   const [isLoading, setIsLoading] = useState(true)
   const [dashboardError, setDashboardError] = useState<string | null>(null)
@@ -534,19 +536,25 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   // ─── HANDLERS ─────────────────────────────────────────────────────────────────
 
   async function handleCreateCampaign() {
-    const result = await createCampaign(newCampaign)
-    if (result.success) {
-      setIsCreateCampaignOpen(false)
-      setNewCampaign({
-        campaignName: "",
-        campaignType: "brand",
-        budgetTotal: 0,
-        scheduledStartAt: "",
-        scheduledEndAt: "",
-        visibilityScope: "agent",
-      })
-      loadCampaigns()
-      loadInitialData()
+    try {
+      const result = await createCampaign(newCampaign)
+      if (result.success) {
+        setIsCreateCampaignOpen(false)
+        setNewCampaign({
+          campaignName: "",
+          campaignType: "brand",
+          budgetTotal: 0,
+          scheduledStartAt: "",
+          scheduledEndAt: "",
+          visibilityScope: "agent",
+        })
+        loadCampaigns()
+        loadInitialData()
+      } else {
+        toast({ title: "Failed to create campaign", description: (result as any).error ?? "Unknown error", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Failed to create campaign", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
     }
   }
 
@@ -559,15 +567,21 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   }
 
   async function handleCreateAsset() {
-    const result = await createAsset({
-      ...newAsset,
-      campaignId: newAsset.campaignId || undefined,
-    })
-    if (result.success) {
-      setIsCreateAssetOpen(false)
-      setNewAsset({ assetName: "", assetType: "image", campaignId: "", previewText: "" })
-      loadAssets()
-      loadInitialData()
+    try {
+      const result = await createAsset({
+        ...newAsset,
+        campaignId: newAsset.campaignId || undefined,
+      })
+      if (result.success) {
+        setIsCreateAssetOpen(false)
+        setNewAsset({ assetName: "", assetType: "image", campaignId: "", previewText: "" })
+        loadAssets()
+        loadInitialData()
+      } else {
+        toast({ title: "Failed to create asset", description: (result as any).error ?? "Unknown error", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Failed to create asset", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
     }
   }
 
@@ -588,14 +602,20 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   }
 
   async function handleCreateCalendarEvent() {
-    const result = await createCalendarEvent({
-      ...newEvent,
-      campaignId: newEvent.campaignId || undefined,
-    })
-    if (result.success) {
-      setIsCreateEventOpen(false)
-      setNewEvent({ title: "", eventType: "publish", scheduledAt: "", campaignId: "", notes: "" })
-      loadCalendarEvents()
+    try {
+      const result = await createCalendarEvent({
+        ...newEvent,
+        campaignId: newEvent.campaignId || undefined,
+      })
+      if (result.success) {
+        setIsCreateEventOpen(false)
+        setNewEvent({ title: "", eventType: "publish", scheduledAt: "", campaignId: "", notes: "" })
+        loadCalendarEvents()
+      } else {
+        toast({ title: "Failed to create calendar event", description: (result as any).error ?? "Unknown error", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Failed to create calendar event", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
     }
   }
 

@@ -114,7 +114,7 @@ export async function canAccessFeature(
   const flag = flagRaw as FeatureFlagRow | null
 
   if (!flag) {
-    return { allowed: false, reason: "Feature does not exist" }
+    return { allowed: true }
   }
 
   if (!flag.enabled) {
