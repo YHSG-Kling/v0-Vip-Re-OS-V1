@@ -285,8 +285,10 @@ export async function getOpenHouseAttendees(openHouseId: string): Promise<{
     if (ctx.brokerageId && eventCheck.brokerage_id !== ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
-    if (ctx.userType === "agent" && ctx.agentId && eventCheck.agent_id !== ctx.agentId) {
-      return { success: false, error: "Unauthorized" }
+    if (ctx.userType === "agent") {
+      if (!ctx.agentId || eventCheck.agent_id !== ctx.agentId) {
+        return { success: false, error: "Unauthorized" }
+      }
     }
 
     const { data, error } = await service
@@ -462,15 +464,23 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
       sent_at: new Date().toISOString(),
     }))
 
-    await service
+    const { error: upsertError } = await service
       .from("open_house_invitations")
       .upsert(invitations, { onConflict: "event_id,contact_id", ignoreDuplicates: true })
+    if (upsertError) {
+      console.error("[sendOpenHouseInvites] upsert failed:", upsertError.message)
+      return { success: false, error: upsertError.message }
+    }
 
     // Update event status
-    await service
+    const { error: statusError } = await service
       .from("open_house_events")
       .update({ status: "invitations_sent" })
       .eq("id", openHouseId)
+    if (statusError) {
+      // Non-fatal — invites were sent, just status flag failed
+      console.warn("[sendOpenHouseInvites] status update failed:", statusError.message)
+    }
 
     revalidatePath("/dashboard/open-houses")
     return { success: true, sent: contacts.length }
@@ -597,7 +607,8 @@ export async function cancelOpenHouse(openHouseId: string): Promise<{
       .eq("id", openHouseId)
       .eq("brokerage_id", ctx.brokerageId)
 
-    if (!isBrokerOrAdmin && ctx.agentId) {
+    if (!isBrokerOrAdmin) {
+      if (!ctx.agentId) return { success: false, error: "Unauthorized" }
       query = query.eq("agent_id", ctx.agentId)
     }
 
