@@ -23,7 +23,8 @@ export interface Notification {
   is_read: boolean
   read_at: string | null
   created_at: string
-  action_url: string | null
+  entity_type: string | null
+  entity_id: string | null
   priority: string | null
 }
 
@@ -42,7 +43,7 @@ export async function getNotifications(
   const { data, error } = await supabase
     .from("notifications")
     .select(
-      "id, title, body, type, is_read, read_at, created_at, action_url, priority",
+      "id, title, body, type, is_read, read_at, created_at, entity_type, entity_id, priority",
     )
     .eq("user_id", ctx.userId)
     .order("created_at", { ascending: false })
@@ -63,7 +64,8 @@ export async function getNotifications(
     is_read: Boolean(row.is_read),
     read_at: row.read_at != null ? String(row.read_at) : null,
     created_at: String(row.created_at ?? new Date().toISOString()),
-    action_url: row.action_url != null ? String(row.action_url) : null,
+    entity_type: row.entity_type != null ? String(row.entity_type) : null,
+    entity_id: row.entity_id != null ? String(row.entity_id) : null,
     priority: row.priority != null ? String(row.priority) : null,
   }))
 
@@ -132,10 +134,11 @@ export async function createNotification(params: {
   type: NotificationType
   agentId: string
   brokerageId: string
-  actionUrl?: string
+  entityType?: string
+  entityId?: string
   priority?: string
 }): Promise<{ success: boolean; id?: string; error?: string }> {
-  const { title, body, type, agentId, brokerageId, actionUrl, priority } =
+  const { title, body, type, agentId, brokerageId, entityType, entityId, priority } =
     params
 
   const supabase = createServiceClient()
@@ -161,7 +164,8 @@ export async function createNotification(params: {
       body,
       type,
       is_read: false,
-      action_url: actionUrl ?? null,
+      entity_type: entityType ?? null,
+      entity_id: entityId ?? null,
       priority: priority ?? null,
     })
     .select("id")

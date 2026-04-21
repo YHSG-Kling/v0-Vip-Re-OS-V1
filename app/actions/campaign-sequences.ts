@@ -580,20 +580,31 @@ export interface SequenceBuilderStep {
   delay_days: number
   delay_hours: number
   subject?: string | null
-  body: string | null
+  body: string
   is_active: boolean
 }
 
 export async function getSequenceSteps(sequenceId: string): Promise<{ steps: SequenceBuilderStep[]; error?: string }> {
   try {
     const service = createServiceClient()
+    // DB stores channel (not step_type) — map on read
     const { data, error } = await service
       .from("campaign_sequence_steps")
-      .select("id, step_number, step_type, delay_days, delay_hours, subject, body, is_active")
+      .select("id, step_number, channel, delay_days, delay_hours, subject, body, is_active")
       .eq("sequence_id", sequenceId)
       .order("step_number", { ascending: true })
     if (error) return { steps: [], error: error.message }
-    return { steps: (data ?? []) as SequenceBuilderStep[] }
+    const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => ({
+      id: row.id,
+      step_number: row.step_number,
+      step_type: row.channel as SequenceBuilderStep["step_type"],
+      delay_days: row.delay_days ?? 0,
+      delay_hours: row.delay_hours ?? 0,
+      subject: row.subject ?? null,
+      body: row.body ?? "",
+      is_active: row.is_active ?? true,
+    }))
+    return { steps }
   } catch (e: any) {
     return { steps: [], error: e.message }
   }
@@ -607,11 +618,11 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       const rows = steps.map((s, i) => ({
         sequence_id: sequenceId,
         step_number: i + 1,
-        step_type: s.step_type,
+        channel: s.step_type,  // UI uses step_type; DB column is channel
         delay_days: s.delay_days ?? 0,
         delay_hours: s.delay_hours ?? 0,
         subject: s.subject ?? null,
-        body: s.body ?? "",
+        body: s.body || "",  // NOT NULL in DB
         is_active: s.is_active ?? true,
       }))
       const { error } = await service.from("campaign_sequence_steps").insert(rows)

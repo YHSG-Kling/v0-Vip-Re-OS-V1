@@ -27,10 +27,9 @@ export interface OpenHouseEvent {
   start_time: string
   end_time: string
   status: string
-  description: string | null
+  description: string | null  // public-facing event description
+  notes: string | null        // agent private notes
   max_attendees: number | null
-  agent_notes: string | null
-  public_description: string | null
   created_at: string
   // Joined
   listing?: {
@@ -108,8 +107,8 @@ export async function createOpenHouse(params: {
         start_time: params.startTime,
         end_time: params.endTime,
         max_attendees: params.maxAttendees ?? null,
-        agent_notes: params.agentNotes ?? null,
-        public_description: params.publicDescription ?? null,
+        notes: params.agentNotes ?? null,
+        description: params.publicDescription ?? null,
         status: "scheduled",
         registration_required: false,
       })
@@ -163,9 +162,8 @@ export async function getOpenHouses(): Promise<{
         end_time,
         status,
         description,
+        notes,
         max_attendees,
-        agent_notes,
-        public_description,
         created_at,
         listings (
           id,
@@ -233,9 +231,8 @@ export async function getOpenHouses(): Promise<{
       end_time: e.end_time,
       status: e.status ?? "scheduled",
       description: e.description,
+      notes: e.notes,
       max_attendees: e.max_attendees,
-      agent_notes: e.agent_notes,
-      public_description: e.public_description,
       created_at: e.created_at,
       listing: Array.isArray(e.listings) ? (e.listings[0] ?? null) : (e.listings as OpenHouseEvent["listing"] ?? null),
       attendee_count: attendeeCountMap[e.id] ?? 0,

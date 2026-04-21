@@ -32,7 +32,7 @@ const STEP_TYPES = [
 ] as const
 
 function newStep(type: SequenceStep["step_type"], index: number): SequenceStep {
-  return { step_number: index + 1, step_type: type, delay_days: type === "wait" ? 3 : 1, delay_hours: 0, body: null, subject: type === "email" ? "" : null, is_active: true }
+  return { step_number: index + 1, step_type: type, delay_days: type === "wait" ? 3 : 1, delay_hours: 0, body: "", subject: type === "email" ? "" : null, is_active: true }
 }
 
 export default function SequenceStepBuilderClient({ sequence, initialSteps, brokerageId }: Props) {
@@ -240,8 +240,8 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
                       </Label>
                       <Textarea
                         placeholder={`Write your ${selected.step_type === "sms" ? "SMS message" : "content"} here...`}
-                        value={selected.body ?? ""}
-                        onChange={(e) => updateStep(selectedIdx!, { body: e.target.value || null })}
+                        value={selected.body}
+                        onChange={(e) => updateStep(selectedIdx!, { body: e.target.value })}
                         rows={8}
                         className="text-sm mt-1 resize-none"
                       />

@@ -65,6 +65,20 @@ function timeAgo(isoString: string): string {
   return `${days}d ago`
 }
 
+// ── Entity URL resolver ───────────────────────────────────────────────────────
+
+function resolveNotificationUrl(entityType: string | null, entityId: string | null): string | null {
+  if (!entityType || !entityId) return null
+  switch (entityType) {
+    case "contact": return `/crm?contact=${entityId}`
+    case "transaction": return `/dashboard/transactions/${entityId}`
+    case "listing": return `/dashboard/listings/${entityId}`
+    case "open_house": return `/dashboard/open-houses/${entityId}`
+    case "deal": return `/dashboard/transactions/${entityId}`
+    default: return null
+  }
+}
+
 // ── NotificationBell ──────────────────────────────────────────────────────────
 
 export function NotificationBell() {
@@ -128,9 +142,8 @@ export function NotificationBell() {
       }
     }
     setOpen(false)
-    if (notification.action_url) {
-      router.push(notification.action_url)
-    }
+    const url = resolveNotificationUrl(notification.entity_type, notification.entity_id)
+    if (url) router.push(url)
   }
 
   return (
