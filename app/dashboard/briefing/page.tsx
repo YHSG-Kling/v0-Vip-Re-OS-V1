@@ -619,7 +619,7 @@ export default function BriefingPage() {
                     </p>
                     <p className="text-xs text-emerald-600 mt-0.5 flex items-center gap-1">
                       <Clock className="h-3 w-3" />
-                      Close: {new Date(pipelineSummary.approachingClose.close_date).toLocaleDateString()}
+                      Close: {new Date(`${pipelineSummary.approachingClose.close_date}T00:00:00`).toLocaleDateString()}
                     </p>
                   </div>
                 ) : (
