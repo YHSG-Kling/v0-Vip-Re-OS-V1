@@ -25,6 +25,7 @@ import {
   processKernelEvent,
   KernelEvent,
 } from "@/lib/kernel"
+import { dispatchDirectMail } from "@/lib/providers/dispatch"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -614,9 +615,30 @@ export async function sendCampaign(params: SendCampaignParams) {
       return { success: false, error: "No pending recipients to mail" }
     }
 
-    // ── Simulate Lob API call ──
-    // In production, integrate with Lob API using provider.providerKey and config
-    const lobOrderId = `lob_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`
+    // ── Call Lob API via dispatchDirectMail() for each recipient ──
+    let firstSuccessfulMessageId: string | undefined
+    for (const recipient of recipients) {
+      const lobResult = await dispatchDirectMail({
+        brokerageId: params.brokerageId,
+        userId: params.actorUserId,
+        teamId: params.teamId,
+        agentId: params.agentId,
+        contactId: recipient.contact_id ?? undefined,
+        systemSource: "direct_mail_campaign",
+        recipientName: `${recipient.first_name} ${recipient.last_name}`.trim(),
+        mailingAddress: recipient.address_line1,
+        city: recipient.city,
+        state: recipient.state,
+        zip: recipient.zip,
+        templateId: campaign.design_url ?? campaign.id,
+        mergeVars: campaign.copy_text ? { copy_text: campaign.copy_text } : undefined,
+        metadata: { campaign_id: params.campaignId },
+      })
+      if (lobResult.success && lobResult.messageId && !firstSuccessfulMessageId) {
+        firstSuccessfulMessageId = lobResult.messageId
+      }
+    }
+    const lobOrderId = firstSuccessfulMessageId ?? `lob_${Date.now()}`
 
     // Update campaign
     const { error: updateError } = await supabase
