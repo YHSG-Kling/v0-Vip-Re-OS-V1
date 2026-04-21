@@ -91,29 +91,54 @@ export async function generateMarketInsights(): Promise<{
       ])
 
     // ── 2. Process results ────────────────────────────────────────────────────
+    // null = query failed (data unavailable), [] = query succeeded but empty
+
+    if (activeListingsResult.status === "rejected") {
+      console.warn("[MarketInsights] active listings query failed:", activeListingsResult.reason)
+    } else if (activeListingsResult.value.error) {
+      console.warn("[MarketInsights] active listings query error:", activeListingsResult.value.error.message)
+    }
+
+    if (soldListingsResult.status === "rejected") {
+      console.warn("[MarketInsights] sold listings query failed:", soldListingsResult.reason)
+    } else if (soldListingsResult.value.error) {
+      console.warn("[MarketInsights] sold listings query error:", soldListingsResult.value.error.message)
+    }
+
+    if (transactionsResult.status === "rejected") {
+      console.warn("[MarketInsights] transactions query failed:", transactionsResult.reason)
+    } else if (transactionsResult.value.error) {
+      console.warn("[MarketInsights] transactions query error:", transactionsResult.value.error.message)
+    }
+
+    if (buyerContactsResult.status === "rejected") {
+      console.warn("[MarketInsights] buyer contacts query failed:", buyerContactsResult.reason)
+    } else if (buyerContactsResult.value.error) {
+      console.warn("[MarketInsights] buyer contacts query error:", buyerContactsResult.value.error.message)
+    }
 
     const activeListings =
-      activeListingsResult.status === "fulfilled"
+      activeListingsResult.status === "fulfilled" && !activeListingsResult.value.error
         ? (activeListingsResult.value.data ?? [])
-        : []
+        : null
 
     const soldListings =
-      soldListingsResult.status === "fulfilled"
+      soldListingsResult.status === "fulfilled" && !soldListingsResult.value.error
         ? (soldListingsResult.value.data ?? [])
-        : []
+        : null
 
     const transactions =
-      transactionsResult.status === "fulfilled"
+      transactionsResult.status === "fulfilled" && !transactionsResult.value.error
         ? (transactionsResult.value.data ?? [])
-        : []
+        : null
 
     const buyerContacts =
-      buyerContactsResult.status === "fulfilled"
+      buyerContactsResult.status === "fulfilled" && !buyerContactsResult.value.error
         ? (buyerContactsResult.value.data ?? [])
-        : []
+        : null
 
     // Compute market snapshot from real DB data
-    const activePrices = activeListings
+    const activePrices = (activeListings ?? [])
       .map((l) => l.list_price)
       .filter((p): p is number => typeof p === "number" && p > 0)
 
@@ -122,7 +147,7 @@ export async function generateMarketInsights(): Promise<{
         ? Math.round(activePrices.reduce((a, b) => a + b, 0) / activePrices.length)
         : null
 
-    const domValues = activeListings
+    const domValues = (activeListings ?? [])
       .map((l) => l.days_on_market)
       .filter((d): d is number => typeof d === "number" && d >= 0)
 
@@ -133,10 +158,10 @@ export async function generateMarketInsights(): Promise<{
 
     // Average sale price: prefer sold listings sold_price, fall back to transactions purchase_price
     const salePrices: number[] = [
-      ...soldListings
+      ...(soldListings ?? [])
         .map((l) => l.sold_price ?? l.list_price)
         .filter((p): p is number => typeof p === "number" && p > 0),
-      ...transactions
+      ...(transactions ?? [])
         .map((t) => t.purchase_price)
         .filter((p): p is number => typeof p === "number" && p > 0),
     ]
@@ -147,7 +172,7 @@ export async function generateMarketInsights(): Promise<{
         : null
 
     const activeBuyerStages = new Set(["active", "hot", "nurture", "qualified", "touring"])
-    const activeBuyerContacts = buyerContacts.filter(
+    const activeBuyerContactsCount = (buyerContacts ?? []).filter(
       (c) =>
         activeBuyerStages.has((c.lead_stage ?? "").toLowerCase()) ||
         activeBuyerStages.has((c.status ?? "").toLowerCase())
@@ -157,10 +182,10 @@ export async function generateMarketInsights(): Promise<{
       avgListPrice,
       avgSalePrice,
       avgDaysOnMarket,
-      activeListings: activeListings.length,
-      recentSales: soldListings.length + transactions.length,
-      activeBuyerContacts,
-      totalBuyerContacts: buyerContacts.length,
+      activeListings: activeListings != null ? activeListings.length : 0,
+      recentSales: (soldListings != null ? soldListings.length : 0) + (transactions != null ? transactions.length : 0),
+      activeBuyerContacts: activeBuyerContactsCount,
+      totalBuyerContacts: buyerContacts != null ? buyerContacts.length : 0,
     }
 
     // ── 3. Call AI with the snapshot ──────────────────────────────────────────
@@ -177,20 +202,20 @@ Output ONLY valid JSON — no markdown, no extra text — matching this exact sc
 
 Rules:
 - marketTemperature: Seller's Market if low inventory + fast DOM (<30 days), Buyer's Market if high inventory + slow DOM (>60 days), otherwise Balanced Market
-- keyInsight: reference actual numbers from the snapshot
+- keyInsight: reference actual numbers from the snapshot; if a metric shows "data temporarily unavailable" treat it as unknown
 - actionItems: exactly 3, be specific to this agent's data (mention addresses/counts when available)
 - opportunityAlert: highlight buyer/listing match opportunities or pricing opportunities — null if no clear opportunity`
 
     const userPrompt = `Generate market insights from this agent's pipeline data:
 
 Market Snapshot:
-- Active listings: ${snapshot.activeListings}
+- ${activeListings != null ? `Active listings: ${snapshot.activeListings}` : "Active listings: data temporarily unavailable"}
 - Average list price: ${snapshot.avgListPrice ? `$${snapshot.avgListPrice.toLocaleString()}` : "No data"}
 - Average days on market: ${snapshot.avgDaysOnMarket !== null ? `${snapshot.avgDaysOnMarket} days` : "No data"}
-- Recent sales (last 30 days): ${snapshot.recentSales}
+- ${soldListings != null && transactions != null ? `Recent sales (last 30 days): ${snapshot.recentSales}` : "Recent sales (last 30 days): data temporarily unavailable"}
 - Average sale price: ${snapshot.avgSalePrice ? `$${snapshot.avgSalePrice.toLocaleString()}` : "No data"}
-- Active buyer contacts in pipeline: ${snapshot.activeBuyerContacts}
-- Total buyer contacts: ${snapshot.totalBuyerContacts}
+- ${buyerContacts != null ? `Active buyer contacts in pipeline: ${snapshot.activeBuyerContacts}` : "Active buyer contacts in pipeline: data temporarily unavailable"}
+- ${buyerContacts != null ? `Total buyer contacts: ${snapshot.totalBuyerContacts}` : "Total buyer contacts: data temporarily unavailable"}
 
 Price-to-sale ratio: ${snapshot.avgListPrice && snapshot.avgSalePrice ? ((snapshot.avgSalePrice / snapshot.avgListPrice) * 100).toFixed(1) + "%" : "No data"}
 
@@ -277,7 +302,7 @@ Generate insights that help this agent take action today.`
     console.error("[MarketInsights] generateMarketInsights failed:", err)
     return {
       insights: null,
-      error: err instanceof Error ? err.message : "Failed to generate market insights",
+      error: "Unable to generate market insights. Please try again.",
     }
   }
 }

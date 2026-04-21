@@ -793,7 +793,7 @@ export interface SaveBlogPostParams {
   featuredImageUrl?: string
   category?: string
   callToAction?: string
-  publishStatus?: "draft" | "pending_review" | "approved" | "published"
+  publishStatus?: "draft" | "pending_review"
   keywords?: string[]
 }
 
@@ -832,10 +832,7 @@ export async function saveBlogPost(
     excerpt: params.excerpt || null,
     content: params.content || null,
     featured_image_url: params.featuredImageUrl || null,
-    publish_status:
-      params.publishStatus === "pending_review" || params.publishStatus === "draft"
-        ? params.publishStatus
-        : "draft",
+    publish_status: params.publishStatus ?? "draft",
     visibility_scope: "agent",
     compliance_approved: false,
   }
