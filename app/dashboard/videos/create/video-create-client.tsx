@@ -386,10 +386,14 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect || "16:9",
           background: backgroundStyle === "custom" && customBgUrl
             ? { type: "image", value: customBgUrl }
-            : {
-                type: backgroundStyle.startsWith("linear") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
-                value: BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.color ?? "#ffffff",
-              },
+            : (() => {
+                const bgPreset = BACKGROUND_STYLES.find(b => b.id === backgroundStyle)
+                const bgColorValue = bgPreset?.color ?? "#ffffff"
+                return {
+                  type: bgColorValue.startsWith("linear") || bgColorValue.startsWith("repeating") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
+                  value: bgColorValue,
+                }
+              })(),
         }),
       })
 
@@ -1148,10 +1152,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                       >
                         <div
                           className="w-full h-12 rounded mb-2"
-                          style={{
-                            background: bg.color.startsWith("linear") ? bg.color : bg.color,
-                            backgroundColor: !bg.color.startsWith("linear") ? bg.color : undefined,
-                          }}
+                          style={bg.previewStyle}
                         />
                         <p className="text-xs font-medium truncate">{bg.label}</p>
                       </div>

@@ -688,7 +688,7 @@ export default function BriefingPage() {
                       <p className="text-xs text-muted-foreground capitalize">
                         {contact.lead_stage || "contact"} &middot;{" "}
                         {contact.last_contact_date
-                          ? `Last: ${new Date(contact.last_contact_date).toLocaleDateString()}`
+                          ? `Last: ${new Date(contact.last_contact_date + "T00:00:00").toLocaleDateString()}`
                           : "Never contacted"}
                       </p>
                     </div>
