@@ -69,6 +69,10 @@ export interface SequenceEnrollment {
   contact?: { first_name: string | null; last_name: string | null; email: string | null }
 }
 
+// ─── Valid step types ─────────────────────────────────────────────────────────
+
+export const VALID_STEP_TYPES = new Set(["email", "sms", "voice_drop", "wait", "ai_call", "direct_mail"] as const)
+
 // ─── Sequence type categories ─────────────────────────────────────────────────
 
 export const MARKETING_SEQUENCE_TYPES = [
@@ -610,7 +614,9 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
     const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => ({
       id: row.id,
       step_number: row.step_number,
-      step_type: row.channel as SequenceBuilderStep["step_type"],
+      step_type: VALID_STEP_TYPES.has(row.channel)
+        ? (row.channel as SequenceBuilderStep["step_type"])
+        : "email",
       delay_days: row.delay_days ?? 0,
       delay_hours: row.delay_hours ?? 0,
       subject: row.subject ?? null,

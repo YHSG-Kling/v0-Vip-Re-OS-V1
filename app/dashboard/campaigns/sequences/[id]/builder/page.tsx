@@ -1,5 +1,5 @@
 import { redirect, notFound } from "next/navigation"
-import { getCampaignSequence, getSequenceSteps } from "@/app/actions/campaign-sequences"
+import { getCampaignSequence, type SequenceBuilderStep } from "@/app/actions/campaign-sequences"
 import { getAgentContext } from "@/lib/identity"
 import SequenceStepBuilderClient from "./sequence-builder-client"
 
@@ -30,16 +30,24 @@ export default async function SequenceBuilderPage({ params }: Props) {
   if (!ctx.isAuthenticated) redirect("/login")
   if (!ctx.brokerageId) redirect("/dashboard/onboarding")
 
-  const [{ sequence, error }, { steps: builderSteps, error: stepsError }] = await Promise.all([
-    getCampaignSequence(id),
-    getSequenceSteps(id),
-  ])
+  const { sequence, steps: rawSteps, error } = await getCampaignSequence(id)
 
   if (error || !sequence) notFound()
   if (sequence.brokerage_id !== ctx.brokerageId) notFound()
-  if (stepsError) {
-    redirect(`/dashboard/campaigns/sequences?error=steps_load_failed`)
-  }
+
+  const VALID_STEP_TYPES = new Set(["email", "sms", "voice_drop", "wait", "ai_call", "direct_mail"])
+  const builderSteps: SequenceBuilderStep[] = (rawSteps ?? []).map((s) => ({
+    id: s.id,
+    step_number: s.step_number,
+    step_type: VALID_STEP_TYPES.has(s.channel)
+      ? (s.channel as SequenceBuilderStep["step_type"])
+      : "email",
+    delay_days: s.delay_days,
+    delay_hours: s.delay_hours,
+    subject: s.subject ?? null,
+    body: s.body ?? "",
+    is_active: s.is_active,
+  }))
 
   return (
     <SequenceStepBuilderClient
