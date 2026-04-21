@@ -292,6 +292,7 @@ export default function CRMPage() {
 
   // Journey & Team tab — lazy loaded on first tab activation
   const [journeyTeamData, setJourneyTeamData] = useState<{
+    transactionId: string | null
     milestones:   any[]
     dealTeam:     any[]
     lenders:      any[]
@@ -604,6 +605,7 @@ export default function CRMPage() {
       ])
 
       setJourneyTeamData({
+        transactionId: txId,
         milestones:  milestonesRes.data ?? [],
         dealTeam:    dealTeamRes.data ?? [],
         lenders:     lendersRes.data ?? [],
@@ -1285,7 +1287,7 @@ export default function CRMPage() {
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
                         <span className="ml-2 text-sm text-muted-foreground">Loading deal data...</span>
                       </div>
-                    ) : !journeyTeamData || (journeyTeamData.milestones.length === 0 && journeyTeamData.dealTeam.length === 0 && journeyTeamData.lenders.length === 0 && journeyTeamData.vendors.length === 0 && journeyTeamData.timeline.length === 0) ? (
+                    ) : !journeyTeamData || journeyTeamData.transactionId === null ? (
                       <div className="py-8 text-center space-y-3">
                         <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center mx-auto">
                           <Users className="h-5 w-5 text-muted-foreground" />
@@ -1305,6 +1307,11 @@ export default function CRMPage() {
                         >
                           Start a Transaction
                         </Button>
+                      </div>
+                    ) : journeyTeamData.milestones.length === 0 && journeyTeamData.dealTeam.length === 0 && journeyTeamData.lenders.length === 0 && journeyTeamData.vendors.length === 0 && journeyTeamData.timeline.length === 0 ? (
+                      <div className="py-8 text-center space-y-2">
+                        <p className="text-sm font-medium">Transaction in progress</p>
+                        <p className="text-xs text-muted-foreground">Milestones and team details will appear here as the deal progresses.</p>
                       </div>
                     ) : (
                       <>
