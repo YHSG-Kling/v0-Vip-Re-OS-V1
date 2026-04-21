@@ -5,7 +5,7 @@
 
 set -e
 
-export HEYGEN_API_KEY="${HEYGEN_API_KEY:-$(grep HEYGEN_API_KEY .env.local 2>/dev/null | cut -d= -f2)}"
+export HEYGEN_API_KEY="${HEYGEN_API_KEY:-$(grep '^HEYGEN_API_KEY=' .env.local 2>/dev/null | cut -d= -f2-)}"
 
 if [ -z "$HEYGEN_API_KEY" ]; then
   echo "ERROR: HEYGEN_API_KEY not set"

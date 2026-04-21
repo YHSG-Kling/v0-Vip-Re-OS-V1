@@ -131,10 +131,10 @@ export async function POST() {
 
     const { error } = await supabase
       .from("feature_flags")
-      .upsert(rows, { onConflict: "feature_key" })
+      .upsert(rows, { onConflict: "feature_key", ignoreDuplicates: true })
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
+      return NextResponse.json({ error: "Seed operation failed" }, { status: 500 })
     }
 
     const { data: seeded } = await supabase
@@ -148,7 +148,7 @@ export async function POST() {
       seeded: seeded?.length ?? 0,
       features: seeded?.map((r: { feature_key: string }) => r.feature_key) ?? [],
     })
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message ?? "Seed failed" }, { status: 500 })
+  } catch {
+    return NextResponse.json({ error: "Seed operation failed" }, { status: 500 })
   }
 }

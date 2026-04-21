@@ -181,7 +181,11 @@ export async function createNotification(params: {
       return { success: false, error: "Unauthorized" }
     }
   } else {
-    // No cross-agent auth needed — fetch target agent on its own.
+    // Guard: agent-role callers without a resolved agentId cannot be authorized
+    if (ctx.isAuthenticated && !ctx.agentId && !["broker", "admin", "superadmin"].includes(ctx.userType ?? "")) {
+      return { success: false, error: "Agent identity required" }
+    }
+    // No cross-agent auth needed (caller == target, or caller is broker/admin)
     const { data: ta, error: agentError } = await targetAgentQuery
     if (agentError || !ta?.user_id) {
       console.warn("[notifications] createNotification: agent lookup failed", agentError?.message)

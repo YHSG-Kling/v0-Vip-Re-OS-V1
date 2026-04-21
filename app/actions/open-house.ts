@@ -194,6 +194,9 @@ export async function getOpenHouses(): Promise<{
       query = query.eq("agent_id", ctx.agentId)
     } else if (ctx.brokerageId) {
       query = query.eq("brokerage_id", ctx.brokerageId)
+    } else {
+      // Non-agent with no brokerageId — deny rather than expose all events (service client has no RLS)
+      return { success: false, error: "Brokerage context required" }
     }
 
     const { data: events, error } = await query

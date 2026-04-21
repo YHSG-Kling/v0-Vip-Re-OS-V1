@@ -171,19 +171,9 @@ ON CONFLICT (feature_key)
 DO UPDATE SET
   display_name             = EXCLUDED.display_name,
   description              = EXCLUDED.description,
-  enabled                  = EXCLUDED.enabled,
-  solo_agent_access        = EXCLUDED.solo_agent_access,
-  team_access              = EXCLUDED.team_access,
-  brokerage_access         = EXCLUDED.brokerage_access,
-  multi_location_access    = EXCLUDED.multi_location_access,
-  solo_agent_limit         = EXCLUDED.solo_agent_limit,
-  team_limit               = EXCLUDED.team_limit,
-  brokerage_limit          = EXCLUDED.brokerage_limit,
-  multi_location_limit     = EXCLUDED.multi_location_limit,
-  superadmin_only          = EXCLUDED.superadmin_only,
-  beta                     = EXCLUDED.beta,
-  deprecated               = EXCLUDED.deprecated,
   category                 = EXCLUDED.category,
   updated_at               = now();
+-- NOTE: enabled, access flags, and limits are intentionally NOT updated on conflict
+-- so re-running this seed cannot reset live feature gating or usage limits.
 
 -- Completed: all 16 missing feature flags seeded with full tier access enabled.
