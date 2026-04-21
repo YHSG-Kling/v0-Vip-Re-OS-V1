@@ -613,7 +613,8 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
 export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuilderStep[]): Promise<{ success: boolean; error?: string }> {
   try {
     const service = createServiceClient()
-    await service.from("campaign_sequence_steps").delete().eq("sequence_id", sequenceId)
+    const { error: deleteError } = await service.from("campaign_sequence_steps").delete().eq("sequence_id", sequenceId)
+    if (deleteError) return { success: false, error: deleteError.message }
     if (steps.length > 0) {
       const rows = steps.map((s, i) => ({
         sequence_id: sequenceId,
