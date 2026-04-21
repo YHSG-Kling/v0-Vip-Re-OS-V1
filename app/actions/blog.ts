@@ -858,6 +858,8 @@ export async function saveBlogPost(
     return { success: false, error: "Failed to save blog post" }
   }
 
+  await incrementFeatureUsage(ctx.userId, "seo_blog_engine")
+
   // ── 4. Link keywords if provided ────────────────────────────────────────────
   if (params.keywords?.length) {
     for (let i = 0; i < params.keywords.length; i++) {

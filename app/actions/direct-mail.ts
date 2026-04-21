@@ -617,6 +617,7 @@ export async function sendCampaign(params: SendCampaignParams) {
 
     // ── Call Lob API via dispatchDirectMail() for each recipient ──
     let firstSuccessfulMessageId: string | undefined
+    let successCount = 0
     for (const recipient of recipients) {
       const lobResult = await dispatchDirectMail({
         brokerageId: params.brokerageId,
@@ -633,10 +634,20 @@ export async function sendCampaign(params: SendCampaignParams) {
         mergeVars: campaign.copy_text ? { copy_text: campaign.copy_text } : undefined,
         metadata: { campaign_id: params.campaignId },
       })
-      if (lobResult.success && lobResult.messageId && !firstSuccessfulMessageId) {
-        firstSuccessfulMessageId = lobResult.messageId
+      if (lobResult.success && lobResult.messageId) {
+        if (!firstSuccessfulMessageId) firstSuccessfulMessageId = lobResult.messageId
+        successCount++
       }
     }
+
+    if (successCount === 0) {
+      return { success: false, error: "Direct mail failed: no pieces dispatched via Lob" }
+    }
+
+    if (successCount < recipients.length) {
+      console.warn(`[DirectMail] Partial success: ${successCount}/${recipients.length} pieces dispatched for campaign ${params.campaignId}`)
+    }
+
     const lobOrderId = firstSuccessfulMessageId ?? `lob_${Date.now()}`
 
     // Update campaign

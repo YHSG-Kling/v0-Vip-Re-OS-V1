@@ -13,4 +13,4 @@ if [ -z "$HEYGEN_API_KEY" ]; then
 fi
 
 echo "Generating HeyGen video..."
-heygen video create "$@" 2>&1 || echo "Note: heygen CLI may require auth. Use the API routes instead."
+heygen video create "$@"

@@ -611,12 +611,15 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
       .eq("sequence_id", sequenceId)
       .order("step_number", { ascending: true })
     if (error) return { steps: [], error: error.message }
+    for (const row of data ?? []) {
+      if (row.channel && !VALID_STEP_TYPES.has(row.channel)) {
+        return { steps: [], error: `Invalid step channel in sequence: ${row.channel}` }
+      }
+    }
     const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => ({
       id: row.id,
       step_number: row.step_number,
-      step_type: VALID_STEP_TYPES.has(row.channel)
-        ? (row.channel as SequenceBuilderStep["step_type"])
-        : "email",
+      step_type: (row.channel ?? "email") as SequenceBuilderStep["step_type"],
       delay_days: row.delay_days ?? 0,
       delay_hours: row.delay_hours ?? 0,
       subject: row.subject ?? null,
@@ -657,6 +660,12 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
     if (deleteError) return { success: false, error: `Failed to clear existing steps: ${deleteError.message}` }
 
     if (steps.length > 0) {
+      for (const s of steps) {
+        if (s.step_type && !VALID_STEP_TYPES.has(s.step_type as any)) {
+          return { success: false, error: `Invalid step channel: ${s.step_type}` }
+        }
+      }
+
       const rows = steps.map((s, i) => ({
         sequence_id: sequenceId,
         step_number: i + 1,
