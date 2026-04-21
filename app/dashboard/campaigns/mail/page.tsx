@@ -1,6 +1,6 @@
 import { Suspense } from "react"
 import { redirect } from "next/navigation"
-import { createClient } from "@/lib/supabase/server"
+import { getAgentContext } from "@/lib/identity"
 import { MailDashboard } from "./mail-dashboard"
 
 export const dynamic = "force-dynamic"
@@ -11,27 +11,11 @@ export const metadata = {
 }
 
 export default async function DirectMailPage() {
-  let brokerageId = ""
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) redirect("/login")
+  if (!ctx.brokerageId) redirect("/dashboard/onboarding")
 
-  const supabase = await createClient()
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) redirect("/login")
-
-  try {
-    const { data: profile } = await supabase
-      .from("users")
-      .select("brokerage_id")
-      .eq("id", user.id)
-      .maybeSingle()
-
-    brokerageId = profile?.brokerage_id ?? ""
-  } catch (err) {
-    // Non-fatal — render dashboard in degraded state; the client will retry
-    console.error("[DirectMailPage] Failed to load brokerage context:", err)
-  }
+  const brokerageId = ctx.brokerageId
 
   return (
     <div className="flex flex-col h-full">

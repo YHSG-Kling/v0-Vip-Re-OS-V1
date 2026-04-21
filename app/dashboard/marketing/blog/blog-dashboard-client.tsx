@@ -50,6 +50,7 @@ interface BlogPost {
   slug: string
   excerpt: string
   publish_status: string
+  category?: string | null
   seo_score: number | null
   created_at: string
   published_at: string | null
@@ -156,7 +157,9 @@ export function BlogDashboardClient({
       post.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
       post.excerpt?.toLowerCase().includes(searchQuery.toLowerCase())
     const matchesStatus = statusFilter === "all" || post.publish_status === statusFilter
-    return matchesSearch && matchesStatus
+    const matchesCategory =
+      !categoryFilter || categoryFilter === "All" || post.category === categoryFilter
+    return matchesSearch && matchesStatus && matchesCategory
   })
 
   const handleGenerateBlogPost = async () => {

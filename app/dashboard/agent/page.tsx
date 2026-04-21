@@ -9,7 +9,6 @@ import { getUpcomingAnniversaries } from "@/app/actions/past-clients"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
 import { getHotLeads } from "@/app/actions/ai-auto-response"
 import { getMotivatedSellers } from "@/app/actions/lead-intelligence"
-import { getMarketAlerts } from "@/app/actions/ai-market-intelligence"
 import { getRecentLifeChanges } from "@/app/actions/contact-enrichment"
 import { initiateWhisperBridge, triggerVapiVoiceBot } from "@/app/actions/voice-call-bridge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -58,8 +57,6 @@ export default function AgentDashboard() {
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
   const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
-  const [marketAlerts, setMarketAlerts] = useState<any[]>([])
-  const [marketSnapshot, setMarketSnapshot] = useState<{ overallTrend: string; keyMetric: string; comparedToLastMonth: string } | null>(null)
 
   useEffect(() => {
     const loadData = async () => {
@@ -123,9 +120,6 @@ export default function AgentDashboard() {
           getExpenses({ startDate: monthStart }),
           getHotLeads(10),
           getRecentLifeChanges(agentRow?.id, 7).catch(() => []),
-          agentRow?.id
-            ? getMarketAlerts({ agentId: agentRow.id }).catch(() => null)
-            : Promise.resolve(null),
           getMotivatedSellers({ min_score: 60 }).catch(() => null),
         ])
 
@@ -183,15 +177,7 @@ export default function AgentDashboard() {
         }
 
         if (results[9].status === 'fulfilled' && results[9].value) {
-          const alertsResult = results[9].value as any
-          if (alertsResult?.success) {
-            setMarketAlerts(alertsResult.alerts || [])
-            setMarketSnapshot(alertsResult.snapshot || null)
-          }
-        }
-
-        if (results[10].status === 'fulfilled' && results[10].value) {
-          const sellersResult = results[10].value as any
+          const sellersResult = results[9].value as any
           setMotivatedSellers(sellersResult?.sellers ?? [])
         }
 
