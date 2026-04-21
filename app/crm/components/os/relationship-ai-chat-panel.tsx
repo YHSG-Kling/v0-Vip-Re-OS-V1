@@ -96,6 +96,7 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
         question: draftPrompt,
         contactName,
         contactPersona,
+        systemPrompt: `You are a professional message writer for a real estate agent. Write client-ready messages that the agent can send directly. Output ONLY the message body — no subject lines, no "Dear..." greetings, no coaching notes, no meta-commentary. Write in first-person as the agent in a warm, professional voice.`,
       })
 
       if (result.success && result.answer) {

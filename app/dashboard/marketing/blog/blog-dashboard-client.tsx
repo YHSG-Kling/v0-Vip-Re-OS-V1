@@ -664,16 +664,16 @@ export function BlogDashboardClient({
                 <Sparkles className="h-10 w-10 text-primary" />
               </div>
               <h3 className="text-lg font-semibold mb-2">
-                {searchQuery || statusFilter !== "all"
+                {searchQuery || statusFilter !== "all" || (categoryFilter && categoryFilter !== "All" && categoryFilter !== "")
                   ? "No posts match your filters"
                   : "Create your first blog post"}
               </h3>
               <p className="text-muted-foreground text-sm text-center max-w-sm mb-6">
-                {searchQuery || statusFilter !== "all"
+                {searchQuery || statusFilter !== "all" || (categoryFilter && categoryFilter !== "All" && categoryFilter !== "")
                   ? "Try adjusting your search or filter to find what you're looking for."
                   : "AI will help you write SEO-optimized content in minutes — just pick some keywords and let it do the work."}
               </p>
-              {!searchQuery && statusFilter === "all" && (
+              {!searchQuery && statusFilter === "all" && (!categoryFilter || categoryFilter === "All" || categoryFilter === "") && (
                 <div className="flex flex-wrap gap-3 justify-center">
                   <Button onClick={() => setIsTopicsOpen(true)} variant="outline">
                     <Lightbulb className="h-4 w-4 mr-2" />
@@ -685,10 +685,10 @@ export function BlogDashboardClient({
                   </Button>
                 </div>
               )}
-              {(searchQuery || statusFilter !== "all") && (
+              {(searchQuery || statusFilter !== "all" || (categoryFilter && categoryFilter !== "All" && categoryFilter !== "")) && (
                 <Button
                   variant="outline"
-                  onClick={() => { setSearchQuery(""); setStatusFilter("all") }}
+                  onClick={() => { setSearchQuery(""); setStatusFilter("all"); setCategoryFilter("All") }}
                 >
                   <X className="h-4 w-4 mr-2" />
                   Clear Filters
