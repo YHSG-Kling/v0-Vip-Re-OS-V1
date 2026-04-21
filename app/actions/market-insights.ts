@@ -214,7 +214,7 @@ Market Snapshot:
 - ${activeListings != null ? `Active listings: ${snapshot.activeListings}` : "Active listings: data temporarily unavailable"}
 - Average list price: ${snapshot.avgListPrice ? `$${snapshot.avgListPrice.toLocaleString()}` : "No data"}
 - Average days on market: ${snapshot.avgDaysOnMarket !== null ? `${snapshot.avgDaysOnMarket} days` : "No data"}
-- ${soldListings != null && transactions != null ? `Recent sales (last 30 days): ${snapshot.recentSales}` : "Recent sales (last 30 days): data temporarily unavailable"}
+- ${soldListings != null || transactions != null ? `Recent sales (last 30 days): ${snapshot.recentSales}` : "Recent sales (last 30 days): data temporarily unavailable"}
 - Average sale price: ${snapshot.avgSalePrice ? `$${snapshot.avgSalePrice.toLocaleString()}` : "No data"}
 - ${buyerContacts != null ? `Active buyer contacts in pipeline: ${snapshot.activeBuyerContacts}` : "Active buyer contacts in pipeline: data temporarily unavailable"}
 - ${buyerContacts != null ? `Total buyer contacts: ${snapshot.totalBuyerContacts}` : "Total buyer contacts: data temporarily unavailable"}

@@ -492,6 +492,15 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   // Cleanup webcam on unmount
   useEffect(() => () => { webcamStream?.getTracks().forEach((t) => t.stop()) }, [webcamStream])
 
+  // Stop webcam tracks when leaving the style step (step 3)
+  useEffect(() => {
+    if (currentStep !== 3 && webcamStream) {
+      webcamStream.getTracks().forEach((t) => t.stop())
+      setWebcamStream(null)
+      setShowWebcamCapture(false)
+    }
+  }, [currentStep]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleBgFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
