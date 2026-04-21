@@ -802,6 +802,11 @@ export async function saveBlogPost(
     return { success: false, error: "Not authenticated" }
   }
 
+  const accessCheck = await canAccessFeature(ctx.userId, "seo_blog_engine")
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.reason || "Feature access denied" }
+  }
+
   const supabase = await createClient()
 
   // ── 2. Build slug from title if not supplied ────────────────────────────────
