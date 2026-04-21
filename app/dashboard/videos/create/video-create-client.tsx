@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -38,9 +38,6 @@ import {
   Monitor,
   Smartphone,
   Square,
-  Upload,
-  Camera,
-  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
@@ -183,14 +180,6 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   const [qualityPreset, setQualityPreset] = useState<string>("1080p")
   const [outputOrientation, setOutputOrientation] = useState<string>("landscape")
   const [brandingPresetId, setBrandingPresetId] = useState<string>("")
-  // Custom background
-  const [customBgUrl, setCustomBgUrl] = useState<string | null>(null)
-  const [isUploadingBg, setIsUploadingBg] = useState(false)
-  const [showWebcamCapture, setShowWebcamCapture] = useState(false)
-  const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null)
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const bgFileInputRef = useRef<HTMLInputElement>(null)
 
   // Data from DB
   const [scripts, setScripts] = useState<any[]>([])
@@ -308,74 +297,6 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
     loadData()
   }, [brokerage?.id, user?.id, supabase])
-
-  // ─── Custom Background Upload ───────────────────────────────────────────────
-
-  async function handleBgFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file || !brokerage?.id) return
-
-    setIsUploadingBg(true)
-    try {
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from("video-backgrounds")
-        .upload(`${brokerage.id}/${Date.now()}-${file.name}`, file, {
-          contentType: file.type,
-          upsert: false,
-        })
-
-      if (uploadError) throw uploadError
-
-      const { data: { publicUrl } } = supabase.storage
-        .from("video-backgrounds")
-        .getPublicUrl(uploadData.path)
-
-      setCustomBgUrl(publicUrl)
-      setBackgroundStyle("custom_upload")
-    } catch (err: any) {
-      console.error("Background upload failed:", err)
-      setError("Background upload failed: " + err.message)
-    } finally {
-      setIsUploadingBg(false)
-    }
-  }
-
-  async function startWebcam() {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true })
-      setWebcamStream(stream)
-      setShowWebcamCapture(true)
-      // Attach stream to video element after state update
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-        }
-      }, 100)
-    } catch (err) {
-      setError("Could not access camera. Please allow camera permissions.")
-    }
-  }
-
-  function stopWebcam() {
-    webcamStream?.getTracks().forEach(t => t.stop())
-    setWebcamStream(null)
-    setShowWebcamCapture(false)
-  }
-
-  function captureWebcamPhoto() {
-    if (!videoRef.current || !canvasRef.current) return
-    const canvas = canvasRef.current
-    const video = videoRef.current
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return
-    ctx.drawImage(video, 0, 0)
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.9)
-    setCustomBgUrl(dataUrl)
-    setBackgroundStyle("custom_webcam")
-    stopWebcam()
-  }
 
   // ─── Generate Video ─────────────────────────────────────────────────────────
 

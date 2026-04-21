@@ -88,8 +88,6 @@ function buildTypeSystemContext(): Record<string, string> {
   }
 }
 
-const TYPE_SYSTEM_CONTEXT: Record<string, string> = buildTypeSystemContext()
-
 /**
  * Map video type to the appropriate synthetic broadcast contact_type.
  * This determines the audience context for the compliance gate.
@@ -236,8 +234,9 @@ Fair Housing compliance (Gate 4 — mandatory):
   }
 
   // ── Claude script generation ─────────────────────────────────────────────────
+  const typeSystemContext = buildTypeSystemContext()
   const systemPrompt = [
-    TYPE_SYSTEM_CONTEXT[params.videoType] ?? TYPE_SYSTEM_CONTEXT.custom,
+    typeSystemContext[params.videoType] ?? typeSystemContext.custom,
     TONE_INSTRUCTIONS[params.tone] ?? TONE_INSTRUCTIONS.professional,
     brandVoiceBlock,
     themFirstBlock,

@@ -82,12 +82,14 @@ export function RelationshipAiChatPanel({
           ? "Write a well-structured email with a clear subject and call to action."
           : "Write a short, conversational message."
 
-      const question = input
+      const basePrompt = input
         ? `${input}\n\nContext: This is for a ${selectedChannel} to ${contactName}. ${channelInstructions}`
         : `Draft a ${purpose.replace(/_/g, " ")} ${selectedChannel} for ${contactName}. Use a ${brandVoice?.tone || "professional"} tone. ${channelInstructions} Address it directly to ${contactName}.`
 
+      const draftPrompt = `${basePrompt}\n\nImportant: Return ONLY the client-ready message text that the agent should send. Write in first person as the agent. Do not include coaching advice or meta-commentary.`
+
       const result = await askRelationshipAI({
-        question,
+        question: draftPrompt,
         contactName,
         contactPersona,
       })
@@ -204,6 +206,9 @@ export function RelationshipAiChatPanel({
 
             {draft && (
               <div className="space-y-3">
+                <p className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                  Message Draft — Review before sending
+                </p>
                 <Textarea
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
