@@ -12,7 +12,11 @@ export default async function OpenHousesPage() {
   }
 
   const result = await getOpenHouses()
-  const events = result.success ? (result.events ?? []) : []
 
-  return <OpenHousesClient initialEvents={events} />
+  return (
+    <OpenHousesClient
+      initialEvents={result.events ?? []}
+      fetchError={result.success ? undefined : (result.error ?? "Failed to load open houses")}
+    />
+  )
 }

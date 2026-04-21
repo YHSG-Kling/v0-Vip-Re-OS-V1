@@ -32,6 +32,8 @@ export interface UpdateBlogPostParams {
   excerpt?: string
   featuredImageUrl?: string
   publishStatus?: "draft" | "pending_review" | "approved" | "published" | "rejected"
+  category?: string
+  callToAction?: string
 }
 
 export interface BlogPostResult {
@@ -281,6 +283,8 @@ export async function updateBlogPost(
   if (updates.excerpt !== undefined) updateData.excerpt = updates.excerpt
   if (updates.featuredImageUrl !== undefined) updateData.featured_image_url = updates.featuredImageUrl
   if (updates.publishStatus !== undefined) updateData.publish_status = updates.publishStatus
+  if (updates.category !== undefined) updateData.category = updates.category || null
+  if (updates.callToAction !== undefined) updateData.call_to_action = updates.callToAction || null
 
   const { error: updateError } = await supabase.from("blog_posts").update(updateData).eq("id", postId)
 

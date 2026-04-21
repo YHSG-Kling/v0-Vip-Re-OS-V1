@@ -182,8 +182,8 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
   const [excerpt, setExcerpt] = useState(post.excerpt || "")
   const [content, setContent] = useState(post.content || "")
   const [featuredImageUrl, setFeaturedImageUrl] = useState(post.featured_image_url || "")
-  const [callToAction, setCallToAction] = useState("")
-  const [category, setCategory] = useState("")
+  const [callToAction, setCallToAction] = useState((post as any).call_to_action || "")
+  const [category, setCategory] = useState((post as any).category || "")
   const [publishStatus, setPublishStatus] = useState(post.publish_status)
   const [seoScore, setSeoScore] = useState(post.seo_score)
   const [seoIssues, setSeoIssues] = useState(post.latestSeoLog?.issues || [])
@@ -225,6 +225,8 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
         excerpt,
         content,
         featuredImageUrl: featuredImageUrl || undefined,
+        category: category || undefined,
+        callToAction: callToAction || undefined,
       })
 
       if (result.success) {

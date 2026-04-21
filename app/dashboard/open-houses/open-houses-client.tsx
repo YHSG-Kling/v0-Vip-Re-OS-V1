@@ -18,6 +18,7 @@ import { useToast } from "@/hooks/use-toast"
 
 interface Props {
   initialEvents: OpenHouseEvent[]
+  fetchError?: string
 }
 
 const STATUS_STYLES: Record<string, string> = {
@@ -40,7 +41,7 @@ function formatTime(t: string) {
   return `${hour}:${m.toString().padStart(2, "0")} ${period}`
 }
 
-export function OpenHousesClient({ initialEvents }: Props) {
+export function OpenHousesClient({ initialEvents, fetchError }: Props) {
   const [events, setEvents] = useState<OpenHouseEvent[]>(initialEvents)
   const [open, setOpen] = useState(false)
   const [isPending, startTransition] = useTransition()
@@ -57,9 +58,9 @@ export function OpenHousesClient({ initialEvents }: Props) {
     agentNotes: "",
   })
 
-  const now = new Date().toISOString().split("T")[0]
-  const upcoming = events.filter((e) => e.event_date >= now && e.status !== "cancelled")
-  const past = events.filter((e) => e.event_date < now || e.status === "completed")
+  const now = new Date().toLocaleDateString("en-CA") // YYYY-MM-DD in local timezone
+  const upcoming = events.filter((e) => e.event_date >= now && e.status !== "cancelled" && e.status !== "completed")
+  const past = events.filter((e) => e.event_date < now || e.status === "completed" || e.status === "cancelled")
   const totalAttendees = events.reduce((s, e) => s + (e.attendee_count ?? 0), 0)
   const avgFeedback = (() => {
     const rated = events.filter((e) => e.avg_feedback != null)
@@ -189,6 +190,13 @@ export function OpenHousesClient({ initialEvents }: Props) {
         </Dialog>
       </div>
 
+      {fetchError && (
+        <div className="bg-destructive/10 border border-destructive/20 rounded-lg px-4 py-3 text-sm text-destructive flex items-center gap-2 mx-6 mt-4">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          {fetchError}
+        </div>
+      )}
+
       <div className="p-6 space-y-6">
         {/* KPIs */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -290,9 +298,10 @@ function EventRow({ event, onClick }: { event: OpenHouseEvent; onClick: () => vo
     : "Unlisted property"
 
   return (
-    <div
+    <button
+      type="button"
       onClick={onClick}
-      className="flex items-center gap-4 py-3 cursor-pointer hover:bg-muted/30 rounded-md px-2 -mx-2 transition-colors"
+      className="w-full text-left flex items-center gap-4 py-3 hover:bg-muted/30 rounded-md px-2 -mx-2 transition-colors"
     >
       <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
         <Home className="h-5 w-5 text-primary" />
@@ -318,6 +327,6 @@ function EventRow({ event, onClick }: { event: OpenHouseEvent; onClick: () => vo
         </div>
       </div>
       <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
-    </div>
+    </button>
   )
 }

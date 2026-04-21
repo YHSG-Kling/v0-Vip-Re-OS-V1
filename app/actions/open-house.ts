@@ -531,14 +531,25 @@ export async function cancelOpenHouse(openHouseId: string): Promise<{
 }> {
   try {
     const ctx = await getAgentContext()
-    if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Unauthorized" }
 
     const service = createServiceClient()
 
-    const { error } = await service
+    // Scope update to the user's brokerage; non-broker agents are further
+    // scoped to only their own events so they cannot cancel others' events.
+    const isBrokerOrAdmin = ctx.userType === "broker" || ctx.userType === "admin" || ctx.userType === "superadmin"
+
+    let query = service
       .from("open_house_events")
       .update({ status: "cancelled" })
       .eq("id", openHouseId)
+      .eq("brokerage_id", ctx.brokerageId)
+
+    if (!isBrokerOrAdmin && ctx.agentId) {
+      query = query.eq("agent_id", ctx.agentId)
+    }
+
+    const { error } = await query
 
     if (error) return { success: false, error: error.message }
 
