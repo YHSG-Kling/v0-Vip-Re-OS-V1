@@ -263,6 +263,21 @@ export async function getOpenHouseAttendees(openHouseId: string): Promise<{
 
     const service = createServiceClient()
 
+    // Verify the event belongs to the caller's brokerage
+    const { data: eventCheck } = await service
+      .from("open_house_events")
+      .select("brokerage_id, agent_id")
+      .eq("id", openHouseId)
+      .maybeSingle()
+
+    if (!eventCheck) return { success: false, error: "Event not found" }
+    if (ctx.brokerageId && eventCheck.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    if (ctx.userType === "agent" && ctx.agentId && eventCheck.agent_id !== ctx.agentId) {
+      return { success: false, error: "Unauthorized" }
+    }
+
     const { data, error } = await service
       .from("open_house_attendees")
       .select(
@@ -294,6 +309,21 @@ export async function getOpenHouseFeedback(openHouseId: string): Promise<{
     if (!ctx.isAuthenticated) return { success: false, error: "Not authenticated" }
 
     const service = createServiceClient()
+
+    // Verify the event belongs to the caller's brokerage
+    const { data: eventCheck } = await service
+      .from("open_house_events")
+      .select("brokerage_id, agent_id")
+      .eq("id", openHouseId)
+      .maybeSingle()
+
+    if (!eventCheck) return { success: false, error: "Event not found" }
+    if (ctx.brokerageId && eventCheck.brokerage_id !== ctx.brokerageId) {
+      return { success: false, error: "Unauthorized" }
+    }
+    if (ctx.userType === "agent" && ctx.agentId && eventCheck.agent_id !== ctx.agentId) {
+      return { success: false, error: "Unauthorized" }
+    }
 
     // Try open_house_feedback table first (may exist), else fall back to
     // feedback_rating/feedback_comments columns on open_house_attendees

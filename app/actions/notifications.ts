@@ -155,11 +155,14 @@ export async function createNotification(params: {
     return { success: false, error: "Agent not found" }
   }
 
-  // Validate caller-provided brokerageId against agent's actual brokerage to prevent cross-tenant writes
-  if (agent.brokerage_id && agent.brokerage_id !== brokerageId) {
+  if (!agent.brokerage_id) {
+    console.warn("[notifications] createNotification: agent has no brokerage_id, cannot create notification")
+    return { success: false, error: "Agent has no brokerage context" }
+  }
+  if (agent.brokerage_id !== brokerageId) {
     console.warn("[notifications] brokerageId mismatch — using agent's brokerage_id")
   }
-  const resolvedBrokerageId = agent.brokerage_id ?? brokerageId
+  const resolvedBrokerageId = agent.brokerage_id
 
   const { data, error } = await supabase
     .from("notifications")

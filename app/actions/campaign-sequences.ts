@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -586,7 +587,19 @@ export interface SequenceBuilderStep {
 
 export async function getSequenceSteps(sequenceId: string): Promise<{ steps: SequenceBuilderStep[]; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { steps: [], error: "Not authenticated" }
+
     const service = createServiceClient()
+
+    // Verify ownership
+    const { data: seq } = await service
+      .from("campaign_sequences")
+      .select("brokerage_id")
+      .eq("id", sequenceId)
+      .maybeSingle()
+    if (!seq || seq.brokerage_id !== ctx.brokerageId) return { steps: [], error: "Not found" }
+
     // DB stores channel (not step_type) — map on read
     const { data, error } = await service
       .from("campaign_sequence_steps")
@@ -612,24 +625,51 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
 
 export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuilderStep[]): Promise<{ success: boolean; error?: string }> {
   try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
     const service = createServiceClient()
-    const { error: deleteError } = await service.from("campaign_sequence_steps").delete().eq("sequence_id", sequenceId)
+
+    // Verify ownership
+    const { data: seq } = await service
+      .from("campaign_sequences")
+      .select("brokerage_id")
+      .eq("id", sequenceId)
+      .maybeSingle()
+    if (!seq || seq.brokerage_id !== ctx.brokerageId) return { success: false, error: "Unauthorized" }
+
+    // Save backup of existing steps before delete
+    const { data: existingSteps } = await service
+      .from("campaign_sequence_steps")
+      .select("*")
+      .eq("sequence_id", sequenceId)
+
+    const { error: deleteError } = await service
+      .from("campaign_sequence_steps")
+      .delete()
+      .eq("sequence_id", sequenceId)
     if (deleteError) return { success: false, error: `Failed to clear existing steps: ${deleteError.message}` }
+
     if (steps.length > 0) {
       const rows = steps.map((s, i) => ({
         sequence_id: sequenceId,
         step_number: i + 1,
-        channel: s.step_type,  // UI uses step_type; DB column is channel
+        channel: s.step_type,
         delay_days: s.delay_days ?? 0,
         delay_hours: s.delay_hours ?? 0,
         subject: s.subject ?? null,
-        body: s.body || "",  // NOT NULL in DB
+        body: s.body || "",
         is_active: s.is_active ?? true,
       }))
-      const { error } = await service.from("campaign_sequence_steps").insert(rows)
-      if (error) {
-        console.error(`[saveSequenceSteps] insert failed after delete for sequence ${sequenceId} (${steps.length} steps):`, error.message)
-        return { success: false, error: error.message }
+      const { error: insertError } = await service.from("campaign_sequence_steps").insert(rows)
+      if (insertError) {
+        // Best-effort recovery: re-insert original steps to avoid empty sequence
+        if (existingSteps && existingSteps.length > 0) {
+          const recoveryRows = existingSteps.map(({ id, created_at, ...rest }: any) => rest)
+          await Promise.resolve(service.from("campaign_sequence_steps").insert(recoveryRows)).catch(() => {})
+        }
+        console.error(`[saveSequenceSteps] insert failed for sequence ${sequenceId}:`, insertError.message)
+        return { success: false, error: insertError.message }
       }
     }
     revalidatePath("/dashboard/campaigns/sequences")
