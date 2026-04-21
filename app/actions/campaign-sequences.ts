@@ -666,7 +666,10 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
         // Best-effort recovery: re-insert original steps to avoid empty sequence
         if (existingSteps && existingSteps.length > 0) {
           const recoveryRows = existingSteps.map(({ id, created_at, ...rest }: any) => rest)
-          await Promise.resolve(service.from("campaign_sequence_steps").insert(recoveryRows)).catch(() => {})
+          const { error: recoveryError } = await service.from("campaign_sequence_steps").insert(recoveryRows)
+          if (recoveryError) {
+            return { success: false, error: `Failed to insert new steps and restore previous steps: ${recoveryError.message}` }
+          }
         }
         console.error(`[saveSequenceSteps] insert failed for sequence ${sequenceId}:`, insertError.message)
         return { success: false, error: insertError.message }
