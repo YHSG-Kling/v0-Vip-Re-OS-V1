@@ -55,6 +55,7 @@ import {
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 import { generateVideoScript } from "@/app/actions/video/generate-script"
 import { getAgentSettings } from "@/app/actions/agent-settings"
+import { getHeyGenAvatars } from "@/app/actions/heygen-avatars"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -267,27 +268,38 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
         setBrandingPresets(brandingData || [])
 
-        // HeyGen default avatars (shown when user has no personal avatar configured)
+        // HeyGen default avatars (fallback when API call fails)
         const defaultAvatars = [
-          { id: "Angela-inblackskirt-20220820", name: "Angela", style: "Professional" },
-          { id: "Daisy-inskirt-20220818", name: "Daisy", style: "Friendly" },
-          { id: "Josh_lite3_20230714", name: "Josh", style: "Casual" },
-          { id: "Kristin_public_3_20240108", name: "Kristin", style: "Professional" },
-          { id: "Wayne_20240711", name: "Wayne", style: "Executive" },
+          { id: "Angela-inblackskirt-20220820", name: "Angela", style: "Professional", thumbnailUrl: undefined },
+          { id: "Daisy-inskirt-20220818", name: "Daisy", style: "Friendly", thumbnailUrl: undefined },
+          { id: "Josh_lite3_20230714", name: "Josh", style: "Casual", thumbnailUrl: undefined },
+          { id: "Kristin_public_3_20240108", name: "Kristin", style: "Professional", thumbnailUrl: undefined },
+          { id: "Wayne_20240711", name: "Wayne", style: "Executive", thumbnailUrl: undefined },
         ]
+
+        // Fetch all available HeyGen avatars from live API
+        const heygenResult = await getHeyGenAvatars()
+        const liveAvatars = heygenResult.success && heygenResult.avatars.length > 0
+          ? heygenResult.avatars.map((av) => ({
+              id: av.avatar_id,
+              name: av.avatar_name,
+              style: av.gender ?? "Public",
+              thumbnailUrl: av.preview_image_url ?? undefined,
+            }))
+          : defaultAvatars
 
         // Load per-user avatar + voice configured during onboarding
         if (user?.id) {
           const agentSettings = await getAgentSettings(user.id)
           if (agentSettings.avatarId) {
-            // Personal avatar goes first, defaults as fallbacks
+            // Personal avatar goes first, live/default avatars as fallbacks
             setAvatars([
-              { id: agentSettings.avatarId, name: "My Avatar", style: "Personal" },
-              ...defaultAvatars,
+              { id: agentSettings.avatarId, name: "My Avatar", style: "Personal", thumbnailUrl: undefined },
+              ...liveAvatars,
             ])
             setSelectedAvatar(agentSettings.avatarId)
           } else {
-            setAvatars(defaultAvatars)
+            setAvatars(liveAvatars)
           }
           // Pre-select configured voice ID if no cloned voice profiles exist
           if (agentSettings.voiceId && clonedVoiceProfiles.length === 0) {
@@ -1051,14 +1063,28 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                             : "border-border hover:border-primary/50"
                         )}
                       >
-                        <div className="w-16 h-16 rounded-full bg-muted mx-auto mb-2 flex items-center justify-center">
-                          <User className="h-8 w-8 text-muted-foreground" />
+                        <div className="w-16 h-16 rounded-full bg-muted mx-auto mb-2 flex items-center justify-center overflow-hidden">
+                          {avatar.thumbnailUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={avatar.thumbnailUrl}
+                              alt={avatar.name}
+                              className="w-16 h-16 rounded-full object-cover mx-auto"
+                            />
+                          ) : (
+                            <User className="w-8 h-8 mx-auto text-muted-foreground" />
+                          )}
                         </div>
                         <p className="font-medium">{avatar.name}</p>
                         <p className="text-xs text-muted-foreground">{avatar.style}</p>
                       </div>
                     ))}
                   </div>
+                  <p className="text-xs text-muted-foreground mt-2 text-center">
+                    <a href="/dashboard/videos/voice" className="underline hover:text-foreground">
+                      + Create your personal avatar
+                    </a>
+                  </p>
                 </div>
 
                 {/* Voice Selection */}

@@ -5,6 +5,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { dispatchVideo } from "@/lib/providers/dispatch"
 
 // ============================================================================
 // TYPES & CONTRACTS
@@ -647,16 +648,40 @@ async function submitToHeyGen(params: {
   avatarStyle: string
   estimatedDurationSeconds: number
 }): Promise<string> {
-  // Call HeyGen API - would use actual dispatch provider
-  return `job_${Date.now()}`
+  const result = await dispatchVideo({
+    brokerageId: "system",
+    templateId: params.avatarStyle,
+    recipientEmail: "system@internal",
+    scriptVars: {
+      script: params.script,
+      voice_profile_id: params.voiceProfileId,
+      duration_seconds: String(params.estimatedDurationSeconds),
+    },
+    systemSource: "video_kernel",
+  })
+  if (!result.success) throw new Error(result.error ?? "HeyGen video submission failed")
+  return result.messageId ?? `job_${Date.now()}`
 }
 
 async function checkHeyGenJobStatus(jobId: string): Promise<{
   status: string
   videoUrl?: string
 }> {
-  // Poll HeyGen API - would use actual dispatch provider
-  return { status: "completed", videoUrl: `https://cdn.heygen.com/${jobId}.mp4` }
+  const apiKey = process.env.HEYGEN_API_KEY
+  if (!apiKey) return { status: "unknown" }
+
+  const res = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${encodeURIComponent(jobId)}`, {
+    headers: { "X-Api-Key": apiKey },
+  })
+  if (!res.ok) return { status: "unknown" }
+
+  const data = await res.json()
+  // API returns: data.data.status = "pending" | "processing" | "completed" | "failed"
+  // data.data.video_url when completed
+  return {
+    status: data.data?.status ?? "unknown",
+    videoUrl: data.data?.video_url ?? undefined,
+  }
 }
 
 async function publishToChannel(params: {
