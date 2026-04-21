@@ -79,7 +79,7 @@ export function RelationshipAiChatPanel({
         selectedChannel === "sms"
           ? "Keep it concise, under 160 characters."
           : selectedChannel === "email"
-          ? "Write a well-structured email with a clear subject and call to action."
+          ? "Write a well-structured email body with a clear call to action."
           : "Write a short, conversational message."
 
       const basePrompt = input

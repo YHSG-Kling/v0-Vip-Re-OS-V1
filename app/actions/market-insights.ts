@@ -71,7 +71,7 @@ export async function generateMarketInsights(): Promise<{
           .eq("agent_id", agentId)
           .in("status", ["sold", "closed"])
           .gte("updated_at", thirtyDaysAgoStr)
-          .limit(20),
+          .limit(200),
 
         // Recent transactions (closings)
         supabase
@@ -80,7 +80,7 @@ export async function generateMarketInsights(): Promise<{
           .eq("agent_id", agentId)
           .in("stage", ["closed", "funded"])
           .gte("close_date", thirtyDaysAgo.toISOString().split("T")[0])
-          .limit(20),
+          .limit(200),
 
         // Buyer contacts: count all buyers and active-stage buyers
         supabase
@@ -183,7 +183,9 @@ export async function generateMarketInsights(): Promise<{
       avgSalePrice,
       avgDaysOnMarket,
       activeListings: activeListings != null ? activeListings.length : 0,
-      recentSales: (soldListings != null ? soldListings.length : 0) + (transactions != null ? transactions.length : 0),
+      recentSales: transactions != null
+        ? transactions.length
+        : (soldListings != null ? soldListings.length : 0),
       activeBuyerContacts: activeBuyerContactsCount,
       totalBuyerContacts: buyerContacts != null ? buyerContacts.length : 0,
     }
@@ -282,7 +284,9 @@ Generate insights that help this agent take action today.`
     if (!Array.isArray(aiResult.actionItems)) {
       aiResult.actionItems = []
     }
-    const parsedItems = aiResult.actionItems.slice(0, 3)
+    const parsedItems = (aiResult.actionItems as unknown[])
+      .slice(0, 3)
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     aiResult.actionItems = [
       ...parsedItems,
       ...FALLBACK_ACTION_ITEMS.slice(parsedItems.length),
