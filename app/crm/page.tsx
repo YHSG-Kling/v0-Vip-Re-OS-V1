@@ -1300,7 +1300,7 @@ export default function CRMPage() {
                           size="sm"
                           variant="outline"
                           onClick={() => {
-                            if (selectedContactId) window.location.href = `/dashboard/transactions/new?contactId=${selectedContactId}`
+                            if (selectedContactId) router.push(`/dashboard/transactions/new?contactId=${encodeURIComponent(selectedContactId)}`)
                           }}
                         >
                           Start a Transaction
