@@ -83,10 +83,14 @@ export function RelationshipAiChatPanel({
           : "Write a short, conversational message."
 
       const basePrompt = input
-        ? `${input}\n\nContext: This is for a ${selectedChannel} to ${contactName}. ${channelInstructions}`
-        : `Draft a ${purpose.replace(/_/g, " ")} ${selectedChannel} for ${contactName}. Use a ${brandVoice?.tone || "professional"} tone. ${channelInstructions} Address it directly to ${contactName}.`
+        ? `The agent has provided this context: ${input}\n\nChannel: ${selectedChannel}. ${channelInstructions}`
+        : `Purpose: ${purpose.replace(/_/g, " ")}. Channel: ${selectedChannel}. Use a ${brandVoice?.tone || "professional"} tone. ${channelInstructions}`
 
-      const draftPrompt = `${basePrompt}\n\nImportant: Return ONLY the client-ready message text that the agent should send. Write in first person as the agent. Do not include coaching advice or meta-commentary.`
+      const draftPrompt = `You are helping a real estate agent write a message to send directly to a client named ${contactName}.
+
+Context about this client: ${basePrompt}
+
+Task: Write ONLY the text of the message the agent should send. Do not include subject lines, greetings like "Dear...", explanations, coaching notes, or meta-commentary. Write in a warm, professional first-person voice as the agent. Output only the message body, nothing else.`
 
       const result = await askRelationshipAI({
         question: draftPrompt,
@@ -206,9 +210,14 @@ export function RelationshipAiChatPanel({
 
             {draft && (
               <div className="space-y-3">
-                <p className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                  Message Draft — Review before sending
-                </p>
+                <div className="bg-amber-50 border border-amber-200 rounded px-2 py-1.5 space-y-0.5">
+                  <p className="text-xs font-semibold text-amber-700">
+                    Message Draft — review and edit before sending
+                  </p>
+                  <p className="text-[11px] text-amber-600">
+                    This draft was written for you to review. Edit it before sending.
+                  </p>
+                </div>
                 <Textarea
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
@@ -250,7 +259,7 @@ export function RelationshipAiChatPanel({
                   </Select>
                   <Button variant="outline" size="sm" onClick={handleCopyDraft}>
                     <Copy className="h-4 w-4 mr-1" />
-                    Copy
+                    Copy Draft
                   </Button>
                   <Button size="sm">
                     <Send className="h-4 w-4 mr-1" />

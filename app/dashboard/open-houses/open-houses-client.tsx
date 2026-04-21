@@ -73,13 +73,23 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
       toast({ title: "Listing ID and date are required", variant: "destructive" })
       return
     }
+    if (form.startTime && form.endTime) {
+      const [sh, sm] = form.startTime.split(":").map(Number)
+      const [eh, em] = form.endTime.split(":").map(Number)
+      if (sh * 60 + sm >= eh * 60 + em) {
+        toast({ title: "End time must be after start time", variant: "destructive" })
+        return
+      }
+    }
     startTransition(async () => {
       const res = await createOpenHouse({
         listingId: form.listingId.trim(),
         date: form.date,
         startTime: form.startTime,
         endTime: form.endTime,
-        maxAttendees: form.maxAttendees ? Number(form.maxAttendees) : undefined,
+        maxAttendees: form.maxAttendees
+          ? Math.max(1, Math.floor(Number(form.maxAttendees))) || undefined
+          : undefined,
         agentNotes: form.agentNotes || undefined,
         publicDescription: form.publicDescription || undefined,
       })
