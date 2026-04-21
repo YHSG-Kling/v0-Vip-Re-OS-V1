@@ -410,6 +410,7 @@ export async function getBlogPosts(
     slug: string
     excerpt: string
     publish_status: string
+    category: string | null
     seo_score: number | null
     created_at: string
     published_at: string | null
@@ -421,7 +422,7 @@ export async function getBlogPosts(
 
   let query = supabase
     .from("blog_posts")
-    .select("id, title, slug, excerpt, publish_status, seo_score, created_at, published_at, agent_user_id")
+    .select("id, title, slug, excerpt, publish_status, category, seo_score, created_at, published_at, agent_user_id")
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
 

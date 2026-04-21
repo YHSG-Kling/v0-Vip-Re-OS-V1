@@ -183,6 +183,7 @@ DO UPDATE SET
   superadmin_only          = EXCLUDED.superadmin_only,
   beta                     = EXCLUDED.beta,
   deprecated               = EXCLUDED.deprecated,
+  category                 = EXCLUDED.category,
   updated_at               = now();
 
 -- Completed: all 16 missing feature flags seeded with full tier access enabled.

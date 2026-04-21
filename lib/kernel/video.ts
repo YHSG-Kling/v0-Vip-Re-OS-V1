@@ -297,7 +297,7 @@ export async function submitVideoGenerationJob(
   const heygenJobId = await submitToHeyGen({
     script: input.scriptText,
     voiceProfileId: input.voiceProfileId,
-    avatarStyle: input.avatarStyle,
+    avatarId: input.avatarStyle,
     estimatedDurationSeconds: input.estimatedDurationSeconds,
   })
 
@@ -645,12 +645,18 @@ function parseSceneBreakpoints(
 async function submitToHeyGen(params: {
   script: string
   voiceProfileId: string
-  avatarStyle: string
+  avatarId: string
   estimatedDurationSeconds: number
 }): Promise<string> {
+  // avatarId must be a real HeyGen avatar/template ID (UUID-like or slash-separated path),
+  // not a UI style label like "Professional" or "Casual".
+  const isValidAvatarId = /^[a-zA-Z0-9_\-\/]{8,}$/.test(params.avatarId) && !/^(professional|casual|luxury|executive)$/i.test(params.avatarId)
+  if (!isValidAvatarId) {
+    throw new Error(`avatarId must be a valid HeyGen avatar ID, not a style label (got: "${params.avatarId}")`)
+  }
   const result = await dispatchVideo({
     brokerageId: "system",
-    templateId: params.avatarStyle,
+    templateId: params.avatarId,
     recipientEmail: "system@internal",
     scriptVars: {
       script: params.script,
@@ -660,7 +666,9 @@ async function submitToHeyGen(params: {
     systemSource: "video_kernel",
   })
   if (!result.success) throw new Error(result.error ?? "HeyGen video submission failed")
-  return result.messageId ?? `job_${Date.now()}`
+  const jobId = result.messageId
+  if (!jobId) throw new Error("HeyGen returned no video_id — cannot track job")
+  return jobId
 }
 
 async function checkHeyGenJobStatus(jobId: string): Promise<{

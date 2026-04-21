@@ -552,8 +552,9 @@ export default function CRMPage() {
   }, [selectedContactId])
 
   // Lazy-load Journey & Team tab data
-  const loadJourneyTeam = useCallback(async (contactId: string) => {
-    if (journeyTeamLoaded || journeyTeamLoading) return
+  const loadJourneyTeam = useCallback(async (contactId: string, force = false) => {
+    if (!force && (journeyTeamLoaded || journeyTeamLoading)) return
+    setJourneyTeamError(null)
     setJourneyTeamLoading(true)
     const supabase = createClient()
     try {
@@ -1294,7 +1295,7 @@ export default function CRMPage() {
                     ) : journeyTeamError ? (
                       <div className="py-8 text-center space-y-2">
                         <p className="text-sm text-destructive">{journeyTeamError}</p>
-                        <Button size="sm" variant="outline" onClick={() => { setJourneyTeamLoaded(false); setJourneyTeamError(null); if (selectedContactId) loadJourneyTeam(selectedContactId) }}>
+                        <Button size="sm" variant="outline" onClick={() => { if (selectedContactId) loadJourneyTeam(selectedContactId, true) }}>
                           Retry
                         </Button>
                       </div>
