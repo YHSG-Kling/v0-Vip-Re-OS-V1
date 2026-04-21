@@ -622,7 +622,6 @@ export async function sendCampaign(params: SendCampaignParams) {
         brokerageId: params.brokerageId,
         userId: params.actorUserId,
         teamId: params.teamId,
-        agentId: params.agentId,
         contactId: recipient.contact_id ?? undefined,
         systemSource: "direct_mail_campaign",
         recipientName: `${recipient.first_name} ${recipient.last_name}`.trim(),

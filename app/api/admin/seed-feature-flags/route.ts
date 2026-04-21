@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { createServiceClient } from "@/lib/supabase/server"
+import { createClient } from "@/lib/supabase/server"
 import { getAgentContext } from "@/lib/identity"
 
 const FEATURE_FLAGS = [
@@ -111,7 +111,7 @@ export async function POST() {
       return NextResponse.json({ error: "Forbidden — superadmin/admin only" }, { status: 403 })
     }
 
-    const supabase = await createServiceClient()
+    const supabase = await createClient()
 
     const rows = FEATURE_FLAGS.map((f) => ({
       ...f,
@@ -146,7 +146,7 @@ export async function POST() {
     return NextResponse.json({
       success: true,
       seeded: seeded?.length ?? 0,
-      features: seeded?.map((r) => r.feature_key) ?? [],
+      features: seeded?.map((r: { feature_key: string }) => r.feature_key) ?? [],
     })
   } catch (err: any) {
     return NextResponse.json({ error: err.message ?? "Seed failed" }, { status: 500 })
