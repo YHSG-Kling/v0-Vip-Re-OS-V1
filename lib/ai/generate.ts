@@ -5,9 +5,25 @@
  */
 
 import { generateText, Output } from "ai"
+import { createGateway } from "@ai-sdk/gateway"
 import { resolveModel } from "@/lib/ai/resolve-model"
 import { runPipelineSimple } from "@/lib/ai/pipeline"
 import { z } from "zod"
+
+/**
+ * Wraps a resolved model string into a LanguageModel instance via the Vercel
+ * AI Gateway. Requires AI_GATEWAY_API_KEY to be set in the environment.
+ * Throws a clear error if the key is missing so callers get an actionable message.
+ */
+function resolveGatewayModel(modelStr: string) {
+  const apiKey = process.env.AI_GATEWAY_API_KEY
+  if (!apiKey) {
+    throw new Error(
+      `AI_GATEWAY_API_KEY is not configured. Cannot call model: ${modelStr}`
+    )
+  }
+  return createGateway({ apiKey })(modelStr)
+}
 
 // ─── JSON GENERATION ─────────────────────────────────────────────────────────
 
@@ -114,10 +130,10 @@ export async function generateObject<T extends z.ZodType>({
   system?: string
 }): Promise<{ object: z.infer<T> }> {
   // If model is already a resolved provider instance (any non-string truthy value),
-  // use it directly. If it's a string, resolve it via the gateway helper.
+  // use it directly. If it's a string, resolve it via the Vercel AI Gateway.
   const resolvedModel =
     typeof model === "string"
-      ? resolveModel(model as Parameters<typeof resolveModel>[0])
+      ? resolveGatewayModel(resolveModel(model as Parameters<typeof resolveModel>[0]) as string)
       : model
 
   const promptParts = [system, prompt].filter(Boolean).join("\n\n")
@@ -145,7 +161,7 @@ export async function generateAIObject<T extends z.ZodType>(
 ): Promise<{ success: boolean; object?: z.infer<T>; error?: string }> {
   try {
     const { experimental_output: object } = await generateText({
-      model: resolveModel((options?.model ?? "openai/gpt-4o") as Parameters<typeof resolveModel>[0]),
+      model: resolveGatewayModel(resolveModel((options?.model ?? "openai/gpt-4o") as Parameters<typeof resolveModel>[0]) as string),
       prompt,
       temperature: options?.temperature ?? 0.7,
       experimental_output: Output.object({ schema }),

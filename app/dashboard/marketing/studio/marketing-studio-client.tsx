@@ -2521,7 +2521,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       setIsCreateNewsletterOpen(false)
                       setNewNewsletter({ campaignName: "", subjectLine: "", content: "" })
                       await loadNewsletterData()
+                    } else {
+                      toast({ title: "Failed to create newsletter", description: (result as any).error ?? "Unknown error", variant: "destructive" })
                     }
+                  } catch (err) {
+                    toast({ title: "Failed to create newsletter", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
                   } finally {
                     setIsCreatingNewsletter(false)
                   }

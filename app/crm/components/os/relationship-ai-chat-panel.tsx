@@ -23,6 +23,8 @@ import {
 } from "@/app/actions/ai-chat"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { askRelationshipAI } from "@/app/crm/actions/ask-relationship-ai"
+import { sendPortalMessage } from "@/app/actions/portal-messages"
+import { toast } from "sonner"
 
 interface RelationshipAiChatPanelProps {
   contactId: string
@@ -52,6 +54,7 @@ export function RelationshipAiChatPanel({
   const [complianceCheck, setComplianceCheck] = useState<{ passed: boolean; suggestion?: string } | null>(null)
   const [temperature, setTemperature] = useState<any>(null)
   const [suggestions, setSuggestions] = useState<any[]>([])
+  const [sending, setSending] = useState(false)
 
   // Load brand voice and templates on mount
   useEffect(() => {
@@ -150,6 +153,30 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
 
   const handleCopyDraft = () => {
     navigator.clipboard.writeText(draft)
+  }
+
+  const handleSend = async () => {
+    const message = draft
+    if (!message?.trim()) return
+    setSending(true)
+    try {
+      const result = await sendPortalMessage({
+        contactId,
+        messageBody: message,
+        direction: "agent_to_client",
+        channel: selectedChannel,
+      })
+      if (result.success) {
+        toast.success("Message sent")
+        setDraft("")
+      } else {
+        toast.error(result.error ?? "Failed to send message")
+      }
+    } catch (e) {
+      toast.error("Failed to send message")
+    } finally {
+      setSending(false)
+    }
   }
 
   const handleInsertTemplate = (template: any) => {
@@ -262,9 +289,9 @@ Task: Write ONLY the text of the message the agent should send. Do not include s
                     <Copy className="h-4 w-4 mr-1" />
                     Copy Draft
                   </Button>
-                  <Button size="sm">
+                  <Button size="sm" onClick={handleSend} disabled={sending || !draft?.trim()}>
                     <Send className="h-4 w-4 mr-1" />
-                    Send
+                    {sending ? "Sending..." : "Send"}
                   </Button>
                 </div>
               </div>
