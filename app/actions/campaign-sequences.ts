@@ -136,27 +136,26 @@ export async function getCampaignSequence(
   const service = createServiceClient()
   const includeEnrollments = options?.includeEnrollments ?? true
 
-  const [seqRes, stepsRes] = await Promise.all([
+  const [seqRes, stepsRes, enrollRes] = await Promise.all([
     service.from("campaign_sequences").select("*").eq("id", sequenceId).maybeSingle(),
     service
       .from("campaign_sequence_steps")
       .select("*")
       .eq("sequence_id", sequenceId)
       .order("step_number", { ascending: true }),
+    includeEnrollments
+      ? service
+          .from("sequence_enrollments")
+          .select(`*, contact:contacts(first_name, last_name, email)`)
+          .eq("sequence_id", sequenceId)
+          .order("enrolled_at", { ascending: false })
+          .limit(200)
+      : Promise.resolve({ data: null, error: null }),
   ])
 
   if (seqRes.error) return { sequence: null, steps: [], enrollments: [], error: seqRes.error.message }
 
-  let enrollments: SequenceEnrollment[] = []
-  if (includeEnrollments) {
-    const { data: enrollData } = await service
-      .from("sequence_enrollments")
-      .select(`*, contact:contacts(first_name, last_name, email)`)
-      .eq("sequence_id", sequenceId)
-      .order("enrolled_at", { ascending: false })
-      .limit(200)
-    enrollments = (enrollData ?? []) as SequenceEnrollment[]
-  }
+  const enrollments = ((enrollRes.data ?? []) as SequenceEnrollment[])
 
   return {
     sequence: seqRes.data as CampaignSequence,

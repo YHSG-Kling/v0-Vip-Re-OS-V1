@@ -1177,7 +1177,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                     {BACKGROUND_STYLES.map((bg) => (
                       <div
                         key={bg.id}
-                        onClick={() => setBackgroundStyle(bg.id)}
+                        onClick={() => { if (bg.id !== "custom") stopWebcam(); setBackgroundStyle(bg.id) }}
                         className={cn(
                           "p-3 rounded-lg border-2 cursor-pointer transition-all text-center",
                           backgroundStyle === bg.id

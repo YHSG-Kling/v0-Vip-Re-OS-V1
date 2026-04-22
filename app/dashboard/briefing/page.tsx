@@ -566,7 +566,7 @@ export default function BriefingPage() {
                               {tx.close_date && (
                                 <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                                   <Clock className="h-3 w-3" />
-                                  Close: {(() => { const [y, m, d] = tx.close_date.split("-"); return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) })()}
+                                  Close: {(() => { const [y, m, d] = tx.close_date.split("T")[0].split("-"); return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) })()}
                                 </p>
                               )}
                               {tx.purchase_price && (

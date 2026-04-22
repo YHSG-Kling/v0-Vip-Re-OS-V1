@@ -539,6 +539,10 @@ export async function recordAttendee(
       if (ctx.brokerageId && ctx.brokerageId !== event.brokerage_id) {
         return { success: false, error: "Unauthorized" }
       }
+      // Agents can only record attendees for their own events
+      if (ctx.userType === "agent" && ctx.agentId && ctx.agentId !== event.agent_id) {
+        return { success: false, error: "Unauthorized" }
+      }
     } else {
       // Unauthenticated (public QR check-in): only allow for active events
       const activeStatuses = ["active", "live", "scheduled", "open"]

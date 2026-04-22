@@ -143,16 +143,16 @@ export async function createNotification(params: {
 
   const supabase = createServiceClient()
 
-  // Caller authorization: if an authenticated session exists, verify the caller
-  // is either targeting their own agent account or is in the same brokerage as
-  // the target agent (comparison uses DB-sourced brokerage IDs only — never the
-  // caller-supplied brokerageId param, which cannot be trusted).
-  // Background/system calls (no session) are allowed through.
+  // Caller authorization: require an authenticated session. This server action
+  // uses the service-role client (bypasses RLS) so every caller must be verified.
   const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) {
+    return { success: false, error: "Unauthorized" }
+  }
 
   // Deny authenticated callers who have no agent identity and are not a
   // broker/admin/superadmin — they cannot be authorized to create notifications.
-  if (ctx.isAuthenticated && !ctx.agentId && !["broker", "admin", "superadmin"].includes(ctx.userType)) {
+  if (!ctx.agentId && !["broker", "admin", "superadmin"].includes(ctx.userType)) {
     return { success: false, error: "Agent identity required" }
   }
 

@@ -655,10 +655,14 @@ export async function sendCampaign(params: SendCampaignParams) {
     // Mark failed recipients so they aren't silently treated as mailed
     if (failedRecipientIds.length > 0) {
       console.warn(`[DirectMail] Partial success: ${successCount}/${recipients.length} dispatched for campaign ${params.campaignId}`)
-      await supabase
+      const { error: failedUpdateError } = await supabase
         .from("direct_mail_recipients")
         .update({ delivery_status: "failed" })
         .in("id", failedRecipientIds)
+      if (failedUpdateError) {
+        console.error(`[DirectMail] Could not mark failed recipients for campaign ${params.campaignId}:`, failedUpdateError.message)
+        return { success: false, error: "Failed to record delivery status — aborting to prevent data inconsistency" }
+      }
     }
 
     const lobOrderId = firstSuccessfulMessageId ?? `lob_${Date.now()}`
