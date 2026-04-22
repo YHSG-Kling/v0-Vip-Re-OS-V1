@@ -450,9 +450,6 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
     if (ctx.userType === "agent" && !ctx.agentId) {
       return { success: false, error: "Agent identity required" }
     }
-    if (!ctx.brokerageId) {
-      return { success: false, error: "Brokerage context required" }
-    }
 
     let contactsQuery = service
       .from("contacts")
