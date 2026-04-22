@@ -294,12 +294,25 @@ export async function submitVideoGenerationJob(
 ): Promise<SubmitVideoGenerationJobOutput> {
   const supabase = await createClient()
 
+  if (!input.avatarId) {
+    throw new Error("avatarId is required for HeyGen video generation. Select an avatar from the library.")
+  }
+
+  // Fetch project to get tenant attribution for dispatch
+  const { data: project } = await supabase
+    .from("ai_video_projects")
+    .select("brokerage_id")
+    .eq("id", input.projectId)
+    .maybeSingle()
+  const brokerageId = project?.brokerage_id ?? "unknown"
+
   // Call HeyGen API via dispatch
   const heygenJobId = await submitToHeyGen({
     script: input.scriptText,
     voiceProfileId: input.voiceProfileId,
-    avatarId: input.avatarId ?? input.avatarStyle,
+    avatarId: input.avatarId,
     estimatedDurationSeconds: input.estimatedDurationSeconds,
+    brokerageId,
   })
 
   // Update project with job ID
@@ -648,12 +661,13 @@ async function submitToHeyGen(params: {
   voiceProfileId: string
   avatarId: string
   estimatedDurationSeconds: number
+  brokerageId: string
 }): Promise<string> {
   if (!params.avatarId || params.avatarId.trim().length < 1) {
     throw new Error("avatarId is required to submit a HeyGen video job")
   }
   const result = await dispatchVideo({
-    brokerageId: "system",
+    brokerageId: params.brokerageId,
     templateId: params.avatarId,
     recipientEmail: "system@internal",
     scriptVars: {

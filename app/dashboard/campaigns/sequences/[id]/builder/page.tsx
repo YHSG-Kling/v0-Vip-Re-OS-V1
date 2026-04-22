@@ -1,10 +1,12 @@
 import { cache } from "react"
 import { redirect, notFound } from "next/navigation"
-import { getCampaignSequence, type SequenceBuilderStep } from "@/app/actions/campaign-sequences"
+import { getCampaignSequence, VALID_STEP_TYPES, type SequenceBuilderStep } from "@/app/actions/campaign-sequences"
 import { getAgentContext } from "@/lib/identity"
 import SequenceStepBuilderClient from "./sequence-builder-client"
 
-const getCampaignSequenceCached = cache(getCampaignSequence)
+const getCampaignSequenceCached = cache((id: string) =>
+  getCampaignSequence(id, { includeEnrollments: false })
+)
 
 interface Props {
   params: Promise<{ id: string }>
@@ -38,11 +40,10 @@ export default async function SequenceBuilderPage({ params }: Props) {
   if (error || !sequence) notFound()
   if (sequence.brokerage_id !== ctx.brokerageId) notFound()
 
-  const VALID_STEP_TYPES = new Set(["email", "sms", "voice_drop", "wait", "ai_call", "direct_mail"])
   const builderSteps: SequenceBuilderStep[] = (rawSteps ?? []).map((s) => ({
     id: s.id,
     step_number: s.step_number,
-    step_type: VALID_STEP_TYPES.has(s.channel)
+    step_type: VALID_STEP_TYPES.has(s.channel as SequenceBuilderStep["step_type"])
       ? (s.channel as SequenceBuilderStep["step_type"])
       : "email",
     delay_days: s.delay_days,

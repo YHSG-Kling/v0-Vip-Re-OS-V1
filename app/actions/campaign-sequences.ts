@@ -124,37 +124,44 @@ export async function listCampaignSequences(
 
 // ─── Get sequence with steps ──────────────────────────────────────────────────
 
-export async function getCampaignSequence(sequenceId: string): Promise<{
+export async function getCampaignSequence(
+  sequenceId: string,
+  options?: { includeEnrollments?: boolean }
+): Promise<{
   sequence: CampaignSequence | null
   steps: SequenceStep[]
   enrollments: SequenceEnrollment[]
   error?: string
 }> {
   const service = createServiceClient()
-  const [seqRes, stepsRes, enrollRes] = await Promise.all([
+  const includeEnrollments = options?.includeEnrollments ?? true
+
+  const [seqRes, stepsRes] = await Promise.all([
     service.from("campaign_sequences").select("*").eq("id", sequenceId).maybeSingle(),
     service
       .from("campaign_sequence_steps")
       .select("*")
       .eq("sequence_id", sequenceId)
       .order("step_number", { ascending: true }),
-    service
-      .from("sequence_enrollments")
-      .select(`
-        *,
-        contact:contacts(first_name, last_name, email)
-      `)
-      .eq("sequence_id", sequenceId)
-      .order("enrolled_at", { ascending: false })
-      .limit(200),
   ])
 
   if (seqRes.error) return { sequence: null, steps: [], enrollments: [], error: seqRes.error.message }
 
+  let enrollments: SequenceEnrollment[] = []
+  if (includeEnrollments) {
+    const { data: enrollData } = await service
+      .from("sequence_enrollments")
+      .select(`*, contact:contacts(first_name, last_name, email)`)
+      .eq("sequence_id", sequenceId)
+      .order("enrolled_at", { ascending: false })
+      .limit(200)
+    enrollments = (enrollData ?? []) as SequenceEnrollment[]
+  }
+
   return {
     sequence: seqRes.data as CampaignSequence,
     steps: (stepsRes.data ?? []) as SequenceStep[],
-    enrollments: (enrollRes.data ?? []) as SequenceEnrollment[],
+    enrollments,
   }
 }
 
@@ -686,14 +693,15 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
         // Best-effort recovery: re-insert original steps to avoid empty sequence
         if (existingSteps && existingSteps.length > 0) {
           const recoveryRows = existingSteps.map(({ id, created_at, ...rest }: any) => rest)
-          await Promise.resolve(
-            service.from("campaign_sequence_steps").insert(recoveryRows)
-          ).catch((rollbackErr: unknown) => {
+          const { error: recoveryError } = await service
+            .from("campaign_sequence_steps")
+            .insert(recoveryRows)
+          if (recoveryError) {
             console.error(
               `[saveSequenceSteps] recovery re-insert failed for sequence ${sequenceId}:`,
-              rollbackErr instanceof Error ? rollbackErr.message : rollbackErr
+              recoveryError.message
             )
-          })
+          }
         }
         console.error(`[saveSequenceSteps] insert failed for sequence ${sequenceId}:`, insertError.message)
         return { success: false, error: insertError.message }

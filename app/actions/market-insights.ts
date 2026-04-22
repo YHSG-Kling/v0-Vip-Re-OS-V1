@@ -294,9 +294,13 @@ Generate insights that help this agent take action today.`
 
     const result: MarketInsightResult = {
       marketTemperature: aiResult.marketTemperature,
-      keyInsight: aiResult.keyInsight || "No market insight available",
+      keyInsight: typeof aiResult.keyInsight === "string" && aiResult.keyInsight
+        ? aiResult.keyInsight
+        : "No market insight available",
       actionItems: aiResult.actionItems,
-      opportunityAlert: aiResult.opportunityAlert || null,
+      opportunityAlert: typeof aiResult.opportunityAlert === "string" && aiResult.opportunityAlert
+        ? aiResult.opportunityAlert
+        : null,
       generatedAt: new Date().toISOString(),
       snapshot,
     }

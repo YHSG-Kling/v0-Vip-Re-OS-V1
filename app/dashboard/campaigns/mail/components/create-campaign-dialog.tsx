@@ -99,12 +99,13 @@ const EST_RESPONSE_RATE_BY_SEGMENT: Record<AudienceSegment, number> = {
   new_movers: 0.014,
 }
 
-function sanitizeCssColor(value: string): string {
+function sanitizeCssColor(value: unknown): string {
+  if (typeof value !== "string") return "#000000"
   // Only allow safe color values — hex, rgb/rgba, hsl/hsla, or named colors
   if (/^(#[0-9a-fA-F]{3,8}|rgb[a]?\([^)]+\)|hsl[a]?\([^)]+\)|[a-zA-Z]+)$/.test(value.trim())) {
     return value.trim()
   }
-  return "#000000" // safe fallback
+  return "#000000"
 }
 
 export function CreateCampaignDialog({

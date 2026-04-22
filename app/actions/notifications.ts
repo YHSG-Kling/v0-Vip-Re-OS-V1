@@ -192,6 +192,12 @@ export async function createNotification(params: {
       return { success: false, error: "Agent not found" }
     }
     targetAgent = ta
+    // Broker/admin callers (no agentId) must stay within their own brokerage
+    if (ctx.isAuthenticated && !ctx.agentId && ctx.userType !== "superadmin") {
+      if (ctx.brokerageId && targetAgent.brokerage_id !== ctx.brokerageId) {
+        return { success: false, error: "Unauthorized" }
+      }
+    }
   }
 
   if (!targetAgent.brokerage_id) {

@@ -73,7 +73,7 @@ function resolveNotificationUrl(entityType: string | null, entityId: string | nu
     case "contact": return `/crm?contact=${entityId}`
     case "transaction": return `/dashboard/transactions/${entityId}`
     case "listing": return `/dashboard/listings/${entityId}`
-    case "open_house": return `/dashboard/open-houses/${entityId}`
+    case "open_house": return `/dashboard/open-houses?event=${entityId}`
     case "deal": return `/dashboard/transactions/${entityId}`
     default: return null
   }
@@ -121,8 +121,10 @@ export function NotificationBell() {
   const handleMarkAllRead = async () => {
     setLoading(true)
     try {
-      await markAllRead()
-      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })))
+      const result = await markAllRead()
+      if (result.success) {
+        setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })))
+      }
     } finally {
       setLoading(false)
     }
@@ -130,15 +132,13 @@ export function NotificationBell() {
 
   const handleClickNotification = async (notification: Notification) => {
     if (!notification.is_read) {
-      try {
-        await markNotificationRead(notification.id)
+      const result = await markNotificationRead(notification.id).catch(() => ({ success: false as const }))
+      if (result.success) {
         setNotifications((prev) =>
           prev.map((n) =>
             n.id === notification.id ? { ...n, is_read: true } : n,
           ),
         )
-      } catch {
-        // Ignore — still navigate
       }
     }
     setOpen(false)

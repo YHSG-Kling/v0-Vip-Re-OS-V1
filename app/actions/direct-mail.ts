@@ -620,26 +620,30 @@ export async function sendCampaign(params: SendCampaignParams) {
     let successCount = 0
     const failedRecipientIds: string[] = []
     for (const recipient of recipients) {
-      const lobResult = await dispatchDirectMail({
-        brokerageId: params.brokerageId,
-        userId: params.actorUserId,
-        teamId: params.teamId,
-        contactId: recipient.contact_id ?? undefined,
-        systemSource: "direct_mail_campaign",
-        recipientName: `${recipient.first_name} ${recipient.last_name}`.trim(),
-        mailingAddress: recipient.address_line1,
-        mailingAddress2: recipient.address_line2 ?? undefined,
-        city: recipient.city,
-        state: recipient.state,
-        zip: recipient.zip,
-        templateId: campaign.design_url ?? campaign.id,
-        mergeVars: campaign.copy_text ? { copy_text: campaign.copy_text } : undefined,
-        metadata: { campaign_id: params.campaignId },
-      })
-      if (lobResult.success && lobResult.messageId) {
-        if (!firstSuccessfulMessageId) firstSuccessfulMessageId = lobResult.messageId
-        successCount++
-      } else {
+      try {
+        const lobResult = await dispatchDirectMail({
+          brokerageId: params.brokerageId,
+          userId: params.actorUserId,
+          teamId: params.teamId,
+          contactId: recipient.contact_id ?? undefined,
+          systemSource: "direct_mail_campaign",
+          recipientName: `${recipient.first_name} ${recipient.last_name}`.trim(),
+          mailingAddress: recipient.address_line1,
+          mailingAddress2: recipient.address_line2 ?? undefined,
+          city: recipient.city,
+          state: recipient.state,
+          zip: recipient.zip,
+          templateId: campaign.design_url ?? campaign.id,
+          mergeVars: campaign.copy_text ? { copy_text: campaign.copy_text } : undefined,
+          metadata: { campaign_id: params.campaignId },
+        })
+        if (lobResult.success && lobResult.messageId) {
+          if (!firstSuccessfulMessageId) firstSuccessfulMessageId = lobResult.messageId
+          successCount++
+        } else {
+          failedRecipientIds.push(recipient.id)
+        }
+      } catch {
         failedRecipientIds.push(recipient.id)
       }
     }
@@ -666,7 +670,7 @@ export async function sendCampaign(params: SendCampaignParams) {
         status: "mailed",
         mailing_date: new Date().toISOString().slice(0, 10),
         lob_order_id: lobOrderId,
-        pieces_mailed: recipients.length,
+        pieces_mailed: successCount,
       })
       .eq("id", params.campaignId)
 
@@ -697,7 +701,7 @@ export async function sendCampaign(params: SendCampaignParams) {
     return {
       success: true,
       lobOrderId,
-      piecesMailed: recipients.length,
+      piecesMailed: successCount,
       provider: provider.providerKey,
     }
   } catch (error) {

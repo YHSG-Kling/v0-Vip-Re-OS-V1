@@ -448,6 +448,9 @@ export async function sendOpenHouseInvites(openHouseId: string): Promise<{
     if (ctx.userType === "agent" && !ctx.agentId) {
       return { success: false, error: "Agent identity required" }
     }
+    if (!ctx.brokerageId) {
+      return { success: false, error: "Brokerage context required" }
+    }
 
     let contactsQuery = service
       .from("contacts")
@@ -519,16 +522,30 @@ export async function recordAttendee(
   }
 ): Promise<{ success: boolean; attendeeId?: string; error?: string }> {
   try {
+    const ctx = await getAgentContext()
     const service = createServiceClient()
 
     // Validate event exists
     const { data: event } = await service
       .from("open_house_events")
-      .select("id, brokerage_id, agent_id")
+      .select("id, brokerage_id, agent_id, status")
       .eq("id", openHouseId)
       .maybeSingle()
 
     if (!event) return { success: false, error: "Event not found" }
+
+    if (ctx.isAuthenticated) {
+      // Authenticated callers must belong to the same brokerage as the event
+      if (ctx.brokerageId && ctx.brokerageId !== event.brokerage_id) {
+        return { success: false, error: "Unauthorized" }
+      }
+    } else {
+      // Unauthenticated (public QR check-in): only allow for active events
+      const activeStatuses = ["active", "live", "scheduled", "open"]
+      if (!activeStatuses.includes(event.status ?? "")) {
+        return { success: false, error: "Event is not accepting check-ins" }
+      }
+    }
 
     const { data, error } = await service
       .from("open_house_attendees")

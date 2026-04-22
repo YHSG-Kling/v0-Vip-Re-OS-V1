@@ -137,11 +137,15 @@ export async function POST() {
       return NextResponse.json({ error: "Seed operation failed" }, { status: 500 })
     }
 
-    const { data: seeded } = await supabase
+    const { data: seeded, error: selectError } = await supabase
       .from("feature_flags")
       .select("feature_key, enabled")
       .in("feature_key", FEATURE_FLAGS.map((f) => f.feature_key))
       .order("feature_key")
+
+    if (selectError) {
+      return NextResponse.json({ success: true, seeded: FEATURE_FLAGS.length, features: [] })
+    }
 
     return NextResponse.json({
       success: true,
