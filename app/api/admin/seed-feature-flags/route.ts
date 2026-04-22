@@ -131,7 +131,7 @@ export async function POST() {
 
     const { error } = await supabase
       .from("feature_flags")
-      .upsert(rows, { onConflict: "feature_key", ignoreDuplicates: true })
+      .upsert(rows, { onConflict: "feature_key" })
 
     if (error) {
       return NextResponse.json({ error: "Seed operation failed" }, { status: 500 })
@@ -144,7 +144,7 @@ export async function POST() {
       .order("feature_key")
 
     if (selectError) {
-      return NextResponse.json({ success: true, seeded: FEATURE_FLAGS.length, features: [] })
+      return NextResponse.json({ success: false, error: "Seed succeeded but verification failed" }, { status: 500 })
     }
 
     return NextResponse.json({

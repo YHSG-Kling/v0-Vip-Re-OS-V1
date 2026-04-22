@@ -297,7 +297,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
             // Personal avatar goes first, live/default avatars as fallbacks
             setAvatars([
               { id: agentSettings.avatarId, name: "My Avatar", style: "Personal", thumbnailUrl: undefined },
-              ...liveAvatars,
+              ...liveAvatars.filter(av => av.id !== agentSettings.avatarId),
             ])
             setSelectedAvatar(agentSettings.avatarId)
           } else {
