@@ -676,25 +676,50 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
     const newIds = new Set(steps.map((s) => s.id))
     const idsToDelete = [...existingIds].filter((id) => !newIds.has(id))
 
-    // Upsert first — preserves existing IDs so enrollment foreign keys stay valid.
-    // New steps are inserted; existing steps have their content/order updated.
+    // Split steps into verified-existing (safe to upsert by ID) and new (insert without ID).
+    // Client-provided IDs that are NOT in existingIds could belong to another sequence;
+    // inserting without an ID lets the DB generate a fresh UUID and prevents cross-sequence overwrite.
     if (steps.length > 0) {
-      const rows = steps.map((s, i) => ({
-        id: s.id,
-        sequence_id: sequenceId,
-        step_number: i + 1,
-        step_name: s.step_name || s.step_type,
-        channel: s.step_type,
-        delay_days: s.delay_days ?? 0,
-        delay_hours: s.delay_hours ?? 0,
-        subject: s.subject ?? null,
-        body: s.body || "",
-        is_active: s.is_active ?? true,
-      }))
-      const { error: upsertError } = await service
-        .from("campaign_sequence_steps")
-        .upsert(rows, { onConflict: "id" })
-      if (upsertError) return { success: false, error: upsertError.message }
+      const toUpdate = steps.filter((s): s is SequenceBuilderStep & { id: string } => !!s.id && existingIds.has(s.id))
+      const toInsert = steps.filter((s) => !s.id || !existingIds.has(s.id))
+
+      if (toUpdate.length > 0) {
+        const updateRows = toUpdate.map((s, i) => ({
+          id: s.id,
+          sequence_id: sequenceId,
+          step_number: steps.indexOf(s) + 1,
+          step_name: s.step_name || s.step_type,
+          channel: s.step_type,
+          delay_days: s.delay_days ?? 0,
+          delay_hours: s.delay_hours ?? 0,
+          subject: s.subject ?? null,
+          body: s.body || "",
+          is_active: s.is_active ?? true,
+        }))
+        const { error: upsertError } = await service
+          .from("campaign_sequence_steps")
+          .upsert(updateRows, { onConflict: "id" })
+        if (upsertError) return { success: false, error: upsertError.message }
+      }
+
+      if (toInsert.length > 0) {
+        const insertRows = toInsert.map((s) => ({
+          // No id — DB generates a fresh UUID; prevents cross-sequence ID overwrite
+          sequence_id: sequenceId,
+          step_number: steps.indexOf(s) + 1,
+          step_name: s.step_name || s.step_type,
+          channel: s.step_type,
+          delay_days: s.delay_days ?? 0,
+          delay_hours: s.delay_hours ?? 0,
+          subject: s.subject ?? null,
+          body: s.body || "",
+          is_active: s.is_active ?? true,
+        }))
+        const { error: insertError } = await service
+          .from("campaign_sequence_steps")
+          .insert(insertRows)
+        if (insertError) return { success: false, error: insertError.message }
+      }
     }
 
     // Delete only rows that were removed — surgical, never touches unchanged steps.
