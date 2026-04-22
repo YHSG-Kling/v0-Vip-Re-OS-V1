@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { toast } from "sonner"
 import { aiRecommendGift, aiGenerateThankYouNote } from "@/app/actions/ai-client-gifting"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
 import { checkThemFirstCompliance } from "@/app/actions/ai-chat"
@@ -71,6 +72,8 @@ export function GratitudeGiftingPanel({
           rationale: rec.whyThisGift ?? rec.description ?? rec.rationale ?? "",
           link: rec.vendor ?? rec.link ?? undefined,
         })
+      } else {
+        toast.error((result as any).error ?? "Gift recommendation failed — check AI Gateway configuration")
       }
     })
   }
@@ -90,6 +93,8 @@ export function GratitudeGiftingPanel({
         // Check compliance — analyzeThemFirstLanguage returns { score, feedback }
         const compliance = await checkThemFirstCompliance(noteText)
         setComplianceOk((compliance as any).score >= 50)
+      } else {
+        toast.error((result as any).error ?? "Thank you note generation failed — check AI Gateway configuration")
       }
     })
   }

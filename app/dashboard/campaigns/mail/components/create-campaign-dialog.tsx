@@ -49,13 +49,64 @@ const TEMPLATE_TYPE_OPTIONS = [
   { value: "brand_awareness", label: "Brand Awareness" },
 ]
 
+// Expanded audience types for all real estate use cases
 const TARGET_AUDIENCE_OPTIONS = [
-  { value: "homeowners", label: "Homeowners" },
-  { value: "renters", label: "Renters" },
-  { value: "investors", label: "Investors" },
+  { value: "homeowners", label: "Homeowners in Target Area" },
+  { value: "renters", label: "Renters (First-Time Buyer Prospects)" },
+  { value: "fsbo", label: "FSBO (For Sale By Owner)" },
   { value: "expired", label: "Expired Listings" },
-  { value: "fsbo", label: "FSBO" },
+  { value: "divorce_probate", label: "Divorce / Probate Prospects" },
+  { value: "investors", label: "Investor Prospects" },
+  { value: "past_clients", label: "Past Clients (Sphere of Influence)" },
+  { value: "geographic_farm", label: "Geographic Farm (Neighborhood)" },
+  { value: "new_movers", label: "New Movers" },
 ]
+
+export type AudienceSegment =
+  | "homeowners"
+  | "renters"
+  | "fsbo"
+  | "expired"
+  | "divorce_probate"
+  | "investors"
+  | "past_clients"
+  | "geographic_farm"
+  | "new_movers"
+
+// Average commission assumptions for ROI calculation
+const AVG_COMMISSION_BY_SEGMENT: Record<AudienceSegment, number> = {
+  homeowners: 15000,
+  renters: 10000,
+  fsbo: 18000,
+  expired: 16000,
+  divorce_probate: 14000,
+  investors: 12000,
+  past_clients: 15000,
+  geographic_farm: 13000,
+  new_movers: 10000,
+}
+
+// Estimated response rates per segment
+const EST_RESPONSE_RATE_BY_SEGMENT: Record<AudienceSegment, number> = {
+  homeowners: 0.012,
+  renters: 0.008,
+  fsbo: 0.025,
+  expired: 0.022,
+  divorce_probate: 0.018,
+  investors: 0.015,
+  past_clients: 0.035,
+  geographic_farm: 0.01,
+  new_movers: 0.014,
+}
+
+function sanitizeCssColor(value: unknown): string {
+  if (typeof value !== "string") return "#000000"
+  // Only allow safe color values — hex, rgb/rgba, hsl/hsla, or named colors
+  if (/^(#[0-9a-fA-F]{3,8}|rgb[a]?\([^)]+\)|hsl[a]?\([^)]+\)|[a-zA-Z]+)$/.test(value.trim())) {
+    return value.trim()
+  }
+  return "#000000"
+}
 
 export function CreateCampaignDialog({
   open,
@@ -80,7 +131,7 @@ export function CreateCampaignDialog({
     targetAudience: "",
     copyText: "",
     templateType: "just_listed",
-    audienceSegment: "homeowners" as "homeowners" | "renters" | "investors" | "expired" | "fsbo",
+    audienceSegment: "homeowners" as AudienceSegment,
     designUrl: "",
     quantity: 500,
     mailingDate: "",
@@ -126,7 +177,7 @@ export function CreateCampaignDialog({
         setAiCopyGenerated(true)
         toast.success("AI copy generated")
       } else {
-        toast.error(result.error ?? "Failed to generate copy")
+        toast.error((result as any).error ?? "Failed to generate copy")
       }
     } catch {
       toast.error("Copy generation failed")
@@ -180,7 +231,7 @@ export function CreateCampaignDialog({
         setFormData((f) => ({ ...f, targetAudience: description }))
         toast.success("Target audience selected")
       } else {
-        toast.error(result.error ?? "Audience selection failed")
+        toast.error((result as any).error ?? "Audience selection failed")
       }
     } catch {
       toast.error("Audience selection failed")
@@ -208,7 +259,7 @@ export function CreateCampaignDialog({
         setRoiPrediction({ ...result.prediction, costs: result.costs })
         toast.success("ROI prediction ready")
       } else {
-        toast.error(result.error ?? "ROI prediction failed")
+        toast.error((result as any).error ?? "ROI prediction failed")
       }
     } catch {
       toast.error("ROI prediction failed")
@@ -223,14 +274,23 @@ export function CreateCampaignDialog({
       toast.error("Session not loaded yet, please wait.")
       return
     }
+    if (!formData.campaignName.trim()) {
+      toast.error("Campaign name is required")
+      return
+    }
+    if (!formData.targetAudience.trim()) {
+      toast.error("Target audience is required")
+      return
+    }
     setCreating(true)
     try {
       const result = await createMailCampaign({
         brokerageId,
         agentId,
-        campaignName: formData.campaignName,
-        targetAudience: formData.targetAudience,
+        campaignName: formData.campaignName.trim(),
+        targetAudience: formData.targetAudience.trim(),
         designUrl: formData.designUrl || undefined,
+        copyText: formData.copyText || undefined,
         quantity: formData.quantity,
         mailingDate: formData.mailingDate || undefined,
         perPieceCost: formData.perPieceCost,
@@ -238,7 +298,12 @@ export function CreateCampaignDialog({
       })
 
       if (result.success) {
-        toast.success("Campaign created")
+        const lobWarning = (result as any).lobWarning as string | undefined
+        if (lobWarning) {
+          toast.success(`Campaign saved — ${lobWarning}`)
+        } else {
+          toast.success("Campaign created")
+        }
         setFormData({
           campaignName: "",
           targetAudience: "",
@@ -258,7 +323,7 @@ export function CreateCampaignDialog({
         setRoiPrediction(null)
         onCreated()
       } else {
-        toast.error(result.error ?? "Failed to create campaign")
+        toast.error((result as any).error ?? "Failed to create campaign")
       }
     } catch {
       toast.error("Failed to create campaign")
@@ -267,7 +332,13 @@ export function CreateCampaignDialog({
     }
   }
 
-  const estimatedCost = formData.quantity * formData.perPieceCost
+  // ── Static ROI calculation ─────────────────────────────────────────────────
+  const totalCost = formData.quantity * formData.perPieceCost
+  const responseRate = EST_RESPONSE_RATE_BY_SEGMENT[formData.audienceSegment] ?? 0.01
+  const avgCommission = AVG_COMMISSION_BY_SEGMENT[formData.audienceSegment] ?? 12000
+  const estimatedResponses = Math.round(formData.quantity * responseRate)
+  const projectedRevenue = estimatedResponses * avgCommission
+  const staticROI = totalCost > 0 ? ((projectedRevenue - totalCost) / totalCost) * 100 : 0
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -316,7 +387,7 @@ export function CreateCampaignDialog({
                 <Select
                   value={formData.audienceSegment}
                   onValueChange={(v) =>
-                    setFormData({ ...formData, audienceSegment: v as typeof formData.audienceSegment })
+                    setFormData({ ...formData, audienceSegment: v as AudienceSegment })
                   }
                 >
                   <SelectTrigger>
@@ -424,6 +495,65 @@ export function CreateCampaignDialog({
                 </div>
               )}
             </div>
+
+            {/* Postcard Preview */}
+            {(formData.copyText || aiCopyGenerated || aiDesignSuggestion) && (
+              <div className="grid gap-2">
+                <Label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Postcard Preview</Label>
+                <div className="rounded-lg border bg-muted/20 p-2">
+                  <div
+                    className="relative w-full rounded-md overflow-hidden flex"
+                    style={{ minHeight: 160, backgroundColor: sanitizeCssColor(aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af") }}
+                  >
+                    {/* Front — left 60% */}
+                    <div className="flex-1 p-4 flex flex-col justify-between" style={{ backgroundColor: sanitizeCssColor(aiDesignSuggestion?.colorScheme?.primary ?? "#1e40af") }}>
+                      <div>
+                        <p className="text-white/60 text-[9px] uppercase tracking-widest mb-1">
+                          {formData.templateType?.replace(/_/g, " ") ?? "Direct Mail"}
+                        </p>
+                        <p className="text-white font-bold text-sm leading-tight line-clamp-2">
+                          {formData.campaignName || "Your Campaign Headline"}
+                        </p>
+                        {formData.copyText && (
+                          <p className="text-white/80 text-[10px] mt-1.5 line-clamp-3">
+                            {formData.copyText}
+                          </p>
+                        )}
+                      </div>
+                      <div className="mt-2">
+                        <span
+                          className="inline-block text-[10px] font-semibold px-2 py-0.5 rounded"
+                          style={{ backgroundColor: sanitizeCssColor(aiDesignSuggestion?.colorScheme?.accent ?? "#f59e0b"), color: "#fff" }}
+                        >
+                          Call or Scan QR →
+                        </span>
+                      </div>
+                    </div>
+                    {/* Back — right 40% */}
+                    <div className="w-2/5 bg-white/95 p-3 flex flex-col justify-between border-l border-white/20">
+                      <div>
+                        <div className="w-8 h-8 rounded bg-muted/40 mb-1.5 flex items-center justify-center">
+                          <span className="text-[8px] text-muted-foreground font-mono">QR</span>
+                        </div>
+                        <p className="text-[8px] text-muted-foreground leading-tight">Scan for details</p>
+                      </div>
+                      <div className="mt-auto">
+                        <div className="h-3 w-16 rounded bg-muted/60 mb-0.5" />
+                        <div className="h-2 w-24 rounded bg-muted/40 mb-0.5" />
+                        <div className="h-2 w-20 rounded bg-muted/40" />
+                        <p className="text-[8px] text-muted-foreground mt-1">Return Address</p>
+                        <div className="mt-1.5 border-t border-dashed border-muted pt-1">
+                          <div className="h-2 w-28 rounded bg-muted/50 mb-0.5" />
+                          <div className="h-2 w-20 rounded bg-muted/30" />
+                          <p className="text-[8px] text-muted-foreground mt-0.5">Recipient Address</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground text-center mt-1.5">4×6 postcard preview — design adjusts based on AI suggestions</p>
+                </div>
+              </div>
+            )}
 
             {/* AI SECTION — Audience */}
             <div className="grid gap-2">
@@ -551,7 +681,7 @@ export function CreateCampaignDialog({
                   ) : (
                     <TrendingUp className="h-3.5 w-3.5 mr-1.5" />
                   )}
-                  Predict ROI
+                  AI Predict ROI
                 </Button>
               </div>
               {roiPrediction ? (
@@ -571,7 +701,7 @@ export function CreateCampaignDialog({
                       <p className="text-lg font-bold text-green-600">
                         {roiPrediction.roi > 0 ? "+" : ""}{roiPrediction.roi.toFixed(0)}%
                       </p>
-                      <p className="text-xs text-muted-foreground">ROI</p>
+                      <p className="text-xs text-muted-foreground">AI ROI</p>
                     </div>
                   </div>
                   {roiPrediction.costs && (
@@ -584,9 +714,31 @@ export function CreateCampaignDialog({
                   </Badge>
                 </div>
               ) : (
-                <div className="rounded-lg border bg-muted p-4 text-center">
-                  <p className="text-sm text-muted-foreground">
-                    Click Predict ROI to see expected response rate, leads, and return on investment before submitting.
+                <div className="rounded-lg border bg-muted/50 p-3 space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Estimated ROI</p>
+                  <div className="grid grid-cols-3 gap-3 text-center mt-1">
+                    <div>
+                      <p className="text-base font-bold text-primary">
+                        {(responseRate * 100).toFixed(1)}%
+                      </p>
+                      <p className="text-xs text-muted-foreground">Est. Response</p>
+                    </div>
+                    <div>
+                      <p className="text-base font-bold">{estimatedResponses}</p>
+                      <p className="text-xs text-muted-foreground">Est. Responses</p>
+                    </div>
+                    <div>
+                      <p className={`text-base font-bold ${staticROI >= 0 ? "text-green-600" : "text-destructive"}`}>
+                        {staticROI > 0 ? "+" : ""}{staticROI.toFixed(0)}%
+                      </p>
+                      <p className="text-xs text-muted-foreground">Est. ROI</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground text-center">
+                    ${totalCost.toFixed(2)} cost — ${projectedRevenue.toLocaleString()} projected revenue
+                  </p>
+                  <p className="text-[10px] text-muted-foreground text-center">
+                    Based on industry benchmarks · Click AI Predict ROI for detailed analysis
                   </p>
                 </div>
               )}
@@ -597,7 +749,7 @@ export function CreateCampaignDialog({
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">Estimated Total Cost</span>
                 <span className="text-lg font-bold">
-                  ${estimatedCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  ${totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </span>
               </div>
               <p className="text-xs text-muted-foreground mt-1">

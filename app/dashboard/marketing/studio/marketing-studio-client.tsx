@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useMemo } from "react"
+import { useToast } from "@/hooks/use-toast"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -168,6 +169,7 @@ interface MarketingStudioClientProps {
 }
 
 export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole }: MarketingStudioClientProps) {
+  const { toast } = useToast()
   const [activeTab, setActiveTab] = useState("overview")
   const [isLoading, setIsLoading] = useState(true)
   const [dashboardError, setDashboardError] = useState<string | null>(null)
@@ -242,6 +244,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   const [isCreateQrOpen, setIsCreateQrOpen] = useState(false)
   const [newQr, setNewQr] = useState<{ label: string; targetUrl: string; purpose: "listing" | "open_house" | "general" | "campaign" | "lead_capture" }>({ label: "", targetUrl: "", purpose: "general" })
   const [isCreatingQr, setIsCreatingQr] = useState(false)
+  const [qrError, setQrError] = useState<string | null>(null)
 
   // Ad OS state
   const [listings, setListings] = useState<Array<{ id: string; address: string; city: string; zip?: string; list_price?: number }>>([])
@@ -533,19 +536,25 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   // ─── HANDLERS ─────────────────────────────────────────────────────────────────
 
   async function handleCreateCampaign() {
-    const result = await createCampaign(newCampaign)
-    if (result.success) {
-      setIsCreateCampaignOpen(false)
-      setNewCampaign({
-        campaignName: "",
-        campaignType: "brand",
-        budgetTotal: 0,
-        scheduledStartAt: "",
-        scheduledEndAt: "",
-        visibilityScope: "agent",
-      })
-      loadCampaigns()
-      loadInitialData()
+    try {
+      const result = await createCampaign(newCampaign)
+      if (result.success) {
+        setIsCreateCampaignOpen(false)
+        setNewCampaign({
+          campaignName: "",
+          campaignType: "brand",
+          budgetTotal: 0,
+          scheduledStartAt: "",
+          scheduledEndAt: "",
+          visibilityScope: "agent",
+        })
+        loadCampaigns()
+        loadInitialData()
+      } else {
+        toast({ title: "Failed to create campaign", description: (result as any).error ?? "Unknown error", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Failed to create campaign", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
     }
   }
 
@@ -558,15 +567,21 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   }
 
   async function handleCreateAsset() {
-    const result = await createAsset({
-      ...newAsset,
-      campaignId: newAsset.campaignId || undefined,
-    })
-    if (result.success) {
-      setIsCreateAssetOpen(false)
-      setNewAsset({ assetName: "", assetType: "image", campaignId: "", previewText: "" })
-      loadAssets()
-      loadInitialData()
+    try {
+      const result = await createAsset({
+        ...newAsset,
+        campaignId: newAsset.campaignId || undefined,
+      })
+      if (result.success) {
+        setIsCreateAssetOpen(false)
+        setNewAsset({ assetName: "", assetType: "image", campaignId: "", previewText: "" })
+        loadAssets()
+        loadInitialData()
+      } else {
+        toast({ title: "Failed to create asset", description: (result as any).error ?? "Unknown error", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Failed to create asset", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
     }
   }
 
@@ -587,14 +602,20 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   }
 
   async function handleCreateCalendarEvent() {
-    const result = await createCalendarEvent({
-      ...newEvent,
-      campaignId: newEvent.campaignId || undefined,
-    })
-    if (result.success) {
-      setIsCreateEventOpen(false)
-      setNewEvent({ title: "", eventType: "publish", scheduledAt: "", campaignId: "", notes: "" })
-      loadCalendarEvents()
+    try {
+      const result = await createCalendarEvent({
+        ...newEvent,
+        campaignId: newEvent.campaignId || undefined,
+      })
+      if (result.success) {
+        setIsCreateEventOpen(false)
+        setNewEvent({ title: "", eventType: "publish", scheduledAt: "", campaignId: "", notes: "" })
+        loadCalendarEvents()
+      } else {
+        toast({ title: "Failed to create calendar event", description: (result as any).error ?? "Unknown error", variant: "destructive" })
+      }
+    } catch (err) {
+      toast({ title: "Failed to create calendar event", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
     }
   }
 
@@ -1948,14 +1969,24 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
               </CardHeader>
               <CardContent>
                 <div className="flex items-center gap-4 mb-6">
-                  <Button onClick={loadRegistry} variant="outline">
+                  <Input
+                    placeholder="Search registry..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="max-w-xs h-9 text-sm"
+                  />
+                  <Button onClick={loadRegistry} variant="outline" size="sm">
                     <Search className="mr-2 h-4 w-4" />
-                    Search Content Registry
+                    {registryItems.length === 0 ? "Load Registry" : "Refresh"}
                   </Button>
                 </div>
                 {registryItems.length > 0 && (
                   <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {registryItems.map((item) => (
+                    {registryItems.filter((item) => {
+                      if (!searchQuery.trim()) return true
+                      const q = searchQuery.toLowerCase()
+                      return item.title?.toLowerCase().includes(q) || item.previewText?.toLowerCase().includes(q) || item.sourceTable?.toLowerCase().includes(q)
+                    }).map((item) => (
                       <Card key={`${item.sourceTable}-${item.id}`} className="bg-muted/30">
                         <CardContent className="pt-4">
                           <div className="flex items-start justify-between mb-2">
@@ -2490,7 +2521,11 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       setIsCreateNewsletterOpen(false)
                       setNewNewsletter({ campaignName: "", subjectLine: "", content: "" })
                       await loadNewsletterData()
+                    } else {
+                      toast({ title: "Failed to create newsletter", description: (result as any).error ?? "Unknown error", variant: "destructive" })
                     }
+                  } catch (err) {
+                    toast({ title: "Failed to create newsletter", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
                   } finally {
                     setIsCreatingNewsletter(false)
                   }
@@ -2504,7 +2539,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         </Dialog>
 
         {/* Create QR Code Dialog */}
-        <Dialog open={isCreateQrOpen} onOpenChange={setIsCreateQrOpen}>
+        <Dialog open={isCreateQrOpen} onOpenChange={(open) => { setIsCreateQrOpen(open); if (!open) setQrError(null) }}>
           <DialogContent className="sm:max-w-[440px]">
             <DialogHeader>
               <DialogTitle>New QR Code</DialogTitle>
@@ -2547,6 +2582,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                   <option value="campaign">Campaign</option>
                 </select>
               </div>
+              {qrError && (
+                <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700 flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {qrError}
+                </div>
+              )}
             </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setIsCreateQrOpen(false)}>
@@ -2557,10 +2598,22 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 disabled={isCreatingQr || !newQr.label.trim() || !newQr.targetUrl.trim()}
                 onClick={async () => {
                   setIsCreatingQr(true)
+                  setQrError(null)
                   try {
                     const { createQrCodeAction } = await import("@/app/actions/marketing-studio")
-                    const resolvedBrokerageId = brokerageIdProp || brokerageId
-                    const resolvedAgentId = agentId
+                    // Resolve brokerageId and agentId — fall back to user context if props not available
+                    let resolvedBrokerageId = brokerageIdProp || brokerageId
+                    let resolvedAgentId = agentId
+                    if (!resolvedBrokerageId || !resolvedAgentId) {
+                      const { getUserContextForPrediction } = await import("@/app/actions/content-prediction")
+                      const ctx = await getUserContextForPrediction()
+                      if (ctx.success && ctx.brokerageId) resolvedBrokerageId = resolvedBrokerageId || ctx.brokerageId
+                      if (ctx.success && ctx.userId) resolvedAgentId = resolvedAgentId || ctx.userId
+                    }
+                    if (!resolvedBrokerageId || !resolvedAgentId) {
+                      setQrError("Could not determine your account context. Please refresh and try again.")
+                      return
+                    }
                     const result = await createQrCodeAction({
                       brokerageId: resolvedBrokerageId,
                       agentId: resolvedAgentId,
@@ -2571,8 +2624,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                     if (result.success) {
                       setIsCreateQrOpen(false)
                       setNewQr({ label: "", targetUrl: "", purpose: "general" })
+                      setQrError(null)
                       await loadQrCodes()
+                    } else {
+                      setQrError((result as any).error ?? "Failed to create QR code.")
                     }
+                  } catch (err) {
+                    setQrError(err instanceof Error ? err.message : "Failed to create QR code.")
                   } finally {
                     setIsCreatingQr(false)
                   }

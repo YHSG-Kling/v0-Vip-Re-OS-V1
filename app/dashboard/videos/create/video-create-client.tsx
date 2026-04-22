@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -38,6 +38,9 @@ import {
   Monitor,
   Smartphone,
   Square,
+  Upload,
+  Camera,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
@@ -52,6 +55,7 @@ import {
 import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdateMode } from "../components/business-context"
 import { generateVideoScript } from "@/app/actions/video/generate-script"
 import { getAgentSettings } from "@/app/actions/agent-settings"
+import { getHeyGenAvatars } from "@/app/actions/heygen-avatars"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -106,12 +110,33 @@ const OUTPUT_ORIENTATIONS = [
 ]
 
 const BACKGROUND_STYLES = [
-  { id: "white", label: "Clean White", color: "#ffffff" },
-  { id: "light_gray", label: "Light Gray", color: "#f5f5f5" },
-  { id: "dark", label: "Dark", color: "#1a1a1a" },
-  { id: "gradient_blue", label: "Blue Gradient", color: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)" },
-  { id: "office", label: "Office Background", color: "office" },
-  { id: "modern", label: "Modern Interior", color: "modern" },
+  { id: "white", label: "Clean White", color: "#ffffff", previewStyle: { backgroundColor: "#ffffff" } },
+  { id: "light_gray", label: "Light Gray", color: "#f5f5f5", previewStyle: { backgroundColor: "#f5f5f5" } },
+  { id: "dark", label: "Dark", color: "#1a1a1a", previewStyle: { backgroundColor: "#1a1a1a" } },
+  {
+    id: "gradient_blue",
+    label: "Blue Gradient",
+    color: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
+    previewStyle: { background: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)" },
+  },
+  {
+    id: "office",
+    label: "Office Background",
+    color: "office",
+    previewStyle: { background: "linear-gradient(135deg, #8B7355 0%, #A0956B 40%, #C4B48A 100%)" },
+  },
+  {
+    id: "modern",
+    label: "Modern Interior",
+    color: "modern",
+    previewStyle: { background: "linear-gradient(135deg, #e8e0d5 0%, #d4c5b0 50%, #b8a898 100%)" },
+  },
+  {
+    id: "custom",
+    label: "Custom Upload",
+    color: "#e8f4fd",
+    previewStyle: { background: "repeating-conic-gradient(#e8f4fd 0% 25%, #c7e1f5 0% 50%) 0 0 / 10px 10px" },
+  },
 ]
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
@@ -165,6 +190,15 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   const [qualityPreset, setQualityPreset] = useState<string>("1080p")
   const [outputOrientation, setOutputOrientation] = useState<string>("landscape")
   const [brandingPresetId, setBrandingPresetId] = useState<string>("")
+
+  // Step 3: Custom background upload / webcam capture
+  const [customBgUrl, setCustomBgUrl] = useState<string>("")
+  const [isUploadingBg, setIsUploadingBg] = useState(false)
+  const [showWebcamCapture, setShowWebcamCapture] = useState(false)
+  const [webcamStream, setWebcamStream] = useState<MediaStream | null>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const bgFileInputRef = useRef<HTMLInputElement>(null)
 
   // Data from DB
   const [scripts, setScripts] = useState<any[]>([])
@@ -234,27 +268,40 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
         setBrandingPresets(brandingData || [])
 
-        // HeyGen default avatars (shown when user has no personal avatar configured)
+        // HeyGen default avatars (fallback when API call fails)
         const defaultAvatars = [
-          { id: "Angela-inblackskirt-20220820", name: "Angela", style: "Professional" },
-          { id: "Daisy-inskirt-20220818", name: "Daisy", style: "Friendly" },
-          { id: "Josh_lite3_20230714", name: "Josh", style: "Casual" },
-          { id: "Kristin_public_3_20240108", name: "Kristin", style: "Professional" },
-          { id: "Wayne_20240711", name: "Wayne", style: "Executive" },
+          { id: "Angela-inblackskirt-20220820", name: "Angela", style: "Professional", thumbnailUrl: undefined },
+          { id: "Daisy-inskirt-20220818", name: "Daisy", style: "Friendly", thumbnailUrl: undefined },
+          { id: "Josh_lite3_20230714", name: "Josh", style: "Casual", thumbnailUrl: undefined },
+          { id: "Kristin_public_3_20240108", name: "Kristin", style: "Professional", thumbnailUrl: undefined },
+          { id: "Wayne_20240711", name: "Wayne", style: "Executive", thumbnailUrl: undefined },
         ]
+
+        // Fetch all available HeyGen avatars from live API
+        const heygenResult = await getHeyGenAvatars()
+        const rawAvatars = heygenResult.success && heygenResult.avatars.length > 0
+          ? heygenResult.avatars.map((av) => ({
+              id: av.avatar_id,
+              name: av.avatar_name,
+              style: av.gender ?? "Public",
+              thumbnailUrl: av.preview_image_url ?? undefined,
+            }))
+          : defaultAvatars
+        const seenAvatarIds = new Set<string>()
+        const liveAvatars = rawAvatars.filter(av => !seenAvatarIds.has(av.id) && seenAvatarIds.add(av.id))
 
         // Load per-user avatar + voice configured during onboarding
         if (user?.id) {
           const agentSettings = await getAgentSettings(user.id)
           if (agentSettings.avatarId) {
-            // Personal avatar goes first, defaults as fallbacks
+            // Personal avatar goes first, live/default avatars as fallbacks
             setAvatars([
-              { id: agentSettings.avatarId, name: "My Avatar", style: "Personal" },
-              ...defaultAvatars,
+              { id: agentSettings.avatarId, name: "My Avatar", style: "Personal", thumbnailUrl: undefined },
+              ...liveAvatars.filter(av => av.id !== agentSettings.avatarId),
             ])
             setSelectedAvatar(agentSettings.avatarId)
           } else {
-            setAvatars(defaultAvatars)
+            setAvatars(liveAvatars)
           }
           // Pre-select configured voice ID if no cloned voice profiles exist
           if (agentSettings.voiceId && clonedVoiceProfiles.length === 0) {
@@ -351,10 +398,16 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           quality_preset: qualityPreset,
           output_orientation: outputOrientation,
           aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect || "16:9",
-          background: {
-            type: backgroundStyle.startsWith("linear") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
-            value: BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.color || "#ffffff",
-          },
+          background: backgroundStyle === "custom" && customBgUrl
+            ? { type: "image", value: customBgUrl }
+            : (() => {
+                const bgPreset = BACKGROUND_STYLES.find(b => b.id === backgroundStyle)
+                const bgColorValue = bgPreset?.color ?? "#ffffff"
+                return {
+                  type: bgColorValue.startsWith("linear") || bgColorValue.startsWith("repeating") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
+                  value: bgColorValue,
+                }
+              })(),
         }),
       })
 
@@ -408,7 +461,8 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
         if (voiceProfiles.length > 0 && !selectedVoice) return false
         return true
       case 3:
-        return !!backgroundStyle && !!qualityPreset && !!outputOrientation
+        return !!backgroundStyle && !!qualityPreset && !!outputOrientation &&
+          (backgroundStyle !== "custom" || !!customBgUrl)
       default:
         return true
     }
@@ -426,6 +480,98 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
     setRepurposeDestinations((prev) =>
       prev.includes(dest) ? prev.filter((d) => d !== dest) : [...prev, dest]
     )
+  }
+
+  // ─── Custom Background Handlers ────────────────────────────────────────────
+
+  const stopWebcam = useCallback(() => {
+    if (webcamStream) {
+      webcamStream.getTracks().forEach((t) => t.stop())
+      setWebcamStream(null)
+    }
+    setShowWebcamCapture(false)
+  }, [webcamStream])
+
+  // Cleanup webcam on unmount
+  useEffect(() => () => { webcamStream?.getTracks().forEach((t) => t.stop()) }, [webcamStream])
+
+  // Stop webcam tracks when leaving the style step (step 3)
+  useEffect(() => {
+    if (currentStep !== 3 && webcamStream) {
+      webcamStream.getTracks().forEach((t) => t.stop())
+      setWebcamStream(null)
+      setShowWebcamCapture(false)
+    }
+  }, [currentStep, webcamStream])
+
+  const handleBgFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!file.type.startsWith("image/")) {
+      setError("Please select an image file (JPG, PNG, WebP)")
+      return
+    }
+    setIsUploadingBg(true)
+    try {
+      const ext = file.name.split(".").pop() ?? "jpg"
+      const path = `video-backgrounds/${user?.id ?? "anon"}/${Date.now()}.${ext}`
+      const { error: uploadError } = await supabase.storage
+        .from("listing-media")
+        .upload(path, file, { upsert: true, contentType: file.type })
+      if (uploadError) throw uploadError
+      const { data: { publicUrl } } = supabase.storage.from("listing-media").getPublicUrl(path)
+      setCustomBgUrl(publicUrl)
+      setBackgroundStyle("custom")
+    } catch (err: any) {
+      setError(`Background upload failed: ${err.message}`)
+    } finally {
+      setIsUploadingBg(false)
+      if (bgFileInputRef.current) bgFileInputRef.current.value = ""
+    }
+  }
+
+  const startWebcam = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } })
+      setWebcamStream(stream)
+      setShowWebcamCapture(true)
+      // Assign stream after state update so the video element is rendered
+      setTimeout(() => {
+        if (videoRef.current) videoRef.current.srcObject = stream
+      }, 50)
+    } catch {
+      setError("Camera access denied. Allow camera access to capture a background photo.")
+    }
+  }
+
+  const captureWebcamPhoto = async () => {
+    if (!videoRef.current || !canvasRef.current) return
+    const video = videoRef.current
+    const canvas = canvasRef.current
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+    ctx.drawImage(video, 0, 0)
+    stopWebcam()
+    setIsUploadingBg(true)
+    try {
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Capture failed"))), "image/jpeg", 0.92)
+      })
+      const path = `video-backgrounds/${user?.id ?? "anon"}/${Date.now()}.jpg`
+      const { error: uploadError } = await supabase.storage
+        .from("listing-media")
+        .upload(path, blob, { upsert: true, contentType: "image/jpeg" })
+      if (uploadError) throw uploadError
+      const { data: { publicUrl } } = supabase.storage.from("listing-media").getPublicUrl(path)
+      setCustomBgUrl(publicUrl)
+      setBackgroundStyle("custom")
+    } catch (err: any) {
+      setError(`Background capture failed: ${err.message}`)
+    } finally {
+      setIsUploadingBg(false)
+    }
   }
 
   // Generate script from Step 0 context — calls Claude via server action
@@ -929,14 +1075,28 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                             : "border-border hover:border-primary/50"
                         )}
                       >
-                        <div className="w-16 h-16 rounded-full bg-muted mx-auto mb-2 flex items-center justify-center">
-                          <User className="h-8 w-8 text-muted-foreground" />
+                        <div className="w-16 h-16 rounded-full bg-muted mx-auto mb-2 flex items-center justify-center overflow-hidden">
+                          {avatar.thumbnailUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={avatar.thumbnailUrl}
+                              alt={avatar.name}
+                              className="w-16 h-16 rounded-full object-cover mx-auto"
+                            />
+                          ) : (
+                            <User className="w-8 h-8 mx-auto text-muted-foreground" />
+                          )}
                         </div>
                         <p className="font-medium">{avatar.name}</p>
                         <p className="text-xs text-muted-foreground">{avatar.style}</p>
                       </div>
                     ))}
                   </div>
+                  <p className="text-xs text-muted-foreground mt-2 text-center">
+                    <a href="/dashboard/videos/voice" className="underline hover:text-foreground">
+                      + Create your personal avatar
+                    </a>
+                  </p>
                 </div>
 
                 {/* Voice Selection */}
@@ -1020,7 +1180,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                     {BACKGROUND_STYLES.map((bg) => (
                       <div
                         key={bg.id}
-                        onClick={() => setBackgroundStyle(bg.id)}
+                        onClick={() => { if (bg.id !== "custom") stopWebcam(); setBackgroundStyle(bg.id) }}
                         className={cn(
                           "p-3 rounded-lg border-2 cursor-pointer transition-all text-center",
                           backgroundStyle === bg.id
@@ -1030,16 +1190,107 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                       >
                         <div
                           className="w-full h-12 rounded mb-2"
-                          style={{
-                            background: bg.color.startsWith("linear") ? bg.color : bg.color,
-                            backgroundColor: !bg.color.startsWith("linear") ? bg.color : undefined,
-                          }}
+                          style={bg.previewStyle}
                         />
                         <p className="text-xs font-medium truncate">{bg.label}</p>
                       </div>
                     ))}
                   </div>
                 </div>
+
+                {/* Custom Background Upload (shown when "Custom Upload" is selected) */}
+                {backgroundStyle === "custom" && (
+                  <div className="space-y-3 p-4 rounded-lg border bg-muted/30">
+                    <Label className="text-sm font-medium">Upload or Capture Your Background</Label>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => bgFileInputRef.current?.click()}
+                        disabled={isUploadingBg}
+                        className="gap-2"
+                      >
+                        {isUploadingBg ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                        Upload Image
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={showWebcamCapture ? stopWebcam : startWebcam}
+                        disabled={isUploadingBg}
+                        className="gap-2"
+                      >
+                        {showWebcamCapture ? <X className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
+                        {showWebcamCapture ? "Cancel Webcam" : "Use Webcam"}
+                      </Button>
+                      {customBgUrl && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => { setCustomBgUrl(""); setBackgroundStyle("white") }}
+                          className="gap-2 text-destructive hover:text-destructive"
+                        >
+                          <X className="h-4 w-4" /> Clear
+                        </Button>
+                      )}
+                    </div>
+
+                    {/* Hidden file input */}
+                    <input
+                      ref={bgFileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="hidden"
+                      onChange={handleBgFileUpload}
+                    />
+
+                    {/* Live webcam feed */}
+                    {showWebcamCapture && (
+                      <div className="space-y-2">
+                        <video
+                          ref={videoRef}
+                          autoPlay
+                          muted
+                          playsInline
+                          className="w-full max-h-52 rounded-lg object-cover border"
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={captureWebcamPhoto}
+                          disabled={isUploadingBg}
+                          className="w-full gap-2"
+                        >
+                          {isUploadingBg ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                          Capture as Background
+                        </Button>
+                      </div>
+                    )}
+
+                    {/* Off-screen canvas for frame capture */}
+                    <canvas ref={canvasRef} className="hidden" />
+
+                    {/* Preview uploaded/captured image */}
+                    {customBgUrl && (
+                      <div className="relative w-full h-28 rounded-lg overflow-hidden border">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={customBgUrl} alt="Custom background preview" className="w-full h-full object-cover" />
+                        <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                          <Badge className="bg-primary text-primary-foreground">Custom Background Active</Badge>
+                        </div>
+                      </div>
+                    )}
+
+                    {!customBgUrl && !showWebcamCapture && !isUploadingBg && (
+                      <p className="text-xs text-muted-foreground">
+                        Upload a JPG, PNG, or WebP image to use as your video background, or use your webcam to capture a photo.
+                      </p>
+                    )}
+                  </div>
+                )}
 
                 {/* Output Orientation */}
                 <div className="space-y-3">

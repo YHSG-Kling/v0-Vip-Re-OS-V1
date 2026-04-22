@@ -292,6 +292,7 @@ export default function CRMPage() {
 
   // Journey & Team tab — lazy loaded on first tab activation
   const [journeyTeamData, setJourneyTeamData] = useState<{
+    transactionId: string | null
     milestones:   any[]
     dealTeam:     any[]
     lenders:      any[]
@@ -300,6 +301,7 @@ export default function CRMPage() {
   } | null>(null)
   const [journeyTeamLoading, setJourneyTeamLoading] = useState(false)
   const [journeyTeamLoaded, setJourneyTeamLoaded] = useState(false)
+  const [journeyTeamError, setJourneyTeamError] = useState<string | null>(null)
 
   // Active CRM tab
   const [activeTab, setActiveTab] = useState("overview")
@@ -471,6 +473,7 @@ export default function CRMPage() {
       setPortalInviteData(null)
       setJourneyTeamData(null)
       setJourneyTeamLoaded(false)
+      setJourneyTeamError(null)
       setActiveTab("overview")
       return
     }
@@ -549,8 +552,9 @@ export default function CRMPage() {
   }, [selectedContactId])
 
   // Lazy-load Journey & Team tab data
-  const loadJourneyTeam = useCallback(async (contactId: string) => {
-    if (journeyTeamLoaded || journeyTeamLoading) return
+  const loadJourneyTeam = useCallback(async (contactId: string, force = false) => {
+    if (!force && (journeyTeamLoaded || journeyTeamLoading)) return
+    setJourneyTeamError(null)
     setJourneyTeamLoading(true)
     const supabase = createClient()
     try {
@@ -604,14 +608,17 @@ export default function CRMPage() {
       ])
 
       setJourneyTeamData({
+        transactionId: txId,
         milestones:  milestonesRes.data ?? [],
         dealTeam:    dealTeamRes.data ?? [],
         lenders:     lendersRes.data ?? [],
         vendors:     vendorsRes.data ?? [],
         timeline:    timelineRes.data ?? [],
       })
-    } catch {/* non-blocking */}
-    finally {
+    } catch (e: any) {
+      console.error("[CRM] loadJourneyTeam error:", e)
+      setJourneyTeamError("Failed to load deal data. Please try again.")
+    } finally {
       setJourneyTeamLoading(false)
       setJourneyTeamLoaded(true)
     }
@@ -1285,9 +1292,38 @@ export default function CRMPage() {
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
                         <span className="ml-2 text-sm text-muted-foreground">Loading deal data...</span>
                       </div>
-                    ) : !journeyTeamData ? (
-                      <div className="text-sm text-muted-foreground text-center py-8">
-                        No transaction found for this contact.
+                    ) : journeyTeamError ? (
+                      <div className="py-8 text-center space-y-2">
+                        <p className="text-sm text-destructive">{journeyTeamError}</p>
+                        <Button size="sm" variant="outline" onClick={() => { if (selectedContactId) loadJourneyTeam(selectedContactId, true) }}>
+                          Retry
+                        </Button>
+                      </div>
+                    ) : !journeyTeamData || journeyTeamData.transactionId === null ? (
+                      <div className="py-8 text-center space-y-3">
+                        <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center mx-auto">
+                          <Users className="h-5 w-5 text-muted-foreground" />
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-sm font-medium">No active transaction</p>
+                          <p className="text-xs text-muted-foreground max-w-xs mx-auto">
+                            Journey &amp; team details will appear here once a transaction is started for this contact — milestones, deal team, lenders, and vendors.
+                          </p>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            if (selectedContactId) router.push(`/dashboard/transactions?contactId=${encodeURIComponent(selectedContactId)}`)
+                          }}
+                        >
+                          Start a Transaction
+                        </Button>
+                      </div>
+                    ) : journeyTeamData.milestones.length === 0 && journeyTeamData.dealTeam.length === 0 && journeyTeamData.lenders.length === 0 && journeyTeamData.vendors.length === 0 && journeyTeamData.timeline.length === 0 ? (
+                      <div className="py-8 text-center space-y-2">
+                        <p className="text-sm font-medium">Transaction in progress</p>
+                        <p className="text-xs text-muted-foreground">Milestones and team details will appear here as the deal progresses.</p>
                       </div>
                     ) : (
                       <>

@@ -64,25 +64,28 @@ const TONE_INSTRUCTIONS: Record<string, string> = {
     "Use a clear, informative tone. Explain concepts simply. Use structure (numbered points where helpful).",
 }
 
-const TYPE_SYSTEM_CONTEXT: Record<string, string> = {
-  property_tour:
-    "You are writing a property walkthrough narration for a real estate agent's avatar video. Focus on features, flow, and lifestyle benefits. Use vivid but accurate descriptions.",
-  market_update:
-    "You are writing a local market update script. Present stats and trends conversationally. Give buyers and sellers actionable takeaways.",
-  agent_intro:
+function buildTypeSystemContext(): Record<string, string> {
+  const currentYear = new Date().getFullYear()
+  return {
+    property_tour:
+      "You are writing a property walkthrough narration for a real estate agent's avatar video. Focus on features, flow, and lifestyle benefits. Use vivid but accurate descriptions.",
+    market_update:
+      `You are writing a local market update script for ${currentYear}. Present stats and trends conversationally. Reference current ${currentYear} market conditions — interest rates, inventory, price trends. Give buyers and sellers actionable takeaways relevant to today's market.`,
+    agent_intro:
     "You are writing a personal brand introduction for a real estate agent. Build trust, highlight unique value, and end with a clear call to action.",
-  listing_presentation:
-    "You are writing a listing appointment presentation script. Focus on the agent's marketing plan, expertise, and why sellers should choose them.",
-  buyer_education:
-    "You are writing a buyer education video. Explain the home buying process in simple steps. Reduce anxiety and build confidence.",
-  seller_update:
-    "You are writing a seller update video. Give the homeowner a warm, transparent update on their listing's activity and market position.",
-  testimonial:
-    "You are writing a client testimonial highlight script for a real estate agent. Emphasize authentic outcomes and emotional results.",
-  tips:
-    "You are writing a quick tips video for a real estate agent's social media. Give 3-5 concrete, actionable tips. Keep it energetic and shareable.",
-  custom:
-    "You are writing a real estate video script for an agent. Follow the provided description closely.",
+    listing_presentation:
+      "You are writing a listing appointment presentation script. Focus on the agent's marketing plan, expertise, and why sellers should choose them.",
+    buyer_education:
+      `You are writing a buyer education video for ${new Date().getFullYear()}. Explain the home buying process in simple steps with current context. Reduce anxiety and build confidence.`,
+    seller_update:
+      "You are writing a seller update video. Give the homeowner a warm, transparent update on their listing's activity and market position.",
+    testimonial:
+      "You are writing a client testimonial highlight script for a real estate agent. Emphasize authentic outcomes and emotional results.",
+    tips:
+      "You are writing a quick tips video for a real estate agent's social media. Give 3-5 concrete, actionable tips. Keep it energetic and shareable.",
+    custom:
+      "You are writing a real estate video script for an agent. Follow the provided description closely.",
+  }
 }
 
 /**
@@ -231,8 +234,9 @@ Fair Housing compliance (Gate 4 — mandatory):
   }
 
   // ── Claude script generation ─────────────────────────────────────────────────
+  const typeSystemContext = buildTypeSystemContext()
   const systemPrompt = [
-    TYPE_SYSTEM_CONTEXT[params.videoType] ?? TYPE_SYSTEM_CONTEXT.custom,
+    typeSystemContext[params.videoType] ?? typeSystemContext.custom,
     TONE_INSTRUCTIONS[params.tone] ?? TONE_INSTRUCTIONS.professional,
     brandVoiceBlock,
     themFirstBlock,
@@ -250,6 +254,7 @@ Fair Housing compliance (Gate 4 — mandatory):
     `Video type: ${params.videoType.replace(/_/g, " ")}`,
     `Tone: ${params.tone}`,
     `Target duration: ${duration} seconds (~${wordTarget} words)`,
+    `Current date: ${new Date().toLocaleDateString("en-US", { month: "long", year: "numeric" })}`,
   ]
     .filter(Boolean)
     .join("\n")

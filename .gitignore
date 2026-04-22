@@ -40,6 +40,9 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzd
 # vercel
 .vercel
 
+# supabase CLI temp/cache
+supabase/.temp/
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

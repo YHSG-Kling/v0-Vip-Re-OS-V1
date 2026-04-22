@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
+import { getAgentContext } from "@/lib/identity"
 import { revalidatePath } from "next/cache"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -68,6 +69,10 @@ export interface SequenceEnrollment {
   contact?: { first_name: string | null; last_name: string | null; email: string | null }
 }
 
+// ─── Valid step types ─────────────────────────────────────────────────────────
+
+export const VALID_STEP_TYPES = new Set(["email", "sms", "voice_drop", "wait", "ai_call", "direct_mail"] as const)
+
 // ─── Sequence type categories ─────────────────────────────────────────────────
 
 export const MARKETING_SEQUENCE_TYPES = [
@@ -119,13 +124,18 @@ export async function listCampaignSequences(
 
 // ─── Get sequence with steps ──────────────────────────────────────────────────
 
-export async function getCampaignSequence(sequenceId: string): Promise<{
+export async function getCampaignSequence(
+  sequenceId: string,
+  options?: { includeEnrollments?: boolean }
+): Promise<{
   sequence: CampaignSequence | null
   steps: SequenceStep[]
   enrollments: SequenceEnrollment[]
   error?: string
 }> {
   const service = createServiceClient()
+  const includeEnrollments = options?.includeEnrollments ?? true
+
   const [seqRes, stepsRes, enrollRes] = await Promise.all([
     service.from("campaign_sequences").select("*").eq("id", sequenceId).maybeSingle(),
     service
@@ -133,23 +143,24 @@ export async function getCampaignSequence(sequenceId: string): Promise<{
       .select("*")
       .eq("sequence_id", sequenceId)
       .order("step_number", { ascending: true }),
-    service
-      .from("sequence_enrollments")
-      .select(`
-        *,
-        contact:contacts(first_name, last_name, email)
-      `)
-      .eq("sequence_id", sequenceId)
-      .order("enrolled_at", { ascending: false })
-      .limit(200),
+    includeEnrollments
+      ? service
+          .from("sequence_enrollments")
+          .select(`*, contact:contacts(first_name, last_name, email)`)
+          .eq("sequence_id", sequenceId)
+          .order("enrolled_at", { ascending: false })
+          .limit(200)
+      : Promise.resolve({ data: null, error: null }),
   ])
 
   if (seqRes.error) return { sequence: null, steps: [], enrollments: [], error: seqRes.error.message }
 
+  const enrollments = ((enrollRes.data ?? []) as SequenceEnrollment[])
+
   return {
     sequence: seqRes.data as CampaignSequence,
     steps: (stepsRes.data ?? []) as SequenceStep[],
-    enrollments: (enrollRes.data ?? []) as SequenceEnrollment[],
+    enrollments,
   }
 }
 
@@ -569,4 +580,159 @@ export async function batchArchiveSequences(sequenceIds: string[]): Promise<{ su
   if (error) return { success: false, count: 0, error: error.message }
   revalidatePath("/dashboard/campaigns/sequences")
   return { success: true, count: sequenceIds.length }
+}
+
+// ─── Sequence Step Builder ────────────────────────────────────────────────────
+
+export interface SequenceBuilderStep {
+  id?: string
+  step_number: number
+  step_name: string
+  step_type: "email" | "sms" | "voice_drop" | "wait" | "ai_call" | "direct_mail"
+  delay_days: number
+  delay_hours: number
+  subject?: string | null
+  body: string
+  is_active: boolean
+}
+
+export async function getSequenceSteps(sequenceId: string): Promise<{ steps: SequenceBuilderStep[]; error?: string }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { steps: [], error: "Not authenticated" }
+
+    const service = createServiceClient()
+
+    // Verify ownership
+    const { data: seq } = await service
+      .from("campaign_sequences")
+      .select("brokerage_id")
+      .eq("id", sequenceId)
+      .maybeSingle()
+    if (!seq || seq.brokerage_id !== ctx.brokerageId) return { steps: [], error: "Not found" }
+
+    // DB stores channel (not step_type) — map on read
+    const { data, error } = await service
+      .from("campaign_sequence_steps")
+      .select("id, step_number, step_name, channel, delay_days, delay_hours, subject, body, is_active")
+      .eq("sequence_id", sequenceId)
+      .order("step_number", { ascending: true })
+    if (error) return { steps: [], error: error.message }
+    for (const row of data ?? []) {
+      if (!row.channel || !VALID_STEP_TYPES.has(row.channel)) {
+        return { steps: [], error: `Invalid step channel in sequence: ${row.channel ?? "(empty)"}` }
+      }
+    }
+    const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => ({
+      id: row.id,
+      step_number: row.step_number,
+      step_name: row.step_name ?? row.channel ?? "Step",
+      step_type: (row.channel ?? "email") as SequenceBuilderStep["step_type"],
+      delay_days: row.delay_days ?? 0,
+      delay_hours: row.delay_hours ?? 0,
+      subject: row.subject ?? null,
+      body: row.body ?? "",
+      is_active: row.is_active ?? true,
+    }))
+    return { steps }
+  } catch (e: any) {
+    return { steps: [], error: e.message }
+  }
+}
+
+export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuilderStep[]): Promise<{ success: boolean; error?: string }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated || !ctx.brokerageId) return { success: false, error: "Not authenticated" }
+
+    const service = createServiceClient()
+
+    // Verify ownership
+    const { data: seq } = await service
+      .from("campaign_sequences")
+      .select("brokerage_id")
+      .eq("id", sequenceId)
+      .maybeSingle()
+    if (!seq || seq.brokerage_id !== ctx.brokerageId) return { success: false, error: "Unauthorized" }
+
+    // Validate all steps BEFORE any DB mutation so an invalid channel
+    // cannot corrupt existing steps.
+    for (const s of steps) {
+      if (!s.step_type || !VALID_STEP_TYPES.has(s.step_type as any)) {
+        return { success: false, error: `Invalid step channel: ${s.step_type ?? "(empty)"}` }
+      }
+    }
+
+    // Fetch only the IDs of existing steps — needed to compute which rows to delete.
+    const { data: existingSteps, error: fetchError } = await service
+      .from("campaign_sequence_steps")
+      .select("id")
+      .eq("sequence_id", sequenceId)
+    if (fetchError) {
+      return { success: false, error: `Failed to read existing steps: ${fetchError.message}` }
+    }
+
+    const existingIds = new Set((existingSteps ?? []).map((s: any) => s.id as string))
+    const newIds = new Set(steps.map((s) => s.id))
+    const idsToDelete = [...existingIds].filter((id) => !newIds.has(id))
+
+    // Split steps into verified-existing (safe to upsert by ID) and new (insert without ID).
+    // Client-provided IDs that are NOT in existingIds could belong to another sequence;
+    // inserting without an ID lets the DB generate a fresh UUID and prevents cross-sequence overwrite.
+    if (steps.length > 0) {
+      const toUpdate = steps.filter((s): s is SequenceBuilderStep & { id: string } => !!s.id && existingIds.has(s.id))
+      const toInsert = steps.filter((s) => !s.id || !existingIds.has(s.id))
+
+      if (toUpdate.length > 0) {
+        const updateRows = toUpdate.map((s, i) => ({
+          id: s.id,
+          sequence_id: sequenceId,
+          step_number: steps.indexOf(s) + 1,
+          step_name: s.step_name || s.step_type,
+          channel: s.step_type,
+          delay_days: s.delay_days ?? 0,
+          delay_hours: s.delay_hours ?? 0,
+          subject: s.subject ?? null,
+          body: s.body || "",
+          is_active: s.is_active ?? true,
+        }))
+        const { error: upsertError } = await service
+          .from("campaign_sequence_steps")
+          .upsert(updateRows, { onConflict: "id" })
+        if (upsertError) return { success: false, error: upsertError.message }
+      }
+
+      if (toInsert.length > 0) {
+        const insertRows = toInsert.map((s) => ({
+          // No id — DB generates a fresh UUID; prevents cross-sequence ID overwrite
+          sequence_id: sequenceId,
+          step_number: steps.indexOf(s) + 1,
+          step_name: s.step_name || s.step_type,
+          channel: s.step_type,
+          delay_days: s.delay_days ?? 0,
+          delay_hours: s.delay_hours ?? 0,
+          subject: s.subject ?? null,
+          body: s.body || "",
+          is_active: s.is_active ?? true,
+        }))
+        const { error: insertError } = await service
+          .from("campaign_sequence_steps")
+          .insert(insertRows)
+        if (insertError) return { success: false, error: insertError.message }
+      }
+    }
+
+    // Delete only rows that were removed — surgical, never touches unchanged steps.
+    if (idsToDelete.length > 0) {
+      const { error: deleteError } = await service
+        .from("campaign_sequence_steps")
+        .delete()
+        .in("id", idsToDelete)
+      if (deleteError) return { success: false, error: `Failed to remove deleted steps: ${deleteError.message}` }
+    }
+    revalidatePath("/dashboard/campaigns/sequences")
+    return { success: true }
+  } catch (e: any) {
+    return { success: false, error: e.message }
+  }
 }

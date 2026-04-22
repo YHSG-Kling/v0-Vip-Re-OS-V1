@@ -21,8 +21,10 @@ import {
   checkThemFirstCompliance,
   getChatTemplates,
 } from "@/app/actions/ai-chat"
-import { generateSmartResponse } from "@/app/actions/ai-communication-hub"
 import { getBrandVoiceProfile } from "@/app/actions/ai-content-generation"
+import { askRelationshipAI } from "@/app/crm/actions/ask-relationship-ai"
+import { sendPortalMessage } from "@/app/actions/portal-messages"
+import { toast } from "sonner"
 
 interface RelationshipAiChatPanelProps {
   contactId: string
@@ -52,6 +54,7 @@ export function RelationshipAiChatPanel({
   const [complianceCheck, setComplianceCheck] = useState<{ passed: boolean; suggestion?: string } | null>(null)
   const [temperature, setTemperature] = useState<any>(null)
   const [suggestions, setSuggestions] = useState<any[]>([])
+  const [sending, setSending] = useState(false)
 
   // Load brand voice and templates on mount
   useEffect(() => {
@@ -74,19 +77,38 @@ export function RelationshipAiChatPanel({
     setLoading(true)
     setComplianceCheck(null)
     try {
-      const result = await generateSmartResponse({
-        incomingMessage: input || `Draft a ${purpose.replace(/_/g, " ")} message for ${contactName}`,
-        contactId,
-        agentId,
-        brokerageId: "",
-        channel: selectedChannel,
-        tone: brandVoice?.tone || "professional",
+      // Build a context-rich question for the AI
+      const channelInstructions =
+        selectedChannel === "sms"
+          ? "Keep it concise, under 160 characters."
+          : selectedChannel === "email"
+          ? "Write a well-structured email body with a clear call to action."
+          : "Write a short, conversational message."
+
+      const basePrompt = input
+        ? `The agent has provided this context: ${input}\n\nChannel: ${selectedChannel}. ${channelInstructions}`
+        : `Purpose: ${purpose.replace(/_/g, " ")}. Channel: ${selectedChannel}. Use a ${brandVoice?.tone || "professional"} tone. ${channelInstructions}`
+
+      const draftPrompt = `You are helping a real estate agent write a message to send directly to a client named ${contactName}.
+
+Context about this client: ${basePrompt}
+
+Task: Write ONLY the text of the message the agent should send. Do not include subject lines, greetings like "Dear...", explanations, coaching notes, or meta-commentary. Write in a warm, professional first-person voice as the agent. Output only the message body, nothing else.`
+
+      const result = await askRelationshipAI({
+        question: draftPrompt,
+        contactName,
+        contactPersona,
+        systemPrompt: `You are a professional message writer for a real estate agent. Write client-ready messages that the agent can send directly. Output ONLY the message body — no subject lines, no "Dear..." greetings, no coaching notes, no meta-commentary. Write in first-person as the agent in a warm, professional voice.`,
       })
-      if (result.success && 'draft' in result && result.draft) {
-        setDraft(result.draft)
+
+      if (result.success && result.answer) {
+        setDraft(result.answer)
         // Run compliance check
-        const compliance = await checkThemFirstCompliance(result.draft)
+        const compliance = await checkThemFirstCompliance(result.answer)
         setComplianceCheck(compliance)
+      } else {
+        console.error("Draft generation failed:", result.error)
       }
     } catch (err) {
       console.error("Draft generation failed:", err)
@@ -131,6 +153,38 @@ export function RelationshipAiChatPanel({
 
   const handleCopyDraft = () => {
     navigator.clipboard.writeText(draft)
+  }
+
+  const handleSend = async () => {
+    const message = draft
+    if (!message?.trim() || sending) return
+
+    setSending(true)
+    try {
+      // Re-run Them First compliance on the current draft before sending,
+      // since the message may have been edited after the initial check.
+      const compliance = await checkThemFirstCompliance(message)
+      if ((compliance as any).score < 50) {
+        toast.warning("Message may not meet Them-First standards. Please revise before sending.")
+        return
+      }
+      const result = await sendPortalMessage({
+        contactId,
+        messageBody: message,
+        direction: "agent_to_client",
+        channel: selectedChannel,
+      })
+      if (result.success) {
+        toast.success("Message sent")
+        setDraft("")
+      } else {
+        toast.error(result.error ?? "Failed to send message")
+      }
+    } catch (e) {
+      toast.error("Failed to send message")
+    } finally {
+      setSending(false)
+    }
   }
 
   const handleInsertTemplate = (template: any) => {
@@ -192,6 +246,14 @@ export function RelationshipAiChatPanel({
 
             {draft && (
               <div className="space-y-3">
+                <div className="bg-amber-50 border border-amber-200 rounded px-2 py-1.5 space-y-0.5">
+                  <p className="text-xs font-semibold text-amber-700">
+                    Message Draft — review and edit before sending
+                  </p>
+                  <p className="text-[11px] text-amber-600">
+                    This draft was written for you to review. Edit it before sending.
+                  </p>
+                </div>
                 <Textarea
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
@@ -233,11 +295,11 @@ export function RelationshipAiChatPanel({
                   </Select>
                   <Button variant="outline" size="sm" onClick={handleCopyDraft}>
                     <Copy className="h-4 w-4 mr-1" />
-                    Copy
+                    Copy Draft
                   </Button>
-                  <Button size="sm">
+                  <Button size="sm" onClick={handleSend} disabled={sending || !draft?.trim()}>
                     <Send className="h-4 w-4 mr-1" />
-                    Send
+                    {sending ? "Sending..." : "Send"}
                   </Button>
                 </div>
               </div>

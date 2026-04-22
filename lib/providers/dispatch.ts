@@ -381,6 +381,7 @@ export async function dispatchPhone(params: DispatchPhoneParams): Promise<Dispat
 export interface DispatchDirectMailParams extends DispatchActorContext {
   recipientName: string
   mailingAddress: string
+  mailingAddress2?: string
   city: string
   state: string
   zip: string
@@ -426,6 +427,7 @@ export async function dispatchDirectMail(
       to: {
         name: params.recipientName,
         address_line1: params.mailingAddress,
+        ...(params.mailingAddress2 ? { address_line2: params.mailingAddress2 } : {}),
         address_city: params.city,
         address_state: params.state,
         address_zip: params.zip,
