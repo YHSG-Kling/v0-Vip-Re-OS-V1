@@ -673,10 +673,11 @@ export async function sendCampaign(params: SendCampaignParams) {
     // Mark successfully dispatched recipients as mailed
     if (mailedRecipientIds.length > 0) {
       const mailedAt = new Date().toISOString()
-      await supabase
+      const { error: mailedUpdateError } = await supabase
         .from("direct_mail_recipients")
         .update({ delivery_status: "mailed", mailed_at: mailedAt })
         .in("id", mailedRecipientIds)
+      if (mailedUpdateError) throw mailedUpdateError
     }
 
     // Mark failed recipients so they aren't silently re-queried as pending
