@@ -655,34 +655,32 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       .maybeSingle()
     if (!seq || seq.brokerage_id !== ctx.brokerageId) return { success: false, error: "Unauthorized" }
 
-    // Save backup of existing steps before delete — abort if backup fails
-    const { data: existingSteps, error: backupError } = await service
-      .from("campaign_sequence_steps")
-      .select("*")
-      .eq("sequence_id", sequenceId)
-    if (backupError) {
-      return { success: false, error: `Failed to read existing steps for rollback: ${backupError.message}` }
-    }
-
     // Validate all steps BEFORE any DB mutation so an invalid channel
-    // cannot erase existing steps and then fail.
-    if (steps.length > 0) {
-      for (const s of steps) {
-        if (!s.step_type || !VALID_STEP_TYPES.has(s.step_type as any)) {
-          return { success: false, error: `Invalid step channel: ${s.step_type ?? "(empty)"}` }
-        }
+    // cannot corrupt existing steps.
+    for (const s of steps) {
+      if (!s.step_type || !VALID_STEP_TYPES.has(s.step_type as any)) {
+        return { success: false, error: `Invalid step channel: ${s.step_type ?? "(empty)"}` }
       }
     }
 
-    const { error: deleteError } = await service
+    // Fetch only the IDs of existing steps — needed to compute which rows to delete.
+    const { data: existingSteps, error: fetchError } = await service
       .from("campaign_sequence_steps")
-      .delete()
+      .select("id")
       .eq("sequence_id", sequenceId)
-    if (deleteError) return { success: false, error: `Failed to clear existing steps: ${deleteError.message}` }
+    if (fetchError) {
+      return { success: false, error: `Failed to read existing steps: ${fetchError.message}` }
+    }
 
+    const existingIds = new Set((existingSteps ?? []).map((s: any) => s.id as string))
+    const newIds = new Set(steps.map((s) => s.id))
+    const idsToDelete = [...existingIds].filter((id) => !newIds.has(id))
+
+    // Upsert first — preserves existing IDs so enrollment foreign keys stay valid.
+    // New steps are inserted; existing steps have their content/order updated.
     if (steps.length > 0) {
-
       const rows = steps.map((s, i) => ({
+        id: s.id,
         sequence_id: sequenceId,
         step_number: i + 1,
         step_name: s.step_name || s.step_type,
@@ -693,24 +691,19 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
         body: s.body || "",
         is_active: s.is_active ?? true,
       }))
-      const { error: insertError } = await service.from("campaign_sequence_steps").insert(rows)
-      if (insertError) {
-        // Best-effort recovery: re-insert original steps to avoid empty sequence
-        if (existingSteps && existingSteps.length > 0) {
-          const recoveryRows = existingSteps.map(({ id, created_at, ...rest }: any) => rest)
-          const { error: recoveryError } = await service
-            .from("campaign_sequence_steps")
-            .insert(recoveryRows)
-          if (recoveryError) {
-            console.error(
-              `[saveSequenceSteps] recovery re-insert failed for sequence ${sequenceId}:`,
-              recoveryError.message
-            )
-          }
-        }
-        console.error(`[saveSequenceSteps] insert failed for sequence ${sequenceId}:`, insertError.message)
-        return { success: false, error: insertError.message }
-      }
+      const { error: upsertError } = await service
+        .from("campaign_sequence_steps")
+        .upsert(rows, { onConflict: "id" })
+      if (upsertError) return { success: false, error: upsertError.message }
+    }
+
+    // Delete only rows that were removed — surgical, never touches unchanged steps.
+    if (idsToDelete.length > 0) {
+      const { error: deleteError } = await service
+        .from("campaign_sequence_steps")
+        .delete()
+        .in("id", idsToDelete)
+      if (deleteError) return { success: false, error: `Failed to remove deleted steps: ${deleteError.message}` }
     }
     revalidatePath("/dashboard/campaigns/sequences")
     return { success: true }
