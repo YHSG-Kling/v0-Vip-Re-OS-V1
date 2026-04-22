@@ -194,6 +194,12 @@ export function MarketInsightWidget() {
             <BarChart3 className="h-5 w-5 text-primary shrink-0" />
             Market Pulse
           </CardTitle>
+          {error && (
+            <p className="text-xs text-destructive flex items-center gap-1">
+              <AlertCircle className="h-3 w-3 shrink-0" />
+              {error}
+            </p>
+          )}
           {/* Temperature Badge */}
           <Badge
             variant="outline"

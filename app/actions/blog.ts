@@ -816,12 +816,15 @@ export async function saveBlogPost(
 
   // ── 2. Build slug from title if not supplied ────────────────────────────────
   const slug =
-    params.slug ||
-    params.title
-      .toLowerCase()
-      .replace(/[^a-z0-9\s-]/g, "")
-      .replace(/\s+/g, "-")
-      .slice(0, 80)
+    (
+      params.slug ||
+      params.title
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 80)
+    ) || `post-${Date.now()}`
 
   // ── 3. Insert blog_posts ────────────────────────────────────────────────────
   const insertData: Record<string, unknown> = {

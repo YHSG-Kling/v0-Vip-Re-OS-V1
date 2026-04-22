@@ -618,8 +618,8 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
       .order("step_number", { ascending: true })
     if (error) return { steps: [], error: error.message }
     for (const row of data ?? []) {
-      if (row.channel && !VALID_STEP_TYPES.has(row.channel)) {
-        return { steps: [], error: `Invalid step channel in sequence: ${row.channel}` }
+      if (!row.channel || !VALID_STEP_TYPES.has(row.channel)) {
+        return { steps: [], error: `Invalid step channel in sequence: ${row.channel ?? "(empty)"}` }
       }
     }
     const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => ({
@@ -663,8 +663,8 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
     // cannot erase existing steps and then fail.
     if (steps.length > 0) {
       for (const s of steps) {
-        if (s.step_type && !VALID_STEP_TYPES.has(s.step_type as any)) {
-          return { success: false, error: `Invalid step channel: ${s.step_type}` }
+        if (!s.step_type || !VALID_STEP_TYPES.has(s.step_type as any)) {
+          return { success: false, error: `Invalid step channel: ${s.step_type ?? "(empty)"}` }
         }
       }
     }

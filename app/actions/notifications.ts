@@ -47,7 +47,7 @@ export async function getNotifications(
     )
     .eq("user_id", ctx.userId)
     .order("created_at", { ascending: false })
-    .limit(limit)
+    .limit(Math.min(limit, 100))
 
   // If the table doesn't exist or another error occurs, return gracefully
   if (error) {
@@ -192,9 +192,10 @@ export async function createNotification(params: {
       return { success: false, error: "Agent not found" }
     }
     targetAgent = ta
-    // Broker/admin callers (no agentId) must stay within their own brokerage
+    // Broker/admin callers (no agentId) must stay within their own brokerage.
+    // Missing brokerageId cannot be trusted — deny rather than allow through.
     if (ctx.isAuthenticated && !ctx.agentId && ctx.userType !== "superadmin") {
-      if (ctx.brokerageId && targetAgent.brokerage_id !== ctx.brokerageId) {
+      if (!ctx.brokerageId || targetAgent.brokerage_id !== ctx.brokerageId) {
         return { success: false, error: "Unauthorized" }
       }
     }

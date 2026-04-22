@@ -29,6 +29,7 @@ export function VideoPreview({ projectId, scriptText }: { projectId: string; scr
       scriptText,
       voiceProfileId: "default",
       avatarStyle: "professional",
+      avatarId: "Angela-inblackskirt-20220820",
       estimatedDurationSeconds: 60,
     })
 

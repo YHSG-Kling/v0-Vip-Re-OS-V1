@@ -2629,6 +2629,8 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                     } else {
                       setQrError((result as any).error ?? "Failed to create QR code.")
                     }
+                  } catch (err) {
+                    setQrError(err instanceof Error ? err.message : "Failed to create QR code.")
                   } finally {
                     setIsCreatingQr(false)
                   }

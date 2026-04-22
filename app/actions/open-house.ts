@@ -604,6 +604,9 @@ export async function getAgentListings(): Promise<{
       query = query.eq("agent_id", ctx.agentId)
     } else if (ctx.brokerageId) {
       query = query.eq("brokerage_id", ctx.brokerageId)
+    } else {
+      // No scoping context — deny rather than expose all listings via service client
+      return { success: false, error: "No scoping context available" }
     }
 
     const { data, error } = await query
@@ -645,9 +648,10 @@ export async function cancelOpenHouse(openHouseId: string): Promise<{
       query = query.eq("agent_id", ctx.agentId)
     }
 
-    const { error } = await query
+    const { data: updated, error } = await query.select("id")
 
     if (error) return { success: false, error: error.message }
+    if (!updated?.length) return { success: false, error: "Event not found or not cancellable" }
 
     revalidatePath("/dashboard/open-houses")
     return { success: true }

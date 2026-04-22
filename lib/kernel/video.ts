@@ -63,7 +63,7 @@ export interface SubmitVideoGenerationJobInput {
   scriptText: string
   voiceProfileId: string
   avatarStyle: string
-  avatarId?: string
+  avatarId: string
   estimatedDurationSeconds: number
 }
 
@@ -304,7 +304,10 @@ export async function submitVideoGenerationJob(
     .select("brokerage_id")
     .eq("id", input.projectId)
     .maybeSingle()
-  const brokerageId = project?.brokerage_id ?? "unknown"
+  if (!project?.brokerage_id) {
+    throw new Error("Cannot submit video: project not found or missing tenant context")
+  }
+  const brokerageId = project.brokerage_id
 
   // Call HeyGen API via dispatch
   const heygenJobId = await submitToHeyGen({
@@ -690,17 +693,21 @@ async function checkHeyGenJobStatus(jobId: string): Promise<{
   const apiKey = process.env.HEYGEN_API_KEY
   if (!apiKey) return { status: "unknown" }
 
-  const res = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${encodeURIComponent(jobId)}`, {
-    headers: { "X-Api-Key": apiKey },
-  })
-  if (!res.ok) return { status: "unknown" }
+  try {
+    const res = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${encodeURIComponent(jobId)}`, {
+      headers: { "X-Api-Key": apiKey },
+    })
+    if (!res.ok) return { status: "unknown" }
 
-  const data = await res.json()
-  // API returns: data.data.status = "pending" | "processing" | "completed" | "failed"
-  // data.data.video_url when completed
-  return {
-    status: data.data?.status ?? "unknown",
-    videoUrl: data.data?.video_url ?? undefined,
+    const data = await res.json()
+    // API returns: data.data.status = "pending" | "processing" | "completed" | "failed"
+    // data.data.video_url when completed
+    return {
+      status: data.data?.status ?? "unknown",
+      videoUrl: data.data?.video_url ?? undefined,
+    }
+  } catch {
+    return { status: "unknown" }
   }
 }
 

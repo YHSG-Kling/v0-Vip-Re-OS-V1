@@ -279,7 +279,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
 
         // Fetch all available HeyGen avatars from live API
         const heygenResult = await getHeyGenAvatars()
-        const liveAvatars = heygenResult.success && heygenResult.avatars.length > 0
+        const rawAvatars = heygenResult.success && heygenResult.avatars.length > 0
           ? heygenResult.avatars.map((av) => ({
               id: av.avatar_id,
               name: av.avatar_name,
@@ -287,6 +287,8 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
               thumbnailUrl: av.preview_image_url ?? undefined,
             }))
           : defaultAvatars
+        const seenAvatarIds = new Set<string>()
+        const liveAvatars = rawAvatars.filter(av => !seenAvatarIds.has(av.id) && seenAvatarIds.add(av.id))
 
         // Load per-user avatar + voice configured during onboarding
         if (user?.id) {
@@ -459,7 +461,8 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
         if (voiceProfiles.length > 0 && !selectedVoice) return false
         return true
       case 3:
-        return !!backgroundStyle && !!qualityPreset && !!outputOrientation
+        return !!backgroundStyle && !!qualityPreset && !!outputOrientation &&
+          (backgroundStyle !== "custom" || !!customBgUrl)
       default:
         return true
     }

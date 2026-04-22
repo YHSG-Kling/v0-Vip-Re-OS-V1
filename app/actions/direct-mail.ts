@@ -640,6 +640,11 @@ export async function sendCampaign(params: SendCampaignParams) {
         if (lobResult.success && lobResult.messageId) {
           if (!firstSuccessfulMessageId) firstSuccessfulMessageId = lobResult.messageId
           successCount++
+          // Mark immediately so a mid-loop crash never re-sends this piece on retry
+          await supabase
+            .from("direct_mail_recipients")
+            .update({ delivery_status: "mailed", mailed_at: new Date().toISOString() })
+            .eq("id", recipient.id)
         } else {
           failedRecipientIds.push(recipient.id)
         }
