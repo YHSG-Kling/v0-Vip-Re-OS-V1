@@ -89,9 +89,9 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
       {/* Header */}
       <div className="border-b bg-background px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <Link href="/dashboard/campaigns/sequences">
-            <Button variant="ghost" size="sm"><ArrowLeft className="h-4 w-4 mr-1" />Back</Button>
-          </Link>
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/dashboard/campaigns/sequences"><ArrowLeft className="h-4 w-4 mr-1" />Back</Link>
+          </Button>
           <div>
             <h1 className="text-lg font-semibold">{sequence.name}</h1>
             <p className="text-xs text-muted-foreground">{steps.length} steps · {Math.ceil(totalDuration)} day sequence</p>
