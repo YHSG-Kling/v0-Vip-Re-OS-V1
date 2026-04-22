@@ -691,16 +691,6 @@ export async function sendCampaign(params: SendCampaignParams) {
       }
     }
 
-    // Update recipients status
-    await supabase
-      .from("direct_mail_recipients")
-      .update({
-        delivery_status: "mailed",
-        mailed_at: new Date().toISOString(),
-      })
-      .eq("campaign_id", params.campaignId)
-      .eq("delivery_status", "pending")
-
     // ── Fire kernel event ──
     await processKernelEvent({
       event: KernelEvent.DIRECT_MAIL_SENT,

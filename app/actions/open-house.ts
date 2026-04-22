@@ -538,7 +538,7 @@ export async function recordAttendee(
 
     if (ctx.isAuthenticated) {
       // Authenticated callers must belong to the same brokerage as the event
-      if (ctx.brokerageId && ctx.brokerageId !== event.brokerage_id) {
+      if (!ctx.brokerageId || ctx.brokerageId !== event.brokerage_id) {
         return { success: false, error: "Unauthorized" }
       }
       // Agents can only record attendees for their own events

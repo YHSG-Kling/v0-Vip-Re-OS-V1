@@ -43,9 +43,11 @@ export default function SequenceStepBuilderClient({ sequence, initialSteps, brok
   const router = useRouter()
 
   const addStep = (type: SequenceStep["step_type"]) => {
-    const s = newStep(type, steps.length)
-    setSteps((prev) => [...prev, s])
-    setSelectedIdx(steps.length)
+    setSteps((prev) => {
+      // Use prev.length so rapid consecutive adds get correct step numbers
+      setSelectedIdx(prev.length)
+      return [...prev, newStep(type, prev.length)]
+    })
   }
 
   const removeStep = (idx: number) => {

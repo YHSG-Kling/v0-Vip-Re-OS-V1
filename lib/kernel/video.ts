@@ -312,13 +312,20 @@ export async function submitVideoGenerationJob(
   }
   const brokerageId = project.brokerage_id
 
-  // Pre-mark project as "generating" BEFORE calling HeyGen to prevent double-submit
-  const { error: preMarkError } = await supabase
+  // Atomically claim the project slot by updating ONLY when not already in-progress.
+  // The WHERE clause ensures a concurrent second call fails rather than proceeding.
+  const { data: reserved, error: preMarkError } = await supabase
     .from("ai_video_projects")
     .update({ status: "generating", heygen_status: "submitting", updated_at: new Date().toISOString() })
     .eq("id", input.projectId)
+    .neq("status", "generating")
+    .neq("status", "submitting")
+    .select("id")
   if (preMarkError) {
     throw new Error(`Cannot submit video: failed to reserve project slot — ${preMarkError.message}`)
+  }
+  if (!reserved?.length) {
+    throw new Error("Video generation is already in progress for this project")
   }
 
   // Call HeyGen API via dispatch
