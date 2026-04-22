@@ -1,6 +1,7 @@
 "use server"
 
 import { getAgentContext } from "@/lib/identity"
+import { resolveWriteContext } from "@/lib/kernel/identity"
 import { createClient } from "@/lib/supabase/server"
 import { createServiceClient } from "@/lib/supabase/service"
 
@@ -141,9 +142,9 @@ export async function createNotification(params: {
 
   const supabase = createServiceClient()
 
-  // Caller authorization: require an authenticated session. This server action
-  // uses the service-role client (bypasses RLS) so every caller must be verified.
-  const ctx = await getAgentContext()
+  // Caller authorization: use resolveWriteContext (kernel mandate for all write actions).
+  // Provides FK-safe agentId, superadmin brokerage fallback, and non-null brokerageId guarantee.
+  const ctx = await resolveWriteContext()
   if (!ctx.isAuthenticated) {
     return { success: false, error: "Unauthorized" }
   }
@@ -164,7 +165,7 @@ export async function createNotification(params: {
 
   let targetAgent: { user_id: string | null; brokerage_id: string | null } | null = null
 
-  if (ctx.isAuthenticated && ctx.agentId && ctx.agentId !== agentId) {
+  if (ctx.agentId && ctx.agentId !== agentId) {
     // Fetch both agents in parallel so we can compare brokerage IDs from the DB.
     const [{ data: callerAgent }, { data: ta, error: agentError }] = await Promise.all([
       supabase.from("agents").select("brokerage_id").eq("id", ctx.agentId).maybeSingle(),
@@ -187,9 +188,9 @@ export async function createNotification(params: {
     }
     targetAgent = ta
     // Broker/admin callers (no agentId) must stay within their own brokerage.
-    // Missing brokerageId cannot be trusted — deny rather than allow through.
-    if (ctx.isAuthenticated && !ctx.agentId && ctx.userType !== "superadmin") {
-      if (!ctx.brokerageId || targetAgent.brokerage_id !== ctx.brokerageId) {
+    // resolveWriteContext guarantees brokerageId is non-null, so only compare values.
+    if (!ctx.agentId && ctx.userType !== "superadmin") {
+      if (targetAgent.brokerage_id !== ctx.brokerageId) {
         return { success: false, error: "Unauthorized" }
       }
     }
