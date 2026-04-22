@@ -894,7 +894,10 @@ export async function saveBlogPost(
           .select("id")
           .maybeSingle()
 
-        if (kwErr || !newKw) continue
+        if (kwErr || !newKw) {
+          console.error("[saveBlogPost] Keyword insert failed:", kwErr)
+          return { success: false, error: "Post saved but failed to create keywords" }
+        }
         seoKeywordId = newKw.id
       }
 
