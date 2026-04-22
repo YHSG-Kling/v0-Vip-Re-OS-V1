@@ -312,16 +312,35 @@ export async function submitVideoGenerationJob(
   }
   const brokerageId = project.brokerage_id
 
-  // Call HeyGen API via dispatch
-  const heygenJobId = await submitToHeyGen({
-    script: input.scriptText,
-    voiceProfileId: input.voiceProfileId,
-    avatarId: input.avatarId,
-    estimatedDurationSeconds: input.estimatedDurationSeconds,
-    brokerageId,
-  })
+  // Pre-mark project as "generating" BEFORE calling HeyGen to prevent double-submit
+  const { error: preMarkError } = await supabase
+    .from("ai_video_projects")
+    .update({ status: "generating", heygen_status: "submitting", updated_at: new Date().toISOString() })
+    .eq("id", input.projectId)
+  if (preMarkError) {
+    throw new Error(`Cannot submit video: failed to reserve project slot — ${preMarkError.message}`)
+  }
 
-  // Update project with job ID
+  // Call HeyGen API via dispatch
+  let heygenJobId: string
+  try {
+    heygenJobId = await submitToHeyGen({
+      script: input.scriptText,
+      voiceProfileId: input.voiceProfileId,
+      avatarId: input.avatarId,
+      estimatedDurationSeconds: input.estimatedDurationSeconds,
+      brokerageId,
+    })
+  } catch (dispatchErr) {
+    // Roll back to setup status so the user can retry
+    await supabase
+      .from("ai_video_projects")
+      .update({ status: "setup", heygen_status: null, updated_at: new Date().toISOString() })
+      .eq("id", input.projectId)
+    throw dispatchErr
+  }
+
+  // Persist job ID — log clearly if this fails (job is already submitted to HeyGen)
   const { error } = await supabase
     .from("ai_video_projects")
     .update({
@@ -333,7 +352,8 @@ export async function submitVideoGenerationJob(
     .eq("id", input.projectId)
 
   if (error) {
-    throw new Error(`Failed to submit job: ${error.message}`)
+    console.error(`[VideoKernel] ORPHANED HeyGen job ${heygenJobId} — DB update failed:`, error.message)
+    throw new Error(`Failed to persist video job: ${error.message}`)
   }
 
   return {

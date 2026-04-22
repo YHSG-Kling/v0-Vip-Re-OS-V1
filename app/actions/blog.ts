@@ -900,12 +900,16 @@ export async function saveBlogPost(
         seoKeywordId = newKw.id
       }
 
-      await supabase.from("blog_post_keywords").insert({
+      const { error: linkError } = await supabase.from("blog_post_keywords").insert({
         brokerage_id: ctx.brokerageId,
         blog_post_id: post.id,
         seo_keyword_id: seoKeywordId,
         is_primary: isPrimary,
       })
+      if (linkError) {
+        console.error("[saveBlogPost] keyword link insert failed:", linkError.message)
+        return { success: false, error: "Post saved but failed to link keywords" }
+      }
     }
   }
 

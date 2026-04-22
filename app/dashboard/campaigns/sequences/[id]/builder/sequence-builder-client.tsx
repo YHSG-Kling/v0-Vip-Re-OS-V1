@@ -32,7 +32,7 @@ const STEP_TYPES = [
 ] as const
 
 function newStep(type: SequenceStep["step_type"], index: number): SequenceStep {
-  return { id: crypto.randomUUID(), step_number: index + 1, step_type: type, delay_days: type === "wait" ? 3 : 1, delay_hours: 0, body: "", subject: type === "email" ? "" : null, is_active: true }
+  return { id: crypto.randomUUID(), step_number: index + 1, step_name: type, step_type: type, delay_days: type === "wait" ? 3 : 1, delay_hours: 0, body: "", subject: type === "email" ? "" : null, is_active: true }
 }
 
 export default function SequenceStepBuilderClient({ sequence, initialSteps, brokerageId }: Props) {

@@ -587,6 +587,7 @@ export async function batchArchiveSequences(sequenceIds: string[]): Promise<{ su
 export interface SequenceBuilderStep {
   id?: string
   step_number: number
+  step_name: string
   step_type: "email" | "sms" | "voice_drop" | "wait" | "ai_call" | "direct_mail"
   delay_days: number
   delay_hours: number
@@ -613,7 +614,7 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
     // DB stores channel (not step_type) — map on read
     const { data, error } = await service
       .from("campaign_sequence_steps")
-      .select("id, step_number, channel, delay_days, delay_hours, subject, body, is_active")
+      .select("id, step_number, step_name, channel, delay_days, delay_hours, subject, body, is_active")
       .eq("sequence_id", sequenceId)
       .order("step_number", { ascending: true })
     if (error) return { steps: [], error: error.message }
@@ -625,6 +626,7 @@ export async function getSequenceSteps(sequenceId: string): Promise<{ steps: Seq
     const steps: SequenceBuilderStep[] = (data ?? []).map((row: any) => ({
       id: row.id,
       step_number: row.step_number,
+      step_name: row.step_name ?? row.channel ?? "Step",
       step_type: (row.channel ?? "email") as SequenceBuilderStep["step_type"],
       delay_days: row.delay_days ?? 0,
       delay_hours: row.delay_hours ?? 0,
@@ -683,6 +685,7 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       const rows = steps.map((s, i) => ({
         sequence_id: sequenceId,
         step_number: i + 1,
+        step_name: s.step_name || s.step_type,
         channel: s.step_type,
         delay_days: s.delay_days ?? 0,
         delay_hours: s.delay_hours ?? 0,

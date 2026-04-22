@@ -132,9 +132,11 @@ export async function createOpenHouse(params: {
     }
     if (!event) return { success: false, error: "Failed to create open house" }
 
-    // Fire-and-forget invites if requested
+    // Send invites synchronously — fire-and-forget loses the request-scoped cookie context
     if (params.sendInvites && event.id) {
-      sendOpenHouseInvites(event.id).catch(() => {/* intentionally silent */})
+      await sendOpenHouseInvites(event.id).catch((err) => {
+        console.warn("[createOpenHouse] invite send failed (non-blocking):", err instanceof Error ? err.message : err)
+      })
     }
 
     revalidatePath("/dashboard/open-houses")
@@ -336,7 +338,7 @@ export async function getOpenHouseFeedback(openHouseId: string): Promise<{
       .maybeSingle()
 
     if (!eventCheck) return { success: false, error: "Event not found" }
-    if (ctx.brokerageId && eventCheck.brokerage_id !== ctx.brokerageId) {
+    if (!ctx.brokerageId || eventCheck.brokerage_id !== ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
     if (ctx.userType === "agent" && !ctx.agentId) {

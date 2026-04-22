@@ -35,7 +35,7 @@ export async function getNotifications(
 ): Promise<{ success: boolean; notifications: Notification[] }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) {
-    return { success: true, notifications: [] }
+    return { success: false, notifications: [] }
   }
 
   const supabase = await createClient()

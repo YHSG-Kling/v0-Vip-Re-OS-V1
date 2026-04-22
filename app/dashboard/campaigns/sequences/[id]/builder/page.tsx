@@ -43,6 +43,7 @@ export default async function SequenceBuilderPage({ params }: Props) {
   const builderSteps: SequenceBuilderStep[] = (rawSteps ?? []).map((s) => ({
     id: s.id,
     step_number: s.step_number,
+    step_name: s.step_name ?? s.channel ?? "Step",
     step_type: VALID_STEP_TYPES.has(s.channel as SequenceBuilderStep["step_type"])
       ? (s.channel as SequenceBuilderStep["step_type"])
       : "email",

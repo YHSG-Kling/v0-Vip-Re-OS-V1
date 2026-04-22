@@ -619,6 +619,7 @@ export async function sendCampaign(params: SendCampaignParams) {
     let firstSuccessfulMessageId: string | undefined
     let successCount = 0
     const failedRecipientIds: string[] = []
+    const mailedRecipientIds: string[] = []
     for (const recipient of recipients) {
       try {
         const lobResult = await dispatchDirectMail({
@@ -640,11 +641,7 @@ export async function sendCampaign(params: SendCampaignParams) {
         if (lobResult.success && lobResult.messageId) {
           if (!firstSuccessfulMessageId) firstSuccessfulMessageId = lobResult.messageId
           successCount++
-          // Mark immediately so a mid-loop crash never re-sends this piece on retry
-          await supabase
-            .from("direct_mail_recipients")
-            .update({ delivery_status: "mailed", mailed_at: new Date().toISOString() })
-            .eq("id", recipient.id)
+          mailedRecipientIds.push(recipient.id)
         } else {
           failedRecipientIds.push(recipient.id)
         }
@@ -657,23 +654,10 @@ export async function sendCampaign(params: SendCampaignParams) {
       return { success: false, error: "Direct mail failed: no pieces dispatched via Lob" }
     }
 
-    // Mark failed recipients so they aren't silently treated as mailed
-    if (failedRecipientIds.length > 0) {
-      console.warn(`[DirectMail] Partial success: ${successCount}/${recipients.length} dispatched for campaign ${params.campaignId}`)
-      const { error: failedUpdateError } = await supabase
-        .from("direct_mail_recipients")
-        .update({ delivery_status: "failed" })
-        .in("id", failedRecipientIds)
-      if (failedUpdateError) {
-        console.error(`[DirectMail] Could not mark failed recipients for campaign ${params.campaignId}:`, failedUpdateError.message)
-        return { success: false, error: "Failed to record delivery status — aborting to prevent data inconsistency" }
-      }
-    }
-
     const lobOrderId = firstSuccessfulMessageId ?? `lob_${Date.now()}`
     const campaignStatus = failedRecipientIds.length > 0 ? "partial" : "mailed"
 
-    // Update campaign — use "partial" when some recipients failed so retries remain possible
+    // Update campaign FIRST — recipients are only marked after this succeeds to keep state consistent
     const { error: updateError } = await supabase
       .from("direct_mail_campaigns")
       .update({
@@ -685,6 +669,27 @@ export async function sendCampaign(params: SendCampaignParams) {
       .eq("id", params.campaignId)
 
     if (updateError) throw updateError
+
+    // Mark successfully dispatched recipients as mailed
+    if (mailedRecipientIds.length > 0) {
+      const mailedAt = new Date().toISOString()
+      await supabase
+        .from("direct_mail_recipients")
+        .update({ delivery_status: "mailed", mailed_at: mailedAt })
+        .in("id", mailedRecipientIds)
+    }
+
+    // Mark failed recipients so they aren't silently re-queried as pending
+    if (failedRecipientIds.length > 0) {
+      console.warn(`[DirectMail] Partial success: ${successCount}/${recipients.length} dispatched for campaign ${params.campaignId}`)
+      const { error: failedUpdateError } = await supabase
+        .from("direct_mail_recipients")
+        .update({ delivery_status: "failed" })
+        .in("id", failedRecipientIds)
+      if (failedUpdateError) {
+        console.error(`[DirectMail] Could not mark failed recipients for campaign ${params.campaignId}:`, failedUpdateError.message)
+      }
+    }
 
     // Update recipients status
     await supabase

@@ -104,7 +104,7 @@ const FEATURE_FLAGS = [
 export async function POST() {
   try {
     const ctx = await getAgentContext()
-    if (!ctx) {
+    if (!ctx.isAuthenticated) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
     if (!["superadmin", "admin"].includes(ctx.role)) {

@@ -156,15 +156,16 @@ export async function generateMarketInsights(): Promise<{
         ? Math.round(domValues.reduce((a, b) => a + b, 0) / domValues.length)
         : null
 
-    // Average sale price: prefer sold listings sold_price, fall back to transactions purchase_price
-    const salePrices: number[] = [
-      ...(soldListings ?? [])
-        .map((l) => l.sold_price ?? l.list_price)
-        .filter((p): p is number => typeof p === "number" && p > 0),
-      ...(transactions ?? [])
-        .map((t) => t.purchase_price)
-        .filter((p): p is number => typeof p === "number" && p > 0),
-    ]
+    // Average sale price: use sold_price from sold listings only (not list_price — that's asking price).
+    // Fall back to transactions.purchase_price when no valid sold prices are available.
+    const soldPrices = (soldListings ?? [])
+      .map((l) => l.sold_price)
+      .filter((p): p is number => typeof p === "number" && p > 0)
+    const salePrices: number[] = soldPrices.length > 0
+      ? soldPrices
+      : (transactions ?? [])
+          .map((t) => t.purchase_price)
+          .filter((p): p is number => typeof p === "number" && p > 0)
 
     const avgSalePrice =
       salePrices.length > 0

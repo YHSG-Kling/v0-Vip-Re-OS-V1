@@ -82,24 +82,28 @@ export function OpenHousesClient({ initialEvents, fetchError }: Props) {
       }
     }
     startTransition(async () => {
-      const res = await createOpenHouse({
-        listingId: form.listingId.trim(),
-        date: form.date,
-        startTime: form.startTime,
-        endTime: form.endTime,
-        maxAttendees: form.maxAttendees
-          ? Math.max(1, Math.floor(Number(form.maxAttendees))) || undefined
-          : undefined,
-        agentNotes: form.agentNotes || undefined,
-        publicDescription: form.publicDescription || undefined,
-      })
-      if (res.success && res.event) {
-        toast({ title: "Open house scheduled" })
-        setEvents((prev) => [res.event as OpenHouseEvent, ...prev])
-        setOpen(false)
-        setForm({ listingId: "", date: "", startTime: "10:00", endTime: "12:00", maxAttendees: "", publicDescription: "", agentNotes: "" })
-      } else {
-        toast({ title: res.error ?? "Failed to schedule open house", variant: "destructive" })
+      try {
+        const res = await createOpenHouse({
+          listingId: form.listingId.trim(),
+          date: form.date,
+          startTime: form.startTime,
+          endTime: form.endTime,
+          maxAttendees: form.maxAttendees
+            ? Math.max(1, Math.floor(Number(form.maxAttendees))) || undefined
+            : undefined,
+          agentNotes: form.agentNotes || undefined,
+          publicDescription: form.publicDescription || undefined,
+        })
+        if (res.success && res.event) {
+          toast({ title: "Open house scheduled" })
+          setEvents((prev) => [res.event as OpenHouseEvent, ...prev])
+          setOpen(false)
+          setForm({ listingId: "", date: "", startTime: "10:00", endTime: "12:00", maxAttendees: "", publicDescription: "", agentNotes: "" })
+        } else {
+          toast({ title: res.error ?? "Failed to schedule open house", variant: "destructive" })
+        }
+      } catch (err) {
+        toast({ title: err instanceof Error ? err.message : "Failed to schedule open house", variant: "destructive" })
       }
     })
   }

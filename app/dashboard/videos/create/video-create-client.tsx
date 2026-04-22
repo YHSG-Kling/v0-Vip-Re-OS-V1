@@ -502,7 +502,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
       setWebcamStream(null)
       setShowWebcamCapture(false)
     }
-  }, [currentStep]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentStep, webcamStream])
 
   const handleBgFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
