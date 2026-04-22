@@ -163,7 +163,7 @@ function computeLocalSeoScore(
   // Primary keyword density 0.5–2.5% (+20)
   if (primaryKw && wordCount > 0) {
     const escapedPrimaryKw = primaryKw.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    const matches = (content.toLowerCase().match(new RegExp(escapedPrimaryKw, "gi")) || []).length
+    const matches = (content.toLowerCase().match(new RegExp(`\\b${escapedPrimaryKw}\\b`, "gi")) || []).length
     const density = (matches / wordCount) * 100
     if (density >= 0.5 && density <= 2.5) score += 20
   }

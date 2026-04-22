@@ -287,7 +287,7 @@ export async function getOpenHouseAttendees(openHouseId: string): Promise<{
       .maybeSingle()
 
     if (!eventCheck) return { success: false, error: "Event not found" }
-    if (ctx.brokerageId && eventCheck.brokerage_id !== ctx.brokerageId) {
+    if (!ctx.brokerageId || eventCheck.brokerage_id !== ctx.brokerageId) {
       return { success: false, error: "Unauthorized" }
     }
     if (ctx.userType === "agent") {

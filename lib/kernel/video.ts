@@ -299,11 +299,14 @@ export async function submitVideoGenerationJob(
   }
 
   // Fetch project to get tenant attribution for dispatch
-  const { data: project } = await supabase
+  const { data: project, error: projectError } = await supabase
     .from("ai_video_projects")
     .select("brokerage_id")
     .eq("id", input.projectId)
     .maybeSingle()
+  if (projectError) {
+    throw new Error(`Cannot submit video: failed to load project — ${projectError.message}`)
+  }
   if (!project?.brokerage_id) {
     throw new Error("Cannot submit video: project not found or missing tenant context")
   }

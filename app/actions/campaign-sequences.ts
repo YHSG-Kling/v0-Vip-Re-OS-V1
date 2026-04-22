@@ -653,11 +653,14 @@ export async function saveSequenceSteps(sequenceId: string, steps: SequenceBuild
       .maybeSingle()
     if (!seq || seq.brokerage_id !== ctx.brokerageId) return { success: false, error: "Unauthorized" }
 
-    // Save backup of existing steps before delete
-    const { data: existingSteps } = await service
+    // Save backup of existing steps before delete — abort if backup fails
+    const { data: existingSteps, error: backupError } = await service
       .from("campaign_sequence_steps")
       .select("*")
       .eq("sequence_id", sequenceId)
+    if (backupError) {
+      return { success: false, error: `Failed to read existing steps for rollback: ${backupError.message}` }
+    }
 
     // Validate all steps BEFORE any DB mutation so an invalid channel
     // cannot erase existing steps and then fail.

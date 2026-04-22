@@ -671,12 +671,13 @@ export async function sendCampaign(params: SendCampaignParams) {
     }
 
     const lobOrderId = firstSuccessfulMessageId ?? `lob_${Date.now()}`
+    const campaignStatus = failedRecipientIds.length > 0 ? "partial" : "mailed"
 
-    // Update campaign
+    // Update campaign — use "partial" when some recipients failed so retries remain possible
     const { error: updateError } = await supabase
       .from("direct_mail_campaigns")
       .update({
-        status: "mailed",
+        status: campaignStatus,
         mailing_date: new Date().toISOString().slice(0, 10),
         lob_order_id: lobOrderId,
         pieces_mailed: successCount,
@@ -711,6 +712,8 @@ export async function sendCampaign(params: SendCampaignParams) {
       success: true,
       lobOrderId,
       piecesMailed: successCount,
+      failedCount: failedRecipientIds.length,
+      status: campaignStatus,
       provider: provider.providerKey,
     }
   } catch (error) {

@@ -69,12 +69,13 @@ function timeAgo(isoString: string): string {
 
 function resolveNotificationUrl(entityType: string | null, entityId: string | null): string | null {
   if (!entityType || !entityId) return null
+  const id = encodeURIComponent(entityId)
   switch (entityType) {
-    case "contact": return `/crm?contact=${entityId}`
-    case "transaction": return `/dashboard/transactions/${entityId}`
-    case "listing": return `/dashboard/listings/${entityId}`
-    case "open_house": return `/dashboard/open-houses?event=${entityId}`
-    case "deal": return `/dashboard/transactions/${entityId}`
+    case "contact": return `/crm?contact=${id}`
+    case "transaction": return `/dashboard/transactions/${id}`
+    case "listing": return `/dashboard/listings/${id}`
+    case "open_house": return `/dashboard/open-houses?event=${id}`
+    case "deal": return `/dashboard/transactions/${id}`
     default: return null
   }
 }

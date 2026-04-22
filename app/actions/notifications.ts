@@ -49,11 +49,9 @@ export async function getNotifications(
     .order("created_at", { ascending: false })
     .limit(Math.min(limit, 100))
 
-  // If the table doesn't exist or another error occurs, return gracefully
   if (error) {
-    // Table may not exist yet — don't crash
     console.warn("[notifications] getNotifications query failed:", error.message)
-    return { success: true, notifications: [] }
+    return { success: false, notifications: [] }
   }
 
   const notifications: Notification[] = (data ?? []).map((row) => ({
