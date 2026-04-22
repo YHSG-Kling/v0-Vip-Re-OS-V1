@@ -299,9 +299,9 @@ export default function BriefingPage() {
         getTodaysBriefing(),
         getUpcomingShowings(),
         getActiveTransactions(),
-        getPipelineSummary(),
-        getBuyerMatchCount(),
-        getChurnRiskContacts(),
+        getPipelineSummary().catch(() => ({ activeCount: 0, approachingClose: null })),
+        getBuyerMatchCount().catch(() => ({ matchCount: 0 })),
+        getChurnRiskContacts().catch(() => ({ contacts: [], totalCount: 0 })),
       ])
 
       setAgentName(nameResult.name)
