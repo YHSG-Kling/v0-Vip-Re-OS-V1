@@ -170,7 +170,7 @@ export async function getCampaigns(filters?: {
   campaignType?: string
   listingId?: string
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   // If no brokerageId, return empty campaigns
@@ -190,11 +190,11 @@ export async function getCampaigns(filters?: {
     .order("created_at", { ascending: false })
 
   // Visibility filter — agent sees own + team + brokerage level
-  // Only apply agent filter if agentId is a valid UUID
-  if (agentId) {
-    query = query.or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`)
+  // Filter on agent_user_id (stores userId/auth-user-id, not agents.id)
+  if (userId) {
+    query = query.or(`agent_user_id.eq.${userId},visibility_scope.eq.brokerage`)
   } else {
-    // If no agentId, only show brokerage-wide campaigns
+    // If no userId, only show brokerage-wide campaigns
     query = query.eq("visibility_scope", "brokerage")
   }
 
@@ -442,7 +442,7 @@ export async function getAssets(filters?: {
   assetType?: string
   approvalStatus?: AssetApprovalStatus
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   // If no brokerageId, return empty assets
@@ -456,9 +456,9 @@ export async function getAssets(filters?: {
     .eq("brokerage_id", brokerageId)
     .order("created_at", { ascending: false })
 
-  // Only apply agent filter if agentId is a valid UUID
-  if (agentId) {
-    query = query.or(`agent_user_id.eq.${agentId},visibility_scope.eq.brokerage`)
+  // Filter on agent_user_id (stores userId/auth-user-id, not agents.id)
+  if (userId) {
+    query = query.or(`agent_user_id.eq.${userId},visibility_scope.eq.brokerage`)
   } else {
     query = query.eq("visibility_scope", "brokerage")
   }

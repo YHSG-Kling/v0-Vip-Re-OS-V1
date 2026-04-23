@@ -81,6 +81,8 @@ export const AI_TASK_ROUTING: Record<string, {
   direct_mail_copy:          { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Physical mailer copy — compliance + persona targeting" },
   blog_post_generation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Long-form blog — SEO + brand voice" },
   ai_reply_coach:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Coaching agent reply drafts — nuanced tone guidance" },
+  smart_reply_generation:    { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Generate smart reply suggestions for inbound messages" },
+  communication_summary_generation: { model: "claude-haiku", fallback: "gpt-4o-mini", reason: "Summarize communication history for agent quick reference" },
   listing_presentation:      { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Seller presentation content — high stakes, brand quality" },
   cma_narrative:             { model: "claude-sonnet", fallback: "gpt-4o",       reason: "CMA written analysis — professional, data-driven narrative" },
   offer_analysis:            { model: "claude-sonnet", fallback: "gpt-4o",       reason: "Offer comparison narrative for buyer — decision-critical" },

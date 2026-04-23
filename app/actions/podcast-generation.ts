@@ -95,7 +95,7 @@ export async function createPodcastEpisode(params: {
     // Generate script from keywords if no script provided
     let finalScript = params.script
     if (!finalScript && params.keywords && params.keywords.length > 0) {
-      finalScript = await generateScriptFromKeywords(params.keywords, params.category)
+      finalScript = await generateScriptFromKeywords(params.keywords, params.category, userId)
     }
 
     if (!finalScript) {
@@ -222,7 +222,11 @@ export async function createPodcastEpisode(params: {
 }
 
 // Generate script from keywords using AI
-async function generateScriptFromKeywords(keywords: string[], category?: string): Promise<string> {
+async function generateScriptFromKeywords(keywords: string[], category?: string, userId?: string): Promise<string> {
+  if (userId) {
+    const access = await canAccessFeature(userId, "podcast_generation")
+    if (!access.allowed) throw new Error(access.reason ?? "Podcast generation not available")
+  }
   // Use Grok/OpenAI to generate podcast script
   const prompt = `Generate a 3-5 minute podcast script for a real estate agent based on these keywords: ${keywords.join(", ")}. 
   Category: ${category || "general real estate"}
