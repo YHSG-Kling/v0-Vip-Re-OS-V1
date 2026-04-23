@@ -90,6 +90,11 @@ SESSION_ID=""
 if $JQ_AVAILABLE; then
   VIDEO_URL=$(echo "$RESULT" | jq -r '.video_url // .share_url // empty' 2>/dev/null || true)
   SESSION_ID=$(echo "$RESULT" | jq -r '.session_id // empty' 2>/dev/null || true)
+else
+  # Fallback: extract values with grep when jq is unavailable
+  VIDEO_URL=$(echo "$RESULT" | grep -oP '"video_url"\s*:\s*"\K[^"]+' 2>/dev/null \
+    || echo "$RESULT" | grep -oP '"share_url"\s*:\s*"\K[^"]+' 2>/dev/null || true)
+  SESSION_ID=$(echo "$RESULT" | grep -oP '"session_id"\s*:\s*"\K[^"]+' 2>/dev/null || true)
 fi
 
 # Log to JSONL (requires jq for safe JSON encoding)

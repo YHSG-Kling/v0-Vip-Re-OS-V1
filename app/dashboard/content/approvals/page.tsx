@@ -36,11 +36,16 @@ export default function ContentApprovalsPage() {
   const handleDecision = (itemId: string, decision: "approved" | "rejected") => {
     startTransition(async () => {
       const supabase = createClient()
+      const item = pending.find(p => p.id === itemId)
+      const existingNotes = typeof item?.notes === "string"
+        ? JSON.parse(item.notes)
+        : (item?.notes ?? {})
       const { error } = await supabase
         .from("activities")
         .update({
           status: decision === "approved" ? "completed" : "rejected",
           completed_at: new Date().toISOString(),
+          notes: { ...existingNotes, approval_status: decision },
         })
         .eq("id", itemId)
       if (!error) {

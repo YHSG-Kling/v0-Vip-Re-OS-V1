@@ -146,16 +146,23 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
       setVideoStatus('processing')
       toast.success('Video generation started — checking status…')
       let pollAttempts = 0
+      let consecutiveErrors = 0
       const MAX_POLL_ATTEMPTS = 60 // 10 minutes at 10s intervals
+      const MAX_CONSECUTIVE_ERRORS = 5 // tolerate up to 5 transient errors before giving up
       pollRef.current = setInterval(async () => {
         pollAttempts++
         const statusResult = await getHeyGenVideoStatus(result.videoId!)
         if (!statusResult.success) {
-          clearInterval(pollRef.current!)
-          setVideoStatus('failed')
-          toast.error(statusResult.error ?? 'Failed to check video status')
+          consecutiveErrors++
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            clearInterval(pollRef.current!)
+            setVideoStatus('failed')
+            toast.error(statusResult.error ?? 'Failed to check video status')
+          }
+          // transient error — keep polling
           return
         }
+        consecutiveErrors = 0 // reset on successful status check
         if ((statusResult as any).status === 'completed') {
           clearInterval(pollRef.current!)
           setVideoStatus('completed')
