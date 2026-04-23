@@ -927,7 +927,7 @@ export default function CRMPage() {
       const result = await analyzeCallTranscript({
         transcript: activity.description || activity.notes || activity.title || "Call activity",
         contactId: selectedContactId,
-        agentId: user.id,
+        agentId: agentId ?? user.id,
         callType: activity.direction === "inbound" ? "inbound" : "outbound",
       })
       if (result.success && result.analysis) {
@@ -947,7 +947,7 @@ export default function CRMPage() {
     const result = await generateCallSummaryEmail({
       analysisId: analysis.id,
       recipientType: "client",
-      agentId: user.id,
+      agentId: agentId ?? user.id,
     })
     if ((result as any).success) {
       toast.success("Summary email drafted")

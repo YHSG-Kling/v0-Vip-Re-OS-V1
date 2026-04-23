@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -25,6 +25,15 @@ import { toast } from "sonner"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { draftSmartEmail } from "@/app/actions/ai-insights"
 import { sendEmail } from "@/app/actions/communications"
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
 
 const BUYER_STAGES = [
   { value: "new", label: "New Lead" },
@@ -62,6 +71,8 @@ export function BuyerMatchPanel({
   contactName,
 }: BuyerMatchPanelProps) {
   const [stage, setStage] = useState(buyerStage ?? "")
+  // Generation counter to handle rapid stage changes — only apply result from latest request
+  const stageGenRef = useRef(0)
   const [query, setQuery] = useState("")
   const [emailDialogOpen, setEmailDialogOpen] = useState(false)
   const [emailDraft, setEmailDraft] = useState("")
@@ -264,7 +275,9 @@ export function BuyerMatchPanel({
             onValueChange={async (val) => {
               const prev = stage
               setStage(val)
+              const gen = ++stageGenRef.current
               const result = await updateContact(contactId, { buyer_stage: val })
+              if (stageGenRef.current !== gen) return // superseded by a later request
               if (!result.success) {
                 setStage(prev)
                 toast.error("Failed to update stage")
@@ -595,7 +608,7 @@ export function BuyerMatchPanel({
                     const result = await sendEmail({
                       contactId,
                       subject: `Properties Matched for You, ${firstName}`,
-                      html: `<pre style="font-family:sans-serif;white-space:pre-wrap">${emailDraft}</pre>`,
+                      html: `<pre style="font-family:sans-serif;white-space:pre-wrap">${escapeHtml(emailDraft)}</pre>`,
                       text: emailDraft,
                       channelPurpose: "conversation",
                     })
