@@ -17,6 +17,7 @@ import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
 import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
 import { createPortalInviteForContact } from "@/app/actions/portal-invites"
 import { sendSMS, scheduleAppointment, triggerAutomation } from "@/app/actions/communications"
+import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -272,6 +273,8 @@ export default function CRMPage() {
 
   // Contact activity feed (notes, calls, etc.) — shown in the Communications tab
   const [contactActivities, setContactActivities] = useState<any[]>([])
+  const [callAnalyses, setCallAnalyses] = useState<Record<string, any>>({})
+  const [analyzingCallId, setAnalyzingCallId] = useState<string | null>(null)
 
   // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
   const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
@@ -914,6 +917,42 @@ export default function CRMPage() {
     setSelectedContactId(null)
     setSelectedContact(null)
     router.push("/crm", { scroll: false })
+  }
+
+  const handleAnalyzeCall = async (activity: any) => {
+    if (!selectedContactId || !user) return
+    setAnalyzingCallId(activity.id)
+    try {
+      const result = await analyzeCallTranscript({
+        transcript: activity.description || activity.notes || activity.title || "Call activity",
+        contactId: selectedContactId,
+        agentId: user.id,
+        callType: activity.direction === "inbound" ? "inbound" : "outbound",
+      })
+      if (result.success && result.analysis) {
+        setCallAnalyses(prev => ({ ...prev, [activity.id]: result.analysis }))
+      } else {
+        toast.error("Could not analyze call")
+      }
+    } finally {
+      setAnalyzingCallId(null)
+    }
+  }
+
+  const handleCallSummaryEmail = async (activity: any) => {
+    if (!user) return
+    const analysis = callAnalyses[activity.id]
+    if (!analysis?.id) return
+    const result = await generateCallSummaryEmail({
+      analysisId: analysis.id,
+      recipientType: "client",
+      agentId: user.id,
+    })
+    if ((result as any).success) {
+      toast.success("Summary email drafted")
+    } else {
+      toast.error("Could not generate summary email")
+    }
   }
 
   if (authLoading) {
@@ -1929,26 +1968,69 @@ export default function CRMPage() {
                           </CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-3">
-                          {contactActivities.map((item: any) => (
-                            <div key={item.id} className="flex gap-3 pb-3 border-b last:border-0">
-                              <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
-                              <div className="flex-1 space-y-0.5">
-                                <div className="flex items-center justify-between">
-                                  <span className="font-medium text-xs capitalize text-foreground">
-                                    {(item.activity_type ?? "activity").replace(/_/g, " ")}
-                                  </span>
-                                  <span className="text-xs text-muted-foreground">
-                                    {item.created_at ? format(new Date(item.created_at), "MMM d, h:mm a") : ""}
-                                  </span>
+                          {contactActivities.map((item: any) => {
+                            const isCall = item.activity_type === "phone_call" || item.activity_type === "call" || item.activity_type === "outbound_call" || item.activity_type === "inbound_call"
+                            const callAnalysis = callAnalyses[item.id]
+                            return (
+                              <div key={item.id} className="flex gap-3 pb-3 border-b last:border-0">
+                                <div className="flex-shrink-0 w-2 h-2 mt-2 rounded-full bg-primary" />
+                                <div className="flex-1 space-y-0.5">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-medium text-xs capitalize text-foreground">
+                                      {(item.activity_type ?? "activity").replace(/_/g, " ")}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground">
+                                      {item.created_at ? format(new Date(item.created_at), "MMM d, h:mm a") : ""}
+                                    </span>
+                                  </div>
+                                  {(item.description || item.notes || item.title) && (
+                                    <p className="text-xs text-muted-foreground line-clamp-2">
+                                      {item.description || item.notes || item.title}
+                                    </p>
+                                  )}
+                                  {isCall && !callAnalysis && (
+                                    <button
+                                      onClick={() => handleAnalyzeCall(item)}
+                                      disabled={analyzingCallId === item.id}
+                                      className="text-[10px] mt-1 flex items-center gap-1 text-primary hover:underline disabled:opacity-60"
+                                    >
+                                      {analyzingCallId === item.id ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <Sparkles className="h-3 w-3" />
+                                      )}
+                                      Analyze Call
+                                    </button>
+                                  )}
+                                  {callAnalysis && (
+                                    <div className="mt-2 rounded-md bg-blue-50 border border-blue-200 p-2 text-xs space-y-1">
+                                      <p className="font-medium text-blue-800">AI Call Summary</p>
+                                      {callAnalysis.overall_summary && (
+                                        <p className="text-blue-700">{callAnalysis.overall_summary}</p>
+                                      )}
+                                      {callAnalysis.action_items?.length > 0 && (
+                                        <div>
+                                          <p className="font-medium text-blue-800 mt-1">Action Items:</p>
+                                          <ul className="list-disc list-inside space-y-0.5">
+                                            {callAnalysis.action_items.slice(0, 3).map((a: any, i: number) => (
+                                              <li key={i} className="text-blue-700">{typeof a === "string" ? a : a.action}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
+                                      <button
+                                        onClick={() => handleCallSummaryEmail(item)}
+                                        className="mt-1 text-[10px] flex items-center gap-1 text-blue-700 hover:underline"
+                                      >
+                                        <MessageCircle className="h-3 w-3" />
+                                        Send Summary Email
+                                      </button>
+                                    </div>
+                                  )}
                                 </div>
-                                {(item.description || item.notes || item.title) && (
-                                  <p className="text-xs text-muted-foreground line-clamp-2">
-                                    {item.description || item.notes || item.title}
-                                  </p>
-                                )}
                               </div>
-                            </div>
-                          ))}
+                            )
+                          })}
                         </CardContent>
                       </Card>
                     )}
