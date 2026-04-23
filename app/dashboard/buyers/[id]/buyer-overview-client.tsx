@@ -584,7 +584,12 @@ export function BuyerOverviewClient({
         <div className="flex flex-1 min-h-0 overflow-auto">
           {/* LEFT — stage progress (280px) */}
           <aside className="w-[280px] flex-shrink-0 border-r border-border overflow-y-auto">
-            <BuyerStageProgress currentStage={currentStage} blockers={blockers} />
+            <BuyerStageProgress
+              currentStage={currentStage}
+              blockers={blockers}
+              contactId={buyerId}
+              agentId={agentUserId}
+            />
           </aside>
 
           {/* CENTER — main content */}
