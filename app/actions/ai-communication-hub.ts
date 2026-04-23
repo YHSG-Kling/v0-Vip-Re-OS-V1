@@ -374,7 +374,7 @@ export async function generateSmartResponse(params: {
     const charLimit = params.channel === "sms" ? 160 : params.channel === "chat" ? 500 : 2000
 
     const { text: response } = await generateText({
-      model: resolveModel("openai/gpt-4o"),
+      feature: "smart_reply_generation",
       prompt: `Generate a ${params.tone || "professional"} response for this ${params.channel} message.
 
 INCOMING MESSAGE: "${params.incomingMessage}"
@@ -615,7 +615,7 @@ export async function generateCommunicationSummary(params: {
     }
 
     const { text: summary } = await generateText({
-      model: resolveModel("openai/gpt-4o-mini"),
+      feature: "communication_summary_generation",
       prompt: `Summarize this client communication history for an agent's quick reference:
 
 MESSAGES (${messages.length} total):
