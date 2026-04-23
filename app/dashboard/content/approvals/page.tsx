@@ -37,9 +37,14 @@ export default function ContentApprovalsPage() {
     startTransition(async () => {
       const supabase = createClient()
       const item = pending.find(p => p.id === itemId)
-      const existingNotes = typeof item?.notes === "string"
-        ? JSON.parse(item.notes)
-        : (item?.notes ?? {})
+      let existingNotes = item?.notes ?? {}
+      if (typeof item?.notes === "string") {
+        try {
+          existingNotes = JSON.parse(item.notes)
+        } catch {
+          existingNotes = {}
+        }
+      }
       const { error } = await supabase
         .from("activities")
         .update({
