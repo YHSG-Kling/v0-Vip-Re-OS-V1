@@ -18,6 +18,7 @@ import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
 import { createPortalInviteForContact } from "@/app/actions/portal-invites"
 import { sendSMS, scheduleAppointment, triggerAutomation } from "@/app/actions/communications"
 import { analyzeCallTranscript, generateCallSummaryEmail } from "@/app/actions/ai-voice-transcription"
+import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -2438,6 +2439,23 @@ export default function CRMPage() {
                 value={addForm.phone}
                 onChange={(e) => setAddForm((f) => ({ ...f, phone: e.target.value }))}
                 placeholder="(555) 000-0000"
+                disabled={addFormSubmitting}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="add-address">Address</Label>
+              <AddressAutocomplete
+                id="add-address"
+                value={(addForm as any).street_address ?? ""}
+                onChange={v => setAddForm((f) => ({ ...f, street_address: v } as any))}
+                onSelect={a => setAddForm((f) => ({
+                  ...f,
+                  street_address: a.street,
+                  city: a.city || f.city,
+                  state: a.state || f.state,
+                  zip_code: a.zip || f.zip_code,
+                } as any))}
+                placeholder="123 Main St, Miami, FL"
                 disabled={addFormSubmitting}
               />
             </div>
