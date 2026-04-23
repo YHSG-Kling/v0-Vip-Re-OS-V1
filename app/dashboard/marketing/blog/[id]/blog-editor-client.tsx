@@ -43,10 +43,17 @@ import {
   Clock,
   BookOpen,
   X,
+  Copy,
+  Share2,
+  Layers,
 } from "lucide-react"
 import { updateBlogPost, publishToWordPress, suggestSEOKeywords } from "@/app/actions/blog"
+import { generateOmnipresent, generateVariations } from "@/app/actions/content-generation-engine"
+import { createSocialPost } from "@/app/actions/social-publishing"
+import { createEmailCampaign } from "@/app/actions/email-campaigns"
 import { analyzeSEO } from "@/lib/blog/seo-optimizer"
 import { format } from "date-fns"
+import { toast } from "sonner"
 
 interface BlogPostData {
   id: string
@@ -209,6 +216,13 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
+  // Repurpose + Variations
+  const [repurposeLoading, setRepurposeLoading] = useState(false)
+  const [repurposeResults, setRepurposeResults] = useState<Array<{ format: string; body: string }> | null>(null)
+  const [variationsLoading, setVariationsLoading] = useState(false)
+  const [variations, setVariations] = useState<Array<{ body: string }> | null>(null)
+  const [sendingKey, setSendingKey] = useState<string | null>(null)
+
   // Computed values
   const wordCount = content.split(/\s+/).filter((w) => w.length > 0).length
   const readTime = Math.max(1, Math.ceil(wordCount / 200))
@@ -362,6 +376,95 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
     setSlug(generatedSlug)
   }
 
+  async function handlePostToSocial(body: string, key: string) {
+    setSendingKey(key)
+    try {
+      const result = await createSocialPost({
+        content: body,
+        scheduledFor: new Date().toISOString(),
+        platforms: ["facebook", "instagram"],
+        contentType: "custom",
+        generatedByAi: true,
+        userId,
+      })
+      if (result && (result as any).success === false) {
+        const msg = (result as any).complianceBlocked
+          ? ((result as any).message ?? "Post held for compliance review")
+          : "Failed to queue social post"
+        toast.error(msg)
+      } else {
+        toast.success("Queued for social — check Social dashboard")
+      }
+    } finally {
+      setSendingKey(null)
+    }
+  }
+
+  async function handleSaveAsEmailCampaign(body: string, key: string) {
+    setSendingKey(key)
+    try {
+      const result = await createEmailCampaign({
+        brokerageId,
+        agentId: userId,
+        campaignName: `Blog: ${title || "Untitled"}`,
+        subjectLine: title || "Newsletter",
+        content: body,
+        createdBy: userId,
+      })
+      if (result.success) {
+        toast.success("Saved as email campaign draft")
+      } else {
+        toast.error("Failed to save campaign")
+      }
+    } finally {
+      setSendingKey(null)
+    }
+  }
+
+  const handleRepurpose = async () => {
+    if (!content) { toast.error("No content to repurpose"); return }
+    setRepurposeLoading(true)
+    try {
+      const result = await generateOmnipresent({
+        agent_id: userId,
+        core_idea: title || content.slice(0, 200),
+        formats: ["social_post", "newsletter", "blog"],
+      })
+      if (result.success && result.contents) {
+        setRepurposeResults(result.contents.map((c: any, i: number) => ({
+          format: (["Social Post", "Newsletter Email", "Short Blog"] as const)[i] ?? `Variation ${i + 1}`,
+          body: c.body ?? c.content ?? c.script ?? "",
+        })))
+        toast.success("Content repurposed")
+      } else {
+        toast.error("Could not repurpose content")
+      }
+    } finally {
+      setRepurposeLoading(false)
+    }
+  }
+
+  const handleVariations = async () => {
+    if (!content) { toast.error("Write some content first"); return }
+    setVariationsLoading(true)
+    try {
+      const result = await generateVariations({
+        agent_id: userId,
+        content_type: "social_post",
+        custom_prompt: title,
+        variation_count: 3,
+      })
+      if (result.success && result.contents) {
+        setVariations(result.contents.map((c: any) => ({ body: c.body ?? c.content ?? "" })))
+        toast.success("3 variations generated")
+      } else {
+        toast.error("Could not generate variations")
+      }
+    } finally {
+      setVariationsLoading(false)
+    }
+  }
+
   const currentStepIndex = statusSteps.indexOf(publishStatus)
 
   const getNextAction = () => {
@@ -401,6 +504,14 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
             {publishStatus.replace(/_/g, " ")}
           </Badge>
 
+          <Button variant="outline" size="sm" onClick={handleRepurpose} disabled={repurposeLoading}>
+            {repurposeLoading ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Share2 className="h-4 w-4 mr-1.5" />}
+            Repurpose
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleVariations} disabled={variationsLoading}>
+            {variationsLoading ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Layers className="h-4 w-4 mr-1.5" />}
+            Variations
+          </Button>
           <Button variant="outline" onClick={handleSave} disabled={isSaving}>
             {isSaving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
             Save
@@ -513,6 +624,121 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
           <span>{excerpt.length}/160 meta chars</span>
         </div>
       </div>
+
+      {/* Repurpose results panel */}
+      {repurposeResults && (
+        <Card className="mb-4 border-purple-200">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Share2 className="h-4 w-4 text-purple-600" />
+              Repurposed Content
+            </CardTitle>
+            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setRepurposeResults(null)}>
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {repurposeResults.map((r, i) => {
+                const key = `repurpose-${i}`
+                const isSending = sendingKey === key
+                const isSocial = r.format.toLowerCase().includes("social")
+                const isNewsletter = r.format.toLowerCase().includes("newsletter") || r.format.toLowerCase().includes("email")
+                return (
+                  <div key={i} className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold text-foreground">{r.format}</p>
+                      <button
+                        onClick={() => { navigator.clipboard.writeText(r.body); toast.success("Copied") }}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-xs text-muted-foreground line-clamp-5">{r.body}</p>
+                    {isSocial && (
+                      <Button size="sm" variant="outline" className="w-full h-7 text-xs"
+                        disabled={isSending}
+                        onClick={() => handlePostToSocial(r.body, key)}
+                      >
+                        {isSending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
+                        Post to Social
+                      </Button>
+                    )}
+                    {isNewsletter && (
+                      <Button size="sm" variant="outline" className="w-full h-7 text-xs"
+                        disabled={isSending}
+                        onClick={() => handleSaveAsEmailCampaign(r.body, key)}
+                      >
+                        {isSending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
+                        Save as Campaign
+                      </Button>
+                    )}
+                    {!isSocial && !isNewsletter && (
+                      <Button size="sm" variant="outline" className="w-full h-7 text-xs"
+                        onClick={() => { setContent(r.body); toast.success("Content updated") }}
+                      >
+                        Use as Content
+                      </Button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Variations panel */}
+      {variations && (
+        <Card className="mb-4 border-indigo-200">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Layers className="h-4 w-4 text-indigo-600" />
+              Social Post Variations
+            </CardTitle>
+            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setVariations(null)}>
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {variations.map((v, i) => {
+                const key = `variation-${i}`
+                const isSending = sendingKey === key
+                return (
+                  <div key={i} className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold text-foreground">Variation {i + 1}</p>
+                      <button
+                        onClick={() => { navigator.clipboard.writeText(v.body); toast.success("Copied") }}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{v.body}</p>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" className="flex-1 h-7 text-xs"
+                        onClick={() => { setContent(v.body); toast.success("Draft updated") }}
+                      >
+                        Use This
+                      </Button>
+                      <Button size="sm" variant="outline" className="flex-1 h-7 text-xs"
+                        disabled={isSending}
+                        onClick={() => handlePostToSocial(v.body, key)}
+                      >
+                        {isSending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
+                        Post Now
+                      </Button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Editor */}

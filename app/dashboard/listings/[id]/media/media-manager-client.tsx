@@ -1,12 +1,15 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useTransition } from "react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { MediaGrid } from "./components/media-grid"
 import { VideoPanel } from "./components/video-panel"
 import { SocialPanel } from "./components/social-panel"
-import { ImageIcon, VideoIcon, Share2Icon } from "lucide-react"
+import { ImageIcon, VideoIcon, Share2Icon, Sparkles, Loader2 } from "lucide-react"
+import { analyzePhoto } from "@/app/actions/photo-management"
+import { toast } from "sonner"
 
 interface Listing {
   id: string
@@ -43,8 +46,28 @@ export function MediaManagerClient({
   const [media, setMedia] = useState(initialMedia)
   const [videos, setVideos] = useState(initialVideos)
   const [posts, setPosts] = useState(initialPosts)
+  const [photoScores, setPhotoScores] = useState<Record<string, any>>({})
+  const [isPending, startTransition] = useTransition()
 
   const canApprove = userRole === "admin" || userRole === "broker"
+
+  const handleAnalyzePhotos = () => {
+    const photos = media.filter((m: any) => m.media_type === "image" && (m.file_url || m.url))
+    if (photos.length === 0) { toast.error("No photos to analyze"); return }
+    startTransition(async () => {
+      const results = await Promise.allSettled(
+        photos.map((m: any) => analyzePhoto({ photoId: m.id, photoUrl: m.file_url ?? m.url ?? "" }))
+      )
+      const scores: Record<string, any> = {}
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled" && r.value.success) {
+          scores[photos[i].id] = r.value.data
+        }
+      })
+      setPhotoScores(scores)
+      toast.success(`Analyzed ${Object.keys(scores).length} photo${Object.keys(scores).length !== 1 ? "s" : ""}`)
+    })
+  }
 
   const pendingMedia  = media.filter(m => m.approval_required && !m.is_approved).length
   const pendingPosts  = posts.filter(p => p.approval_status === "pending").length
@@ -58,6 +81,10 @@ export function MediaManagerClient({
           <h1 className="text-2xl font-semibold text-foreground text-balance">
             Media Manager
           </h1>
+          <Button size="sm" variant="outline" onClick={handleAnalyzePhotos} disabled={isPending}>
+            {isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1.5" />}
+            Analyze Photos
+          </Button>
           {failedCompliance > 0 && (
             <Badge variant="destructive" className="text-xs">
               {failedCompliance} compliance issue{failedCompliance > 1 ? "s" : ""}
@@ -102,6 +129,23 @@ export function MediaManagerClient({
         </TabsList>
 
         <TabsContent value="media" className="mt-6">
+          {Object.keys(photoScores).length > 0 && (
+            <div className="mb-4 p-3 rounded-lg border bg-muted/40 text-sm">
+              <p className="font-medium mb-2 flex items-center gap-1.5">
+                <Sparkles className="h-4 w-4 text-primary" />
+                AI Photo Analysis Results
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                {Object.entries(photoScores).map(([photoId, score]: [string, any]) => (
+                  <div key={photoId} className="text-xs rounded border bg-background p-2">
+                    <p className="font-medium capitalize">{score.room_type?.replace(/_/g, " ") ?? "Unknown"}</p>
+                    <p className="text-muted-foreground">Quality: {score.quality_score ?? "—"}/100</p>
+                    {score.is_hero_worthy && <p className="text-amber-600 font-medium">★ Hero Shot</p>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <MediaGrid
             listingId={listingId}
             brokerageId={brokerageId}

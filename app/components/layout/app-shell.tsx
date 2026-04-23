@@ -10,6 +10,7 @@ import { MobileBottomNav } from './mobile-bottom-nav'
 import { getNavigationForRole } from '@/app/config/navigation-config'
 import { Loader2 } from 'lucide-react'
 import { InternalAIAssistant } from '@/app/components/shared/internal-ai-assistant'
+import { CommandPalette } from '@/app/components/command-palette'
 import type { BadgeCounts } from '@/app/types/navigation'
 
 const badgeFetcher = (url: string) => fetch(url).then((r) => r.json())
@@ -165,6 +166,9 @@ export function AppShell({ children }: AppShellProps) {
           userId={safeUserContext.id}
         />
       )}
+
+      {/* Cmd+K Command Palette — available to all authenticated users */}
+      <CommandPalette />
     </div>
   )
 }

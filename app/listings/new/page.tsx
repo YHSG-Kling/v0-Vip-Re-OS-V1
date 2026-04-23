@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/auth/client"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Loader2, Home, MapPin, DollarSign, User, ArrowLeft, Sparkles } from "lucide-react"
@@ -160,12 +161,18 @@ export default function NewListingPage() {
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="address">Street Address</Label>
-                <Input
+                <AddressAutocomplete
                   id="address"
                   placeholder="123 Main Street"
                   value={formData.address}
-                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-                  required
+                  onChange={v => setFormData({ ...formData, address: v })}
+                  onSelect={a => setFormData(prev => ({
+                    ...prev,
+                    address: a.street || prev.address,
+                    city: a.city || prev.city,
+                    state: a.state || prev.state,
+                    zipCode: a.zip || prev.zipCode,
+                  }))}
                 />
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

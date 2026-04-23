@@ -6,8 +6,11 @@ import Link from 'next/link'
 import { format } from 'date-fns'
 import {
   Share2, Gift, Star, Plus, ChevronRight, CheckCircle2,
-  DollarSign, TrendingUp, Clock, Users
+  DollarSign, TrendingUp, Clock, Users, Sparkles, Brain,
+  AlertCircle, BarChart3
 } from 'lucide-react'
+import { identifyReferralOpportunities, analyzeReferralProgram } from '@/app/actions/ai-referral-management'
+import { toast } from 'sonner'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type ReferralStatus = 'identified' | 'asked' | 'received' | 'converting' | 'converted' | 'lost'
@@ -101,12 +104,15 @@ function DraftModal({ draft, onClose }: { draft: string; onClose: () => void }) 
 }
 
 // ── Main component ─────────────────────────────────────────────────────────────
-export function ReferralsClient({ referrals, giftingItems, reviewRequests, roiSummary }: Props) {
+export function ReferralsClient({ referrals, giftingItems, reviewRequests, roiSummary, agentId }: Props) {
   const router = useRouter()
   const [isPending, startTransition] = useTransition()
   const [draft, setDraft] = useState<string | null>(null)
   const [loadingDraft, setLoadingDraft] = useState<string | null>(null)
   const [localGifting, setLocalGifting] = useState<Set<string>>(new Set())
+  const [opportunities, setOpportunities] = useState<any>(null)
+  const [programAnalysis, setProgramAnalysis] = useState<any>(null)
+  const [aiLoading, setAiLoading] = useState<"opportunities" | "analysis" | null>(null)
 
   const grouped = REFERRAL_STATUSES.reduce<Record<ReferralStatus, Referral[]>>((acc, s) => {
     acc[s.key] = referrals.filter(r => r.status === s.key)
@@ -133,6 +139,38 @@ export function ReferralsClient({ referrals, giftingItems, reviewRequests, roiSu
     // so we call Supabase directly via a dedicated gift-sent endpoint pattern using the supabase client on the server.
     // For now, optimistic local state is applied and router refresh syncs.
     startTransition(() => router.refresh())
+  }
+
+  async function handleIdentifyOpportunities() {
+    setAiLoading("opportunities")
+    try {
+      const result = await identifyReferralOpportunities(agentId)
+      if (!result.success) {
+        toast.error((result as any).error ?? "Could not identify opportunities")
+      } else if ((result as any).analysis) {
+        setOpportunities((result as any).analysis)
+        toast.success("Referral opportunities identified")
+      } else {
+        toast.info("No referral opportunities found at this time")
+      }
+    } finally {
+      setAiLoading(null)
+    }
+  }
+
+  async function handleAnalyzeProgram() {
+    setAiLoading("analysis")
+    try {
+      const result = await analyzeReferralProgram(agentId)
+      if (result.success && (result as any).analysis) {
+        setProgramAnalysis((result as any).analysis)
+        toast.success("Program analysis complete")
+      } else {
+        toast.error((result as any).error ?? "Analysis failed")
+      }
+    } finally {
+      setAiLoading(null)
+    }
   }
 
   async function generateDraft(item: GiftingItem) {
@@ -168,10 +206,28 @@ export function ReferralsClient({ referrals, giftingItems, reviewRequests, roiSu
             </h1>
             <p className="text-sm text-slate-500 mt-0.5">Track referral pipeline, send gifts, and manage review requests</p>
           </div>
-          <button className="flex items-center gap-1.5 bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-blue-700">
-            <Plus className="h-4 w-4" />
-            Add Referral
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleIdentifyOpportunities}
+              disabled={aiLoading !== null}
+              className="flex items-center gap-1.5 bg-purple-600 text-white text-sm font-medium px-3 py-2 rounded-lg hover:bg-purple-700 disabled:opacity-60"
+            >
+              <Sparkles className="h-4 w-4" />
+              {aiLoading === "opportunities" ? "Scanning..." : "Find Opportunities"}
+            </button>
+            <button
+              onClick={handleAnalyzeProgram}
+              disabled={aiLoading !== null}
+              className="flex items-center gap-1.5 bg-indigo-600 text-white text-sm font-medium px-3 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-60"
+            >
+              <BarChart3 className="h-4 w-4" />
+              {aiLoading === "analysis" ? "Analyzing..." : "Analyze Program"}
+            </button>
+            <button className="flex items-center gap-1.5 bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-blue-700">
+              <Plus className="h-4 w-4" />
+              Add Referral
+            </button>
+          </div>
         </div>
       </div>
 
@@ -196,6 +252,120 @@ export function ReferralsClient({ referrals, giftingItems, reviewRequests, roiSu
             </div>
           ))}
         </div>
+
+        {/* AI Program Analysis */}
+        {programAnalysis && (
+          <div className="bg-white rounded-xl border border-indigo-200">
+            <div className="px-5 py-4 border-b border-indigo-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <BarChart3 className="h-4 w-4 text-indigo-600" />
+                <div>
+                  <p className="text-sm font-semibold text-slate-800">Referral Program Analysis</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Health score: {programAnalysis.overallHealth?.score ?? "—"}/100 ·{" "}
+                    <span className={
+                      programAnalysis.overallHealth?.trend === "improving" ? "text-green-600" :
+                      programAnalysis.overallHealth?.trend === "declining" ? "text-red-600" : "text-amber-600"
+                    }>
+                      {programAnalysis.overallHealth?.trend ?? "stable"}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setProgramAnalysis(null)} className="text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              {programAnalysis.overallHealth?.summary && (
+                <p className="text-sm text-slate-600">{programAnalysis.overallHealth.summary}</p>
+              )}
+              {programAnalysis.recommendations?.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">Recommendations</p>
+                  <div className="space-y-2">
+                    {programAnalysis.recommendations.slice(0, 4).map((rec: any, i: number) => (
+                      <div key={i} className="flex items-start gap-2">
+                        <span className={`mt-0.5 w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                          rec.effort === "low" ? "bg-green-500" :
+                          rec.effort === "medium" ? "bg-amber-500" : "bg-red-500"
+                        }`} />
+                        <div>
+                          <p className="text-sm text-slate-800">{rec.recommendation}</p>
+                          <p className="text-xs text-slate-500">{rec.expectedImpact}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {programAnalysis.metrics?.topReferrers?.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">Top Referrers</p>
+                  <div className="flex flex-wrap gap-2">
+                    {programAnalysis.metrics.topReferrers.map((r: any, i: number) => (
+                      <span key={i} className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full px-2.5 py-1">
+                        {r.name} · {r.referrals} referrals
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* AI Opportunities */}
+        {opportunities && (
+          <div className="bg-white rounded-xl border border-purple-200">
+            <div className="px-5 py-4 border-b border-purple-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-purple-600" />
+                <div>
+                  <p className="text-sm font-semibold text-slate-800">AI Referral Opportunities</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {opportunities.topReferralCandidates?.length ?? 0} top candidates identified
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setOpportunities(null)} className="text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {(opportunities.topReferralCandidates ?? []).slice(0, 6).map((c: any) => (
+                <div key={c.contactId} className="px-5 py-3 flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-slate-800">{c.contactName}</p>
+                      <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                        c.networkStrength === "high" ? "bg-green-100 text-green-700" :
+                        c.networkStrength === "medium" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"
+                      }`}>
+                        {c.networkStrength}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">{c.bestApproach}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">{c.suggestedTiming}</p>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <p className="text-sm font-bold text-purple-600">{c.referralScore}</p>
+                    <p className="text-xs text-slate-500">score</p>
+                  </div>
+                </div>
+              ))}
+              {opportunities.campaignSuggestions?.length > 0 && (
+                <div className="px-5 py-4">
+                  <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">Suggested Campaigns</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {opportunities.campaignSuggestions.slice(0, 4).map((c: any, i: number) => (
+                      <div key={i} className="p-2.5 rounded-lg bg-purple-50 border border-purple-100">
+                        <p className="text-xs font-medium text-slate-800">{c.name}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{c.approach}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Pipeline kanban */}
         <div>

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react"
 import { createClient } from "@/lib/supabase/client"
 // Actions
 import { getAgentStats } from "@/app/actions/agents"
+import { generateDailyGameplan } from "@/app/actions/copilot"
 import { getTodaysBriefing, generateBriefing, getUpcomingShowings, getActiveTransactions } from "@/app/actions/briefing-actions"
 import { getUpcomingAnniversaries } from "@/app/actions/past-clients"
 import { getCommissionRecords, getExpenses } from "@/app/actions/ai-financial-management"
@@ -57,6 +58,8 @@ export default function AgentDashboard() {
   const [refreshing, setRefreshing] = useState(false)
   const [callingId, setCallingId] = useState<string | null>(null)
   const [motivatedSellers, setMotivatedSellers] = useState<any[]>([])
+  const [gameplan, setGameplan] = useState<any>(null)
+  const [gameplanLoading, setGameplanLoading] = useState(false)
 
   useEffect(() => {
     const loadData = async () => {
@@ -189,6 +192,23 @@ export default function AgentDashboard() {
     }
 
     loadData()
+
+    // Load gameplan independently — doesn't block main render
+    const loadGameplan = async () => {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      setGameplanLoading(true)
+      try {
+        const result = await generateDailyGameplan(user.id)
+        setGameplan(result)
+      } catch {
+        // non-critical — don't surface error
+      } finally {
+        setGameplanLoading(false)
+      }
+    }
+    loadGameplan()
   }, [])
 
   const handleRefreshBriefing = useCallback(async () => {
@@ -246,6 +266,74 @@ export default function AgentDashboard() {
         />
 
         <AgentOperatingRadar stats={stats} loading={loading} />
+
+        {/* Today's Gameplan */}
+        {(gameplan || gameplanLoading) && (
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm flex items-center gap-2">
+                Today&apos;s Gameplan
+                {gameplanLoading && (
+                  <span className="text-xs text-muted-foreground font-normal">Generating…</span>
+                )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {gameplanLoading ? (
+                <div className="h-16 flex items-center justify-center text-sm text-muted-foreground">
+                  Building your daily action plan…
+                </div>
+              ) : gameplan && (
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {gameplan.people_to_call?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Call Today</p>
+                      <ul className="space-y-1">
+                        {gameplan.people_to_call.slice(0, 5).map((p: any, i: number) => (
+                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
+                            {p.name ?? p.contact_name ?? "Contact"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {gameplan.deals_to_protect?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Protect Deals</p>
+                      <ul className="space-y-1">
+                        {gameplan.deals_to_protect.slice(0, 5).map((d: any, i: number) => (
+                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+                            {d.milestone_name?.replace(/_/g, " ") ?? d.description ?? "Milestone"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {gameplan.content_to_post?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Post Today</p>
+                      <ul className="space-y-1">
+                        {gameplan.content_to_post.slice(0, 3).map((c: any, i: number) => (
+                          <li key={i} className="text-sm text-foreground flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-green-500 shrink-0" />
+                            {c.title ?? "Content"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {gameplan.ai_summary && (
+                    <div className="md:col-span-3 pt-2 border-t text-xs text-muted-foreground italic">
+                      {gameplan.ai_summary}
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {(hotLeads.length > 0 || loading) && (
           <AgentHotLeadsPanel

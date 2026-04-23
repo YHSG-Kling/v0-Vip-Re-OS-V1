@@ -6,6 +6,7 @@
 import { createClient } from "@/lib/supabase/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { dispatchVideo } from "@/lib/providers/dispatch"
+import { generateTextRouted } from "@/lib/ai/models"
 
 // ============================================================================
 // TYPES & CONTRACTS
@@ -649,25 +650,32 @@ async function generateScriptViaAI(params: {
   tone: string
   durationSeconds: number
 }): Promise<string> {
-  // Use AI SDK provider function - openai or anthropic
-  // This is a placeholder that would call the actual AI generation
-  return `
-[Scene 1 - 0:00-0:15]
-Showcase the stunning exterior and curb appeal.
-Property highlights: ${params.title}
+  const durationLabel = params.durationSeconds >= 60
+    ? `${Math.floor(params.durationSeconds / 60)}-minute`
+    : `${params.durationSeconds}-second`
 
-[Scene 2 - 0:15-0:30]
-Virtual tour of the main living areas.
-Tour through the spacious rooms.
+  const prompt = `You are an expert real estate video scriptwriter creating a ${durationLabel} property video script.
 
-[Scene 3 - 0:30-0:45]
-Kitchen and modern amenities.
-State-of-the-art finishes.
+Title: "${params.title}"${params.description ? `\nContext: ${params.description}` : ""}
+Strategy: ${params.strategy}
+Tone: ${params.tone}
 
-[Scene 4 - 0:45-1:00]
-Outdoor spaces and property details.
-Perfect for entertaining.
-  `.trim()
+Write a scene-by-scene script with timestamps, narration, and visual direction.
+Format each scene as:
+[Scene N - M:SS-M:SS]
+<visual direction>
+<narration text>
+
+Focus on viewer benefits — what the home means for their life — not feature lists.
+Keep narration natural and conversational.`
+
+  const { text } = await generateTextRouted({
+    prompt,
+    feature: "video_script_generation",
+    maxTokens: 1200,
+    temperature: 0.7,
+  })
+  return text
 }
 
 function parseSceneBreakpoints(

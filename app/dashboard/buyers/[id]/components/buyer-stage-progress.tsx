@@ -1,7 +1,12 @@
 "use client"
 
+import { useState, useTransition } from "react"
 import { Badge }   from "@/components/ui/badge"
+import { Button }  from "@/components/ui/button"
 import { cn }      from "@/lib/utils"
+import { ChevronRight, Loader2 } from "lucide-react"
+import { agentAdvanceBuyer } from "@/app/actions/buyer-execution"
+import { toast } from "sonner"
 
 const BUYER_STAGES = [
   { key: "BUYER_CONTACT_CREATED",      label: "Contact Created",       milestone: false },
@@ -24,12 +29,33 @@ type BuyerStageKey = typeof BUYER_STAGES[number]["key"]
 interface BuyerStageProgressProps {
   currentStage:  string | null
   blockers?:     string[]
+  contactId?:    string
+  agentId?:      string
+  onAdvanced?:   (newStage: string) => void
 }
 
-export function BuyerStageProgress({ currentStage, blockers }: BuyerStageProgressProps) {
+export function BuyerStageProgress({ currentStage, blockers, contactId, agentId, onAdvanced }: BuyerStageProgressProps) {
+  const [confirmStage, setConfirmStage] = useState<string | null>(null)
+  const [isPending, startTransition] = useTransition()
+
   const currentIdx = BUYER_STAGES.findIndex(s => s.key === currentStage)
   const displayIdx = currentIdx === -1 ? 0 : currentIdx
   const pct        = Math.round(((displayIdx + 1) / BUYER_STAGES.length) * 100)
+  const nextStage  = BUYER_STAGES[displayIdx + 1] ?? null
+
+  const handleAdvance = (targetStage: string) => {
+    if (!contactId || !agentId) return
+    setConfirmStage(null)
+    startTransition(async () => {
+      const result = await agentAdvanceBuyer({ contactId, agentId, targetState: targetStage })
+      if ((result as any).success === false) {
+        toast.error((result as any).error ?? "Failed to advance stage")
+      } else {
+        toast.success(`Buyer advanced to ${BUYER_STAGES.find(s => s.key === targetStage)?.label ?? targetStage}`)
+        onAdvanced?.(targetStage)
+      }
+    })
+  }
 
   return (
     <div className="flex flex-col gap-2">
@@ -91,6 +117,34 @@ export function BuyerStageProgress({ currentStage, blockers }: BuyerStageProgres
           )
         })}
       </ol>
+
+      {/* Advance stage */}
+      {nextStage && contactId && agentId && (
+        <div className="mx-2 mb-2">
+          {confirmStage === nextStage.key ? (
+            <div className="rounded-md border border-primary/30 bg-primary/5 px-3 py-2 space-y-2">
+              <p className="text-xs text-foreground">Advance to <strong>{nextStage.label}</strong>?</p>
+              <div className="flex gap-2">
+                <Button size="sm" className="h-6 text-xs" onClick={() => handleAdvance(nextStage.key)} disabled={isPending}>
+                  {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Confirm"}
+                </Button>
+                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setConfirmStage(null)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConfirmStage(nextStage.key)}
+              disabled={isPending}
+              className="w-full flex items-center justify-between rounded-md border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-primary hover:bg-primary/10 transition-colors"
+            >
+              <span>Advance to {nextStage.label}</span>
+              <ChevronRight className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Blockers banner */}
       {blockers && blockers.length > 0 && (

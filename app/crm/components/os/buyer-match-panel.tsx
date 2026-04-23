@@ -1,11 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Home, Search, Loader2, ThumbsUp, ThumbsDown, Calendar, Eye, Sparkles, Bell, FlaskConical, CheckCircle2, AlertCircle } from "lucide-react"
 import {
   searchPropertiesWithNaturalLanguage,
@@ -19,6 +20,30 @@ import {
   notifyNewMatches,
 } from "@/app/actions/ai-property-matching"
 import { requestShowing } from "@/app/actions/smart-insights"
+import { updateContact } from "@/app/actions/contacts"
+import { toast } from "sonner"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { draftSmartEmail } from "@/app/actions/ai-insights"
+import { sendEmail } from "@/app/actions/communications"
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+const BUYER_STAGES = [
+  { value: "new", label: "New Lead" },
+  { value: "nurturing", label: "Nurturing" },
+  { value: "active", label: "Active Buyer" },
+  { value: "qualified", label: "Qualified" },
+  { value: "under_contract", label: "Under Contract" },
+  { value: "closed", label: "Closed" },
+  { value: "lost", label: "Lost" },
+]
 
 interface BuyerMatchPanelProps {
   contactId: string
@@ -45,7 +70,14 @@ export function BuyerMatchPanel({
   buyerStage,
   contactName,
 }: BuyerMatchPanelProps) {
+  const [stage, setStage] = useState(buyerStage ?? "")
+  // Generation counter to handle rapid stage changes — only apply result from latest request
+  const stageGenRef = useRef(0)
   const [query, setQuery] = useState("")
+  const [emailDialogOpen, setEmailDialogOpen] = useState(false)
+  const [emailDraft, setEmailDraft] = useState("")
+  const [emailLoading, setEmailLoading] = useState(false)
+  const [sendingEmail, setSendingEmail] = useState(false)
   const [previewIntent, setPreviewIntent] = useState<any>(null)
   const [matches, setMatches] = useState<PropertyMatch[]>([])
   const [selectedMatch, setSelectedMatch] = useState<string | null>(null)
@@ -233,10 +265,37 @@ export function BuyerMatchPanel({
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-base flex items-center gap-2">
-          <Home className="h-4 w-4 text-blue-600" />
-          Find Homes for {firstName}
-        </CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Home className="h-4 w-4 text-blue-600" />
+            Find Homes for {firstName}
+          </CardTitle>
+          <Select
+            value={stage}
+            onValueChange={async (val) => {
+              const prev = stage
+              setStage(val)
+              const gen = ++stageGenRef.current
+              const result = await updateContact(contactId, { buyer_stage: val })
+              if (stageGenRef.current !== gen) return // superseded by a later request
+              if (!result.success) {
+                setStage(prev)
+                toast.error("Failed to update stage")
+              } else {
+                toast.success("Buyer stage updated")
+              }
+            }}
+          >
+            <SelectTrigger className="h-7 text-xs w-36">
+              <SelectValue placeholder="Set stage" />
+            </SelectTrigger>
+            <SelectContent>
+              {BUYER_STAGES.map((s) => (
+                <SelectItem key={s.value} value={s.value} className="text-xs">{s.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </CardHeader>
       <CardContent>
         {/* Search input */}
@@ -493,6 +552,83 @@ export function BuyerMatchPanel({
             ))}
           </div>
         )}
+
+        {/* Send match email button */}
+        {matches.length > 0 && (
+          <div className="pt-2">
+            <Button
+              size="sm"
+              variant="default"
+              className="w-full gap-1.5"
+              disabled={emailLoading}
+              onClick={async () => {
+                setEmailLoading(true)
+                try {
+                  const matchSummary = matches.slice(0, 5).map(m =>
+                    `${m.address || "Property"} – $${m.price?.toLocaleString() ?? "N/A"}`
+                  ).join("\n")
+                  const draft = await draftSmartEmail(
+                    contactId,
+                    `Found ${matches.length} properties that match ${firstName}'s search criteria:\n${matchSummary}\nDraft a personalized email introducing these properties and inviting them to schedule showings.`
+                  )
+                  setEmailDraft(draft)
+                  setEmailDialogOpen(true)
+                } catch {
+                  toast.error("Could not generate email draft")
+                } finally {
+                  setEmailLoading(false)
+                }
+              }}
+            >
+              {emailLoading ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
+              Email {firstName} about {matches.length} Match{matches.length !== 1 ? "es" : ""}
+            </Button>
+          </div>
+        )}
+
+        {/* Email draft dialog */}
+        <Dialog open={emailDialogOpen} onOpenChange={setEmailDialogOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>AI-Drafted Email to {firstName}</DialogTitle>
+            </DialogHeader>
+            <Textarea
+              value={emailDraft}
+              onChange={(e) => setEmailDraft(e.target.value)}
+              rows={10}
+              className="text-sm"
+            />
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEmailDialogOpen(false)}>Cancel</Button>
+              <Button
+                disabled={sendingEmail}
+                onClick={async () => {
+                  setSendingEmail(true)
+                  try {
+                    const result = await sendEmail({
+                      contactId,
+                      subject: `Properties Matched for You, ${firstName}`,
+                      html: `<pre style="font-family:sans-serif;white-space:pre-wrap">${escapeHtml(emailDraft)}</pre>`,
+                      text: emailDraft,
+                      channelPurpose: "conversation",
+                    })
+                    if (result.success) {
+                      toast.success("Email sent")
+                      setEmailDialogOpen(false)
+                    } else {
+                      toast.error((result as any).error ?? "Send failed")
+                    }
+                  } finally {
+                    setSendingEmail(false)
+                  }
+                }}
+              >
+                {sendingEmail ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}
+                Send Email
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Empty state */}
         {matches.length === 0 && !loading && (

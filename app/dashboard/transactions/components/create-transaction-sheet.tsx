@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { AddressAutocomplete } from "@/app/components/ui/address-autocomplete"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -94,11 +95,11 @@ export function CreateTransactionSheet({ open, onOpenChange }: CreateTransaction
           {/* Property */}
           <div className="space-y-1">
             <Label htmlFor="property_address">Property Address <span className="text-destructive">*</span></Label>
-            <Input
+            <AddressAutocomplete
               id="property_address"
               placeholder="123 Main St"
               value={form.property_address}
-              onChange={e => handleChange("property_address", e.target.value)}
+              onChange={v => handleChange("property_address", v)}
               disabled={isPending}
             />
           </div>
