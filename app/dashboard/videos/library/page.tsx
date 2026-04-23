@@ -38,6 +38,7 @@ import {
   PresentationIcon,
   Sparkles,
   Filter,
+  Share2,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth/client"
@@ -238,6 +239,25 @@ function VideoLibraryContent() {
       console.error("Error creating variation:", error)
     } finally {
       setCreatingVariation(false)
+    }
+  }
+
+  // ─── Distribute Script ─────────────────────────────────────────────────────
+
+  async function handleDistribute(script: VideoScript) {
+    const { distributeVideoProjectAction } = await import("@/app/actions/video")
+    const result = await distributeVideoProjectAction({
+      projectId: script.id,
+      channels: ["youtube", "linkedin"],
+      title: script.title,
+      description: script.script_content.slice(0, 200),
+    })
+    if (result.success) {
+      const { toast } = await import("sonner")
+      toast.success("Video queued for distribution")
+    } else {
+      const { toast } = await import("sonner")
+      toast.error(result.error ?? "Distribution failed")
     }
   }
 
@@ -465,6 +485,12 @@ function VideoLibraryContent() {
                             <Copy className="h-4 w-4 mr-2" />
                             Copy Script
                           </DropdownMenuItem>
+                          {script.approval_status === "approved" && (
+                            <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDistribute(script) }}>
+                              <Share2 className="h-4 w-4 mr-2" />
+                              Distribute
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             className="text-red-600"
@@ -570,6 +596,12 @@ function VideoLibraryContent() {
                           <Copy className="h-4 w-4 mr-2" />
                           Copy Script
                         </DropdownMenuItem>
+                        {script.approval_status === "approved" && (
+                          <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleDistribute(script) }}>
+                            <Share2 className="h-4 w-4 mr-2" />
+                            Distribute
+                          </DropdownMenuItem>
+                        )}
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
                           className="text-red-600"

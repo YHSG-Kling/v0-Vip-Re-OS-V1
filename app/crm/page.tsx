@@ -14,6 +14,9 @@ import { generateCopilotPlan } from "@/app/actions/workflows"
 import { GratitudeGiftingPanel } from "@/app/dashboard/referrals/components/os/gratitude-gifting-panel"
 import { getBuyerInsights } from "@/app/actions/buyer-insights"
 import { getBuyerFatigueScore } from "@/app/actions/buyer-fatigue"
+import { scoreLeadWithAI } from "@/app/actions/ai-lead-scoring"
+import { createPortalInviteForContact } from "@/app/actions/portal-invites"
+import { sendSMS, scheduleAppointment, triggerAutomation } from "@/app/actions/communications"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -57,6 +60,11 @@ import {
   UserCircle,
   LayoutDashboard,
   Network,
+  Send,
+  Star,
+  MessageCircle,
+  CalendarPlus,
+  Workflow,
 } from "lucide-react"
 import Link from "next/link"
 import { format } from "date-fns"
@@ -267,6 +275,20 @@ export default function CRMPage() {
 
   // Lead conversion scores — populated async after contacts load (best-effort, never blocks render)
   const [leadScores, setLeadScores] = useState<Record<string, { label: "High" | "Medium"; score: number }>>({})
+
+  // Communications hub dialog states
+  const [smsDialogOpen, setSmsDialogOpen] = useState(false)
+  const [smsText, setSmsText] = useState("")
+  const [smsSending, setSmsSending] = useState(false)
+  const [apptDialogOpen, setApptDialogOpen] = useState(false)
+  const [apptTitle, setApptTitle] = useState("")
+  const [apptDate, setApptDate] = useState("")
+  const [apptTime, setApptTime] = useState("")
+  const [apptSending, setApptSending] = useState(false)
+  const [autoDialogOpen, setAutoDialogOpen] = useState(false)
+  const [autoWorkflowId, setAutoWorkflowId] = useState("")
+  const [autoEventName, setAutoEventName] = useState("")
+  const [autoSending, setAutoSending] = useState(false)
 
   // Suggested follow-up actions for the selected contact
   const [suggestedActions, setSuggestedActions] = useState<any[]>([])
@@ -1102,7 +1124,210 @@ export default function CRMPage() {
                       Open Inbox
                     </Button>
                   </Link>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={async () => {
+                      if (!selectedContactId || !user) return
+                      const result = await scoreLeadWithAI({ contactId: selectedContactId, agentId: agentId ?? user.id })
+                      if (result.success && (result as any).scores) {
+                        const overall = (result as any).scores.overallScore ?? 0
+                        setLeadScores(prev => ({
+                          ...prev,
+                          [selectedContactId]: {
+                            label: overall >= 60 ? "High" : "Medium",
+                            score: overall,
+                          },
+                        }))
+                        toast.success(`AI Score: ${overall}/100`)
+                      } else {
+                        toast.error("Scoring failed")
+                      }
+                    }}
+                  >
+                    <Star className="h-3.5 w-3.5" />
+                    Run AI Score
+                  </Button>
+                  {(!portalInviteData?.status || portalInviteData.status === "not_invited") && brokerageId && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="w-full gap-1.5 text-xs justify-start"
+                      onClick={async () => {
+                        if (!selectedContactId || !brokerageId || !user) return
+                        const result = await createPortalInviteForContact({
+                          contactId: selectedContactId,
+                          brokerageId,
+                          invitedByUserId: user.id,
+                          sendMagicLink: false,
+                        })
+                        if (result.success) {
+                          setPortalInviteStatus("invited")
+                          setPortalInviteData(prev => ({ ...prev, status: "invited", invited_at: new Date().toISOString() } as any))
+                          toast.success("Portal invite sent")
+                        } else {
+                          toast.error(result.error ?? "Invite failed")
+                        }
+                      }}
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      Send Portal Invite
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={() => { setSmsText(""); setSmsDialogOpen(true) }}
+                  >
+                    <MessageCircle className="h-3.5 w-3.5" />
+                    Send SMS
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={() => { setApptTitle(""); setApptDate(""); setApptTime(""); setApptDialogOpen(true) }}
+                  >
+                    <CalendarPlus className="h-3.5 w-3.5" />
+                    Schedule Appointment
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="w-full gap-1.5 text-xs justify-start"
+                    onClick={() => { setAutoWorkflowId(""); setAutoEventName(""); setAutoDialogOpen(true) }}
+                  >
+                    <Workflow className="h-3.5 w-3.5" />
+                    Trigger Automation
+                  </Button>
                 </div>
+
+                {/* SMS Dialog */}
+                <Dialog open={smsDialogOpen} onOpenChange={setSmsDialogOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Send SMS</DialogTitle>
+                    </DialogHeader>
+                    <Textarea
+                      placeholder="Type your SMS message (160 chars)"
+                      maxLength={160}
+                      value={smsText}
+                      onChange={e => setSmsText(e.target.value)}
+                      rows={3}
+                    />
+                    <p className="text-xs text-muted-foreground text-right">{smsText.length}/160</p>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setSmsDialogOpen(false)}>Cancel</Button>
+                      <Button
+                        disabled={!smsText.trim() || smsSending}
+                        onClick={async () => {
+                          if (!selectedContactId) return
+                          setSmsSending(true)
+                          const result = await sendSMS({ contactId: selectedContactId, message: smsText })
+                          setSmsSending(false)
+                          if (result.success) { toast.success("SMS sent"); setSmsDialogOpen(false) }
+                          else toast.error((result as any).error ?? "SMS failed")
+                        }}
+                      >
+                        {smsSending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                        Send
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
+                {/* Schedule Appointment Dialog */}
+                <Dialog open={apptDialogOpen} onOpenChange={setApptDialogOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Schedule Appointment</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                      <div>
+                        <Label className="text-xs">Title</Label>
+                        <Input value={apptTitle} onChange={e => setApptTitle(e.target.value)} placeholder="Listing consultation" className="mt-1" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <Label className="text-xs">Date</Label>
+                          <Input type="date" value={apptDate} onChange={e => setApptDate(e.target.value)} className="mt-1" />
+                        </div>
+                        <div>
+                          <Label className="text-xs">Time</Label>
+                          <Input type="time" value={apptTime} onChange={e => setApptTime(e.target.value)} className="mt-1" />
+                        </div>
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setApptDialogOpen(false)}>Cancel</Button>
+                      <Button
+                        disabled={!apptTitle || !apptDate || !apptTime || apptSending}
+                        onClick={async () => {
+                          if (!selectedContactId) return
+                          setApptSending(true)
+                          const startIso = new Date(`${apptDate}T${apptTime}`).toISOString()
+                          const endIso = new Date(new Date(`${apptDate}T${apptTime}`).getTime() + 60 * 60 * 1000).toISOString()
+                          const result = await scheduleAppointment({
+                            contactId: selectedContactId,
+                            calendarId: "default",
+                            title: apptTitle,
+                            startTime: startIso,
+                            endTime: endIso,
+                            meetingType: "in_person",
+                          })
+                          setApptSending(false)
+                          if (result.success) { toast.success("Appointment scheduled"); setApptDialogOpen(false) }
+                          else toast.error((result as any).error ?? "Scheduling failed")
+                        }}
+                      >
+                        {apptSending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                        Schedule
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
+
+                {/* Trigger Automation Dialog */}
+                <Dialog open={autoDialogOpen} onOpenChange={setAutoDialogOpen}>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Trigger Automation</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                      <div>
+                        <Label className="text-xs">GHL Workflow ID</Label>
+                        <Input value={autoWorkflowId} onChange={e => setAutoWorkflowId(e.target.value)} placeholder="workflow_abc123" className="mt-1" />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Event Name (optional)</Label>
+                        <Input value={autoEventName} onChange={e => setAutoEventName(e.target.value)} placeholder="nurture_sequence" className="mt-1" />
+                      </div>
+                    </div>
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setAutoDialogOpen(false)}>Cancel</Button>
+                      <Button
+                        disabled={!autoWorkflowId.trim() || autoSending}
+                        onClick={async () => {
+                          if (!selectedContactId) return
+                          setAutoSending(true)
+                          const result = await triggerAutomation({
+                            contactId: selectedContactId,
+                            workflowId: autoWorkflowId,
+                            eventName: autoEventName || undefined,
+                          })
+                          setAutoSending(false)
+                          if (result.success) { toast.success("Automation triggered"); setAutoDialogOpen(false) }
+                          else toast.error((result as any).error ?? "Failed")
+                        }}
+                      >
+                        {autoSending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
+                        Trigger
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
 
                 {/* Related listing/transaction in sidebar */}
                 {(relatedListing || relatedTransaction) && (

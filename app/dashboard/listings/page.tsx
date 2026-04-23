@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { MarketIntelligencePanel } from "@/app/components/dashboard/listings/market-intelligence-panel"
 import { CmaHistorySheet } from "@/app/components/dashboard/listings/cma-history-sheet"
 import { ListingCreateSheet } from "@/app/components/dashboard/listings/listing-create-sheet"
+import { ListingStatusSelect } from "@/app/components/dashboard/listings/listing-status-select"
 import { 
   Plus, 
   Home, 
@@ -305,7 +306,11 @@ export default async function ListingsPage({
                           </div>
                           <ArrowRight className="h-4 w-4 text-muted-foreground" />
                         </Link>
-                        <div className="flex items-center pr-3">
+                        <div className="flex items-center gap-1 pr-3">
+                          <ListingStatusSelect
+                            listingId={listing.id}
+                            currentStatus={listing.status}
+                          />
                           <CmaHistorySheet
                             listingId={listing.id}
                             agentId={user.id}
