@@ -145,11 +145,13 @@ export function ReferralsClient({ referrals, giftingItems, reviewRequests, roiSu
     setAiLoading("opportunities")
     try {
       const result = await identifyReferralOpportunities(agentId)
-      if (result.success && (result as any).analysis) {
+      if (!result.success) {
+        toast.error((result as any).error ?? "Could not identify opportunities")
+      } else if ((result as any).analysis) {
         setOpportunities((result as any).analysis)
         toast.success("Referral opportunities identified")
       } else {
-        toast.error((result as any).error ?? "Could not identify opportunities")
+        toast.info("No referral opportunities found at this time")
       }
     } finally {
       setAiLoading(null)

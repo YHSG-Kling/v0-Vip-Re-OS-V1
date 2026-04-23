@@ -37,7 +37,10 @@ function loadGoogleMaps(apiKey: string): Promise<void> {
     script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=__googleMapsCallback`
     script.async = true
     script.defer = true
-    script.onerror = () => reject(new Error("Failed to load Google Maps"))
+    script.onerror = () => {
+      mapsLoadPromise = null
+      reject(new Error("Failed to load Google Maps"))
+    }
     document.head.appendChild(script)
   })
   return mapsLoadPromise

@@ -58,7 +58,7 @@ Generate a full newsletter with:
         content_type: "newsletter",
         content: text,
         agent_id: agentCtx?.userId ?? null,
-        title: `Newsletter — ${topic || audienceType}`,
+        title: `Newsletter — ${topic || audienceType || 'General'}`,
       })
       .select("id")
       .single()

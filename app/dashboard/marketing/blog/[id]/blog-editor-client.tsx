@@ -387,10 +387,13 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
         generatedByAi: true,
         userId,
       })
-      if (result.success) {
-        toast.success("Queued for social — check Social dashboard")
+      if (result && (result as any).success === false) {
+        const msg = (result as any).complianceBlocked
+          ? ((result as any).message ?? "Post held for compliance review")
+          : "Failed to queue social post"
+        toast.error(msg)
       } else {
-        toast.error("Failed to queue social post")
+        toast.success("Queued for social — check Social dashboard")
       }
     } finally {
       setSendingKey(null)

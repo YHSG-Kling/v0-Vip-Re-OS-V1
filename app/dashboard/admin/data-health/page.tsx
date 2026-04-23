@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Shield, AlertTriangle, CheckCircle2, RefreshCw, Scan } from "lucide-react"
+import { Loader2, Shield, AlertTriangle, CheckCircle2, RefreshCw, Scan, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { getDataHealthStats, runDataHygieneScan, getDataHealthLogs } from "@/app/actions/data-health"
 
@@ -13,20 +13,42 @@ export default function DataHealthPage() {
   const [stats, setStats] = useState<any>(null)
   const [logs, setLogs] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
 
   const loadData = async () => {
-    const [statsRes, logsRes] = await Promise.allSettled([
-      getDataHealthStats(),
-      getDataHealthLogs({}),
-    ])
-    if (statsRes.status === "fulfilled" && statsRes.value.success) {
-      setStats(statsRes.value.stats)
+    setFetchError(null)
+    try {
+      const [statsRes, logsRes] = await Promise.allSettled([
+        getDataHealthStats(),
+        getDataHealthLogs({}),
+      ])
+
+      let hadError = false
+
+      if (statsRes.status === "fulfilled" && statsRes.value.success) {
+        setStats(statsRes.value.stats)
+      } else {
+        const reason = statsRes.status === "rejected"
+          ? (statsRes.reason instanceof Error ? statsRes.reason.message : "Unknown error")
+          : (statsRes.value as any).error ?? "Failed to load stats"
+        setFetchError(`Stats: ${reason}`)
+        hadError = true
+      }
+
+      if (logsRes.status === "fulfilled" && (logsRes.value as any).success) {
+        setLogs((logsRes.value as any).logs ?? [])
+      } else if (!hadError) {
+        const reason = logsRes.status === "rejected"
+          ? (logsRes.reason instanceof Error ? logsRes.reason.message : "Unknown error")
+          : (logsRes.value as any).error ?? "Failed to load logs"
+        setFetchError(`Logs: ${reason}`)
+      }
+    } catch (error) {
+      setFetchError(error instanceof Error ? error.message : "Unexpected error loading data")
+    } finally {
+      setLoading(false)
     }
-    if (logsRes.status === "fulfilled" && (logsRes.value as any).success) {
-      setLogs((logsRes.value as any).logs ?? [])
-    }
-    setLoading(false)
   }
 
   useEffect(() => { loadData() }, [])
@@ -71,6 +93,16 @@ export default function DataHealthPage() {
           </Button>
         </div>
       </div>
+
+      {fetchError && (
+        <div className="flex items-start gap-3 p-4 rounded-lg border border-red-200 bg-red-50 text-red-800">
+          <XCircle className="h-5 w-5 text-red-600 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-sm font-medium">Failed to load data health information</p>
+            <p className="text-xs mt-0.5 text-red-700">{fetchError}</p>
+          </div>
+        </div>
+      )}
 
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

@@ -1,9 +1,6 @@
-"use client"
-
-import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
-import { Loader2, Brain, DollarSign, Zap } from "lucide-react"
+import { Brain, DollarSign, Zap } from "lucide-react"
 import { getCurrentMonthUsage } from "@/lib/ai/cost-tracking"
 
 function formatCost(cents: number) {
@@ -16,24 +13,8 @@ function formatTokens(n: number) {
   return n.toString()
 }
 
-export default function AIUsagePage() {
-  const [usage, setUsage] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    getCurrentMonthUsage({}).then(data => {
-      setUsage(data)
-      setLoading(false)
-    })
-  }, [])
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    )
-  }
+export default async function AIUsagePage() {
+  const usage = await getCurrentMonthUsage({})
 
   if (!usage) {
     return (

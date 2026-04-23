@@ -37,8 +37,11 @@ export default function ContentApprovalsPage() {
     startTransition(async () => {
       const supabase = createClient()
       const { error } = await supabase
-        .from("content_approvals")
-        .update({ status: decision, reviewed_at: new Date().toISOString() })
+        .from("activities")
+        .update({
+          status: decision === "approved" ? "completed" : "rejected",
+          completed_at: new Date().toISOString(),
+        })
         .eq("id", itemId)
       if (!error) {
         setPending(prev => prev.filter(p => p.id !== itemId))

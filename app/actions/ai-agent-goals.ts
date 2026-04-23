@@ -67,6 +67,16 @@ export async function upsertAgentGoal(params: {
   const year     = params.year ?? new Date().getFullYear()
 
   try {
+    // Check if the goal already exists so we can preserve current_value on updates
+    const { data: existing } = await supabase
+      .from("agent_goals")
+      .select("id, current_value")
+      .eq("agent_id",     params.agentId)
+      .eq("brokerage_id", params.brokerageId)
+      .eq("year",         year)
+      .eq("goal_type",    params.goalType)
+      .maybeSingle()
+
     const { data, error } = await supabase
       .from("agent_goals")
       .upsert(
@@ -76,7 +86,8 @@ export async function upsertAgentGoal(params: {
           year,
           goal_type:    params.goalType,
           target_value: params.targetValue,
-          current_value: 0,
+          // Preserve existing progress; only default to 0 for brand-new goals
+          current_value: existing?.current_value ?? 0,
           notes:         params.notes ?? null,
           updated_at:    new Date().toISOString(),
         },

@@ -87,6 +87,10 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
           target_audience: aiAudience,
           length: 'medium',
         })
+        if (!result.success) {
+          toast.error(result.error ?? 'Failed to generate content')
+          return
+        }
         setAiResult((result as any).content?.body ?? (result as any).body ?? '')
       } else {
         const result = await generateVideo({
@@ -95,6 +99,10 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
           custom_prompt: `Write a video script for real estate ${aiAudience}s about: ${aiTopic}`,
           target_audience: aiAudience,
         })
+        if (!result.success) {
+          toast.error(result.error ?? 'Failed to generate content')
+          return
+        }
         setAiResult((result as any).content?.script ?? (result as any).script ?? '')
       }
       toast.success('Content generated')
@@ -137,17 +145,30 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
       setVideoJobId(result.videoId)
       setVideoStatus('processing')
       toast.success('Video generation started — checking status…')
+      let pollAttempts = 0
+      const MAX_POLL_ATTEMPTS = 60 // 10 minutes at 10s intervals
       pollRef.current = setInterval(async () => {
-        const status = await getHeyGenVideoStatus(result.videoId!)
-        if ((status as any).status === 'completed') {
+        pollAttempts++
+        const statusResult = await getHeyGenVideoStatus(result.videoId!)
+        if (!statusResult.success) {
+          clearInterval(pollRef.current!)
+          setVideoStatus('failed')
+          toast.error(statusResult.error ?? 'Failed to check video status')
+          return
+        }
+        if ((statusResult as any).status === 'completed') {
           clearInterval(pollRef.current!)
           setVideoStatus('completed')
-          setVideoUrl((status as any).videoUrl ?? null)
+          setVideoUrl((statusResult as any).videoUrl ?? null)
           toast.success('Video ready!')
-        } else if ((status as any).status === 'failed') {
+        } else if ((statusResult as any).status === 'failed') {
           clearInterval(pollRef.current!)
           setVideoStatus('failed')
           toast.error('Video generation failed')
+        } else if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+          clearInterval(pollRef.current!)
+          setVideoStatus('failed')
+          toast.error('Video generation timed out after 10 minutes')
         }
       }, 10_000)
     })

@@ -52,7 +52,7 @@ export function MediaManagerClient({
   const canApprove = userRole === "admin" || userRole === "broker"
 
   const handleAnalyzePhotos = () => {
-    const photos = media.filter((m: any) => m.media_type !== "video" && (m.file_url || m.url))
+    const photos = media.filter((m: any) => m.media_type === "image" && (m.file_url || m.url))
     if (photos.length === 0) { toast.error("No photos to analyze"); return }
     startTransition(async () => {
       const results = await Promise.allSettled(

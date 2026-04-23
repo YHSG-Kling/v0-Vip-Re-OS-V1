@@ -63,31 +63,38 @@ export default function BrandVoicePage() {
       }
       setLoading(false)
     }
-    load()
+    load().catch(() => {
+      setLoading(false)
+      toast.error("Failed to load brand voice profile")
+    })
   }, [])
 
   const handleSave = () => {
     if (!agentId) return
     startTransition(async () => {
-      const keywords = keywordsText.split(",").map(s => s.trim()).filter(Boolean)
-      const avoidWords = avoidWordsText.split(",").map(s => s.trim()).filter(Boolean)
-      const examplePosts = examplePostsText.split("\n\n").map(s => s.trim()).filter(Boolean)
+      try {
+        const keywords = keywordsText.split(",").map(s => s.trim()).filter(Boolean)
+        const avoidWords = avoidWordsText.split(",").map(s => s.trim()).filter(Boolean)
+        const examplePosts = examplePostsText.split("\n\n").map(s => s.trim()).filter(Boolean)
 
-      const result = await updateBrandVoiceProfile({
-        agentId,
-        tone,
-        style,
-        brandPersonality,
-        targetAudience,
-        keywords,
-        avoidWords,
-        examplePosts,
-      })
+        const result = await updateBrandVoiceProfile({
+          agentId,
+          tone,
+          style,
+          brandPersonality,
+          targetAudience,
+          keywords,
+          avoidWords,
+          examplePosts,
+        })
 
-      if ((result as any)?.error) {
+        if ((result as any)?.error) {
+          toast.error("Failed to save brand voice profile")
+        } else {
+          toast.success("Brand voice profile saved")
+        }
+      } catch {
         toast.error("Failed to save brand voice profile")
-      } else {
-        toast.success("Brand voice profile saved")
       }
     })
   }

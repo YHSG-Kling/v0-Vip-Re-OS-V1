@@ -31,14 +31,19 @@ export default function OrchestratorEventsPage() {
   const [isPending, startTransition] = useTransition()
 
   const loadEvents = async () => {
-    const supabase = createClient()
-    const { data } = await supabase
-      .from("lifecycle_events")
-      .select("id, event_type, entity_type, entity_id, status, created_at, processed_at")
-      .order("created_at", { ascending: false })
-      .limit(100)
-    setEvents(data ?? [])
-    setLoading(false)
+    try {
+      const supabase = createClient()
+      const { data } = await supabase
+        .from("lifecycle_events")
+        .select("id, event_type, entity_type, entity_id, status, created_at, processed_at")
+        .order("created_at", { ascending: false })
+        .limit(100)
+      setEvents(data ?? [])
+    } catch (error) {
+      console.error("Failed to load events:", error)
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { loadEvents() }, [])
