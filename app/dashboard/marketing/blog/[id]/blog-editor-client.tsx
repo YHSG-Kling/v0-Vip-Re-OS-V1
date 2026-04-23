@@ -49,6 +49,8 @@ import {
 } from "lucide-react"
 import { updateBlogPost, publishToWordPress, suggestSEOKeywords } from "@/app/actions/blog"
 import { generateOmnipresent, generateVariations } from "@/app/actions/content-generation-engine"
+import { createSocialPost } from "@/app/actions/social-publishing"
+import { createEmailCampaign } from "@/app/actions/email-campaigns"
 import { analyzeSEO } from "@/lib/blog/seo-optimizer"
 import { format } from "date-fns"
 import { toast } from "sonner"
@@ -219,6 +221,7 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
   const [repurposeResults, setRepurposeResults] = useState<Array<{ format: string; body: string }> | null>(null)
   const [variationsLoading, setVariationsLoading] = useState(false)
   const [variations, setVariations] = useState<Array<{ body: string }> | null>(null)
+  const [sendingKey, setSendingKey] = useState<string | null>(null)
 
   // Computed values
   const wordCount = content.split(/\s+/).filter((w) => w.length > 0).length
@@ -371,6 +374,48 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
       .replace(/\s+/g, "-")
       .slice(0, 80)
     setSlug(generatedSlug)
+  }
+
+  async function handlePostToSocial(body: string, key: string) {
+    setSendingKey(key)
+    try {
+      const result = await createSocialPost({
+        content: body,
+        scheduledFor: new Date().toISOString(),
+        platforms: ["facebook", "instagram"],
+        contentType: "custom",
+        generatedByAi: true,
+        userId,
+      })
+      if (result.success) {
+        toast.success("Queued for social — check Social dashboard")
+      } else {
+        toast.error("Failed to queue social post")
+      }
+    } finally {
+      setSendingKey(null)
+    }
+  }
+
+  async function handleSaveAsEmailCampaign(body: string, key: string) {
+    setSendingKey(key)
+    try {
+      const result = await createEmailCampaign({
+        brokerageId,
+        agentId: userId,
+        campaignName: `Blog: ${title || "Untitled"}`,
+        subjectLine: title || "Newsletter",
+        content: body,
+        createdBy: userId,
+      })
+      if (result.success) {
+        toast.success("Saved as email campaign draft")
+      } else {
+        toast.error("Failed to save campaign")
+      }
+    } finally {
+      setSendingKey(null)
+    }
   }
 
   const handleRepurpose = async () => {
@@ -591,20 +636,51 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {repurposeResults.map((r, i) => (
-                <div key={i} className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold text-foreground">{r.format}</p>
-                    <button
-                      onClick={() => { navigator.clipboard.writeText(r.body); toast.success("Copied") }}
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                    </button>
+              {repurposeResults.map((r, i) => {
+                const key = `repurpose-${i}`
+                const isSending = sendingKey === key
+                const isSocial = r.format.toLowerCase().includes("social")
+                const isNewsletter = r.format.toLowerCase().includes("newsletter") || r.format.toLowerCase().includes("email")
+                return (
+                  <div key={i} className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold text-foreground">{r.format}</p>
+                      <button
+                        onClick={() => { navigator.clipboard.writeText(r.body); toast.success("Copied") }}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-xs text-muted-foreground line-clamp-5">{r.body}</p>
+                    {isSocial && (
+                      <Button size="sm" variant="outline" className="w-full h-7 text-xs"
+                        disabled={isSending}
+                        onClick={() => handlePostToSocial(r.body, key)}
+                      >
+                        {isSending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
+                        Post to Social
+                      </Button>
+                    )}
+                    {isNewsletter && (
+                      <Button size="sm" variant="outline" className="w-full h-7 text-xs"
+                        disabled={isSending}
+                        onClick={() => handleSaveAsEmailCampaign(r.body, key)}
+                      >
+                        {isSending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
+                        Save as Campaign
+                      </Button>
+                    )}
+                    {!isSocial && !isNewsletter && (
+                      <Button size="sm" variant="outline" className="w-full h-7 text-xs"
+                        onClick={() => { setContent(r.body); toast.success("Content updated") }}
+                      >
+                        Use as Content
+                      </Button>
+                    )}
                   </div>
-                  <p className="text-xs text-muted-foreground line-clamp-5">{r.body}</p>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </CardContent>
         </Card>
@@ -624,20 +700,38 @@ export function BlogEditorClient({ userId, brokerageId, post }: BlogEditorClient
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {variations.map((v, i) => (
-                <div key={i} className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold text-foreground">Variation {i + 1}</p>
-                    <button
-                      onClick={() => { navigator.clipboard.writeText(v.body); toast.success("Copied") }}
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                    </button>
+              {variations.map((v, i) => {
+                const key = `variation-${i}`
+                const isSending = sendingKey === key
+                return (
+                  <div key={i} className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold text-foreground">Variation {i + 1}</p>
+                      <button
+                        onClick={() => { navigator.clipboard.writeText(v.body); toast.success("Copied") }}
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <Copy className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{v.body}</p>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" className="flex-1 h-7 text-xs"
+                        onClick={() => { setContent(v.body); toast.success("Draft updated") }}
+                      >
+                        Use This
+                      </Button>
+                      <Button size="sm" variant="outline" className="flex-1 h-7 text-xs"
+                        disabled={isSending}
+                        onClick={() => handlePostToSocial(v.body, key)}
+                      >
+                        {isSending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Send className="h-3 w-3 mr-1" />}
+                        Post Now
+                      </Button>
+                    </div>
                   </div>
-                  <p className="text-xs text-muted-foreground">{v.body}</p>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </CardContent>
         </Card>
