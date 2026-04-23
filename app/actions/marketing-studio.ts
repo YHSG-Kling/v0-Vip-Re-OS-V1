@@ -126,7 +126,7 @@ export async function createCampaign(params: CreateCampaignParams) {
       .from("marketing_campaigns")
       .insert({
         brokerage_id: brokerageId,
-        agent_user_id: agentId,
+        agent_user_id: userId,
         created_by: userId,
         campaign_name: params.campaignName,
         campaign_type: params.campaignType,
@@ -134,8 +134,8 @@ export async function createCampaign(params: CreateCampaignParams) {
         target_audience: params.targetAudience ?? {},
         budget_total: params.budgetTotal ?? 0,
         budget_spent: 0,
-        scheduled_start_at: params.scheduledStartAt ?? null,
-        scheduled_end_at: params.scheduledEndAt ?? null,
+        scheduled_start_at: params.scheduledStartAt || null,
+        scheduled_end_at: params.scheduledEndAt || null,
         visibility_scope: params.visibilityScope ?? "agent",
         status: "draft",
       })
@@ -257,8 +257,8 @@ export async function updateCampaign(params: UpdateCampaignParams) {
   if (params.campaignName !== undefined) updateData.campaign_name = params.campaignName
   if (params.targetAudience !== undefined) updateData.target_audience = params.targetAudience
   if (params.budgetTotal !== undefined) updateData.budget_total = params.budgetTotal
-  if (params.scheduledStartAt !== undefined) updateData.scheduled_start_at = params.scheduledStartAt
-  if (params.scheduledEndAt !== undefined) updateData.scheduled_end_at = params.scheduledEndAt
+  if (params.scheduledStartAt !== undefined) updateData.scheduled_start_at = params.scheduledStartAt || null
+  if (params.scheduledEndAt !== undefined) updateData.scheduled_end_at = params.scheduledEndAt || null
 
   const { error } = await supabase
     .from("marketing_campaigns")
@@ -407,7 +407,7 @@ export async function createAsset(params: CreateAssetParams) {
       .from("marketing_assets")
       .insert({
         brokerage_id: brokerageId,
-        agent_user_id: agentId,
+        agent_user_id: userId,
         created_by: userId,
         campaign_id: params.campaignId ?? null,
         asset_type: params.assetType,
@@ -599,7 +599,7 @@ export async function createCalendarEvent(params: CreateCalendarEventParams) {
       .from("campaign_calendar")
       .insert({
         brokerage_id: brokerageId,
-        agent_user_id: agentId,
+        agent_user_id: userId,
         campaign_id: params.campaignId ?? null,
         event_type: params.eventType,
         channel: params.channel ?? null,

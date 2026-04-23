@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server"
 import { put } from "@vercel/blob"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
+import { generateTextRouted } from "@/lib/ai/models"
 import { canAccessFeature, incrementFeatureUsage } from "@/lib/kernel/0.1-feature-access"
 import { resolveProvider } from "@/lib/kernel/providers"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
@@ -1096,6 +1097,32 @@ export async function deletePodcastEpisode(episodeId: string) {
     return { success: true }
   } catch (error: any) {
     console.error("[v0] Error deleting podcast episode:", error)
+    return { success: false, error: error.message }
+  }
+}
+
+export async function generatePodcastEpisodeDescription(params: {
+  title: string
+  keywords?: string[]
+  targetAudience?: string
+}): Promise<{ success: boolean; description?: string; error?: string }> {
+  try {
+    const ctx = await getAgentContext()
+    if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
+
+    const { text } = await generateTextRouted({
+      feature: "podcast_description_generation",
+      maxTokens: 200,
+      temperature: 0.7,
+      prompt: `Write a compelling 2-3 sentence podcast episode description for a real estate professional.
+Title: "${params.title}"
+${params.keywords?.length ? `Keywords: ${params.keywords.join(", ")}` : ""}
+Audience: ${params.targetAudience ?? "real estate agents and clients"}
+Focus on what the listener gains — lead with the value, not the host.`,
+    })
+
+    return { success: true, description: text.trim() }
+  } catch (error: any) {
     return { success: false, error: error.message }
   }
 }
