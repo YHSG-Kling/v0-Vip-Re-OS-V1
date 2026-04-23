@@ -651,7 +651,7 @@ async function generateScriptViaAI(params: {
   durationSeconds: number
 }): Promise<string> {
   const durationLabel = params.durationSeconds >= 60
-    ? `${Math.round(params.durationSeconds / 60)}-minute`
+    ? `${Math.floor(params.durationSeconds / 60)}-minute`
     : `${params.durationSeconds}-second`
 
   const prompt = `You are an expert real estate video scriptwriter creating a ${durationLabel} property video script.

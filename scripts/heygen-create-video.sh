@@ -55,9 +55,16 @@ if ! command -v heygen &>/dev/null; then
   exit 1
 fi
 
+JQ_AVAILABLE=false
+if command -v jq &>/dev/null; then
+  JQ_AVAILABLE=true
+fi
+
+# HEYGEN_API_KEY is optional — the CLI can use `heygen auth login` session tokens instead.
+# If neither an API key nor a CLI auth session is available, the `heygen` command itself
+# will fail with an authentication error.
 if [[ -z "${HEYGEN_API_KEY:-}" ]]; then
-  echo "Error: HEYGEN_API_KEY is not set."
-  exit 1
+  echo "Note: HEYGEN_API_KEY is not set; relying on CLI auth session (heygen auth login)."
 fi
 
 # Resolve script text
@@ -78,11 +85,19 @@ ARGS=(
 echo "Creating video: $TITLE"
 RESULT=$(heygen video-agent create "${ARGS[@]}")
 
-VIDEO_URL=$(echo "$RESULT" | jq -r '.video_url // .share_url // empty' 2>/dev/null || true)
-SESSION_ID=$(echo "$RESULT" | jq -r '.session_id // empty' 2>/dev/null || true)
+VIDEO_URL=""
+SESSION_ID=""
+if $JQ_AVAILABLE; then
+  VIDEO_URL=$(echo "$RESULT" | jq -r '.video_url // .share_url // empty' 2>/dev/null || true)
+  SESSION_ID=$(echo "$RESULT" | jq -r '.session_id // empty' 2>/dev/null || true)
+fi
 
-# Log to JSONL
-echo "{\"created_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"title\":$(echo "$TITLE" | jq -Rs .),\"session_id\":$(echo "${SESSION_ID:-}" | jq -Rs .),\"video_url\":$(echo "${VIDEO_URL:-}" | jq -Rs .),\"avatar_id\":$(echo "${HEYGEN_AVATAR_ID:-}" | jq -Rs .),\"voice_id\":$(echo "${HEYGEN_VOICE_ID:-}" | jq -Rs .)}" >> "$LOG_FILE"
+# Log to JSONL (requires jq for safe JSON encoding)
+if $JQ_AVAILABLE; then
+  echo "{\"created_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"title\":$(echo "$TITLE" | jq -Rs .),\"session_id\":$(echo "${SESSION_ID:-}" | jq -Rs .),\"video_url\":$(echo "${VIDEO_URL:-}" | jq -Rs .),\"avatar_id\":$(echo "${HEYGEN_AVATAR_ID:-}" | jq -Rs .),\"voice_id\":$(echo "${HEYGEN_VOICE_ID:-}" | jq -Rs .)}" >> "$LOG_FILE"
+else
+  echo "Note: jq not found — skipping JSONL log entry for this run."
+fi
 
 if [[ -n "$VIDEO_URL" ]]; then
   echo "Done: $VIDEO_URL"
