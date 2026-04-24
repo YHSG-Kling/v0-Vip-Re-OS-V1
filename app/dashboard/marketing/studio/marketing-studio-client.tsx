@@ -75,6 +75,7 @@ import {
   type VisibilityScope,
 } from "@/app/actions/marketing-studio"
 import { getMailCampaigns } from "@/app/actions/direct-mail"
+import { createCampaignSequence, createSequenceStep } from "@/app/actions/campaign-sequences"
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
@@ -235,6 +236,23 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   // Direct Mail state
   const [mailCampaigns, setMailCampaigns] = useState<any[]>([])
   const [isMailLoading, setIsMailLoading] = useState(false)
+
+  // Omnichannel sequence builder state
+  type OmnichannelStepType = "email" | "sms" | "social_post" | "video" | "direct_mail" | "wait"
+  interface OmnichannelStep {
+    id: string
+    type: OmnichannelStepType
+    name: string
+    delay_days: number
+    delay_hours: number
+    subject: string
+    body: string
+  }
+  const [omnichannelName, setOmnichannelName] = useState("")
+  const [omnichannelDescription, setOmnichannelDescription] = useState("")
+  const [omnichannelSteps, setOmnichannelSteps] = useState<OmnichannelStep[]>([])
+  const [isCreatingOmnichannel, setIsCreatingOmnichannel] = useState(false)
+  const [omnichannelSuccess, setOmnichannelSuccess] = useState<string | null>(null)
 
   // Create newsletter dialog state (inline in studio)
   const [isCreateNewsletterOpen, setIsCreateNewsletterOpen] = useState(false)
@@ -695,6 +713,76 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     setIsPredicting(false)
   }
 
+  // ─── OMNICHANNEL HANDLER ─────────────────────────────────────────────────────
+
+  function addOmnichannelStep() {
+    const newStep: OmnichannelStep = {
+      id: Math.random().toString(36).slice(2),
+      type: "email",
+      name: "",
+      delay_days: 0,
+      delay_hours: 0,
+      subject: "",
+      body: "",
+    }
+    setOmnichannelSteps((prev) => [...prev, newStep])
+  }
+
+  function updateOmnichannelStep(id: string, patch: Partial<OmnichannelStep>) {
+    setOmnichannelSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)))
+  }
+
+  function removeOmnichannelStep(id: string) {
+    setOmnichannelSteps((prev) => prev.filter((s) => s.id !== id))
+  }
+
+  async function handleCreateOmnichannelSequence() {
+    if (!omnichannelName.trim()) {
+      toast({ title: "Sequence name required", variant: "destructive" })
+      return
+    }
+    setIsCreatingOmnichannel(true)
+    setOmnichannelSuccess(null)
+    try {
+      const resolvedBrokerageId = brokerageIdProp || brokerageId
+      if (!resolvedBrokerageId) {
+        toast({ title: "Brokerage context missing", variant: "destructive" })
+        return
+      }
+      const { sequence, error: seqError } = await createCampaignSequence({
+        brokerageId: resolvedBrokerageId,
+        name: omnichannelName.trim(),
+        description: omnichannelDescription.trim() || undefined,
+        sequence_type: "omnichannel",
+      })
+      if (!sequence || seqError) {
+        toast({ title: "Failed to create sequence", description: seqError, variant: "destructive" })
+        return
+      }
+      for (let i = 0; i < omnichannelSteps.length; i++) {
+        const step = omnichannelSteps[i]
+        await createSequenceStep({
+          sequence_id: sequence.id,
+          step_number: i + 1,
+          step_name: step.name || `Step ${i + 1}`,
+          channel: step.type,
+          delay_days: step.delay_days,
+          delay_hours: step.delay_hours,
+          subject: step.type === "email" ? step.subject : undefined,
+          body: step.body || undefined,
+        })
+      }
+      setOmnichannelName("")
+      setOmnichannelDescription("")
+      setOmnichannelSteps([])
+      setOmnichannelSuccess(`Sequence "${sequence.name}" created with ${omnichannelSteps.length} step${omnichannelSteps.length !== 1 ? "s" : ""}.`)
+    } catch (err) {
+      toast({ title: "Error creating sequence", description: err instanceof Error ? err.message : "Unknown error", variant: "destructive" })
+    } finally {
+      setIsCreatingOmnichannel(false)
+    }
+  }
+
   // ─── STATUS HELPERS ───────────────────────────────────────────────────────────
 
   function getStatusColor(status: string) {
@@ -929,7 +1017,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
         {/* Main Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-4 md:grid-cols-6 lg:grid-cols-12 gap-1 h-auto bg-muted p-2 rounded-xl">
+          <TabsList className="grid w-full grid-cols-4 md:grid-cols-7 lg:grid-cols-7 gap-1 h-auto bg-muted p-2 rounded-xl">
             <TabsTrigger
               value="ad-os"
               className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
@@ -1013,6 +1101,13 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
             >
               <Mic className="h-4 w-4" />
               <span className="text-xs">Podcast</span>
+            </TabsTrigger>
+            <TabsTrigger
+              value="omnichannel"
+              className="flex-col gap-1 h-auto py-3 data-[state=active]:bg-violet-600 data-[state=active]:text-white"
+            >
+              <Sparkles className="h-4 w-4" />
+              <span className="text-xs">Omnichannel</span>
             </TabsTrigger>
           </TabsList>
 
@@ -2461,6 +2556,192 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                 ))}
               </div>
             )}
+          </TabsContent>
+
+          {/* Omnichannel Tab */}
+          <TabsContent value="omnichannel" className="space-y-6">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div>
+                <h3 className="text-lg font-semibold">Omnichannel Sequence Builder</h3>
+                <p className="text-sm text-muted-foreground">Create multi-step automated sequences combining email, SMS, social, video, direct mail, and wait steps.</p>
+              </div>
+              <Button variant="outline" size="sm" asChild>
+                <a href="/dashboard/campaigns/sequences">
+                  <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                  All Sequences
+                </a>
+              </Button>
+            </div>
+
+            {omnichannelSuccess && (
+              <div className="rounded-lg border border-green-200 bg-green-50 dark:bg-green-950/20 px-4 py-3 flex items-center gap-3 text-sm text-green-800 dark:text-green-200">
+                <CheckCircle className="h-4 w-4 shrink-0" />
+                {omnichannelSuccess}
+              </div>
+            )}
+
+            <div className="grid lg:grid-cols-2 gap-6">
+              {/* Sequence config */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Sequence Details</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Sequence Name</Label>
+                    <Input
+                      value={omnichannelName}
+                      onChange={(e) => setOmnichannelName(e.target.value)}
+                      placeholder="e.g. New Buyer 30-Day Nurture"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Description (optional)</Label>
+                    <Textarea
+                      value={omnichannelDescription}
+                      onChange={(e) => setOmnichannelDescription(e.target.value)}
+                      placeholder="What this sequence does…"
+                      rows={3}
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      onClick={addOmnichannelStep}
+                    >
+                      <Plus className="h-4 w-4 mr-1" />
+                      Add Step
+                    </Button>
+                    <Button
+                      className="flex-1 bg-violet-600 hover:bg-violet-700"
+                      onClick={handleCreateOmnichannelSequence}
+                      disabled={isCreatingOmnichannel || !omnichannelName.trim()}
+                    >
+                      {isCreatingOmnichannel ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Send className="h-4 w-4 mr-1" />}
+                      {isCreatingOmnichannel ? "Creating…" : "Create Sequence"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Step builder */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center justify-between">
+                    Steps
+                    <Badge variant="secondary">{omnichannelSteps.length}</Badge>
+                  </CardTitle>
+                  <CardDescription>
+                    Define the order and timing of each touchpoint.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {omnichannelSteps.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <Sparkles className="h-8 w-8 mx-auto mb-2 opacity-40" />
+                      <p className="text-sm">No steps yet. Click "Add Step" to begin building.</p>
+                    </div>
+                  ) : (
+                    <ScrollArea className="h-[400px] pr-2">
+                      <div className="space-y-4">
+                        {omnichannelSteps.map((step, idx) => (
+                          <div key={step.id} className="border rounded-lg p-3 space-y-3 bg-muted/30">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-semibold text-muted-foreground">STEP {idx + 1}</span>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+                                onClick={() => removeOmnichannelStep(step.id)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <Label className="text-xs">Type</Label>
+                                <Select
+                                  value={step.type}
+                                  onValueChange={(v) => updateOmnichannelStep(step.id, { type: v as OmnichannelStep["type"] })}
+                                >
+                                  <SelectTrigger className="h-8 text-xs">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="email">Email</SelectItem>
+                                    <SelectItem value="sms">SMS</SelectItem>
+                                    <SelectItem value="social_post">Social Post</SelectItem>
+                                    <SelectItem value="video">Video</SelectItem>
+                                    <SelectItem value="direct_mail">Direct Mail</SelectItem>
+                                    <SelectItem value="wait">Wait / Delay</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-xs">Step Name</Label>
+                                <Input
+                                  className="h-8 text-xs"
+                                  value={step.name}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { name: e.target.value })}
+                                  placeholder={`Step ${idx + 1}`}
+                                />
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <Label className="text-xs">Delay (days)</Label>
+                                <Input
+                                  className="h-8 text-xs"
+                                  type="number"
+                                  min={0}
+                                  value={step.delay_days}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { delay_days: Number(e.target.value) })}
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-xs">Delay (hours)</Label>
+                                <Input
+                                  className="h-8 text-xs"
+                                  type="number"
+                                  min={0}
+                                  max={23}
+                                  value={step.delay_hours}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { delay_hours: Number(e.target.value) })}
+                                />
+                              </div>
+                            </div>
+                            {step.type === "email" && (
+                              <div className="space-y-1">
+                                <Label className="text-xs">Subject Line</Label>
+                                <Input
+                                  className="h-8 text-xs"
+                                  value={step.subject}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { subject: e.target.value })}
+                                  placeholder="Email subject…"
+                                />
+                              </div>
+                            )}
+                            {step.type !== "wait" && (
+                              <div className="space-y-1">
+                                <Label className="text-xs">{step.type === "email" ? "Body" : "Message / Content"}</Label>
+                                <Textarea
+                                  className="text-xs"
+                                  rows={2}
+                                  value={step.body}
+                                  onChange={(e) => updateOmnichannelStep(step.id, { body: e.target.value })}
+                                  placeholder="Content for this step…"
+                                />
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           </TabsContent>
 
         </Tabs>
