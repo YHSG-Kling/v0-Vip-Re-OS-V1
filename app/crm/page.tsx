@@ -1200,7 +1200,7 @@ export default function CRMPage() {
                           contactId: selectedContactId,
                           brokerageId,
                           invitedByUserId: user.id,
-                          sendMagicLink: false,
+                          sendMagicLink: true,
                         })
                         if (result.success) {
                           setPortalInviteStatus("invited")

@@ -49,15 +49,6 @@ export default async function ListingsPage({
   const resolvedSearchParams = await searchParams
   const showCreateSheet = resolvedSearchParams?.action === "new"
 
-  // Contact prefill values passed from CRM quick-action links
-  const prefillContact = showCreateSheet ? {
-    firstName:  resolvedSearchParams?.firstName  ?? "",
-    lastName:   resolvedSearchParams?.lastName   ?? "",
-    email:      resolvedSearchParams?.email      ?? "",
-    phone:      resolvedSearchParams?.phone      ?? "",
-    contactId:  resolvedSearchParams?.contactId  ?? "",
-  } : undefined
-
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
@@ -65,15 +56,30 @@ export default async function ListingsPage({
     redirect("/login")
   }
 
-  // Look up the agent record to get the agent UUID (listings.agent_id = agents.id, not users.id)
-  const { data: agentRecord } = await supabase
-    .from("agents")
-    .select("id")
-    .eq("user_id", user.id)
-    .maybeSingle()
+  // Load agent record + user profile for sheet pre-fill (agent_id = agents.id, not users.id)
+  const [{ data: agentRecord }, { data: userProfile }] = await Promise.all([
+    supabase.from("agents").select("id").eq("user_id", user.id).maybeSingle(),
+    supabase.from("users").select("first_name, last_name, brokerage_id").eq("id", user.id).maybeSingle(),
+  ])
 
   // Build query — if no agent record found, fall back to user.id for brokers/admins
   const agentId = agentRecord?.id ?? user.id
+  const brokerageId = userProfile?.brokerage_id ?? ""
+  const agentName = [userProfile?.first_name, userProfile?.last_name].filter(Boolean).join(" ")
+  const agentEmail = user.email ?? ""
+
+  // Contact prefill values passed from CRM quick-action links
+  const prefillContact = showCreateSheet ? {
+    firstName:   resolvedSearchParams?.firstName  ?? "",
+    lastName:    resolvedSearchParams?.lastName   ?? "",
+    email:       resolvedSearchParams?.email      ?? "",
+    phone:       resolvedSearchParams?.phone      ?? "",
+    contactId:   resolvedSearchParams?.contactId  ?? "",
+    agentUserId: user.id,
+    agentName,
+    agentEmail,
+    brokerageId,
+  } : undefined
 
   // Fetch listings with correct schema columns
   const { data: listings } = await supabase
