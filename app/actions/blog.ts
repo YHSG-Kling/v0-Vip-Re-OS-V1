@@ -108,7 +108,8 @@ Return ONLY valid JSON with this exact structure (no markdown, no code blocks):
     blogResult = JSON.parse(cleanedText) as BlogPostResult
   } catch (err) {
     console.error("[generateBlogPost] AI generation failed:", err)
-    return { success: false, error: "Failed to generate blog content" }
+    const detail = err instanceof Error ? err.message : String(err)
+    return { success: false, error: `Failed to generate blog content: ${detail}` }
   }
 
   // ── 5. Compliance check via evaluateOutbound ────────────────────────────────

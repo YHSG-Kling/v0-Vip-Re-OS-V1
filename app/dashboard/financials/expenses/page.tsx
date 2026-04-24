@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Receipt, ArrowLeft, TrendingDown } from 'lucide-react'
 import Link from 'next/link'
+import { ExportCSVButton } from '@/app/components/features/financial/ExportCSVButton'
 import {
   ExpenseIntelligencePanel,
   FinancialActionStack,
@@ -91,7 +92,10 @@ export default async function ExpensesPage() {
             <p className="text-muted-foreground">Track and categorize your business expenses for tax purposes</p>
           </div>
         </div>
-        <AddExpenseDialog agentId={user.id} />
+        <div className="flex items-center gap-2">
+          <ExportCSVButton agentId={user.id} type="expenses" />
+          <AddExpenseDialog agentId={user.id} />
+        </div>
       </div>
 
       {/* KPI Row */}

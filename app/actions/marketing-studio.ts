@@ -68,7 +68,7 @@ export interface UpdateCampaignParams {
 
 export interface CreateAssetParams {
   campaignId?: string
-  assetType: "video" | "image" | "document" | "social_post" | "email" | "direct_mail"
+  assetType: "video" | "snippet" | "script" | "graphic" | "template" | "social_post" | "newsletter" | "blog" | "podcast" | "mailer" | "ad_creative" | "qr"
   assetName: string
   sourceTable?: string
   sourceId?: string
@@ -107,7 +107,13 @@ export interface CreateTaskParams {
 
 async function assertMarketingStudioAccess(userId: string): Promise<{ allowed: boolean; reason?: string }> {
   const access = await canAccessFeature(userId, "marketing_studio")
-  return { allowed: access.allowed, reason: access.reason }
+  if (!access.allowed) {
+    const reason = access.reason === "Feature does not exist"
+      ? "Marketing Studio is not yet enabled for your account. Contact your administrator to enable it."
+      : access.reason
+    return { allowed: false, reason }
+  }
+  return { allowed: true }
 }
 
 // ─── CAMPAIGN ACTIONS ─────────────────────────────────────────────────────────

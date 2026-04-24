@@ -64,6 +64,7 @@ import {
   saveThankYouTemplateAction,
   loadNoteHistoryAction,
   loadGiftHistoryAction,
+  createReviewRequestAction,
 } from "@/app/actions/reputation-kernel"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -618,7 +619,15 @@ export function ReputationPanel({
             <Button variant="outline" onClick={() => copy(reviewDraft, "review")}>
               {copiedId === "review" ? <><Check className="w-4 h-4 mr-1" />Copied</> : <><Copy className="w-4 h-4 mr-1" />Copy</>}
             </Button>
-            <Button onClick={() => setReviewDialogOpen(false)}>Done</Button>
+            <Button onClick={async () => {
+              const contactName = `${reviewClient?.contacts?.first_name || reviewClient?.first_name || ""} ${reviewClient?.contacts?.last_name || reviewClient?.last_name || ""}`.trim()
+              await createReviewRequestAction({
+                contactId: reviewClient?.contact_id || reviewClient?.id,
+                contactName: contactName || "Client",
+                platform: reviewPlatform as any,
+              }).catch(() => null)
+              setReviewDialogOpen(false)
+            }}>Done</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

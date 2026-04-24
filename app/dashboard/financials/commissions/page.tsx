@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { DollarSign, ArrowLeft, TrendingUp, Clock, CheckCircle2, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
 import { PayoutButton } from '@/app/components/features/financial/PayoutButton'
+import { ExportCSVButton } from '@/app/components/features/financial/ExportCSVButton'
 import {
   CommissionIntelligencePanel,
   FinancialActionStack,
@@ -87,15 +88,18 @@ export default async function CommissionsPage() {
   return (
     <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <Link href="/dashboard/financials/agent"><Button variant="ghost" size="sm"><ArrowLeft className="w-4 h-4" /></Button></Link>
-        <div>
-          <h1 className="text-3xl font-bold flex items-center gap-2">
-            <DollarSign className="w-7 h-7 text-green-600" />
-            Commission Tracker — {currentYear}
-          </h1>
-          <p className="text-muted-foreground">{commissionsData.length} commission records • {pendingCount} pending • {paidCount} paid</p>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-3">
+          <Link href="/dashboard/financials/agent"><Button variant="ghost" size="sm"><ArrowLeft className="w-4 h-4" /></Button></Link>
+          <div>
+            <h1 className="text-3xl font-bold flex items-center gap-2">
+              <DollarSign className="w-7 h-7 text-green-600" />
+              Commission Tracker — {currentYear}
+            </h1>
+            <p className="text-muted-foreground">{commissionsData.length} commission records • {pendingCount} pending • {paidCount} paid</p>
+          </div>
         </div>
+        <ExportCSVButton agentId={agentId} type="commissions" />
       </div>
 
       {/* KPI Row */}

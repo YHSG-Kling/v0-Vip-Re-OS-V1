@@ -38,6 +38,7 @@ import {
   getVideoScriptsLibrary,
   getVideoProjects,
 } from "@/app/actions/podcast-generation"
+import { listHeygenVoices, type HeyGenVoice } from "@/app/actions/heygen-avatars"
 
 interface Template {
   id: string
@@ -111,6 +112,7 @@ export function CreateEpisodeDialog({
   // Source data
   const [videoScripts, setVideoScripts] = useState<VideoScript[]>([])
   const [videoProjects, setVideoProjects] = useState<VideoProject[]>([])
+  const [heygenVoices, setHeygenVoices] = useState<HeyGenVoice[]>([])
 
   // Form state
   const [sourceType, setSourceType] = useState<SourceType>("keywords")
@@ -155,9 +157,10 @@ export function CreateEpisodeDialog({
   async function loadSourceContent() {
     setLoadingContent(true)
     try {
-      const [scriptsResult, projectsResult] = await Promise.all([
+      const [scriptsResult, projectsResult, voicesResult] = await Promise.all([
         getVideoScriptsLibrary(),
         getVideoProjects(),
+        listHeygenVoices(),
       ])
 
       if (scriptsResult.success) {
@@ -165,6 +168,9 @@ export function CreateEpisodeDialog({
       }
       if (projectsResult.success) {
         setVideoProjects(projectsResult.projects || [])
+      }
+      if (voicesResult.success && voicesResult.voices.length > 0) {
+        setHeygenVoices(voicesResult.voices)
       }
     } catch (error) {
       console.error("Failed to load source content:", error)
@@ -574,9 +580,11 @@ export function CreateEpisodeDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="default">Default Voice</SelectItem>
-                    <SelectItem value="professional">Professional</SelectItem>
-                    <SelectItem value="friendly">Friendly</SelectItem>
-                    <SelectItem value="authoritative">Authoritative</SelectItem>
+                    {heygenVoices.map((v) => (
+                      <SelectItem key={v.voice_id} value={v.voice_id}>
+                        {v.name}{v.language && v.language !== "en" ? ` (${v.language})` : ""}{v.gender ? ` · ${v.gender}` : ""}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
                 <p className="text-xs text-gray-500">

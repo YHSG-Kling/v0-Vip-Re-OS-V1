@@ -454,6 +454,7 @@ export function OffersManagerClient({ listing, initialOffers, currentUserId, bro
                     listPrice={listing.list_price ?? 0}
                     canApprove={canApprove}
                     isPending={isPending}
+                    userId={currentUserId}
                     onAccept={() => handleAcceptGate(offer.id)}
                     onReject={() => handleReject(offer.id)}
                     onCounter={() => setCounterTarget(offer)}

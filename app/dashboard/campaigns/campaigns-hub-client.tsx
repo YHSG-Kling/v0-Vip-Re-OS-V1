@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useTransition, useCallback, useEffect } from "react"
+import { useRouter } from "next/navigation"
 import { format, formatDistanceToNow } from "date-fns"
 import {
   Card, CardContent, CardDescription, CardHeader, CardTitle,
@@ -859,6 +860,7 @@ export function CampaignsHubClient({
   total: initialTotal,
   summary,
 }: CampaignsHubClientProps) {
+  const router = useRouter()
   const [campaigns, setCampaigns] = useState<CampaignWithROI[]>(initialCampaigns)
   const [total] = useState(initialTotal)
   const [search, setSearch] = useState("")
@@ -947,7 +949,8 @@ export function CampaignsHubClient({
       visibility_scope: "brokerage",
     }
     setCampaigns((prev) => [newCampaign, ...prev])
-  }, [userId, brokerageId])
+    router.refresh()
+  }, [userId, brokerageId, router])
 
   return (
     <div className="flex flex-col gap-6 p-6">

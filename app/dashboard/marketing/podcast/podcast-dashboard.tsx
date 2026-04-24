@@ -5,6 +5,10 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/app/components/ui/ta
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent } from "@/app/components/ui/card"
 import { Plus, Mic, Settings, Radio, BarChart2, TrendingUp, CheckCircle2, Loader2 } from "lucide-react"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/app/components/ui/dialog"
+import { Input } from "@/app/components/ui/input"
+import { Label } from "@/app/components/ui/label"
+import { Textarea } from "@/app/components/ui/textarea"
 import { EpisodesTab } from "./components/episodes-tab"
 import { TemplatesTab } from "./components/templates-tab"
 import { DistributionChannelsTab } from "./components/distribution-channels-tab"
@@ -13,6 +17,7 @@ import {
   getPodcastEpisodes,
   getPodcastTemplates,
   getDistributionChannels,
+  createPodcastTemplate,
 } from "@/app/actions/podcast-generation"
 
 interface Episode {
@@ -67,6 +72,10 @@ export function PodcastDashboard({
   const [channels, setChannels] = useState<DistributionChannel[]>([])
   const [loading, setLoading] = useState(initialEpisodes.length === 0)
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false)
+  const [isCreateTemplateOpen, setIsCreateTemplateOpen] = useState(false)
+  const [newTemplateName, setNewTemplateName] = useState("")
+  const [newTemplateDesc, setNewTemplateDesc] = useState("")
+  const [creatingTemplate, setCreatingTemplate] = useState(false)
   const [activeTab, setActiveTab] = useState("episodes")
 
   useEffect(() => {
@@ -113,6 +122,26 @@ export function PodcastDashboard({
     loadData()
   }
 
+  async function handleCreateTemplate() {
+    if (!newTemplateName.trim()) return
+    setCreatingTemplate(true)
+    try {
+      const result = await createPodcastTemplate({
+        name: newTemplateName.trim(),
+        description: newTemplateDesc.trim() || undefined,
+        templateType: "standard",
+      })
+      if (result.success) {
+        setIsCreateTemplateOpen(false)
+        setNewTemplateName("")
+        setNewTemplateDesc("")
+        loadData()
+      }
+    } finally {
+      setCreatingTemplate(false)
+    }
+  }
+
   function handleChannelUpdated() {
     loadData()
   }
@@ -130,10 +159,16 @@ export function PodcastDashboard({
             <p className="text-sm text-gray-500">Create and distribute AI-powered podcasts</p>
           </div>
         </div>
-        <Button onClick={() => setIsCreateDialogOpen(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          New Episode
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setIsCreateTemplateOpen(true)}>
+            <Settings className="h-4 w-4 mr-2" />
+            New Template
+          </Button>
+          <Button onClick={() => setIsCreateDialogOpen(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            New Episode
+          </Button>
+        </div>
       </header>
 
       {/* Analytics Strip */}
@@ -259,6 +294,44 @@ export function PodcastDashboard({
         channels={channels}
         onCreated={handleEpisodeCreated}
       />
+
+      {/* Create Template Dialog */}
+      <Dialog open={isCreateTemplateOpen} onOpenChange={setIsCreateTemplateOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>New Podcast Template</DialogTitle>
+            <DialogDescription>Create a reusable template for your podcast episodes.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="tpl-name">Template Name</Label>
+              <Input
+                id="tpl-name"
+                value={newTemplateName}
+                onChange={e => setNewTemplateName(e.target.value)}
+                placeholder="e.g. Weekly Market Update"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="tpl-desc">Description (optional)</Label>
+              <Textarea
+                id="tpl-desc"
+                value={newTemplateDesc}
+                onChange={e => setNewTemplateDesc(e.target.value)}
+                placeholder="Describe what this template is used for…"
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCreateTemplateOpen(false)}>Cancel</Button>
+            <Button onClick={handleCreateTemplate} disabled={creatingTemplate || !newTemplateName.trim()}>
+              {creatingTemplate ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+              Create Template
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

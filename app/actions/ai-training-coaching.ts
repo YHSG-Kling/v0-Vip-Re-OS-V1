@@ -179,8 +179,31 @@ Generate a detailed role-play scenario including:
       scenario
     }
   } catch (error) {
-    console.error("[v0] Generate coaching scenario error:", error)
-    return handleError(error, "generateCoachingScenario")
+    console.error("[v0] Generate coaching scenario error, trying text fallback:", error)
+    try {
+      const { text } = await generateText({
+        prompt: `Generate a brief real estate coaching scenario for a ${params.scenarioType.replace(/_/g, " ")} situation at ${params.difficulty || "medium"} difficulty. Include a client name, background, main objection, and 2 suggested responses. Keep it concise.`,
+        maxTokens: 400,
+        userId: params.agentId,
+        brokerageId: params.brokerageId,
+        feature: "coaching_scenario",
+      })
+      return {
+        success: true,
+        scenario: {
+          title: `${params.scenarioType.replace(/_/g, " ")} Practice`,
+          setup: text,
+          clientProfile: { name: "Client", background: "", personality: "typical", concerns: [], motivations: [], objections: [] },
+          objectives: ["Practice your response"],
+          keyPoints: [],
+          dialogueStarters: [],
+          evaluationCriteria: [],
+          debrief: { keyTakeaways: [], commonPitfalls: [], advancedTips: [] },
+        }
+      }
+    } catch {
+      return handleError(error, "generateCoachingScenario")
+    }
   }
 }
 
