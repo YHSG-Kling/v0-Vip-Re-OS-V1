@@ -5,13 +5,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/ca
 import { Button } from "@/app/components/ui/button"
 import { createResourceAction } from "@/app/actions/education-kernel"
 import { generateText, generateVideo } from "@/app/actions/content-generation-engine"
-import { getHeyGenAvatars, type HeyGenAvatar } from "@/app/actions/heygen-avatars"
+import { getHeyGenAvatars, createTalkingPhotoVideo, type HeyGenAvatar } from "@/app/actions/heygen-avatars"
 import { generateHeyGenVideo, getHeyGenVideoStatus } from "@/app/actions/external-services"
 import { createClient } from "@/lib/supabase/client"
 import { toast } from "sonner"
 import { Sparkles, Video, Loader2, RefreshCw } from 'lucide-react'
 
-type Tab = "create" | "ai-generate" | "avatar-video"
+type Tab = "create" | "ai-generate" | "avatar-video" | "photo-video"
 
 export function EducationEditor({ brokerageId }: { brokerageId: string }) {
   const [tab, setTab] = useState<Tab>("create")
@@ -31,6 +31,16 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
   const [aiMode, setAiMode] = useState<'article' | 'script'>('article')
   const [aiResult, setAiResult] = useState('')
   const [isGenerating, startGenerating] = useTransition()
+
+  // Photo video tab state
+  const [photoUrl, setPhotoUrl] = useState('')
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null)
+  const [photoScript, setPhotoScript] = useState('')
+  const [photoVideoJobId, setPhotoVideoJobId] = useState<string | null>(null)
+  const [photoVideoStatus, setPhotoVideoStatus] = useState<string | null>(null)
+  const [photoVideoUrl, setPhotoVideoUrl] = useState<string | null>(null)
+  const [isCreatingPhotoVideo, startCreatePhotoVideo] = useTransition()
+  const photoPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Avatar video tab state
   const [avatars, setAvatars] = useState<HeyGenAvatar[]>([])
@@ -130,6 +140,36 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
     }
   }
 
+  const handleGeneratePhotoVideo = () => {
+    if (!photoUrl || !photoScript) { toast.error('Enter a photo URL and script'); return }
+    startCreatePhotoVideo(async () => {
+      const result = await createTalkingPhotoVideo({ photoUrl, script: photoScript, voiceId: 'default' })
+      if (!result.success || !result.videoId) {
+        toast.error(result.error ?? 'Failed to start video generation')
+        return
+      }
+      setPhotoVideoJobId(result.videoId)
+      setPhotoVideoStatus('processing')
+      toast.success('Video generation started — checking status…')
+      let pollAttempts = 0
+      photoPollRef.current = setInterval(async () => {
+        pollAttempts++
+        const statusResult = await getHeyGenVideoStatus(result.videoId!)
+        if (!statusResult.success) return
+        if ((statusResult as any).status === 'completed') {
+          clearInterval(photoPollRef.current!)
+          setPhotoVideoStatus('completed')
+          setPhotoVideoUrl((statusResult as any).videoUrl ?? null)
+          toast.success('Video ready!')
+        } else if ((statusResult as any).status === 'failed' || pollAttempts >= 60) {
+          clearInterval(photoPollRef.current!)
+          setPhotoVideoStatus('failed')
+          toast.error(pollAttempts >= 60 ? 'Video generation timed out' : 'Video generation failed')
+        }
+      }, 10_000)
+    })
+  }
+
   const handleGenerateVideo = () => {
     if (!selectedAvatar || !videoScript) { toast.error('Select an avatar and enter a script'); return }
     startCreateVideo(async () => {
@@ -207,7 +247,7 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
       <CardHeader>
         <CardTitle>Create Education Resource</CardTitle>
         <div className="flex gap-2 mt-2">
-          {(['create', 'ai-generate', 'avatar-video'] as Tab[]).map(t => (
+          {(['create', 'ai-generate', 'avatar-video', 'photo-video'] as Tab[]).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -215,7 +255,7 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
                 tab === t ? 'bg-primary text-primary-foreground' : 'bg-muted hover:bg-muted/80 text-muted-foreground'
               }`}
             >
-              {t === 'create' ? 'Manual' : t === 'ai-generate' ? '✨ AI Generate' : '🎬 Avatar Video'}
+              {t === 'create' ? 'Manual' : t === 'ai-generate' ? '✨ AI Generate' : t === 'avatar-video' ? '🎬 Avatar Video' : '📸 Photo Video'}
             </button>
           ))}
         </div>
@@ -309,6 +349,80 @@ export function EducationEditor({ brokerageId }: { brokerageId: string }) {
                   Save to Education Library
                 </Button>
               </div>
+            )}
+          </div>
+        )}
+
+        {/* Photo video tab */}
+        {tab === 'photo-video' && (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Photo URL</label>
+              <input
+                type="url"
+                value={photoUrl}
+                onChange={e => { setPhotoUrl(e.target.value); setPhotoPreview(e.target.value || null) }}
+                placeholder="https://example.com/your-headshot.jpg"
+                className="w-full border rounded px-3 py-2 text-sm"
+              />
+              {photoPreview && (
+                <div className="mt-2">
+                  <img
+                    src={photoPreview}
+                    alt="Photo preview"
+                    className="h-32 w-32 object-cover rounded-lg border"
+                    onError={() => setPhotoPreview(null)}
+                  />
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Script</label>
+              <textarea
+                value={photoScript}
+                onChange={e => setPhotoScript(e.target.value)}
+                placeholder="Enter the script for your talking photo video…"
+                className="w-full border rounded px-3 py-2 text-sm"
+                rows={5}
+              />
+            </div>
+            {photoVideoStatus === null && (
+              <Button onClick={handleGeneratePhotoVideo} disabled={isCreatingPhotoVideo || !photoUrl || !photoScript}>
+                {isCreatingPhotoVideo ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Video className="h-4 w-4 mr-1.5" />}
+                Create Video from Photo
+              </Button>
+            )}
+            {photoVideoStatus === 'processing' && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                Processing video — checking every 10s…
+              </div>
+            )}
+            {photoVideoStatus === 'completed' && photoVideoUrl && (
+              <div className="space-y-3">
+                <video src={photoVideoUrl} controls className="w-full rounded-lg border" />
+                <Button onClick={async () => {
+                  setLoading(true)
+                  try {
+                    await createResourceAction({
+                      title: `Photo Video - ${new Date().toLocaleDateString()}`,
+                      description: photoScript.slice(0, 120),
+                      contentType: 'video',
+                      content: photoVideoUrl,
+                      estimatedMinutes: 3,
+                      brokerageId,
+                    })
+                    toast.success('Video saved to education library')
+                    setPhotoVideoJobId(null); setPhotoVideoStatus(null); setPhotoVideoUrl(null); setPhotoScript(''); setPhotoUrl(''); setPhotoPreview(null)
+                  } catch { toast.error('Failed to save video') }
+                  finally { setLoading(false) }
+                }} disabled={loading}>
+                  Save to Education Library
+                </Button>
+              </div>
+            )}
+            {photoVideoStatus === 'failed' && (
+              <p className="text-sm text-destructive">Video generation failed. Please try again.</p>
             )}
           </div>
         )}

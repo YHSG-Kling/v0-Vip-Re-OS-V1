@@ -143,7 +143,7 @@ export async function updateCampaignStatus(campaignId: string, status: "active" 
 
 // ─── NEW: ISA Campaigns page actions ─────────────────────────────────────────
 
-export type CampaignType = "FSBO" | "BUYER_MATCH" | "DIVORCE" | "FORECLOSURE" | "GHOST_RECOVERY"
+export type CampaignType = "fsbo" | "buyer_match" | "divorce" | "foreclosure" | "ghost_recovery" | "social_intent" | "search_intent"
 
 export interface ISACampaignRow {
   id: string
@@ -217,7 +217,7 @@ export async function createISACampaign(params: {
     .insert({
       brokerage_id:   params.brokerageId,
       name:           params.name,
-      campaign_type:  params.campaignType,
+      campaign_type:  params.campaignType.toLowerCase() as CampaignType,
       channels:       params.channels,
       target_segment: params.targetSegment ?? {},
       status:         "draft",

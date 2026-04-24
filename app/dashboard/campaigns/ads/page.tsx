@@ -5,6 +5,8 @@ import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { AdsDashboardClient } from "./ads-dashboard-client"
 
+export const dynamic = "force-dynamic"
+
 export const metadata = {
   title: "Ad Campaigns | Dashboard",
   description: "Manage your ad campaigns, audiences, and creative variations",

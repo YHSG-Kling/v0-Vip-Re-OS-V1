@@ -88,6 +88,7 @@ import { isSignableDocType } from "@/lib/documents/signable-doc-types"
 import { AssignTCPanel } from "./assign-tc-panel"
 import { AssignLenderPanel } from "./assign-lender-panel"
 import { VendorBookingsPanel } from "@/app/dashboard/components/vendor-bookings-panel"
+import { VendorBookingSection } from "@/app/components/transactions/VendorBookingSection"
 import {
   analyzeTransactionDocument,
   generateTransactionDocumentReminders,
@@ -98,6 +99,7 @@ import {
   resolveFormsProviderAction,
   loadAvailableFormsAction,
 } from "@/app/actions/forms-kernel"
+import { detectTransactionIssues, detectTransactionDelays } from "@/app/actions/transactions"
 import {
   TransactionFormEsignFlow,
   type FormTemplate,
@@ -504,6 +506,33 @@ export function TransactionDetailClient({
       .then(setDealPrediction)
       .catch(() => null)
       .finally(() => setDealPredLoading(false))
+  }, [transaction.id])
+
+  // Transaction Warnings — issues + delays loaded on mount
+  const [txWarnings, setTxWarnings] = useState<string[]>([])
+
+  useEffect(() => {
+    Promise.all([
+      detectTransactionIssues(transaction.id).catch(() => null),
+      detectTransactionDelays(transaction.id).catch(() => null),
+    ]).then(([issues, delays]) => {
+      const warnings: string[] = []
+      if (issues && typeof issues === "object" && "issues" in issues) {
+        const issueList = (issues as any).issues
+        if (Array.isArray(issueList)) {
+          issueList.forEach((i: any) => warnings.push(typeof i === "string" ? i : i.description ?? i.issue ?? String(i)))
+        }
+      }
+      if (Array.isArray(delays)) {
+        delays.forEach((d: any) => warnings.push(d.description ?? d.delay ?? String(d)))
+      } else if (delays && typeof delays === "object" && "delays" in delays) {
+        const delayList = (delays as any).delays
+        if (Array.isArray(delayList)) {
+          delayList.forEach((d: any) => warnings.push(d.description ?? d.delay ?? String(d)))
+        }
+      }
+      setTxWarnings(warnings)
+    })
   }, [transaction.id])
 
   // E-sign local state (optimistic updates for linked offer)
@@ -950,6 +979,21 @@ export function TransactionDetailClient({
           <AlertDescription>
             {missingContractDate && "Contract date is required. "}
             {missingCompliance && "Compliance must be passed before proceeding."}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* AI Warnings Panel */}
+      {txWarnings.length > 0 && (
+        <Alert className="rounded-none border-x-0 border-t-0 border-yellow-300 bg-yellow-50">
+          <AlertTriangle className="h-4 w-4 text-yellow-600" />
+          <AlertTitle className="text-yellow-800">Transaction Warnings</AlertTitle>
+          <AlertDescription>
+            <ul className="list-disc list-inside space-y-0.5 mt-1">
+              {txWarnings.map((w, i) => (
+                <li key={i} className="text-sm text-yellow-700">{w}</li>
+              ))}
+            </ul>
           </AlertDescription>
         </Alert>
       )}
@@ -2477,8 +2521,15 @@ export function TransactionDetailClient({
               </Card>
             </TabsContent>
 
-            {/* Vendors Tab (Insurance Quotes) */}
-            <TabsContent value="vendors" className="mt-4">
+            {/* Vendors Tab */}
+            <TabsContent value="vendors" className="mt-4 space-y-4">
+              {/* Vendor Bookings */}
+              <VendorBookingSection
+                transactionId={transaction.id}
+                transactionStage={transaction.stage ?? undefined}
+                initialBookings={vendorBookings as any}
+              />
+
               <Card>
                 <CardHeader className="pb-2 flex flex-row items-center justify-between">
                   <CardTitle className="text-sm">Insurance Quotes</CardTitle>

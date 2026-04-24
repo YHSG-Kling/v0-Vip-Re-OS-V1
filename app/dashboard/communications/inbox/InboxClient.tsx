@@ -13,6 +13,9 @@ import {
   analyzeMessageSentiment,
   generateSmartResponse,
 } from "@/app/actions/ai-communication-hub"
+import { analyzeConversation } from "@/app/actions/ai-predictions"
+import { Sparkles, Loader2 } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { createClient } from "@/lib/supabase/client"
 import AIReplyCoachPanel from "./components/AIReplyCoachPanel"
 import { toast } from "sonner"
@@ -81,6 +84,8 @@ export default function InboxClient({
   const [lastInboundBody, setLastInboundBody] = useState<string | undefined>(undefined)
   // ComposeBar controlled body — lets AIReplyCoachPanel inject accepted drafts
   const [composePrefill, setComposePrefill]   = useState<{ body: string; subject?: string } | null>(null)
+  const [conversationInsight, setConversationInsight] = useState<any>(null)
+  const [analyzingConversation, setAnalyzingConversation] = useState(false)
 
   const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count ?? 0), 0)
   const selectedConvo = conversations.find(c => c.id === selectedId) ?? null
@@ -259,6 +264,33 @@ export default function InboxClient({
     return result.success ? (result as any).draft ?? currentText : currentText
   }, [contact, messages, agentId, brokerageId, selectedConvo?.type, composePrefill])
 
+  const handleAnalyzeConversation = useCallback(async () => {
+    if (!selectedId || !contact?.id) return
+    setAnalyzingConversation(true)
+    try {
+      const transcript = messages
+        .map(m => `[${m.direction === "inbound" ? "Contact" : "Agent"}]: ${m.body ?? m.content ?? ""}`)
+        .join("\n")
+      const result = await analyzeConversation({
+        leadId: contact.id,
+        agentId,
+        conversationType: (selectedConvo?.type ?? "email") as "call" | "email" | "sms" | "chat",
+        conversationId: selectedId,
+        transcript,
+      })
+      if (result?.success) {
+        setConversationInsight((result as any).analysis ?? result)
+        toast.success("Conversation analyzed")
+      } else {
+        toast.error("Analysis failed")
+      }
+    } catch {
+      toast.error("Analysis failed")
+    } finally {
+      setAnalyzingConversation(false)
+    }
+  }, [selectedId, contact?.id, agentId, messages, selectedConvo?.type])
+
   const contactName = `${contact?.first_name ?? ""} ${contact?.last_name ?? ""}`.trim() || "Contact"
 
   return (
@@ -308,6 +340,16 @@ export default function InboxClient({
                   Broker View
                 </span>
               )}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="gap-1 text-xs"
+                onClick={handleAnalyzeConversation}
+                disabled={analyzingConversation || messages.length === 0}
+              >
+                {analyzingConversation ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                Analyze
+              </Button>
             </div>
 
             <MessageThread
@@ -315,6 +357,27 @@ export default function InboxClient({
               contactName={contactName}
               loading={messagesLoading}
             />
+
+            {conversationInsight && (
+              <div className="mx-4 mb-2 rounded-md border border-blue-200 bg-blue-50 p-3 text-xs space-y-1">
+                <p className="font-semibold text-blue-800 flex items-center gap-1">
+                  <Sparkles className="h-3 w-3" />
+                  Conversation Intelligence
+                </p>
+                {conversationInsight.sentiment && (
+                  <p className="text-blue-900">Sentiment: <span className="font-medium capitalize">{conversationInsight.sentiment}</span></p>
+                )}
+                {conversationInsight.intent && (
+                  <p className="text-blue-900">Intent: <span className="font-medium">{conversationInsight.intent}</span></p>
+                )}
+                {conversationInsight.urgency && (
+                  <p className="text-blue-900">Urgency: <span className="font-medium capitalize">{conversationInsight.urgency}</span></p>
+                )}
+                {conversationInsight.nextBestAction && (
+                  <p className="text-blue-900 border-t border-blue-200 pt-1">Next action: <span className="font-medium">{conversationInsight.nextBestAction}</span></p>
+                )}
+              </div>
+            )}
 
             <ComposeBar
               conversationId={selectedId!}

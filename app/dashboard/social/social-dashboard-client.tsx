@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Dialog,
@@ -59,6 +60,8 @@ import {
   rejectSocialPost,
   retryFailedPost,
   deleteSocialPost,
+  getSocialMediaAnalytics,
+  rescheduleSocialPost,
 } from "@/app/actions/social-media-automation"
 import { shareListingPost } from "@/app/actions/social-share"
 import { predictPerformanceAction } from "@/app/actions/content-prediction"
@@ -133,6 +136,15 @@ export function SocialDashboardClient({
   const [selectedPostForPrediction, setSelectedPostForPrediction] = useState<any>(null)
   const [currentPrediction, setCurrentPrediction] = useState<PredictionData | null>(null)
   const [isPredicting, setIsPredicting] = useState(false)
+
+  // Analytics
+  const [analytics, setAnalytics] = useState<any>(null)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
+  const [analyticsLoaded, setAnalyticsLoaded] = useState(false)
+
+  // Reschedule
+  const [reschedulingPostId, setReschedulingPostId] = useState<string | null>(null)
+  const [rescheduleDate, setRescheduleDate] = useState("")
 
   const isApprover = APPROVER_ROLES.has(userRole)
 
@@ -246,6 +258,30 @@ export function SocialDashboardClient({
     })
     if (result.success && result.prediction) setCurrentPrediction(result.prediction)
     setIsPredicting(false)
+  }
+
+  const handleLoadAnalytics = async () => {
+    if (analyticsLoaded) return
+    setAnalyticsLoading(true)
+    const data = await getSocialMediaAnalytics(brokerageId).catch(() => null)
+    setAnalytics(data)
+    setAnalyticsLoaded(true)
+    setAnalyticsLoading(false)
+  }
+
+  const handleReschedule = async (postId: string) => {
+    if (!rescheduleDate) return
+    setLoadingPostId(postId)
+    const result = await rescheduleSocialPost(postId, userId, new Date(rescheduleDate).toISOString())
+    if (result.success) {
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, scheduled_for: rescheduleDate } : p))
+      toast.success("Post rescheduled")
+      setReschedulingPostId(null)
+      setRescheduleDate("")
+    } else {
+      toast.error((result as any).error || "Failed to reschedule")
+    }
+    setLoadingPostId(null)
   }
 
   const handlePostSaved = (post: any) => {
@@ -362,6 +398,9 @@ export function SocialDashboardClient({
           <TabsTrigger value="calendar" className="gap-1">
             <Calendar className="h-4 w-4" />Calendar
           </TabsTrigger>
+          <TabsTrigger value="analytics" className="gap-1" onClick={handleLoadAnalytics}>
+            <BarChart3 className="h-4 w-4" />Analytics
+          </TabsTrigger>
           <TabsTrigger value="draft">Draft ({counts.draft})</TabsTrigger>
           <TabsTrigger value="pending_approval" className={counts.pending_approval > 0 ? "text-amber-700" : ""}>
             Pending Approval ({counts.pending_approval})
@@ -392,6 +431,84 @@ export function SocialDashboardClient({
             posts={posts}
             onRefresh={() => router.refresh()}
           />
+        </TabsContent>
+
+        {/* Analytics */}
+        <TabsContent value="analytics" className="space-y-4">
+          {analyticsLoading && (
+            <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">
+              <RefreshCw className="h-4 w-4 animate-spin mr-2" />Loading analytics…
+            </div>
+          )}
+          {!analyticsLoading && analyticsLoaded && !analytics && (
+            <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">No analytics data available yet.</CardContent></Card>
+          )}
+          {analytics && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: "Total Posts",      value: analytics.totalPosts,                  icon: ImageIcon },
+                  { label: "Impressions",      value: analytics.totalImpressions.toLocaleString(), icon: Eye },
+                  { label: "Engagement",       value: analytics.totalEngagement.toLocaleString(),  icon: ThumbsUp },
+                  { label: "Eng. Rate",        value: `${analytics.avgEngagementRate.toFixed(2)}%`, icon: TrendingUp },
+                ].map(({ label, value, icon: Icon }) => (
+                  <Card key={label}>
+                    <CardContent className="p-4 flex items-center gap-3">
+                      <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
+                      <div>
+                        <p className="text-xl font-bold leading-none">{value}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              {/* Platform breakdown */}
+              {Object.keys(analytics.platformBreakdown).length > 0 && (
+                <Card>
+                  <CardContent className="pt-4">
+                    <p className="text-sm font-semibold mb-3">Platform Breakdown</p>
+                    <div className="space-y-2">
+                      {Object.entries(analytics.platformBreakdown as Record<string, { posts: number; impressions: number; engagement: number }>).map(([platform, data]) => (
+                        <div key={platform} className="flex items-center gap-3 text-sm">
+                          <span className="w-20 font-medium capitalize">{platform}</span>
+                          <span className="text-muted-foreground">{data.posts} posts</span>
+                          <span className="text-muted-foreground">{data.impressions.toLocaleString()} impressions</span>
+                          <span className="text-muted-foreground">{data.engagement.toLocaleString()} engagement</span>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Top posts */}
+              {analytics.topPosts.length > 0 && (
+                <Card>
+                  <CardContent className="pt-4">
+                    <p className="text-sm font-semibold mb-3">Top Performing Posts</p>
+                    <div className="space-y-2">
+                      {analytics.topPosts.map((post: any) => (
+                        <div key={post.id} className="flex items-start justify-between gap-2 p-2 rounded border text-xs">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium capitalize">{post.platform}</p>
+                            <p className="text-muted-foreground line-clamp-2">{post.content?.slice(0, 100)}</p>
+                          </div>
+                          {post.engagement && (
+                            <div className="flex items-center gap-2 shrink-0 text-muted-foreground">
+                              <span className="flex items-center gap-0.5"><ThumbsUp className="h-3 w-3" />{(Array.isArray(post.engagement) ? post.engagement[0] : post.engagement)?.likes_count ?? 0}</span>
+                              <span className="flex items-center gap-0.5"><MessageCircle className="h-3 w-3" />{(Array.isArray(post.engagement) ? post.engagement[0] : post.engagement)?.comments_count ?? 0}</span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </>
+          )}
         </TabsContent>
 
         {/* Post list tabs */}
@@ -608,6 +725,12 @@ export function SocialDashboardClient({
                                   <Pencil className="h-4 w-4 mr-2" />Edit Post
                                 </DropdownMenuItem>
                               )}
+                              {/* Reschedule — scheduled posts */}
+                              {post.status === "scheduled" && (
+                                <DropdownMenuItem onClick={() => { setReschedulingPostId(post.id); setRescheduleDate(post.scheduled_for?.slice(0, 16) ?? "") }}>
+                                  <Clock className="h-4 w-4 mr-2" />Reschedule
+                                </DropdownMenuItem>
+                              )}
                               {/* Delete — any non-published */}
                               {post.status !== "published" && (
                                 <>
@@ -672,6 +795,28 @@ export function SocialDashboardClient({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Reschedule Dialog */}
+      <Dialog open={!!reschedulingPostId} onOpenChange={(v) => !v && setReschedulingPostId(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Reschedule Post</DialogTitle>
+            <DialogDescription>Choose a new date and time for this post</DialogDescription>
+          </DialogHeader>
+          <Input
+            type="datetime-local"
+            value={rescheduleDate}
+            onChange={(e) => setRescheduleDate(e.target.value)}
+          />
+          <div className="flex gap-2 pt-2">
+            <Button className="flex-1" onClick={() => reschedulingPostId && handleReschedule(reschedulingPostId)} disabled={!rescheduleDate || !!loadingPostId}>
+              {loadingPostId ? <RefreshCw className="h-4 w-4 animate-spin mr-1" /> : null}
+              Confirm
+            </Button>
+            <Button variant="outline" onClick={() => setReschedulingPostId(null)}>Cancel</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Performance Prediction Dialog */}
       <Dialog open={predictionDialogOpen} onOpenChange={setPredictionDialogOpen}>

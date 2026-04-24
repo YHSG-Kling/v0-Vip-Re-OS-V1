@@ -262,7 +262,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
   })
   const [newAsset, setNewAsset] = useState({
     assetName: "",
-    assetType: "image" as const,
+    assetType: "graphic" as const,
     campaignId: "",
     previewText: "",
   })
@@ -574,7 +574,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
       })
       if (result.success) {
         setIsCreateAssetOpen(false)
-        setNewAsset({ assetName: "", assetType: "image", campaignId: "", previewText: "" })
+        setNewAsset({ assetName: "", assetType: "graphic", campaignId: "", previewText: "" })
         loadAssets()
         loadInitialData()
       } else {
@@ -666,10 +666,17 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     // Map asset_type to content_type
     const contentTypeMap: Record<string, string> = {
       social_post: "social_post",
-      email: "newsletter",
-      document: "blog_post",
-      image: "ad_creative",
+      snippet: "social_post",
+      script: "social_post",
+      newsletter: "newsletter",
+      mailer: "newsletter",
+      blog: "blog_post",
       video: "ad_creative",
+      graphic: "ad_creative",
+      template: "ad_creative",
+      ad_creative: "ad_creative",
+      podcast: "ad_creative",
+      qr: "ad_creative",
     }
 
     const result = await predictPerformanceAction({
@@ -1324,12 +1331,18 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="image">Image</SelectItem>
+                          <SelectItem value="graphic">Graphic</SelectItem>
                           <SelectItem value="video">Video</SelectItem>
-                          <SelectItem value="document">Document</SelectItem>
+                          <SelectItem value="snippet">Snippet</SelectItem>
+                          <SelectItem value="script">Script</SelectItem>
+                          <SelectItem value="template">Template</SelectItem>
                           <SelectItem value="social_post">Social Post</SelectItem>
-                          <SelectItem value="email">Email</SelectItem>
-                          <SelectItem value="direct_mail">Direct Mail</SelectItem>
+                          <SelectItem value="newsletter">Newsletter</SelectItem>
+                          <SelectItem value="blog">Blog</SelectItem>
+                          <SelectItem value="podcast">Podcast</SelectItem>
+                          <SelectItem value="mailer">Direct Mailer</SelectItem>
+                          <SelectItem value="ad_creative">Ad Creative</SelectItem>
+                          <SelectItem value="qr">QR Code</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -1384,10 +1397,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                       ) : (
                         <div className="text-muted-foreground">
                           {asset.asset_type === "video" && <Video className="h-12 w-12" />}
-                          {asset.asset_type === "image" && <Image className="h-12 w-12" />}
-                          {asset.asset_type === "document" && <FileText className="h-12 w-12" />}
-                          {asset.asset_type === "email" && <Mail className="h-12 w-12" />}
-                          {!["video", "image", "document", "email"].includes(asset.asset_type) && (
+                          {asset.asset_type === "graphic" && <Image className="h-12 w-12" />}
+                          {["blog", "snippet", "script", "template"].includes(asset.asset_type) && <FileText className="h-12 w-12" />}
+                          {["newsletter", "mailer"].includes(asset.asset_type) && <Newspaper className="h-12 w-12" />}
+                          {asset.asset_type === "podcast" && <Mic className="h-12 w-12" />}
+                          {asset.asset_type === "qr" && <QrCode className="h-12 w-12" />}
+                          {!["video", "graphic", "blog", "snippet", "script", "template", "newsletter", "mailer", "podcast", "qr"].includes(asset.asset_type) && (
                             <Sparkles className="h-12 w-12" />
                           )}
                         </div>

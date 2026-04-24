@@ -58,9 +58,9 @@ export async function createRepurposePipeline(params: {
         team_id: params.teamId,
         pipeline_name: params.pipelineName,
         source_type: params.sourceType,
-        source_content_id: params.sourceId,
-        output_formats: params.outputFormats,
-        status: "draft",
+        output_config: { formats: params.outputFormats, sourceId: params.sourceId },
+        is_active: true,
+        created_by: userId,
         created_at: new Date().toISOString(),
       })
       .select()
@@ -111,10 +111,9 @@ export async function executePipeline(params: {
       return { success: false, error: "Pipeline not found" }
     }
 
-    // Update pipeline status to processing
     await supabase
       .from("repurpose_pipelines")
-      .update({ status: "processing", started_at: new Date().toISOString() })
+      .update({ updated_at: new Date().toISOString() })
       .eq("id", params.pipelineId)
 
     // ── Fire kernel event: OMNIPRESENCE_PIPELINE_STARTED ──
@@ -128,13 +127,13 @@ export async function executePipeline(params: {
     const outputs: RepurposedOutput[] = []
 
     // Generate content for each output format
-    for (const format of pipeline.output_formats) {
+    for (const format of (pipeline.output_config?.formats ?? [])) {
       try {
         const config = OUTPUT_FORMAT_CONFIG[format as OutputFormat]
         
         // Generate platform-specific content using AI
         const aiResponse = await generateAIResponse({
-          prompt: `Create a ${config.displayName} post based on: ${pipeline.source_content_id}`,
+          prompt: `Create a ${config.displayName} post based on: ${pipeline.output_config?.sourceId ?? pipeline.source_type}`,
           maxTokens: 500,
           metadata: {
             userId,
@@ -199,7 +198,7 @@ export async function executePipeline(params: {
           .insert({
             brokerage_id: params.brokerageId,
             pipeline_id: params.pipelineId,
-            source_content_id: pipeline.source_content_id,
+            source_content_id: pipeline.output_config?.sourceId ?? '',
             source_content_type: pipeline.source_type,
             output_format: format,
             distribution_channel: config.platform,
@@ -224,14 +223,9 @@ export async function executePipeline(params: {
       }
     }
 
-    // Update pipeline to completed
     await supabase
       .from("repurpose_pipelines")
-      .update({ 
-        status: "completed", 
-        completed_at: new Date().toISOString(),
-        output_count: outputs.length,
-      })
+      .update({ updated_at: new Date().toISOString() })
       .eq("id", params.pipelineId)
 
     // ── Fire kernel event: OMNIPRESENCE_PIPELINE_COMPLETED ──

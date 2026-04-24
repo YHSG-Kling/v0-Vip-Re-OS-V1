@@ -80,6 +80,7 @@ import {
   getSellersInMarket,
   generateMarketUpdateEmail,
 } from "@/app/actions/market-insight-actions"
+import { predictMarketShift } from "@/app/actions/ai-predictions"
 
 interface MarketInsightsDashboardClientProps {
   brokerageId: string
@@ -115,6 +116,8 @@ export function MarketInsightsDashboardClient({
   const [isAddingMarket, setIsAddingMarket] = useState(false)
   const [addMarketOpen, setAddMarketOpen] = useState(false)
   const [shareModalOpen, setShareModalOpen] = useState(false)
+  const [marketPrediction, setMarketPrediction] = useState<any>(null)
+  const [isPredicting, setIsPredicting] = useState(false)
 
   // Share modal state
   const [shareContacts, setShareContacts] = useState<any[]>([])
@@ -803,6 +806,93 @@ export function MarketInsightsDashboardClient({
             </p>
           )}
         </CardContent>
+      </Card>
+
+      {/* Market Shift Prediction */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between pb-3">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              Market Shift Prediction
+            </CardTitle>
+            <CardDescription>AI-powered 90-day market forecast</CardDescription>
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={isPredicting || !selectedMarket}
+            onClick={async () => {
+              if (!selectedMarket) return
+              setIsPredicting(true)
+              try {
+                const parts = selectedMarket.split(",").map((s: string) => s.trim())
+                const city = parts[0] ?? selectedMarket
+                const state = parts[1] ?? ""
+                const result = await predictMarketShift({ city, state })
+                if (result?.success) setMarketPrediction(result.prediction)
+                else toast.error("Prediction failed")
+              } catch {
+                toast.error("Prediction failed")
+              } finally {
+                setIsPredicting(false)
+              }
+            }}
+          >
+            {isPredicting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5 mr-1" />
+            )}
+            Run Prediction
+          </Button>
+        </CardHeader>
+        {marketPrediction && (
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">Direction</p>
+                <p className="font-semibold capitalize">{marketPrediction.prediction?.direction?.replace(/_/g, " ") ?? "—"}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">Confidence</p>
+                <p className="font-semibold">{marketPrediction.prediction?.confidence != null ? `${Math.round(marketPrediction.prediction.confidence * 100)}%` : "—"}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">Timeframe</p>
+                <p className="font-semibold">{marketPrediction.prediction?.timeframe ?? "—"}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">Magnitude</p>
+                <p className="font-semibold capitalize">{marketPrediction.prediction?.magnitude ?? "—"}</p>
+              </div>
+            </div>
+            {marketPrediction.predictions && (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                <div className="rounded-md bg-muted/40 p-3">
+                  <p className="text-xs text-muted-foreground">Median Price (60d)</p>
+                  <p className="font-medium">{marketPrediction.predictions.medianPrice60Days ? `$${marketPrediction.predictions.medianPrice60Days.toLocaleString()}` : "—"}</p>
+                </div>
+                <div className="rounded-md bg-muted/40 p-3">
+                  <p className="text-xs text-muted-foreground">Price Change</p>
+                  <p className="font-medium">{marketPrediction.predictions.priceChange ?? "—"}</p>
+                </div>
+                <div className="rounded-md bg-muted/40 p-3">
+                  <p className="text-xs text-muted-foreground">Avg DOM (60d)</p>
+                  <p className="font-medium">{marketPrediction.predictions.daysOnMarket60Days ?? "—"} days</p>
+                </div>
+              </div>
+            )}
+            {marketPrediction.actionableIntelligence?.forAgents?.length > 0 && (
+              <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-xs space-y-1">
+                <p className="font-semibold text-amber-800">Agent Actions</p>
+                {marketPrediction.actionableIntelligence.forAgents.map((tip: string, i: number) => (
+                  <p key={i} className="text-amber-900">• {tip}</p>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        )}
       </Card>
 
       {/* Share Modal — 3-step workflow */}

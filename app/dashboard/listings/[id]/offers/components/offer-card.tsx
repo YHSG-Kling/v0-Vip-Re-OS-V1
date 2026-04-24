@@ -1,12 +1,14 @@
 "use client"
 
+import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
-import { FileText, CheckCircle, XCircle, MessageSquare, Loader2, Trophy } from "lucide-react"
+import { FileText, CheckCircle, XCircle, MessageSquare, Loader2, Trophy, Sparkles, Calculator } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
+import { analyzeOffer, calculateNetSheet } from "@/app/actions/offer-management"
 
 interface Offer {
   id: string
@@ -46,6 +48,7 @@ interface Props {
   listPrice: number
   canApprove: boolean
   isPending: boolean
+  userId?: string
   onAccept: () => void
   onReject: () => void
   onCounter: () => void
@@ -62,10 +65,40 @@ function fmt(n: number | null) {
   return n != null ? `$${n.toLocaleString()}` : "—"
 }
 
-export function OfferCard({ offer, listPrice, canApprove, isPending, onAccept, onReject, onCounter }: Props) {
+export function OfferCard({ offer, listPrice, canApprove, isPending, userId, onAccept, onReject, onCounter }: Props) {
   const priceDiff = listPrice > 0 ? ((offer.offer_price - listPrice) / listPrice) * 100 : 0
   const isWinner = offer.is_winning_offer
   const extracting = offer.ai_extraction_status === "processing" || offer.ai_extraction_status === "pending"
+
+  const [analysisText, setAnalysisText] = useState<string | null>(null)
+  const [analyzing, setAnalyzing] = useState(false)
+  const [netSheet, setNetSheet] = useState<any>(null)
+  const [netSheetLoading, setNetSheetLoading] = useState(false)
+
+  async function handleAnalyze() {
+    if (!userId) return
+    setAnalyzing(true)
+    const result = await analyzeOffer(offer.id, userId).catch(() => null)
+    if (result && "success" in result && result.success) {
+      setAnalysisText((result as any).analysis ?? "Analysis complete.")
+    } else if (result && "analysis" in result) {
+      setAnalysisText((result as any).analysis)
+    }
+    setAnalyzing(false)
+  }
+
+  async function handleNetSheet() {
+    setNetSheetLoading(true)
+    const result = await calculateNetSheet({
+      purchase_price: offer.offer_price,
+      earnest_money: offer.earnest_money ?? 0,
+      agent_commission: 0.06,
+      closing_costs: 0.02,
+      seller_concessions: offer.closing_cost_contribution ?? 0,
+    }).catch(() => null)
+    if (result) setNetSheet(result)
+    setNetSheetLoading(false)
+  }
 
   return (
     <Card className={cn("relative", isWinner && "ring-2 ring-green-500")}>
@@ -201,6 +234,38 @@ export function OfferCard({ offer, listPrice, canApprove, isPending, onAccept, o
               {offer.offer_document_name ?? "View Offer PDF"}
             </a>
           </>
+        )}
+
+        {/* AI Analyze + Net Sheet */}
+        <Separator className="my-3" />
+        <div className="flex items-center gap-2 flex-wrap">
+          {userId && (
+            <Button size="sm" variant="ghost" className="gap-1 text-xs" onClick={handleAnalyze} disabled={analyzing}>
+              {analyzing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+              Analyze
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" className="gap-1 text-xs" onClick={handleNetSheet} disabled={netSheetLoading}>
+            {netSheetLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Calculator className="h-3 w-3" />}
+            Net Sheet
+          </Button>
+        </div>
+
+        {analysisText && (
+          <div className="mt-2 rounded-md bg-blue-50 border border-blue-200 p-3 text-xs text-blue-900 whitespace-pre-line">
+            {analysisText}
+          </div>
+        )}
+
+        {netSheet && (
+          <div className="mt-2 rounded-md bg-green-50 border border-green-200 p-3 text-xs space-y-1">
+            <p className="font-semibold text-green-800">Seller Net Sheet</p>
+            <p>Purchase Price: <span className="font-medium">${netSheet.purchase_price.toLocaleString()}</span></p>
+            <p>Agent Commission: <span className="text-red-600">-${netSheet.deductions.agent_commission.toLocaleString()}</span></p>
+            <p>Closing Costs: <span className="text-red-600">-${netSheet.deductions.closing_costs.toLocaleString()}</span></p>
+            {netSheet.deductions.seller_concessions > 0 && <p>Seller Concessions: <span className="text-red-600">-${netSheet.deductions.seller_concessions.toLocaleString()}</span></p>}
+            <p className="font-bold text-green-700 border-t border-green-200 pt-1">Net to Seller: ${netSheet.net_to_seller.toLocaleString()}</p>
+          </div>
         )}
 
         {/* Actions */}

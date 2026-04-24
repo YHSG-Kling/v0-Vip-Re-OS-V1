@@ -38,7 +38,7 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
           { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
-          { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/admin/lead-magnets' },
+          { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/agent/lead-magnets' },
           { id: 'blog', label: 'Blog Posts', href: '/dashboard/marketing/blog' },
           { id: 'podcast', label: 'Podcast Studio', href: '/dashboard/marketing/podcast' },
           { id: 'seo', label: 'SEO Dashboard', href: '/dashboard/marketing/seo' },

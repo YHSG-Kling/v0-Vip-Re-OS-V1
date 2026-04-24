@@ -4,8 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import { AlertTriangle, Shield } from "lucide-react"
-import { getPendingApprovals, getComplianceViolations, generateComplianceReport } from "@/app/actions/compliance-monitoring"
+import { AlertTriangle, Shield, Award } from "lucide-react"
+import { getPendingApprovals, getComplianceViolations, generateComplianceReport, trackCertificationExpiration } from "@/app/actions/compliance-monitoring"
 import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
 import { createClient } from "@/lib/supabase/server"
 import SubmitContentForm from "@/app/components/shared/compliance/submit-content-form"
@@ -13,6 +13,7 @@ import PendingApprovalsList from "@/app/components/shared/compliance/pending-app
 import ViolationsDashboard from "@/app/components/shared/compliance/violations-dashboard"
 import ApprovedContentLibrary from "@/app/components/shared/compliance/approved-content-library"
 import { TransactionComplianceTab } from "@/app/components/compliance/transaction-compliance-tab"
+import { FairHousingScanner } from "@/app/components/compliance/FairHousingScanner"
 import {
   ComplianceCommandStrip,
   ComplianceRiskRadar,
@@ -33,7 +34,7 @@ export default async function ComplianceDashboardPage() {
   const today = new Date()
   const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs] = await Promise.all([
+  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs, certStatus] = await Promise.all([
     getPendingApprovals(),
     getComplianceViolations(),
     generateComplianceReport({
@@ -41,6 +42,7 @@ export default async function ComplianceDashboardPage() {
       endDate: today.toISOString(),
     }),
     getAllTransactionComplianceLogs({ limit: 100 }),
+    user ? trackCertificationExpiration(user.id).catch(() => null) : Promise.resolve(null),
   ])
 
   const complianceRate =
@@ -180,6 +182,13 @@ export default async function ComplianceDashboardPage() {
               </Badge>
             )}
           </TabsTrigger>
+          <TabsTrigger value="fair-housing">Fair Housing</TabsTrigger>
+          <TabsTrigger value="certifications">
+            Certifications
+            {certStatus && certStatus.expiring > 0 && (
+              <Badge variant="secondary" className="ml-2">{certStatus.expiring}</Badge>
+            )}
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="submit" className="space-y-4">
@@ -218,6 +227,50 @@ export default async function ComplianceDashboardPage() {
           <Suspense fallback={<Skeleton className="h-[400px] w-full" />}>
             <TransactionComplianceTab initialLogs={transactionComplianceLogs.logs} />
           </Suspense>
+        </TabsContent>
+
+        <TabsContent value="fair-housing" className="space-y-4">
+          <FairHousingScanner />
+        </TabsContent>
+
+        <TabsContent value="certifications" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Award className="h-4 w-4 text-primary" />
+                License &amp; Certification Status
+              </CardTitle>
+              <CardDescription>Current certification and licensing status for your profile</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {certStatus ? (
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="text-center p-4 rounded-lg bg-green-50 border border-green-200">
+                    <p className="text-2xl font-bold text-green-700">{certStatus.active}</p>
+                    <p className="text-xs text-green-600 mt-1">Active</p>
+                  </div>
+                  <div className="text-center p-4 rounded-lg bg-yellow-50 border border-yellow-200">
+                    <p className="text-2xl font-bold text-yellow-700">{certStatus.expiring}</p>
+                    <p className="text-xs text-yellow-600 mt-1">Expiring Soon</p>
+                  </div>
+                  <div className="text-center p-4 rounded-lg bg-red-50 border border-red-200">
+                    <p className="text-2xl font-bold text-red-700">{certStatus.expired}</p>
+                    <p className="text-xs text-red-600 mt-1">Expired</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No certification data available. Add certifications in your agent profile.</p>
+              )}
+              {certStatus && certStatus.expiring > 0 && (
+                <Alert className="mt-4 border-yellow-300 bg-yellow-50">
+                  <AlertTriangle className="h-4 w-4 text-yellow-600" />
+                  <AlertDescription className="text-yellow-800">
+                    {certStatus.expiring} certification{certStatus.expiring !== 1 ? "s" : ""} expiring within 30 days. Renew to maintain compliance.
+                  </AlertDescription>
+                </Alert>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>
