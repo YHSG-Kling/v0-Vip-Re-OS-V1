@@ -163,6 +163,7 @@ export default function LifetimeCustomersPage() {
   const [clients, setClients] = useState<PastClient[]>([])
   const [anniversaries, setAnniversaries] = useState<Anniversary[]>([])
   const [loading, setLoading] = useState(true)
+  const [currentAgentId, setCurrentAgentId] = useState("")
 
   // Filter state
   const [search, setSearch] = useState("")
@@ -258,6 +259,22 @@ export default function LifetimeCustomersPage() {
   const [milestones, setMilestones] = useState<any[]>([])
   const [lifeSignals, setLifeSignals] = useState<any[]>([])
   const [referralOpportunities, setReferralOpportunities] = useState<any[]>([])
+
+  // Resolve current agent ID once on mount
+  useEffect(() => {
+    async function resolveAgent() {
+      const supabase = createClient()
+      const { data: { user: authUser } } = await supabase.auth.getUser()
+      if (!authUser) return
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", authUser.id)
+        .maybeSingle()
+      setCurrentAgentId(agentRow?.id ?? authUser.id)
+    }
+    resolveAgent()
+  }, [])
 
   // Load initial data
   useEffect(() => {
@@ -1340,7 +1357,7 @@ export default function LifetimeCustomersPage() {
           {/* TAB 5: Reputation */}
           <TabsContent value="reputation">
             <ReputationPanel
-              agentId=""
+              agentId={currentAgentId}
               clients={clients}
               reviews={[]}
               recentClosings={clients.filter(c => c.transactions?.[0]?.actual_close_date).map(c => ({
