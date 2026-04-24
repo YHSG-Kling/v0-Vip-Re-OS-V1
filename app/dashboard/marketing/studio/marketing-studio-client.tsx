@@ -166,11 +166,12 @@ interface MarketingStudioClientProps {
   userId?: string
   brokerageId?: string
   userRole?: string
+  initialTab?: string
 }
 
-export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole }: MarketingStudioClientProps) {
+export default function MarketingStudioClient({ userId: userIdProp, brokerageId: brokerageIdProp, userRole, initialTab = "overview" }: MarketingStudioClientProps) {
   const { toast } = useToast()
-  const [activeTab, setActiveTab] = useState("overview")
+  const [activeTab, setActiveTab] = useState(initialTab)
   const [isLoading, setIsLoading] = useState(true)
   const [dashboardError, setDashboardError] = useState<string | null>(null)
   const [dashboard, setDashboard] = useState<DashboardData | null>(null)

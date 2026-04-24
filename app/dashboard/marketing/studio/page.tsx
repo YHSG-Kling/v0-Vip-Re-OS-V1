@@ -10,7 +10,12 @@ export const metadata = {
   description: "Unified marketing command center for campaigns, assets, and content scheduling",
 }
 
-export default async function MarketingStudioPage() {
+export default async function MarketingStudioPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>
+}) {
+  const params = await searchParams
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect("/login")
@@ -27,6 +32,7 @@ export default async function MarketingStudioPage() {
         userId={user.id}
         brokerageId={userRow?.brokerage_id ?? ""}
         userRole={userRow?.user_type ?? "agent"}
+        initialTab={params.tab ?? "overview"}
       />
     </Suspense>
   )
