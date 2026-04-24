@@ -17,6 +17,7 @@ interface Transaction {
   completion_percent: number
   stage?: string
   agent_id?: string
+  deal_type?: string | null
 }
 
 interface CoordinatorTransactionListProps {
@@ -89,7 +90,14 @@ export function CoordinatorTransactionList({ transactions = [] }: CoordinatorTra
                     <p className="text-sm text-muted-foreground">Agent: {tx.agent_name}</p>
                   )}
                 </div>
-                <Badge variant={getStatusColor(tx.status)}>{tx.status}</Badge>
+                <div className="flex items-center gap-1.5">
+                  {tx.deal_type && (
+                    <Badge variant="outline" className={tx.deal_type === "buyer" ? "border-blue-400 text-blue-700" : "border-green-400 text-green-700"}>
+                      {tx.deal_type.toUpperCase()}
+                    </Badge>
+                  )}
+                  <Badge variant={getStatusColor(tx.status)}>{tx.status}</Badge>
+                </div>
               </div>
 
               {/* Progress */}

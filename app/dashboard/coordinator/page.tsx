@@ -116,6 +116,11 @@ export default async function CoordinatorDashboard({
         health_score,
         agent_id,
         contact_id,
+        deal_type,
+        buyer_contact_id,
+        seller_contact_id,
+        buyer_agent_id,
+        seller_agent_id,
         created_at
       )
     `

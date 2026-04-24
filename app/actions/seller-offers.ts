@@ -499,3 +499,6 @@ export async function getMlsNumberByAddress(contactId: string, propertyAddress: 
     .maybeSingle()
   return data?.mls_number ?? null
 }
+
+// Re-export AI analysis functions so callers only need to import from this file
+export { analyzeOffer, analyzeMultipleOffers, calculateNetSheet } from "@/app/actions/offer-management"
