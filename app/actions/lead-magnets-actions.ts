@@ -18,18 +18,33 @@ export async function listLeadMagnetsAction(options?: { brokerageId?: string; ag
 export async function createLeadMagnetAction(input: {
   name: string
   magnet_type: string
+  description?: string
+  thank_you_message?: string
+  tcpa_text?: string
+  notify_on_submission?: boolean
 }) {
   try {
     const ctx = await getAgentContext()
     if (!ctx.brokerageId || !ctx.agentId) return { success: false as const, error: "Not authenticated" }
-    return createLeadMagnet({
+    const result = await createLeadMagnet({
       title: input.name,
       magnetType: input.magnet_type as any,
       brokerageId: ctx.brokerageId,
       agentId: ctx.agentId,
       createdBy: ctx.agentId,
-      description: "",
+      description: input.description ?? "",
+      thankYouMessage: input.thank_you_message,
+      tcpaDisclosureText: input.tcpa_text,
     })
+    // Persist notification preference in settings if magnet was created
+    if (result.success && result.magnetId && input.notify_on_submission !== undefined) {
+      const supabase = createServiceClient()
+      await supabase
+        .from("lead_capture_forms")
+        .update({ settings: { notify_on_submission: input.notify_on_submission } })
+        .eq("id", result.magnetId)
+    }
+    return result
   } catch (err: any) {
     return { success: false as const, error: err?.message ?? "Failed to create magnet" }
   }

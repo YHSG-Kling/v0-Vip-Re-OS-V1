@@ -302,9 +302,9 @@ IMPORTANT RULES:
       success: true,
       descriptions,
       guardResult: guardResult ? {
-        flagged:              guardResult.flagged,
-        complianceIssues:     guardResult.complianceIssues,
-        brandVoiceViolations: guardResult.brandVoiceViolations,
+        flagged:     guardResult.flagged,
+        violations:  guardResult.violations,
+        notes:       guardResult.notes,
       } : null,
     }
   } catch (error) {

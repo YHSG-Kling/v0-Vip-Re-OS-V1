@@ -16,7 +16,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { CheckCircle2, Loader2 } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
+import { Bell, CheckCircle2, Loader2 } from "lucide-react"
 
 interface Props {
   brokerageId: string
@@ -56,6 +57,7 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
   )
   const [thankYouMessage, setThankYouMessage] = useState("Thank you! We will be in touch shortly.")
   const [channels, setChannels] = useState<string[]>(["qr_code", "landing_page"])
+  const [notifyByEmail, setNotifyByEmail] = useState(true)
 
   function toggleChannel(channel: string) {
     setChannels((prev) =>
@@ -71,6 +73,10 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
       const result = await createLeadMagnetAction({
         name: title.trim(),
         magnet_type: magnetType,
+        description: description.trim(),
+        thank_you_message: thankYouMessage.trim(),
+        tcpa_text: tcpaText.trim(),
+        notify_on_submission: notifyByEmail,
       })
 
       if (!result.success || !result.magnetId) {
@@ -223,6 +229,22 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
             value={tcpaText}
             onChange={(e) => setTcpaText(e.target.value)}
             rows={3}
+          />
+        </div>
+
+        {/* Email notification preference */}
+        <div className="flex items-center justify-between rounded-lg border p-4">
+          <div className="flex items-center gap-3">
+            <Bell className="h-4 w-4 text-muted-foreground" />
+            <div>
+              <p className="text-sm font-medium">Email notifications</p>
+              <p className="text-xs text-muted-foreground">Receive an email when a lead submits this form</p>
+            </div>
+          </div>
+          <Switch
+            checked={notifyByEmail}
+            onCheckedChange={setNotifyByEmail}
+            aria-label="Notify me by email on lead submission"
           />
         </div>
 

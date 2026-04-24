@@ -1,19 +1,17 @@
-"use server"
-
 /**
- * Content Guardian — unified compliance + BrandVoice gate for all AI-generated content.
+ * lib/content-guardian/index.ts
  *
- * Every AI content generation route should call guardContent() before returning text to the UI.
- * Violations are flagged for admin review but content is still returned (non-blocking).
- * Blocking compliance issues (severity="blocking") set flagged=true.
+ * Unified content pipeline:
+ *   1. Check content against BrandVoice rules (prohibited words, tone)
+ *   2. Scan for fair housing violations
+ *   3. Submit flagged content to content_approvals for admin review
+ *   4. Return content + violation metadata
+ *
+ * Wire into every AI content generation route.
  */
 
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
-import {
-  scanContentComplianceService,
-  submitContentForApprovalService,
-} from "@/lib/application"
-import { createClient } from "@/lib/supabase/server"
+import { createServiceClient } from "@/lib/supabase/service"
 
 export type ContentType =
   | "listing_description"
@@ -21,146 +19,93 @@ export type ContentType =
   | "social_post"
   | "blog"
   | "video_script"
-  | "newsletter"
-  | "direct_mail"
-  | "sms"
 
-interface GuardContentParams {
+export interface GuardContentParams {
   content: string
   agentId: string
   brokerageId: string
-  userId?: string
-  teamId?: string
   contentType: ContentType
-  /** US state abbreviation for disclosure requirements (e.g. "TX") */
-  agentState?: string
+  teamId?: string
 }
 
 export interface GuardContentResult {
-  /** The original content (unchanged — guardian is advisory, not rewriting) */
   content: string
-  /** BrandVoice style violations */
-  brandVoiceViolations: string[]
-  /** BrandVoice advisory notes */
-  brandVoiceNotes: string[]
-  /** Compliance issues found */
-  complianceIssues: string[]
-  /** True when at least one blocking compliance issue was found */
+  violations: string[]
+  notes: string[]
   flagged: boolean
-  brandVoiceApplied: boolean
+  brandVoiceChecked: boolean
 }
 
-const CHANNEL_MAP: Record<ContentType, string[]> = {
-  listing_description: ["website"],
-  email:               ["email"],
-  newsletter:          ["email"],
-  social_post:         ["social"],
-  blog:                ["website"],
-  video_script:        ["video"],
-  direct_mail:         ["print"],
-  sms:                 ["sms"],
+// Fair housing trigger phrases
+const FAIR_HOUSING_PATTERNS: RegExp[] = [
+  /\b(no children|adults only|no kids)\b/i,
+  /\b(perfect for (singles|couples|families with no kids))\b/i,
+  /\b(exclusive|restricted|select)\s+(neighborhood|community|area)\b/i,
+  /\b(walking distance to (church|mosque|temple|synagogue))\b/i,
+  /\b(handicap|handicapped)\b/i,
+  /\b(good schools|great schools)\b/i,
+]
+
+function detectFairHousingViolations(text: string): string[] {
+  const found: string[] = []
+  for (const pattern of FAIR_HOUSING_PATTERNS) {
+    const match = text.match(pattern)
+    if (match) found.push(`Fair housing risk: "${match[0]}"`)
+  }
+  return found
 }
 
-const AUDIENCE_MAP: Record<ContentType, string> = {
-  listing_description: "general",
-  email:               "warm_lead",
-  newsletter:          "warm_lead",
-  social_post:         "general",
-  blog:                "general",
-  video_script:        "general",
-  direct_mail:         "cold_lead",
-  sms:                 "warm_lead",
+// Map content type to brand voice params
+function contentTypeToJourney(ct: ContentType): "buyer" | "seller" {
+  return ct === "email" ? "buyer" : "seller"
 }
 
 export async function guardContent(params: GuardContentParams): Promise<GuardContentResult> {
-  const {
-    content,
-    agentId,
-    brokerageId,
-    userId,
-    teamId,
-    contentType,
-    agentState = "TX",
-  } = params
+  const { content, agentId, brokerageId, contentType, teamId } = params
+  const violations: string[] = []
+  const notes: string[] = []
+  let brandVoiceChecked = false
 
-  if (!content?.trim()) {
-    return {
-      content,
-      brandVoiceViolations: [],
-      brandVoiceNotes: [],
-      complianceIssues: [],
-      flagged: false,
-      brandVoiceApplied: false,
-    }
-  }
-
-  // Run both checks in parallel
-  const [brandVoiceResult, complianceResult] = await Promise.allSettled([
-    applyBrandVoice({
+  // 1. Brand voice check
+  try {
+    const bvResult = await applyBrandVoice({
       content,
       brokerageId,
       teamId,
-      actorUserId: userId ?? agentId,
-      actorRole:   "agent",
-      journeyType: contentType === "listing_description" ? "seller" : "buyer",
-      persona:     "professional",
+      actorUserId: agentId,
+      actorRole: "agent",
+      journeyType: contentTypeToJourney(contentType),
+      persona: "professional",
       messageType: contentType,
-    }),
-    scanContentComplianceService({
-      contentBody:          content,
-      contentType,
-      targetAudience:       AUDIENCE_MAP[contentType] ?? "general",
-      distributionChannels: CHANNEL_MAP[contentType] ?? ["website"],
-      agentState,
-    }),
-  ])
-
-  const brandVoiceViolations = brandVoiceResult.status === "fulfilled" ? brandVoiceResult.value.violations : []
-  const brandVoiceNotes      = brandVoiceResult.status === "fulfilled" ? brandVoiceResult.value.notes      : []
-  const complianceIssues: string[] = []
-  let flagged = false
-
-  if (complianceResult.status === "fulfilled") {
-    const scan = complianceResult.value as any
-    const issues = scan?.issues ?? []
-    for (const issue of issues) {
-      complianceIssues.push(
-        issue.message ?? `${issue.type}: ${issue.found ?? issue.category}`
-      )
-      if (issue.severity === "blocking") flagged = true
-    }
+    })
+    if (bvResult.violations?.length) violations.push(...bvResult.violations)
+    if (bvResult.notes?.length) notes.push(...bvResult.notes)
+    brandVoiceChecked = true
+  } catch {
+    // Non-fatal
   }
 
-  // Log violations to compliance_flags table (live table) for admin review queue
-  if (flagged || brandVoiceViolations.length > 0) {
+  // 2. Fair housing scan
+  violations.push(...detectFairHousingViolations(content))
+
+  // 3. Submit to content_approvals if violations found
+  const flagged = violations.length > 0
+  if (flagged) {
     try {
-      const supabase = await createClient()
-      const allViolations = [
-        ...complianceIssues,
-        ...brandVoiceViolations.map(v => `[BrandVoice] ${v}`),
-      ]
-      await supabase.from("compliance_flags").insert({
-        brokerage_id:    brokerageId,
-        agent_id:        agentId,
-        content_type:    contentType,
-        flagged_content: content.substring(0, 500),
-        violation_type:  flagged ? "compliance" : "brand_voice",
-        severity:        flagged ? "blocking" : "warning",
-        status:          "pending",
-        resolution_notes: allViolations.join(" | "),
-        detected_at:     new Date().toISOString(),
+      const supabase = createServiceClient()
+      await supabase.from("content_approvals").insert({
+        brokerage_id: brokerageId,
+        agent_id: agentId,
+        content_type: contentType,
+        content_text: content,
+        violations: violations,
+        status: "pending",
+        submitted_at: new Date().toISOString(),
       })
     } catch {
-      // Non-fatal — guardian continues even if logging fails
+      // Non-fatal
     }
   }
 
-  return {
-    content,
-    brandVoiceViolations,
-    brandVoiceNotes,
-    complianceIssues,
-    flagged,
-    brandVoiceApplied: brandVoiceResult.status === "fulfilled",
-  }
+  return { content, violations, notes, flagged, brandVoiceChecked }
 }
