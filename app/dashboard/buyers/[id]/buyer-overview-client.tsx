@@ -19,7 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button }                             from "@/components/ui/button"
 import { Badge }                              from "@/components/ui/badge"
 import { Users, Calendar, AlertTriangle, Zap, Loader2 } from "lucide-react"
-import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot } from "@/app/actions/ai-predictions"
+import { enableAIPilot, getActiveAutoPilotPlans, toggleAutoPilot, aiPropertyMatchGenius } from "@/app/actions/ai-predictions"
 import { upsertFinancialProfile }             from "@/app/actions/buyer-financial"
 import { toast }                              from "sonner"
 
@@ -136,6 +136,8 @@ export function BuyerOverviewClient({
     profile?.is_cash_buyer ? "cash" : (profile?.finance_type ?? "")
   )
   const [savingFinance, setSavingFinance] = useState(false)
+  const [aiMatchResult, setAiMatchResult] = useState<any>(null)
+  const [isLoadingMatch, setIsLoadingMatch] = useState(false)
 
   const currentStage = contact.buyer_stage ?? "BUYER_CONTACT_CREATED"
   const persona      = contact.contact_persona ?? null
@@ -378,15 +380,72 @@ export function BuyerOverviewClient({
       ) : activeTab === "Search" ? (
         <div className="flex-1 overflow-y-auto px-6 py-5">
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-3">
               <div>
                 <h2 className="text-lg font-semibold">Property Search</h2>
                 <p className="text-sm text-muted-foreground">Search and save properties for {buyerName}</p>
               </div>
-              <Link href={`/dashboard/buyers/${buyerId}/search`}>
-                <Button>Advanced Search</Button>
-              </Link>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isLoadingMatch}
+                  onClick={async () => {
+                    setIsLoadingMatch(true)
+                    try {
+                      const result = await aiPropertyMatchGenius(buyerId)
+                      setAiMatchResult(result)
+                    } catch {
+                      setAiMatchResult(null)
+                    } finally {
+                      setIsLoadingMatch(false)
+                    }
+                  }}
+                >
+                  {isLoadingMatch ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Zap className="h-4 w-4 mr-1" />}
+                  AI Match
+                </Button>
+                <Link href={`/dashboard/buyers/${buyerId}/search`}>
+                  <Button>Advanced Search</Button>
+                </Link>
+              </div>
             </div>
+
+            {aiMatchResult && (
+              <Card className="border-violet-200 bg-violet-50/50 dark:bg-violet-950/10">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Zap className="h-4 w-4 text-violet-600" />
+                    AI Property Match Results
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {aiMatchResult.success === false ? (
+                    <p className="text-sm text-muted-foreground">{aiMatchResult.error ?? "No matches found."}</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {Array.isArray(aiMatchResult.matches) && aiMatchResult.matches.length > 0 ? (
+                        aiMatchResult.matches.slice(0, 5).map((m: any, i: number) => (
+                          <div key={i} className="flex items-center justify-between py-1.5 border-b last:border-0">
+                            <div>
+                              <p className="text-sm font-medium">{m.address ?? m.property_address ?? `Property ${i + 1}`}</p>
+                              {m.list_price && <p className="text-xs text-muted-foreground">${Number(m.list_price).toLocaleString()}</p>}
+                            </div>
+                            {m.match_score != null && (
+                              <Badge variant="secondary" className="text-xs">{Math.round(m.match_score * 100)}% match</Badge>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-sm text-muted-foreground">
+                          {aiMatchResult.message ?? "AI match analysis complete. Run Advanced Search to see full results."}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
             
             {/* Saved Properties */}
             <Card>
