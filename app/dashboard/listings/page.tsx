@@ -313,7 +313,7 @@ export default async function ListingsPage({
                           />
                           <CmaHistorySheet
                             listingId={listing.id}
-                            agentId={user.id}
+                            agentId={agentId}
                             listingAddress={listing.address}
                           />
                         </div>
@@ -344,7 +344,7 @@ export default async function ListingsPage({
             <MarketIntelligencePanel
               city={refListing.city}
               state={refListing.state}
-              agentId={user.id}
+              agentId={agentId}
             />
           )
         })()}
