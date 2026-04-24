@@ -15,16 +15,18 @@ export default async function AgentQRCodesPage() {
 
   const supabase = await createClient()
 
-  const { data: qrCodes } = await supabase
-    .from('qr_codes')
-    .select('id, slug, label, purpose, scan_count, lead_count, is_active, created_at')
-    .eq('agent_id', ctx.userId)
-    .order('created_at', { ascending: false })
+  const { data: qrCodes } = ctx.agentId
+    ? await supabase
+        .from('qr_codes')
+        .select('id, slug, label, purpose, scan_count, lead_count, is_active, created_at')
+        .eq('agent_id', ctx.agentId)
+        .order('created_at', { ascending: false })
+    : { data: [] as any[] }
 
   return (
     <QRCodesClient
       qrCodes={qrCodes ?? []}
-      agentUserId={ctx.userId}
+      agentUserId={ctx.agentId ?? ""}
       brokerageId={ctx.brokerageId}
     />
   )
