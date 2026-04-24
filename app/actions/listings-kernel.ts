@@ -182,6 +182,45 @@ export async function launchListingAction(params: {
     revalidatePath(`/dashboard/listings/${params.listingId}`)
     revalidatePath(`/dashboard/listings/${params.listingId}/lifecycle`)
     revalidatePath("/dashboard/listings")
+
+    // Auto-generate QR code for listing inquiry — non-fatal
+    try {
+      const { createServiceClient } = await import("@/lib/supabase/service")
+      const svc = createServiceClient()
+      const { data: listing } = await svc
+        .from("listings")
+        .select("id, property_address, brokerage_id, agent_id")
+        .eq("id", params.listingId)
+        .maybeSingle()
+
+      if (listing) {
+        const targetUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/listings/${listing.id}`
+        const slug = `listing-${listing.id.slice(0, 8)}`
+        const { data: existing } = await svc
+          .from("qr_codes")
+          .select("id")
+          .eq("listing_id", params.listingId)
+          .eq("purpose", "listing_inquiry")
+          .maybeSingle()
+
+        if (!existing) {
+          await svc.from("qr_codes").insert({
+            brokerage_id: listing.brokerage_id,
+            agent_id:     listing.agent_id,
+            listing_id:   params.listingId,
+            label:        `Listing Inquiry — ${listing.property_address}`,
+            slug,
+            target_url:   targetUrl,
+            purpose:      "listing_inquiry",
+            scan_count:   0,
+            lead_count:   0,
+            is_active:    true,
+          })
+        }
+      }
+    } catch {
+      // Non-fatal — QR generation is a best-effort enhancement
+    }
   }
 
   return result
