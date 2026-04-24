@@ -8,6 +8,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { guardContent } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { z } from "zod"
 
@@ -280,6 +281,14 @@ IMPORTANT RULES:
 - All content must be original`,
     })
 
+    // Run compliance + BrandVoice guard on MLS description (the regulated channel)
+    const guardResult = await guardContent({
+      content:     descriptions.mlsDescription,
+      agentId:     params.agentId,
+      brokerageId: params.agentId, // falls back gracefully if brokerageId not passed
+      contentType: "listing_description",
+    }).catch(() => null)
+
     // Save generated content
     await supabase.from("listing_marketing_content").insert({
       agent_id: params.agentId,
@@ -289,7 +298,15 @@ IMPORTANT RULES:
       status: "draft",
     })
 
-    return { success: true, descriptions }
+    return {
+      success: true,
+      descriptions,
+      guardResult: guardResult ? {
+        flagged:              guardResult.flagged,
+        complianceIssues:     guardResult.complianceIssues,
+        brandVoiceViolations: guardResult.brandVoiceViolations,
+      } : null,
+    }
   } catch (error) {
     console.error("[AI Listing Intake] Description error:", error)
     return handleError(error, "aiGenerateListingDescription")
