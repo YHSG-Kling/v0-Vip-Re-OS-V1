@@ -36,6 +36,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         icon: 'Palette',
         children: [
           { id: 'marketing-studio', label: 'Marketing Studio', href: '/dashboard/marketing/studio' },
+          { id: 'brand-voice', label: 'BrandVoice Profile', href: '/dashboard/marketing/studio/brand-voice' },
+          { id: 'newsletter-templates', label: 'Newsletter Templates', href: '/newsletters' },
           { id: 'marketing-ops', label: 'Ops Center', href: '/dashboard/marketing/ops' },
           { id: 'social-dashboard', label: 'Social Dashboard', href: '/dashboard/social' },
           { id: 'lead-magnets', label: 'Lead Magnets', href: '/dashboard/agent/lead-magnets' },
@@ -50,7 +52,6 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Campaigns',
         icon: 'Megaphone',
         children: [
-          { id: 'campaigns-hub', label: 'Campaigns Hub', href: '/dashboard/campaigns' },
           { id: 'sequences', label: 'Automation Sequences', href: '/dashboard/campaigns/sequences' },
           { id: 'ads', label: 'Ad Campaigns', href: '/dashboard/campaigns/ads' },
           { id: 'direct-mail', label: 'Direct Mail', href: '/dashboard/campaigns/mail' },
@@ -64,9 +65,8 @@ export const NAVIGATION_BY_ROLE: Record<UserRole, NavigationConfig> = {
         label: 'Communications',
         icon: 'MessageCircle',
         children: [
-          { id: 'inbox', label: 'Inbox', href: '/dashboard/inbox', badgeKey: 'unread_notifications' },
+          { id: 'inbox', label: 'Inbox', href: '/dashboard/communications/inbox', badgeKey: 'unread_notifications' },
           { id: 'outreach', label: 'AI Outreach', href: '/dashboard/communications/outreach' },
-          { id: 'sequences-comm', label: 'Drip Sequences', href: '/dashboard/communications/sequences' },
           { id: 'intelligence', label: 'Comm Intelligence', href: '/dashboard/communications/intelligence' },
           { id: 'handoff-cockpit', label: 'Handoff Cockpit', href: '/dashboard/communications/handoffs' },
         ],

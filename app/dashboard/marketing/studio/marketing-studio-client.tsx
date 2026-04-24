@@ -1802,6 +1802,31 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
               <div className="flex items-center justify-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
               </div>
+            ) : newsletterTemplates.length === 0 ? (
+              /* Prerequisite gate: no templates → empty state */
+              <Card className="border-dashed">
+                <CardContent className="flex flex-col items-center justify-center py-16 text-center gap-4">
+                  <div className="h-14 w-14 rounded-full bg-violet-100 flex items-center justify-center">
+                    <Mail className="h-7 w-7 text-violet-600" />
+                  </div>
+                  <div>
+                    <p className="text-lg font-semibold">No newsletter templates yet</p>
+                    <p className="text-sm text-muted-foreground mt-1 max-w-sm">
+                      Create at least one approved newsletter template before scheduling campaigns.
+                      Templates let you define layout, branding, and reusable sections — then the
+                      AI fills in dynamic content at send time.
+                    </p>
+                  </div>
+                  <Button asChild>
+                    <a href="/newsletters">
+                      Create Newsletter Template
+                    </a>
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    Already have templates? Ask your broker to approve them so they appear here.
+                  </p>
+                </CardContent>
+              </Card>
             ) : (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                 {/* Subscriber Count Card */}
