@@ -433,11 +433,8 @@ export async function getTransactionTimeline(transactionId: string) {
 export async function addDeadline(deadlineData: {
   transaction_id: string
   deadline_type: string
-  description: string
-  due_date: string
-  reminder_days_before?: number
-  assigned_to?: string
-  notes?: string
+  notes: string
+  deadline_date: string
 }) {
   if (!isValidUUID(deadlineData.transaction_id)) return { success: false, error: "Invalid transaction ID" }
   return TransactionService.addDeadline(deadlineData)
@@ -445,7 +442,7 @@ export async function addDeadline(deadlineData: {
 
 export async function updateDeadline(
   deadlineId: string,
-  updates: Partial<{ status: string; due_date: string; description: string; completed_at: string; notes: string }>,
+  updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
   if (!isValidUUID(deadlineId)) return { success: false, error: "Invalid deadline ID" }
   return TransactionService.updateDeadline(deadlineId, updates)

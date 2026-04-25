@@ -97,10 +97,9 @@ export async function guardContent(params: GuardContentParams): Promise<GuardCon
         brokerage_id: brokerageId,
         agent_id: agentId,
         content_type: contentType,
-        content_text: content,
+        original_content: content,
         violations: violations,
         status: "pending",
-        submitted_at: new Date().toISOString(),
       })
     } catch {
       // Non-fatal

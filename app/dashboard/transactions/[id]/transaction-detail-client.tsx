@@ -1981,8 +1981,8 @@ export function TransactionDetailClient({
                             const result = await addDeadline({
                               transaction_id: transaction.id,
                               deadline_type: newDeadlineType,
-                              description: newDeadlineLabel || newDeadlineType.replace(/_/g, " "),
-                              due_date: newDeadlineDate,
+                              notes: newDeadlineLabel || newDeadlineType.replace(/_/g, " "),
+                              deadline_date: newDeadlineDate,
                             })
                             if (result?.success) {
                               toast.success("Deadline added")

@@ -67,6 +67,7 @@ import {
   getLifeChangeSignals,
   findReferralOpportunities,
 } from "@/app/actions/past-clients"
+import { generateReferralRequest } from "@/app/actions/ai-referral-management"
 import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
 import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 
@@ -198,6 +199,11 @@ export default function LifetimeCustomersPage() {
 
   // Track which contact opened the touchpoint draft dialog (for market update send)
   const [touchpointContactId, setTouchpointContactId] = useState<string | null>(null)
+
+  // Referral script generator dialog
+  const [referralScriptContactId, setReferralScriptContactId] = useState<string | null>(null)
+  const [referralScriptChannel, setReferralScriptChannel] = useState<"email" | "text" | "call_script">("email")
+  const [referralScriptOpen, setReferralScriptOpen] = useState(false)
 
   // Priority sub-tab within the Relationship Feed
   const [priorityTab, setPriorityTab] = useState("all")
@@ -378,6 +384,35 @@ export default function LifetimeCustomersPage() {
         setTouchpointDraft(refMessage)
         setTouchpointDialogTitle("Optimized Referral Ask")
         setTouchpointDialogOpen(true)
+      }
+    })
+  }
+
+  function openReferralScriptDialog(contactId: string) {
+    setReferralScriptContactId(contactId)
+    setReferralScriptChannel("email")
+    setReferralScriptOpen(true)
+  }
+
+  async function handleGenerateReferralScript() {
+    if (!referralScriptContactId || !currentAgentId) return
+    setReferralScriptOpen(false)
+    startTransition(async () => {
+      const result = await generateReferralRequest({
+        contactId: referralScriptContactId,
+        agentId: currentAgentId,
+        channel: referralScriptChannel,
+      })
+      if (result.success && (result as any).referralRequest) {
+        setTouchpointDraft((result as any).referralRequest)
+        setTouchpointDialogTitle(
+          referralScriptChannel === "email" ? "Referral Ask — Email Script"
+          : referralScriptChannel === "text" ? "Referral Ask — Text Message"
+          : "Referral Ask — Call Script"
+        )
+        setTouchpointDialogOpen(true)
+      } else {
+        toast.error((result as any).error ?? "Failed to generate referral script")
       }
     })
   }
@@ -1081,15 +1116,26 @@ export default function LifetimeCustomersPage() {
                             AI Message
                           </Button>
                           {m.referralPotential === 'high' && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleOptimizeReferral(m.contactId)}
-                              disabled={isPending}
-                            >
-                              <Gift className="w-4 h-4 mr-1" />
-                              Ask Referral
-                            </Button>
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openReferralScriptDialog(m.contactId)}
+                                disabled={isPending}
+                              >
+                                <Sparkles className="w-4 h-4 mr-1" />
+                                AI Script
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleOptimizeReferral(m.contactId)}
+                                disabled={isPending}
+                              >
+                                <Gift className="w-4 h-4 mr-1" />
+                                Ask Referral
+                              </Button>
+                            </>
                           )}
                         </div>
                       </CardContent>
@@ -1193,14 +1239,25 @@ export default function LifetimeCustomersPage() {
                         <p className="font-medium text-sm">{opp.contactName}</p>
                         <p className="text-xs text-muted-foreground">{opp.reason}</p>
                       </div>
-                      <Button
-                        size="sm"
-                        onClick={() => handleOptimizeReferral(opp.contactId)}
-                        disabled={isPending}
-                      >
-                        <Gift className="w-4 h-4 mr-1" />
-                        Ask Referral
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openReferralScriptDialog(opp.contactId)}
+                          disabled={isPending}
+                        >
+                          <Sparkles className="w-4 h-4 mr-1" />
+                          AI Script
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => handleOptimizeReferral(opp.contactId)}
+                          disabled={isPending}
+                        >
+                          <Gift className="w-4 h-4 mr-1" />
+                          Ask
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </CardContent>
@@ -1459,6 +1516,45 @@ export default function LifetimeCustomersPage() {
               <Button onClick={handleScheduleTouchpoint} disabled={!scheduleDate}>
                 <CalendarPlus className="w-4 h-4 mr-2" />
                 Schedule Touchpoint
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Referral Script Channel Selector Dialog */}
+        <Dialog open={referralScriptOpen} onOpenChange={setReferralScriptOpen}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Generate Referral Ask Script</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <p className="text-sm text-muted-foreground">
+                AI will write a personalized script for asking this contact for a referral.
+              </p>
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Channel</label>
+                <Select
+                  value={referralScriptChannel}
+                  onValueChange={(v) => setReferralScriptChannel(v as "email" | "text" | "call_script")}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="email">Email</SelectItem>
+                    <SelectItem value="text">Text Message</SelectItem>
+                    <SelectItem value="call_script">Call Script</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setReferralScriptOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleGenerateReferralScript} disabled={isPending}>
+                {isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                Generate Script
               </Button>
             </DialogFooter>
           </DialogContent>
