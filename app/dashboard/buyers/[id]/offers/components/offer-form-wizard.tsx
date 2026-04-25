@@ -32,8 +32,11 @@ interface OfferFormWizardProps {
   contingencies?:       string[]
   buyerMaxBudget?:      number
   buyerRiskTolerance?:  "conservative" | "moderate" | "aggressive"
+  // In-app form selections collected in the forms step
+  inAppSelectedFormIds?:   string[]
+  inAppFormFieldValues?:   Record<string, unknown>
   onBack:          () => void
-  onSuccess:       () => void
+  onSuccess:       (offerId?: string) => void
 }
 
 const STEPS = [
@@ -139,6 +142,7 @@ export function OfferFormWizard({
   propertyAddress, propertyCity, propertyState, propertyZip,
   listingId, propertyAddressAiFilled,
   contingencies, buyerMaxBudget, buyerRiskTolerance,
+  inAppSelectedFormIds, inAppFormFieldValues,
   onBack, onSuccess,
 }: OfferFormWizardProps) {
   const [step, setStep]           = useState<Step>("Price")
@@ -292,7 +296,16 @@ export function OfferFormWizard({
   function submitOffer() {
     setSubmitError(null)
     startTrans(async () => {
-      const result = await createOffer(contactId, brokerageId, agentUserId, form)
+      const formWithInAppData = {
+        ...form,
+        ...(inAppSelectedFormIds?.length
+          ? {
+              in_app_selected_form_ids: inAppSelectedFormIds,
+              in_app_form_field_values: inAppFormFieldValues ?? {},
+            }
+          : {}),
+      }
+      const result = await createOffer(contactId, brokerageId, agentUserId, formWithInAppData)
       if (result.success && result.offerId) {
         setCreatedOfferId(result.offerId)
         setStep("Review") // stay on review but show eSign panel
