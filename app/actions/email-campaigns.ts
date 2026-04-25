@@ -22,6 +22,7 @@ import {
 } from "@/lib/kernel"
 import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 import { generateTextRouted as generateText } from "@/lib/ai/models"
+import { generateEmail } from "@/app/actions/ai-content-generation"
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -452,4 +453,153 @@ export async function getEmailCampaignStats(brokerageId: string) {
   } catch (error) {
     return handleError(error, "getEmailCampaignStats")
   }
+}
+
+// ─── LISTING-SPECIFIC EMAIL CAMPAIGNS (migrated from email-campaign-automation.ts) ───
+
+export async function prepareListingEmailCampaign(params: {
+  transactionId: string
+  campaignType: "coming_soon" | "launch" | "open_house" | "price_drop" | "sold"
+}) {
+  if (!isValidUUID(params.transactionId)) {
+    return { success: false, error: "Invalid transaction ID" }
+  }
+
+  const supabase = await createClient()
+
+  try {
+    const { data: transaction } = await supabase
+      .from("transactions")
+      .select("*, listings(*), listing_photos(*)")
+      .eq("id", params.transactionId)
+      .single()
+
+    if (!transaction || !transaction.listings) {
+      return { success: false, error: "Transaction not found" }
+    }
+
+    const listing = transaction.listings
+
+    const emailContent = await generateEmail({
+      agentId: transaction.agent_id,
+      emailType: params.campaignType as any,
+      propertyIds: [listing.id],
+    })
+
+    if (!emailContent.success) {
+      return { success: false, error: "Failed to generate email content" }
+    }
+
+    const recipients = await getListingCampaignRecipients(params.transactionId, params.campaignType, listing)
+
+    const { data: campaign, error } = await supabase
+      .from("newsletter_campaigns")
+      .insert({
+        agent_id: transaction.agent_id,
+        campaign_name: `${params.campaignType} - ${listing.address}`,
+        campaign_type: "one_time",
+        target_segment: determineListingSegment(params.campaignType),
+        status: "draft",
+      })
+      .select()
+      .single()
+
+    if (error) throw error
+
+    if (!emailContent.data?.generated_content) {
+      return { success: false, error: "AI failed to generate email content" }
+    }
+
+    const { data: template } = await supabase
+      .from("email_templates")
+      .insert({
+        agent_id: transaction.agent_id,
+        template_name: `${params.campaignType} - ${listing.address}`,
+        template_type: params.campaignType,
+        subject_line: emailContent.data.subject || `New Listing: ${listing.address}`,
+        email_body: emailContent.data.generated_content,
+        variables: {
+          property_address: listing.address,
+          property_city: listing.city,
+          property_price: listing.price,
+          property_bedrooms: listing.bedrooms,
+          property_bathrooms: listing.bathrooms,
+        },
+      })
+      .select()
+      .single()
+
+    if (template) {
+      await supabase.from("newsletter_campaigns").update({ template_id: template.id }).eq("id", campaign.id)
+    }
+
+    for (const contactId of recipients) {
+      await supabase.from("email_sends").insert({
+        campaign_id: campaign.id,
+        contact_id: contactId,
+        status: "queued",
+      })
+    }
+
+    revalidatePath("/dashboard/listings")
+    return {
+      success: true,
+      campaign_id: campaign.id,
+      recipients: recipients.length,
+      subject: emailContent.data?.subject,
+    }
+  } catch (error) {
+    console.error("Prepare listing email campaign error:", error)
+    return { success: false, error: "Failed to prepare campaign" }
+  }
+}
+
+async function getListingCampaignRecipients(
+  transactionId: string,
+  campaignType: string,
+  listing: any,
+): Promise<string[]> {
+  const supabase = await createClient()
+
+  if (campaignType === "coming_soon" || campaignType === "launch") {
+    const { data: contacts } = await supabase
+      .from("contacts")
+      .select("id")
+      .eq("status", "active")
+      .gte("budget_max", (listing.price || 0) * 0.9)
+      .lte("budget_min", (listing.price || 0) * 1.1)
+    return contacts?.map((c) => c.id) || []
+  }
+
+  if (campaignType === "open_house") {
+    const { data: interested } = await supabase
+      .from("property_interactions")
+      .select("contact_id")
+      .eq("listing_id", listing.id)
+      .in("interaction_type", ["view", "save"])
+    return interested?.map((i) => i.contact_id).filter((id) => id) || []
+  }
+
+  if (campaignType === "price_drop") {
+    const { data: viewers } = await supabase
+      .from("property_interactions")
+      .select("contact_id")
+      .eq("listing_id", listing.id)
+      .eq("interaction_type", "view")
+    return viewers?.map((v) => v.contact_id).filter((id) => id) || []
+  }
+
+  const { data: allContacts } = await supabase.from("contacts").select("id").eq("status", "active").limit(100)
+  return allContacts?.map((c) => c.id) || []
+}
+
+function determineListingSegment(campaignType: string): string {
+  const segments: Record<string, string> = {
+    coming_soon: "matching_buyers",
+    launch: "all_database",
+    open_house: "interested_buyers",
+    price_drop: "previous_viewers",
+    sold: "sphere",
+  }
+  return segments[campaignType] || "all_database"
 }

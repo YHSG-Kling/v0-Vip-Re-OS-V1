@@ -191,6 +191,25 @@ export async function updateReferralStatus(
   }
 }
 
+export async function sendReferralThankYou(referralId: string): Promise<{ success: true }> {
+  const { agentId, brokerageId } = await getAgentContext()
+  const db = createServiceClient()
+
+  const { error } = await db
+    .from("referrals")
+    .update({
+      thank_you_sent: true,
+      thank_you_sent_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", referralId)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
+
+  if (error) throw new Error(`Failed to send thank you: ${error.message}`)
+  return { success: true }
+}
+
 export async function createPartner(params: CreatePartnerParams): Promise<{ id: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

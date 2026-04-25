@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { createReferral } from "@/app/actions/referral-management"
+import { createReferral } from "@/app/actions/referrals/referral-actions"
 import { toast } from "sonner"
 
 export function CreateReferralSheet() {
@@ -35,17 +35,12 @@ export function CreateReferralSheet() {
     setIsLoading(true)
     
     try {
-      const result = await createReferral({
+      await createReferral({
         referralName: formData.referrer_name,
         notes: formData.notes,
-      })
-      
-      if (result.success) {
-        toast.success("Referral created successfully")
-        router.push("/referrals")
-      } else {
-        toast.error(result.error || "Failed to create referral")
-      }
+      } as any)
+      toast.success("Referral created successfully")
+      router.push("/referrals")
     } catch (error) {
       toast.error("An error occurred while creating the referral")
     } finally {

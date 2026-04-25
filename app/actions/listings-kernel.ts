@@ -356,3 +356,32 @@ export async function loadListingWorkspaceAction(listingId: string) {
   if ("error" in ctx) return { success: false, error: ctx.error }
   return loadListingWorkspace({ listingId, userId: ctx.userId })
 }
+
+// ─── Action: updateListingStatus (migrated from listings.ts) ─────────────────
+
+export async function updateListingStatus(listingId: string, status: string) {
+  const supabase = await createClient()
+  try {
+    const { data, error } = await supabase
+      .from("listings")
+      .update({
+        status,
+        current_stage:
+          status === "sold" ? "closed" : status === "withdrawn" ? "cancelled" : undefined,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", listingId)
+      .select()
+      .single()
+
+    if (error) throw error
+
+    revalidatePath("/dashboard/listings")
+    revalidatePath(`/dashboard/listings/${listingId}`)
+    revalidatePath(`/dashboard/listings/${listingId}/lifecycle`)
+    return { success: true, listing: data }
+  } catch (error) {
+    console.error("updateListingStatus error:", error)
+    return { success: false, error: "Failed to update listing status" }
+  }
+}
