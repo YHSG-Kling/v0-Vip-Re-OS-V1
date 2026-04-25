@@ -8,6 +8,7 @@ import { MarketIntelligencePanel } from "@/app/components/dashboard/listings/mar
 import { CmaHistorySheet } from "@/app/components/dashboard/listings/cma-history-sheet"
 import { ListingCreateSheet } from "@/app/components/dashboard/listings/listing-create-sheet"
 import { ListingStatusSelect } from "@/app/components/dashboard/listings/listing-status-select"
+import { MassCMAButton } from "@/app/components/dashboard/listings/mass-cma-button"
 import { 
   Plus, 
   Home, 
@@ -151,6 +152,7 @@ export default async function ListingsPage({
             AI Price Analysis
           </Button>
         </Link>
+        <MassCMAButton agentId={agentId} />
       </div>
 
       <div className="px-4 sm:px-6 space-y-6">

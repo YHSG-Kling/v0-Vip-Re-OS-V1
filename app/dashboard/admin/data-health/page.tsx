@@ -5,9 +5,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Shield, AlertTriangle, CheckCircle2, RefreshCw, Scan, XCircle } from "lucide-react"
+import { Loader2, Shield, AlertTriangle, CheckCircle2, RefreshCw, Scan, XCircle, Sparkles } from "lucide-react"
 import { toast } from "sonner"
 import { getDataHealthStats, runDataHygieneScan, getDataHealthLogs } from "@/app/actions/data-health"
+import { refreshStalePredictions } from "@/app/actions/ai-predictions"
 
 export default function DataHealthPage() {
   const [stats, setStats] = useState<any>(null)
@@ -65,6 +66,17 @@ export default function DataHealthPage() {
     })
   }
 
+  const handleRefreshPredictions = () => {
+    startTransition(async () => {
+      try {
+        const result = await refreshStalePredictions()
+        toast.success(`Refreshed ${result.refreshed} stale AI prediction${result.refreshed !== 1 ? "s" : ""}`)
+      } catch {
+        toast.error("Failed to refresh predictions")
+      }
+    })
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -86,6 +98,10 @@ export default function DataHealthPage() {
           <Button variant="outline" size="sm" onClick={() => { setLoading(true); loadData() }} disabled={isPending}>
             <RefreshCw className="h-4 w-4 mr-1" />
             Refresh
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleRefreshPredictions} disabled={isPending}>
+            {isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Sparkles className="h-4 w-4 mr-1" />}
+            Refresh AI Predictions
           </Button>
           <Button size="sm" onClick={handleScan} disabled={isPending}>
             {isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Scan className="h-4 w-4 mr-1" />}

@@ -67,7 +67,8 @@ import {
   getLifeChangeSignals,
   findReferralOpportunities,
 } from "@/app/actions/past-clients"
-import { generateReferralRequest } from "@/app/actions/ai-referral-management"
+import { generateReferralRequest, nurturePendingReferral, recommendReferralReward } from "@/app/actions/ai-referral-management"
+import { loadReferralPipelineAction } from "@/app/actions/reputation-kernel"
 import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
 import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 
@@ -265,6 +266,9 @@ export default function LifetimeCustomersPage() {
   const [milestones, setMilestones] = useState<any[]>([])
   const [lifeSignals, setLifeSignals] = useState<any[]>([])
   const [referralOpportunities, setReferralOpportunities] = useState<any[]>([])
+  const [referralPipeline, setReferralPipeline] = useState<any[]>([])
+  const [nurtureResults, setNurtureResults] = useState<Record<string, any>>({})
+  const [rewardResults, setRewardResults] = useState<Record<string, any>>({})
 
   // Resolve current agent ID once on mount
   useEffect(() => {
@@ -513,6 +517,57 @@ export default function LifetimeCustomersPage() {
       if (result.success && result.opportunities) {
         setReferralOpportunities(result.opportunities)
         toast.success(`Found ${result.opportunities.length} referral opportunities`)
+      }
+    })
+  }
+
+  async function handleLoadReferralPipeline() {
+    startTransition(async () => {
+      try {
+        const result = await loadReferralPipelineAction()
+        if (result.success && (result as any).data?.referrals) {
+          setReferralPipeline((result as any).data.referrals)
+          toast.success(`Loaded ${(result as any).data.referrals.length} referral${(result as any).data.referrals.length !== 1 ? "s" : ""}`)
+        } else {
+          setReferralPipeline([])
+          toast.info("No referrals found in pipeline")
+        }
+      } catch {
+        toast.error("Failed to load referral pipeline")
+      }
+    })
+  }
+
+  async function handleNurtureReferral(referralId: string) {
+    if (!currentAgentId) return
+    startTransition(async () => {
+      try {
+        const result = await nurturePendingReferral({ referralId, agentId: currentAgentId })
+        if (result.success) {
+          setNurtureResults(prev => ({ ...prev, [referralId]: result.nurtureStrategy }))
+          toast.success("AI nurture strategy generated")
+        } else {
+          toast.error(result.error ?? "Failed to generate nurture strategy")
+        }
+      } catch {
+        toast.error("Failed to generate nurture strategy")
+      }
+    })
+  }
+
+  async function handleRecommendReward(referralId: string) {
+    if (!currentAgentId) return
+    startTransition(async () => {
+      try {
+        const result = await recommendReferralReward({ referralId, agentId: currentAgentId })
+        if (result.success) {
+          setRewardResults(prev => ({ ...prev, [referralId]: result.rewardRecommendation }))
+          toast.success("AI reward recommendation ready")
+        } else {
+          toast.error(result.error ?? "Failed to generate reward recommendation")
+        }
+      } catch {
+        toast.error("Failed to generate reward recommendation")
       }
     })
   }
@@ -1177,7 +1232,7 @@ export default function LifetimeCustomersPage() {
             </div>
 
             {/* Action Buttons */}
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
               <Button onClick={handleLoadLifeSignals} disabled={isPending}>
                 <RefreshCw className="w-4 h-4 mr-2" />
                 Load Life Signals
@@ -1185,6 +1240,10 @@ export default function LifetimeCustomersPage() {
               <Button variant="outline" onClick={handleFindReferrals} disabled={isPending}>
                 <Zap className="w-4 h-4 mr-2" />
                 Find Referral Opportunities
+              </Button>
+              <Button variant="outline" onClick={handleLoadReferralPipeline} disabled={isPending}>
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Load Referral Pipeline
               </Button>
             </div>
 
@@ -1258,6 +1317,65 @@ export default function LifetimeCustomersPage() {
                           Ask
                         </Button>
                       </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Referral Pipeline — actual referral records with Nurture + Reward */}
+            {referralPipeline.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Referral Pipeline</CardTitle>
+                  <CardDescription>Active referrals — nurture and reward your best referrers</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {referralPipeline.map((ref: any) => (
+                    <div key={ref.id} className="p-3 rounded-lg border space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium text-sm">{ref.referral_name || "Unknown Referral"}</p>
+                          <p className="text-xs text-muted-foreground capitalize">
+                            Status: {ref.status?.replace(/_/g, " ")} · Source: {ref.referral_source || "direct"}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleNurtureReferral(ref.id)}
+                            disabled={isPending}
+                          >
+                            <Sparkles className="w-3.5 h-3.5 mr-1" />
+                            AI Nurture
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRecommendReward(ref.id)}
+                            disabled={isPending}
+                          >
+                            <Gift className="w-3.5 h-3.5 mr-1" />
+                            Reward
+                          </Button>
+                        </div>
+                      </div>
+                      {nurtureResults[ref.id] && (
+                        <div className="mt-2 p-2 rounded bg-blue-50 border border-blue-200 text-xs space-y-1">
+                          <p className="font-medium text-blue-800">Next Action: {nurtureResults[ref.id].nextBestAction?.action}</p>
+                          <p className="text-blue-700">{nurtureResults[ref.id].nextBestAction?.message}</p>
+                          <p className="text-blue-600">Conversion probability: {Math.round((nurtureResults[ref.id].conversionProbability ?? 0) * 100)}%</p>
+                        </div>
+                      )}
+                      {rewardResults[ref.id] && (
+                        <div className="mt-2 p-2 rounded bg-green-50 border border-green-200 text-xs space-y-1">
+                          <p className="font-medium text-green-800">
+                            Recommended: {rewardResults[ref.id].recommendedReward?.specific} (${rewardResults[ref.id].recommendedReward?.value})
+                          </p>
+                          <p className="text-green-700">{rewardResults[ref.id].recommendedReward?.reasoning}</p>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </CardContent>
