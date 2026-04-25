@@ -240,6 +240,28 @@ export async function createPartner(params: CreatePartnerParams): Promise<{ id: 
   return { id: data.id }
 }
 
+/**
+ * Delete a partner record by ID. Used for compensating-transaction cleanup when
+ * referral creation fails after a partner has already been inserted.
+ */
+export async function deletePartner(partnerId: string): Promise<void> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Unauthorized")
+
+  const { agentId, brokerageId } = await getAgentContext()
+  const db = createServiceClient()
+
+  const { error } = await db
+    .from("referral_partners")
+    .delete()
+    .eq("id", partnerId)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
+
+  if (error) throw new Error(`Failed to delete partner: ${error.message}`)
+}
+
 export async function listPartnersWithReferrals(): Promise<{
   partners: ReferralPartnerRow[]
   referrals: ReferralRow[]

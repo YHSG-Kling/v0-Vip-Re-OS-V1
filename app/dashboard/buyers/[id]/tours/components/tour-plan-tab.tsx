@@ -221,13 +221,15 @@ export function TourPlanTab({
   const previewTimes = computePreviewTimes()
 
   return (
-    <div className="relative flex gap-6 h-full min-h-0">
+    <div className="relative h-full min-h-0">
       {/* Gate overlay — blocks all interaction when tour scheduling is locked */}
       {disabled && (
         <div className="absolute inset-0 z-10 rounded-lg bg-background/80 backdrop-blur-sm flex items-center justify-center">
           <p className="text-sm font-medium text-muted-foreground">Tour creation is locked — complete financial verification to unlock.</p>
         </div>
       )}
+      {/* Content wrapper — pointer events disabled when the gate overlay is active */}
+      <div className={`flex gap-6 h-full min-h-0${disabled ? " pointer-events-none select-none" : ""}`}>
       {/* Left panel */}
       <div className="w-72 flex-shrink-0 flex flex-col gap-4">
         <div>
@@ -467,6 +469,7 @@ export function TourPlanTab({
           </>
         )}
       </div>
+      </div>{/* end content wrapper */}
     </div>
   )
 }

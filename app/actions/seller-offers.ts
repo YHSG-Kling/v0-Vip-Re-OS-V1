@@ -510,6 +510,25 @@ function extractScore(text: string): number {
   return match ? parseInt(match[1], 10) : 50
 }
 
+// ── PRIVATE HELPER: resolve commission rate for a user/brokerage ──────────────
+// Shared by analyzeOffer and analyzeMultipleOffers to avoid duplicated logic.
+async function resolveCommissionRate(userId: string): Promise<{
+  brokerageId: string
+  totalRate: number
+} | { error: string }> {
+  const supabase = await createClient()
+  const { data: profile } = await supabase
+    .from("users").select("brokerage_id").eq("id", userId).single()
+
+  const brokerageId = profile?.brokerage_id
+  if (!brokerageId) return { error: "User brokerage not found" }
+
+  const commissionStructure = await getDefaultCommissionStructure(brokerageId, userId)
+  const totalRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
+
+  return { brokerageId, totalRate }
+}
+
 export async function analyzeOffer(offerId: string, userId: string) {
   if (!isValidUUID(offerId) || !isValidUUID(userId)) {
     return { success: false, error: "Invalid IDs" }
@@ -524,14 +543,9 @@ export async function analyzeOffer(offerId: string, userId: string) {
 
   if (!offer) return { success: false, error: "Offer not found" }
 
-  const { data: profile } = await supabase
-    .from("users").select("brokerage_id").eq("id", userId).single()
-
-  const brokerageId = profile?.brokerage_id
-  if (!brokerageId) return { success: false, error: "User brokerage not found" }
-
-  const commissionStructure = await getDefaultCommissionStructure(brokerageId, userId)
-  const totalRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
+  const commissionResult = await resolveCommissionRate(userId)
+  if ("error" in commissionResult) return { success: false, error: commissionResult.error }
+  const { totalRate } = commissionResult
 
   const netToSeller = calcNetToSeller({
     offer_price:              offer.offer_price,
@@ -611,14 +625,9 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
     return { success: false, error: "No offers to compare" }
   }
 
-  const { data: profile } = await supabase
-    .from("users").select("brokerage_id").eq("id", userId).single()
-
-  const brokerageId = profile?.brokerage_id
-  if (!brokerageId) return { success: false, error: "User brokerage not found" }
-
-  const commissionStructure = await getDefaultCommissionStructure(brokerageId, userId)
-  const totalRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
+  const commissionResult = await resolveCommissionRate(userId)
+  if ("error" in commissionResult) return { success: false, error: commissionResult.error }
+  const { brokerageId, totalRate } = commissionResult
 
   const offerComparisons = offers.map((offer) => {
     const net = calcNetToSeller({
@@ -640,6 +649,9 @@ export async function analyzeMultipleOffers(listingId: string, userId: string) {
         : 0,
     }
   })
+
+  // Sort descending by net_to_seller so index [0] is always the best offer.
+  offerComparisons.sort((a, b) => b.net_to_seller - a.net_to_seller)
 
   await incrementUsage(userId, "llm_calls", 1)
 
