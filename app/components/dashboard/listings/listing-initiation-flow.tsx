@@ -167,13 +167,15 @@ export function ListingInitiationFlow({
   const [formFieldValues, setFormFieldValues]     = useState<FormFieldValues>({})
 
   function handleFormsComplete(ids: string[], values: FormFieldValues) {
+    // Guard: prevent double-submit if a transition is already in flight
+    if (isPending) return
     setSelectedFormIds(ids)
     setFormFieldValues(values)
-    handleCreateListing()
+    handleCreateListing(ids, values)
   }
 
   // Create the listing then advance to send_for_signatures
-  function handleCreateListing() {
+  function handleCreateListing(selectedIds: string[], fieldValues: FormFieldValues) {
     setError(null)
     startTrans(async () => {
       const result = await createListingWithSellerContact({
@@ -190,6 +192,8 @@ export function ListingInitiationFlow({
         bathrooms:       form.bathrooms       ? Number(form.bathrooms)  : undefined,
         sqft:            form.sqft            ? Number(form.sqft)       : undefined,
         propertyType:    form.propertyType    || undefined,
+        selectedFormIds: selectedIds,
+        formFieldValues: fieldValues,
       })
 
       if (!result.success) {
@@ -461,6 +465,7 @@ export function ListingInitiationFlow({
           state={form.state || undefined}
           autoLoad
           nextLabel={isPending ? "Creating Listing…" : "Create Listing & Send for Signatures"}
+          nextDisabled={isPending}
           onBack={() => setStep("pricing")}
           onComplete={handleFormsComplete}
         />

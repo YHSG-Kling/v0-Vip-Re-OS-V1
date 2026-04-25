@@ -526,14 +526,26 @@ export async function captureFormSubmission(
         .maybeSingle()
 
       if (followUpSeq) {
-        await supabase.from("sequence_enrollments").insert({
-          sequence_id:  followUpSeq.id,
-          contact_id:   contactId,
-          brokerage_id: input.brokerageId,
-          enrolled_at:  submittedAt,
-          status:       "active",
-          current_step: 0,
-        })
+        // Check for an existing active enrollment to avoid duplicates
+        const { data: existingEnrollment } = await supabase
+          .from("sequence_enrollments")
+          .select("id")
+          .eq("sequence_id", followUpSeq.id)
+          .eq("contact_id", contactId)
+          .eq("status", "active")
+          .maybeSingle()
+
+        if (!existingEnrollment) {
+          await supabase.from("sequence_enrollments").insert({
+            sequence_id:  followUpSeq.id,
+            contact_id:   contactId,
+            brokerage_id: input.brokerageId,
+            enrolled_at:  submittedAt,
+            status:       "active",
+            current_step: 0,
+            next_step_at: new Date().toISOString(),
+          })
+        }
       }
     } catch {
       // Non-fatal — sequence enrollment is optional

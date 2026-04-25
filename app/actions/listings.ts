@@ -148,31 +148,8 @@ export async function deleteListing(listingId: string) {
   }
 }
 
-export async function updateListingStatus(listingId: string, status: string) {
-  try {
-    const supabase = await createClient()
-
-    const { data, error } = await supabase
-      .from("listings")
-      .update({ 
-        status,
-        current_stage: status === "sold" ? "closed" : status === "withdrawn" ? "cancelled" : undefined,
-        updated_at: new Date().toISOString() 
-      })
-      .eq("id", listingId)
-      .select()
-      .single()
-
-    if (error) throw error
-
-    revalidatePath("/listings")
-    revalidatePath(`/listings/${listingId}`)
-
-    return { success: true, listing: data }
-  } catch (error) {
-    return handleError(error, "updateListingStatus")
-  }
-}
+// updateListingStatus was migrated to app/actions/listings-kernel.ts
+// Import it from there: import { updateListingStatus } from "@/app/actions/listings-kernel"
 
 export async function getSellerReports(listingId: string) {
   try {

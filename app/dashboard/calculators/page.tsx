@@ -14,10 +14,11 @@ export default async function CalculatorsPage() {
     redirect("/login")
   }
 
-  const [{ data: agentRecord }, { data: userProfile }] = await Promise.all([
-    supabase.from("agents").select("id").eq("user_id", user.id).maybeSingle(),
-    supabase.from("users").select("brokerage_id").eq("id", user.id).maybeSingle(),
-  ])
+  const { data: userProfile } = await supabase
+    .from("users")
+    .select("brokerage_id")
+    .eq("id", user.id)
+    .maybeSingle()
 
   const brokerageId = userProfile?.brokerage_id ?? ""
 

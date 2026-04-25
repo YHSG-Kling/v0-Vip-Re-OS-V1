@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useState, useTransition, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -113,8 +113,8 @@ function AttendeesTab({ eventId }: { eventId: string }) {
   const [isPending, startTransition] = useTransition()
   const [loaded, setLoaded] = useState(false)
 
-  // Load on first mount (via useEffect simulation with lazy init)
-  if (!loaded && !isPending) {
+  // Load once when this tab mounts (i.e. when the sheet is opened and tab is shown)
+  useEffect(() => {
     startTransition(async () => {
       const res = await getOpenHouseAttendees(eventId)
       if (res.success) {
@@ -124,7 +124,8 @@ function AttendeesTab({ eventId }: { eventId: string }) {
       }
       setLoaded(true)
     })
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId])
 
   const [showAddForm, setShowAddForm] = useState(false)
   const [addForm, setAddForm] = useState({
@@ -292,7 +293,8 @@ function FeedbackTab({ eventId }: { eventId: string }) {
   const [isPending, startTransition] = useTransition()
   const [loaded, setLoaded] = useState(false)
 
-  if (!loaded && !isPending) {
+  // Load once when this tab mounts (i.e. when the sheet is opened and tab is shown)
+  useEffect(() => {
     startTransition(async () => {
       const res = await getOpenHouseFeedback(eventId)
       if (res.success) {
@@ -302,7 +304,8 @@ function FeedbackTab({ eventId }: { eventId: string }) {
       }
       setLoaded(true)
     })
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId])
 
   if (isPending && !loaded) {
     return (

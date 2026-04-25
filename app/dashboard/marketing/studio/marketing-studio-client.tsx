@@ -773,7 +773,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
       }
       for (let i = 0; i < omnichannelSteps.length; i++) {
         const step = omnichannelSteps[i]
-        await createSequenceStep({
+        const stepResult = await createSequenceStep({
           sequence_id: sequence.id,
           step_number: i + 1,
           step_name: step.name || `Step ${i + 1}`,
@@ -783,6 +783,14 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
           subject: step.type === "email" ? step.subject : undefined,
           body: step.body || undefined,
         })
+        if (stepResult.error || !stepResult.step) {
+          toast({
+            title: `Failed to create step ${i + 1}`,
+            description: stepResult?.error ?? "Unknown error",
+            variant: "destructive",
+          })
+          return
+        }
       }
       setOmnichannelName("")
       setOmnichannelDescription("")

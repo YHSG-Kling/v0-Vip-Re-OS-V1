@@ -247,6 +247,12 @@ export function AgentFinancialsClient({
         toast.success(
           `Recalculated ${result.data.recalculated} records — ${result.data.capped} newly capped`
         )
+        // Refresh distributions so the UI reflects newly recalculated data
+        handleLoadDistributions()
+        // Also refresh P&L if it was already loaded
+        if (plSummary !== null) {
+          handleLoadPl()
+        }
       } else {
         toast.error(result.error ?? "Recalculation failed")
       }

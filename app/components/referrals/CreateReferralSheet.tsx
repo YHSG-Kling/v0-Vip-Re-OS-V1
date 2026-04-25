@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { createReferral } from "@/app/actions/referrals/referral-actions"
+import { createReferral, createPartner } from "@/app/actions/referrals/referral-actions"
 import { toast } from "sonner"
 
 export function CreateReferralSheet() {
@@ -35,10 +35,21 @@ export function CreateReferralSheet() {
     setIsLoading(true)
     
     try {
+      // createReferral requires a partnerId — create a partner record from the
+      // referrer name first, then attach the referred contact's details.
+      const partner = await createPartner({
+        partnerName: formData.referrer_name,
+        partnerType: "individual",
+        agreementType: "referral",
+      })
       await createReferral({
-        referralName: formData.referrer_name,
-        notes: formData.notes,
-      } as any)
+        partnerId: partner.id,
+        referredPerson: {
+          email: formData.contact_email || undefined,
+          phone: formData.contact_phone || undefined,
+        },
+        referralSource: formData.notes || undefined,
+      })
       toast.success("Referral created successfully")
       router.push("/referrals")
     } catch (error) {

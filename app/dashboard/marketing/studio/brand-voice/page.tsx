@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic"
 export default async function BrandVoicePage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
+  if (!ctx.agentId && ctx.userType === "agent") redirect("/dashboard")
 
   const { profile } = await loadBrandVoiceProfileAction()
 

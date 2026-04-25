@@ -3673,9 +3673,13 @@ export function TransactionDetailClient({
                                 onClick={() => {
                                   startTransition(async () => {
                                     const { markCommissionPaid } = await import("@/app/actions/transactions")
-                                    await markCommissionPaid(c.id, new Date().toISOString().split("T")[0])
-                                    toast.success("Commission marked paid")
-                                    router.refresh()
+                                    const result = await markCommissionPaid(c.id, new Date().toISOString().split("T")[0])
+                                    if (result?.success) {
+                                      toast.success("Commission marked paid")
+                                      router.refresh()
+                                    } else {
+                                      toast.error(result?.error ?? "Failed to mark commission paid")
+                                    }
                                   })
                                 }}
                               >

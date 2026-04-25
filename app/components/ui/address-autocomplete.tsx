@@ -75,14 +75,19 @@ export function AddressAutocomplete({
   const [open, setOpen] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const requestIdRef = useRef(0)
 
   const fetchSuggestions = useCallback(async (query: string) => {
     if (query.length < 4) { setSuggestions([]); setOpen(false); return }
+    // Stamp this request so we can discard out-of-order responses
+    const currentId = ++requestIdRef.current
     try {
       const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(query)}`
       const res = await fetch(url, { headers: { "Accept-Language": "en" } })
       if (!res.ok) return
       const data: NominatimResult[] = await res.json()
+      // Ignore if a newer request has already been issued
+      if (currentId !== requestIdRef.current) return
       setSuggestions(data)
       setOpen(data.length > 0)
     } catch {

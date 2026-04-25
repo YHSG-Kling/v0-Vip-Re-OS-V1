@@ -406,7 +406,7 @@ export function SearchClient({
   async function handleSaveCriteria() {
     setSavingCriteria(true)
     const supabase = createClient()
-    await Promise.all([
+    const [interestsResult, preferencesResult] = await Promise.all([
       supabase.from("property_interests").upsert(
         {
           contact_id:          buyerId,
@@ -441,7 +441,14 @@ export function SearchClient({
       ),
     ])
     setSavingCriteria(false)
-    toast({ title: "Search criteria saved" })
+    if (interestsResult.error || preferencesResult.error) {
+      toast({
+        title: "Failed to save search criteria",
+        description: interestsResult.error?.message ?? preferencesResult.error?.message ?? "Please try again",
+      })
+    } else {
+      toast({ title: "Search criteria saved" })
+    }
   }
 
   function togglePropType(type: string) {

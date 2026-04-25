@@ -77,8 +77,10 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
 
   function handleCalculate() {
     const hv = parseFloat(homeValue)
-    const mb = parseFloat(mortgageBalance)
-    if (!hv || !mb || !location || !state) return
+    // Mortgage balance is optional — a blank or "0" value means fully paid off
+    const mb = mortgageBalance === "" ? 0 : parseFloat(mortgageBalance)
+    if (!hv || !location || !state) return
+    if (isNaN(mb)) return
 
     startTransition(async () => {
       const res = await calculateSellerNet({

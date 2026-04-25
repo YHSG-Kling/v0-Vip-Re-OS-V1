@@ -57,7 +57,7 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
   )
   const [thankYouMessage, setThankYouMessage] = useState("Thank you! We will be in touch shortly.")
   const [channels, setChannels] = useState<string[]>(["qr_code", "landing_page"])
-  const [notifyByEmail, setNotifyByEmail] = useState(true)
+  // notifyByEmail: email notifications not yet implemented; kept false until wired up
 
   function toggleChannel(channel: string) {
     setChannels((prev) =>
@@ -75,8 +75,7 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
         magnet_type: magnetType,
         description: description.trim(),
         thank_you_message: thankYouMessage.trim(),
-        tcpa_text: tcpaText.trim(),
-        notify_on_submission: notifyByEmail,
+        tcpa_text: tcpaText.trim() || undefined,
       })
 
       if (!result.success || !result.magnetId) {
@@ -232,19 +231,19 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
           />
         </div>
 
-        {/* Email notification preference */}
-        <div className="flex items-center justify-between rounded-lg border p-4">
+        {/* Email notification preference — email delivery is not yet available */}
+        <div className="flex items-center justify-between rounded-lg border p-4 opacity-60">
           <div className="flex items-center gap-3">
             <Bell className="h-4 w-4 text-muted-foreground" />
             <div>
-              <p className="text-sm font-medium">Email notifications</p>
-              <p className="text-xs text-muted-foreground">Receive an email when a lead submits this form</p>
+              <p className="text-sm font-medium">Email notifications <span className="ml-1 text-xs font-normal text-muted-foreground">(coming soon)</span></p>
+              <p className="text-xs text-muted-foreground">In-app notifications are sent automatically for every submission</p>
             </div>
           </div>
           <Switch
-            checked={notifyByEmail}
-            onCheckedChange={setNotifyByEmail}
-            aria-label="Notify me by email on lead submission"
+            checked={false}
+            disabled
+            aria-label="Email notifications coming soon"
           />
         </div>
 

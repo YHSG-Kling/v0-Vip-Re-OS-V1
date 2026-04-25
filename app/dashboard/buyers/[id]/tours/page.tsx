@@ -161,6 +161,7 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
           initialTours={tours}
           defaultTab={defaultTab}
           tourInsights={tourInsights}
+          gateBlocked={!tourGateResult.allowed}
         />
       </div>
     </div>

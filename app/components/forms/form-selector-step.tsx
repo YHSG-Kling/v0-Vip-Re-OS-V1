@@ -66,6 +66,8 @@ interface FormSelectorStepProps {
   onBack: () => void
   /** Label for the primary action button */
   nextLabel?: string
+  /** When true, the primary action button is disabled (e.g. while a submission is pending) */
+  nextDisabled?: boolean
 }
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -77,6 +79,7 @@ export function FormSelectorStep({
   onComplete,
   onBack,
   nextLabel = "Continue",
+  nextDisabled = false,
 }: FormSelectorStepProps) {
   // Phase: "select" → checkbox list; "fill" → field fill per form
   const [phase, setPhase] = useState<"select" | "fill">("select")
@@ -317,7 +320,7 @@ export function FormSelectorStep({
           <ChevronLeft className="h-4 w-4 mr-1" />
           Back to Selection
         </Button>
-        <Button onClick={handleComplete}>
+        <Button onClick={handleComplete} disabled={nextDisabled}>
           {nextLabel}
           <ChevronRight className="h-4 w-4 ml-1" />
         </Button>

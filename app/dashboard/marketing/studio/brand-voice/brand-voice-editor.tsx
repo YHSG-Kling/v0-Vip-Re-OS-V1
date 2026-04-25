@@ -163,8 +163,10 @@ export function BrandVoiceEditor({ initialProfile }: BrandVoiceEditorProps) {
               className="h-8 text-sm"
             />
             <Button
+              type="button"
               size="sm"
               variant="outline"
+              aria-label="Add key message"
               onClick={() => addToList(keyMessages, setKeyMessages, newKeyMsg, () => setNewKeyMsg(""))}
             >
               <Plus className="h-3.5 w-3.5" />
@@ -175,7 +177,7 @@ export function BrandVoiceEditor({ initialProfile }: BrandVoiceEditorProps) {
               {keyMessages.map(msg => (
                 <Badge key={msg} variant="secondary" className="gap-1 text-xs pr-1">
                   {msg}
-                  <button onClick={() => removeFromList(keyMessages, setKeyMessages, msg)} className="ml-0.5 hover:text-destructive">
+                  <button type="button" aria-label={`Remove "${msg}"`} onClick={() => removeFromList(keyMessages, setKeyMessages, msg)} className="ml-0.5 hover:text-destructive">
                     <X className="h-3 w-3" />
                   </button>
                 </Badge>
@@ -217,8 +219,10 @@ export function BrandVoiceEditor({ initialProfile }: BrandVoiceEditorProps) {
                 className="h-8 text-sm"
               />
               <Button
+                type="button"
                 size="sm"
                 variant="outline"
+                aria-label="Add preferred word"
                 onClick={() => addToList(preferredWords, setPreferredWords, newPreferred, () => setNewPreferred(""))}
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -229,7 +233,7 @@ export function BrandVoiceEditor({ initialProfile }: BrandVoiceEditorProps) {
                 {preferredWords.map(w => (
                   <Badge key={w} variant="outline" className="gap-1 text-xs pr-1 border-green-300 text-green-700">
                     {w}
-                    <button onClick={() => removeFromList(preferredWords, setPreferredWords, w)} className="ml-0.5 hover:text-destructive">
+                    <button type="button" aria-label={`Remove "${w}"`} onClick={() => removeFromList(preferredWords, setPreferredWords, w)} className="ml-0.5 hover:text-destructive">
                       <X className="h-3 w-3" />
                     </button>
                   </Badge>
@@ -252,8 +256,10 @@ export function BrandVoiceEditor({ initialProfile }: BrandVoiceEditorProps) {
                 className="h-8 text-sm"
               />
               <Button
+                type="button"
                 size="sm"
                 variant="outline"
+                aria-label="Add prohibited word"
                 onClick={() => addToList(prohibitedWords, setProhibited, newProhibited, () => setNewProhibited(""))}
               >
                 <Plus className="h-3.5 w-3.5" />
@@ -264,7 +270,7 @@ export function BrandVoiceEditor({ initialProfile }: BrandVoiceEditorProps) {
                 {prohibitedWords.map(w => (
                   <Badge key={w} variant="outline" className="gap-1 text-xs pr-1 border-destructive/40 text-destructive">
                     {w}
-                    <button onClick={() => removeFromList(prohibitedWords, setProhibited, w)} className="ml-0.5 hover:text-destructive">
+                    <button type="button" aria-label={`Remove "${w}"`} onClick={() => removeFromList(prohibitedWords, setProhibited, w)} className="ml-0.5 hover:text-destructive">
                       <X className="h-3 w-3" />
                     </button>
                   </Badge>

@@ -88,6 +88,10 @@ export async function createListingWithSellerContact(params: {
   bathrooms?: number
   sqft?: number
   propertyType?: string
+  /** Form IDs selected during the listing initiation flow */
+  selectedFormIds?: string[]
+  /** Field values keyed by form name then field name */
+  formFieldValues?: Record<string, Record<string, string>>
 }) {
   const ctx = await resolveCallerContext()
   if ("error" in ctx) return { success: false, error: ctx.error }
@@ -120,12 +124,38 @@ export async function createListingWithSellerContact(params: {
   })
   if (!listingResult.success) return { success: false, error: listingResult.error }
 
+  const newListingId = (listingResult.listing as any).id as string
+
+  // Step 3: Persist form field data collected during the initiation flow (non-fatal)
+  if (params.selectedFormIds?.length && params.formFieldValues) {
+    try {
+      const { saveFormDraft } = await import("@/lib/kernel/forms")
+      for (const formId of params.selectedFormIds) {
+        const fields = params.formFieldValues[formId]
+        if (fields && Object.keys(fields).length > 0) {
+          await saveFormDraft({
+            brokerage_id: ctx.brokerageId,
+            agent_id:     ctx.agentId,
+            form_name:    formId,
+            context_type: "listing",
+            context_id:   newListingId,
+            field_values: fields,
+          }).catch((err: unknown) => {
+            console.error("[createListingWithSellerContact] Form draft save failed (non-fatal):", err)
+          })
+        }
+      }
+    } catch (err) {
+      console.error("[createListingWithSellerContact] Form draft import failed (non-fatal):", err)
+    }
+  }
+
   revalidatePath("/dashboard/listings")
 
   return {
     success:  true,
     listing:  listingResult.listing,
-    listingId: (listingResult.listing as any).id as string,
+    listingId: newListingId,
     sellerCreated: sellerResult.created,
   }
 }
@@ -194,7 +224,9 @@ export async function launchListingAction(params: {
         .maybeSingle()
 
       if (listing) {
-        const targetUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? ""}/listings/${listing.id}`
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL
+        if (!baseUrl) return  // Skip QR generation when base URL is not configured
+        const targetUrl = `${baseUrl}/listings/${listing.id}`
         const slug = `listing-${listing.id.slice(0, 8)}`
         const { data: existing } = await svc
           .from("qr_codes")

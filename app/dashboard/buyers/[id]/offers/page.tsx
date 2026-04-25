@@ -98,6 +98,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
         contactEmail={contactEmail}
         initialOffers={offers ?? []}
         buyerStage={contact.buyer_stage ?? "BUYER_OFFER_ELIGIBLE"}
+        disableOfferCreation={!offerGateResult.allowed}
       />
     </div>
   )

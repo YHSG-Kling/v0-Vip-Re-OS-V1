@@ -318,11 +318,15 @@ export default async function ComplianceDashboardPage() {
             <CardContent className="space-y-4">
               {/* Summary from transaction compliance logs filtered for TRID-related checks */}
               {(() => {
+                const TRID_CHECK_TYPES = new Set([
+                  "trid_disclosure",
+                  "trid_timeline",
+                  "loan_estimate",
+                  "closing_disclosure",
+                ])
                 const tridLogs = allLogs.filter(l =>
-                  l.check_type?.toLowerCase().includes("trid") ||
-                  l.check_type?.toLowerCase().includes("disclosure") ||
-                  l.check_type === "loan_estimate" ||
-                  l.check_type === "closing_disclosure"
+                  (l.check_type && TRID_CHECK_TYPES.has(l.check_type)) ||
+                  l.check_type?.toLowerCase().startsWith("trid_")
                 )
                 const tridPending = tridLogs.filter(l => l.status === "pending" || l.status === "needs_review")
                 const tridPassed = tridLogs.filter(l => l.status === "pass")

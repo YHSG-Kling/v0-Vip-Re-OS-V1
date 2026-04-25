@@ -38,6 +38,9 @@ export interface BrandVoiceUpsertInput {
   custom_instructions?: string
 }
 
+// Roles permitted to read/write brand voice profiles
+const BRAND_VOICE_ALLOWED_ROLES = ["agent", "broker", "admin", "superadmin"]
+
 // ── Load the caller's brand voice profile ────────────────────────────────────
 
 export async function loadBrandVoiceProfileAction(): Promise<{
@@ -47,6 +50,12 @@ export async function loadBrandVoiceProfileAction(): Promise<{
 }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
+  if (!BRAND_VOICE_ALLOWED_ROLES.includes(ctx.userType)) {
+    return { success: false, error: "Forbidden: insufficient role" }
+  }
+  if (ctx.userType === "agent" && !ctx.agentId) {
+    return { success: false, error: "Agent profile not found" }
+  }
 
   const supabase = await createClient()
   const { data, error } = await supabase
@@ -69,6 +78,12 @@ export async function saveBrandVoiceProfileAction(input: BrandVoiceUpsertInput):
 }> {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) return { success: false, error: "Unauthorized" }
+  if (!BRAND_VOICE_ALLOWED_ROLES.includes(ctx.userType)) {
+    return { success: false, error: "Forbidden: insufficient role" }
+  }
+  if (ctx.userType === "agent" && !ctx.agentId) {
+    return { success: false, error: "Agent profile not found" }
+  }
 
   const supabase = await createClient()
 

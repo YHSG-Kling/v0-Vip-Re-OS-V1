@@ -425,15 +425,15 @@ export function BuyerOverviewClient({
                     <p className="text-sm text-muted-foreground">{aiMatchResult.error ?? "No matches found."}</p>
                   ) : (
                     <div className="space-y-2">
-                      {Array.isArray(aiMatchResult.matches) && aiMatchResult.matches.length > 0 ? (
-                        aiMatchResult.matches.slice(0, 5).map((m: any, i: number) => (
+                      {Array.isArray(aiMatchResult.topMatches) && aiMatchResult.topMatches.length > 0 ? (
+                        aiMatchResult.topMatches.slice(0, 5).map((m: any, i: number) => (
                           <div key={i} className="flex items-center justify-between py-1.5 border-b last:border-0">
                             <div>
                               <p className="text-sm font-medium">{m.address ?? m.property_address ?? `Property ${i + 1}`}</p>
-                              {m.list_price && <p className="text-xs text-muted-foreground">${Number(m.list_price).toLocaleString()}</p>}
+                              {m.listPrice && <p className="text-xs text-muted-foreground">${Number(m.listPrice).toLocaleString()}</p>}
                             </div>
-                            {m.match_score != null && (
-                              <Badge variant="secondary" className="text-xs">{Math.round(m.match_score * 100)}% match</Badge>
+                            {m.aiMatchScore != null && (
+                              <Badge variant="secondary" className="text-xs">{Math.round(m.aiMatchScore)}% match</Badge>
                             )}
                           </div>
                         ))
@@ -832,7 +832,7 @@ export function BuyerOverviewClient({
                   {/* Tours gate */}
                   <div className="flex flex-col items-center gap-1.5 rounded-lg border border-border p-3">
                     <span className="text-xs text-muted-foreground font-medium">Tours</span>
-                    {enabledGates.includes("tours") || enabledGates.includes("tour") ? (
+                    {enabledGates.includes("tour_scheduling") || enabledGates.includes("tour_eligibility") ? (
                       <Badge className="bg-green-100 text-green-800 border-green-200 text-xs font-normal">Enabled</Badge>
                     ) : (
                       <Badge className="bg-muted text-muted-foreground border-border text-xs font-normal">Locked</Badge>
@@ -841,7 +841,7 @@ export function BuyerOverviewClient({
                   {/* Offers gate */}
                   <div className="flex flex-col items-center gap-1.5 rounded-lg border border-border p-3">
                     <span className="text-xs text-muted-foreground font-medium">Offers</span>
-                    {enabledGates.includes("offers") || enabledGates.includes("offer") ? (
+                    {enabledGates.includes("offer_creation") || enabledGates.includes("offer_eligibility") ? (
                       <Badge className="bg-green-100 text-green-800 border-green-200 text-xs font-normal">Enabled</Badge>
                     ) : (
                       <Badge className="bg-muted text-muted-foreground border-border text-xs font-normal">Locked</Badge>

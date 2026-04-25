@@ -467,6 +467,16 @@ export async function prepareListingEmailCampaign(params: {
 
   const supabase = await createClient()
 
+  // Auth + feature gate — must match the pattern used by createEmailCampaign / sendEmailCampaign
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) {
+    return { success: false, error: "Unauthorized" }
+  }
+  const access = await canAccessFeature(user.id, "email_campaigns")
+  if (!access.allowed) {
+    return { success: false, error: access.reason ?? "Email campaigns feature not available" }
+  }
+
   try {
     const { data: transaction } = await supabase
       .from("transactions")
@@ -533,7 +543,8 @@ export async function prepareListingEmailCampaign(params: {
       await supabase.from("newsletter_campaigns").update({ template_id: template.id }).eq("id", campaign.id)
     }
 
-    for (const contactId of recipients) {
+    const uniqueRecipients = [...new Set(recipients.filter(Boolean))]
+    for (const contactId of uniqueRecipients) {
       await supabase.from("email_sends").insert({
         campaign_id: campaign.id,
         contact_id: contactId,
@@ -545,7 +556,7 @@ export async function prepareListingEmailCampaign(params: {
     return {
       success: true,
       campaign_id: campaign.id,
-      recipients: recipients.length,
+      recipients: uniqueRecipients.length,
       subject: emailContent.data?.subject,
     }
   } catch (error) {

@@ -1130,6 +1130,7 @@ export async function respondToRepairRequest(
   const updates: Record<string, unknown> = {
     status: response === "counter" ? "countered" : response,
     response_note: notes,
+    ...(response === "counter" && counterOffer !== undefined ? { agreed_amount: counterOffer } : {}),
   }
 
   const { data, error } = await supabase

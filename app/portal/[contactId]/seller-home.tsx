@@ -15,7 +15,6 @@ import {
   getMarketPosition,
   getSellerVendors,
   getShowingInsights,
-  getSellerDashboardData,
   emitSellerPortalViewed,
 } from "@/app/actions/portal-seller"
 import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
@@ -105,13 +104,9 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
 
   // Fetch richer insight data — only when a listing exists, errors silently swallowed
   let showingInsights: Awaited<ReturnType<typeof getShowingInsights>> | null = null
-  let sellerDashboard: Awaited<ReturnType<typeof getSellerDashboardData>> | null = null
 
   if (context.listing) {
-    ;[showingInsights, sellerDashboard] = await Promise.all([
-      getShowingInsights(contactId).catch(() => null),
-      getSellerDashboardData(contactId).catch(() => null),
-    ])
+    showingInsights = await getShowingInsights(contactId).catch(() => null)
   }
 
   // Parallel data fetches
@@ -195,17 +190,16 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   // Computed values
   const unreadMessageCount = messages.filter((m: any) => m.direction === "inbound" && !m.read_at).length
 
-  // Derived values from getSellerDashboardData
-  const dashboardListing = sellerDashboard?.listing
+  // Derived values — use already-fetched context and offerSummary (no duplicate DB call)
   const daysOnMarket: number | null =
-    dashboardListing?.dom ??
+    context.listing?.dom ??
     (context.listing?.listing_date
       ? Math.floor(
           (Date.now() - new Date(context.listing.listing_date).getTime()) /
             (1000 * 60 * 60 * 24)
         )
       : null)
-  const dashboardOfferCount: number = sellerDashboard?.offerSummary?.total ?? 0
+  const dashboardOfferCount: number = offerSummary?.total ?? 0
 
   // Derived values from getShowingInsights
   const sentimentBreakdown = showingInsights?.sentimentBreakdown ?? null
@@ -257,7 +251,7 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
         </CardContent>
       </Card>
 
-      {/* DAYS ON MARKET + OFFER COUNT STATS — from getSellerDashboardData */}
+      {/* DAYS ON MARKET + OFFER COUNT STATS */}
       {context.listing && (daysOnMarket !== null || dashboardOfferCount > 0) && (
         <div className="grid grid-cols-2 gap-4">
           {daysOnMarket !== null && (
@@ -579,7 +573,6 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
       </Card>
 
       {/* NOTE: AlertTriangle available for future price-reduction-recommended banner */}
-      {/* when that field is added to getSellerDashboardData return type */}
     </div>
   )
 }

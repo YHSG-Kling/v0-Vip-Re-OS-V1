@@ -16,14 +16,28 @@ CREATE TABLE IF NOT EXISTS content_approvals (
 
 ALTER TABLE content_approvals ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "agents_own_approvals" ON content_approvals
-  FOR ALL USING (
+CREATE POLICY "agents_own_approvals_select" ON content_approvals
+  FOR SELECT USING (
+    agent_id IN (SELECT id FROM agents WHERE user_id = auth.uid())
+  );
+
+CREATE POLICY "agents_own_approvals_insert" ON content_approvals
+  FOR INSERT WITH CHECK (
     agent_id IN (SELECT id FROM agents WHERE user_id = auth.uid())
   );
 
 CREATE POLICY "brokers_view_brokerage_approvals" ON content_approvals
   FOR SELECT USING (
     brokerage_id IN (SELECT brokerage_id FROM agents WHERE user_id = auth.uid())
+  );
+
+CREATE POLICY "brokers_admins_update_approvals" ON content_approvals
+  FOR UPDATE USING (
+    brokerage_id IN (
+      SELECT brokerage_id FROM users
+      WHERE id = auth.uid()
+        AND user_type IN ('broker', 'admin', 'superadmin')
+    )
   );
 
 -- SM4: Add settings column to lead_capture_forms (used by notify_on_submission toggle)

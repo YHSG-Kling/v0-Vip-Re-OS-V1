@@ -166,6 +166,7 @@ export default function LifetimeCustomersPage() {
   const [anniversaries, setAnniversaries] = useState<Anniversary[]>([])
   const [loading, setLoading] = useState(true)
   const [currentAgentId, setCurrentAgentId] = useState("")
+  const [currentUserId, setCurrentUserId] = useState("")
 
   // Filter state
   const [search, setSearch] = useState("")
@@ -276,6 +277,7 @@ export default function LifetimeCustomersPage() {
       const supabase = createClient()
       const { data: { user: authUser } } = await supabase.auth.getUser()
       if (!authUser) return
+      setCurrentUserId(authUser.id)
       const { data: agentRow } = await supabase
         .from("agents")
         .select("id")
@@ -399,12 +401,12 @@ export default function LifetimeCustomersPage() {
   }
 
   async function handleGenerateReferralScript() {
-    if (!referralScriptContactId || !currentAgentId) return
+    if (!referralScriptContactId || !currentUserId) return
     setReferralScriptOpen(false)
     startTransition(async () => {
       const result = await generateReferralRequest({
         contactId: referralScriptContactId,
-        agentId: currentAgentId,
+        agentId: currentUserId,
         channel: referralScriptChannel,
       })
       if (result.success && (result as any).referralRequest) {
@@ -528,6 +530,8 @@ export default function LifetimeCustomersPage() {
         if (result.success && (result as any).data?.referrals) {
           setReferralPipeline((result as any).data.referrals)
           toast.success(`Loaded ${(result as any).data.referrals.length} referral${(result as any).data.referrals.length !== 1 ? "s" : ""}`)
+        } else if (!result.success) {
+          toast.error((result as any).error ?? "Failed to load referral pipeline")
         } else {
           setReferralPipeline([])
           toast.info("No referrals found in pipeline")

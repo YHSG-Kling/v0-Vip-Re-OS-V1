@@ -245,6 +245,10 @@ export async function aiGenerateListingDescription(params: {
 
     const supabase = await createClient()
 
+    // Resolve brokerage for the agent (used for compliance/brand-voice scoping)
+    const agentCtx = await getAgentContext().catch(() => null)
+    const brokerageId = agentCtx?.brokerageId ?? null
+
     // Get agent's brand voice
     const { data: brandVoice } = await supabase
       .from("brand_voice_profile")
@@ -282,12 +286,14 @@ IMPORTANT RULES:
     })
 
     // Run compliance + BrandVoice guard on MLS description (the regulated channel)
-    const guardResult = await guardContent({
-      content:     descriptions.mlsDescription,
-      agentId:     params.agentId,
-      brokerageId: params.agentId, // falls back gracefully if brokerageId not passed
-      contentType: "listing_description",
-    }).catch(() => null)
+    const guardResult = brokerageId
+      ? await guardContent({
+          content:     descriptions.mlsDescription,
+          agentId:     params.agentId,
+          brokerageId,
+          contentType: "listing_description",
+        }).catch(() => null)
+      : null
 
     // Save generated content
     await supabase.from("listing_marketing_content").insert({
