@@ -58,12 +58,22 @@ export async function loadBrandVoiceProfileAction(): Promise<{
   }
 
   const supabase = await createClient()
-  const { data, error } = await supabase
+
+  let query = supabase
     .from("brand_voice_profile")
     .select("*")
-    .eq("agent_id", ctx.agentId)
     .eq("is_active", true)
-    .maybeSingle()
+
+  if (ctx.userType === "agent") {
+    // Agents: fetch their own profile by agent_id
+    query = query.eq("agent_id", ctx.agentId)
+  } else {
+    // Brokers / admins: fetch the brokerage-level profile (no agent_id set)
+    if (!ctx.brokerageId) return { success: false, error: "Brokerage not found" }
+    query = query.eq("brokerage_id", ctx.brokerageId).is("agent_id", null)
+  }
+
+  const { data, error } = await query.maybeSingle()
 
   if (error) return { success: false, error: error.message }
   return { success: true, profile: data }

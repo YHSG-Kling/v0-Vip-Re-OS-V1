@@ -1532,8 +1532,21 @@ Response JSON structure:
 }
 
 // Mass generate CMAs for all property owners
-export async function massGenerateCMAs(agentId: string) {
+// The agentId parameter is intentionally ignored; identity is always resolved
+// from the server-side session to prevent client-side impersonation.
+export async function massGenerateCMAs(_ignoredAgentId?: string) {
   const supabase = await createClient()
+
+  // Resolve identity server-side — never trust the client-supplied agentId
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Unauthorized")
+
+  const { getAgentContext } = await import("@/lib/identity/get-agent-context")
+  const ctx = await getAgentContext()
+  if (!ctx.isAuthenticated) throw new Error("Unauthorized")
+  if (!ctx.agentId) throw new Error("Agent profile not found")
+
+  const agentId = ctx.agentId
 
   // Get agent's brokerage for commission structure
   const { data: agent } = await supabase
@@ -1542,7 +1555,7 @@ export async function massGenerateCMAs(agentId: string) {
     .eq("id", agentId)
     .single()
 
-  const brokerageId = agent?.profiles?.brokerage_id
+  const brokerageId = agent?.profiles?.brokerage_id ?? ctx.brokerageId
   if (!brokerageId) {
     throw new Error("Agent brokerage not found")
   }

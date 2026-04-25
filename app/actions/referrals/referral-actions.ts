@@ -192,6 +192,10 @@ export async function updateReferralStatus(
 }
 
 export async function sendReferralThankYou(referralId: string): Promise<{ success: true }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Unauthorized")
+
   const { agentId, brokerageId } = await getAgentContext()
   const db = createServiceClient()
 

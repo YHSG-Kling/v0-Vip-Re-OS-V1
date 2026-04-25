@@ -128,7 +128,7 @@ export function FormSelectorStep({
   useEffect(() => {
     if (autoLoad) loadForms()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [state, contextType])
 
   // ── Handlers ─────────────────────────────────────────────────────────────────
 

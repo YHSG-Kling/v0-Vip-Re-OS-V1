@@ -111,7 +111,7 @@ function SellerNetTab({ brokerageId }: { brokerageId: string }) {
     })
   }
 
-  const canCalculate = !!homeValue && !!mortgageBalance && !!location && !!state
+  const canCalculate = !!homeValue && !!location && !!state
 
   return (
     <div className="space-y-6">

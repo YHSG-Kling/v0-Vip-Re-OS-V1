@@ -152,7 +152,7 @@ export default async function ListingsPage({
             AI Price Analysis
           </Button>
         </Link>
-        <MassCMAButton agentId={agentId} />
+        {agentRecord?.id && <MassCMAButton />}
       </div>
 
       <div className="px-4 sm:px-6 space-y-6">

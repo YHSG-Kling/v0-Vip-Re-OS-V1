@@ -75,7 +75,7 @@ import {
   type VisibilityScope,
 } from "@/app/actions/marketing-studio"
 import { getMailCampaigns } from "@/app/actions/direct-mail"
-import { createCampaignSequence, createSequenceStep } from "@/app/actions/campaign-sequences"
+import { createCampaignSequence, createSequenceStep, deleteCampaignSequence } from "@/app/actions/campaign-sequences"
 import { getCampaignRegistry, registerCampaignSource, type ContentSourceItem } from "@/lib/marketing/campaign-registry"
 import { listAvailableQrCodes, type QrLinkInfo } from "@/lib/marketing/qr-asset-linker"
 import { predictPerformanceAction, getUserContextForPrediction } from "@/app/actions/content-prediction"
@@ -771,6 +771,7 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
         toast({ title: "Failed to create sequence", description: seqError, variant: "destructive" })
         return
       }
+      const stepErrors: string[] = []
       for (let i = 0; i < omnichannelSteps.length; i++) {
         const step = omnichannelSteps[i]
         const stepResult = await createSequenceStep({
@@ -784,13 +785,18 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
           body: step.body || undefined,
         })
         if (stepResult.error || !stepResult.step) {
-          toast({
-            title: `Failed to create step ${i + 1}`,
-            description: stepResult?.error ?? "Unknown error",
-            variant: "destructive",
-          })
-          return
+          stepErrors.push(`Step ${i + 1}: ${stepResult?.error ?? "Unknown error"}`)
         }
+      }
+      if (stepErrors.length > 0) {
+        // Roll back the partially-created sequence to avoid orphaned records
+        await deleteCampaignSequence(sequence.id).catch(() => {})
+        toast({
+          title: "Failed to create sequence steps — sequence rolled back",
+          description: stepErrors.join("; "),
+          variant: "destructive",
+        })
+        return
       }
       setOmnichannelName("")
       setOmnichannelDescription("")

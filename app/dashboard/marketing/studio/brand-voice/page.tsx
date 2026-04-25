@@ -8,7 +8,11 @@ export const dynamic = "force-dynamic"
 export default async function BrandVoicePage() {
   const ctx = await getAgentContext()
   if (!ctx.isAuthenticated) redirect("/login")
-  if (!ctx.agentId && ctx.userType === "agent") redirect("/dashboard")
+  // Page requires an agent context. Agents must have a resolved agentId.
+  // Brokers/admins acting on behalf of agents need a brokerageId at minimum.
+  // Any user who is not an agent and has no brokerage context cannot use this page.
+  if (ctx.userType === "agent" && !ctx.agentId) redirect("/dashboard")
+  if (ctx.userType !== "agent" && !ctx.brokerageId) redirect("/dashboard")
 
   const { profile } = await loadBrandVoiceProfileAction()
 

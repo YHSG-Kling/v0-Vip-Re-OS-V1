@@ -8,10 +8,11 @@ import { massGenerateCMAs } from "@/app/actions/ai-predictions"
 import { toast } from "sonner"
 
 interface MassCMAButtonProps {
-  agentId: string
+  // agentId is no longer used — massGenerateCMAs resolves identity server-side
+  agentId?: string
 }
 
-export function MassCMAButton({ agentId }: MassCMAButtonProps) {
+export function MassCMAButton({ agentId: _agentId }: MassCMAButtonProps) {
   const [isPending, startTransition] = useTransition()
   const [result, setResult] = useState<{ totalCMAsGenerated: number; significantOpportunities: number; message?: string } | null>(null)
   const [open, setOpen] = useState(false)
@@ -19,7 +20,7 @@ export function MassCMAButton({ agentId }: MassCMAButtonProps) {
   function handleScan() {
     startTransition(async () => {
       try {
-        const res = await massGenerateCMAs(agentId)
+        const res = await massGenerateCMAs()
         setResult(res)
         setOpen(true)
         if (res.significantOpportunities > 0) {

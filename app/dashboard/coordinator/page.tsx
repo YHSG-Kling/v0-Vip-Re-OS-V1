@@ -210,8 +210,9 @@ export default async function CoordinatorDashboard({
 
   const brokerageId = userData?.brokerage_id
 
-  // Deadline risk prediction — real data from predictDeadlineRisks
-  const { atRiskTransactions, atRiskCount } = await predictDeadlineRisks(coordinatorId)
+  // Deadline risk prediction — scoped to the same transaction IDs the dashboard
+  // already fetched via transaction_assignments (not transactions.coordinator_id)
+  const { atRiskTransactions, atRiskCount } = await predictDeadlineRisks(coordinatorId, transactionIds)
 
   // Pre-compute per-transaction risk details for display
   const atRiskDetails = atRiskTransactions.map((t: any) => {

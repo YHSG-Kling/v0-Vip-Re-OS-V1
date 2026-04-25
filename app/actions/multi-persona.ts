@@ -1128,18 +1128,31 @@ export async function getReferralPartnerStats(partnerId: string) {
 // TRANSACTION COORDINATOR ANALYTICS
 // ============================================
 
-export async function predictDeadlineRisks(coordinatorId: string) {
+export async function predictDeadlineRisks(
+  coordinatorId: string,
+  scopedTransactionIds?: string[]
+) {
   const supabase = await createClient()
 
-  const { data: transactions } = await supabase
+  // When the caller already has the canonical list of transaction IDs (e.g.
+  // fetched via transaction_assignments), restrict the query to that set so
+  // the risk results stay in sync with what the dashboard displays.
+  let query = supabase
     .from("transactions")
     .select(`
       *,
       transaction_milestones(*),
       transaction_deadlines(*)
     `)
-    .eq("coordinator_id", coordinatorId)
     .not("status", "in", "(closed,lost)")
+
+  if (scopedTransactionIds && scopedTransactionIds.length > 0) {
+    query = query.in("id", scopedTransactionIds)
+  } else {
+    query = query.eq("coordinator_id", coordinatorId)
+  }
+
+  const { data: transactions } = await query
 
   const atRisk = transactions?.filter((t) => {
     const daysToClosing = t.close_date

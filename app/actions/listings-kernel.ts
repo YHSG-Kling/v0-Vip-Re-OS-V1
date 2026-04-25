@@ -225,7 +225,9 @@ export async function launchListingAction(params: {
 
       if (listing) {
         const baseUrl = process.env.NEXT_PUBLIC_APP_URL
-        if (!baseUrl) return  // Skip QR generation when base URL is not configured
+        if (!baseUrl) {
+          // Base URL not configured — skip QR generation but continue action
+        } else {
         const targetUrl = `${baseUrl}/listings/${listing.id}`
         const slug = `listing-${listing.id.slice(0, 8)}`
         const { data: existing } = await svc
@@ -249,6 +251,7 @@ export async function launchListingAction(params: {
             is_active:    true,
           })
         }
+        } // end else (baseUrl exists)
       }
     } catch {
       // Non-fatal — QR generation is a best-effort enhancement

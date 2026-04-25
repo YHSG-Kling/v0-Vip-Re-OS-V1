@@ -436,13 +436,15 @@ export async function createOffer(
       closing_cost_contribution:   form.closing_cost_contribution ?? null,
       escalation_clause:           form.escalation_clause,
       escalation_cap:              form.escalation_cap ?? null,
-      buyer_notes:                 form.in_app_selected_form_ids?.length
-        ? JSON.stringify({
-            notes:             form.buyer_notes ?? null,
+      buyer_notes:                 form.buyer_notes ?? null,
+      // form_data stores in-app form selections separately so buyer_notes
+      // remains human-readable plain text and is never corrupted with JSON.
+      form_data:                   form.in_app_selected_form_ids?.length
+        ? {
             selected_form_ids: form.in_app_selected_form_ids,
             form_field_values: form.in_app_form_field_values ?? {},
-          })
-        : (form.buyer_notes ?? null),
+          }
+        : null,
       form_source:                 form.form_source,
       form_provider_ref:           form.form_provider_ref ?? null,
       esign_provider:              form.esign_provider ?? null,

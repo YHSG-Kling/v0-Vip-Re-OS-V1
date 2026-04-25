@@ -304,7 +304,10 @@ IMPORTANT RULES:
           agentId:     params.agentId,
           brokerageId,
           contentType: "listing_description",
-        }).catch(() => null)
+        }).catch((err) => {
+            console.error("[compliance-guard] guardContent threw — treating as guard failure:", err)
+            return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false }
+          })
       : null
 
     // Save generated content

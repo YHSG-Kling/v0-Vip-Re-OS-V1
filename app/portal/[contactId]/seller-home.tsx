@@ -15,8 +15,8 @@ import {
   getMarketPosition,
   getSellerVendors,
   getShowingInsights,
-  emitSellerPortalViewed,
 } from "@/app/actions/portal-seller"
+import { SellerPortalViewTracker } from "./components/seller-mode/SellerPortalViewTracker"
 import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
 import { ShowingActivityStrip, ShowingFeedbackCard } from "@/app/components/portal/ShowingsFeedCard"
 import { SellerOfferCard } from "@/app/components/portal/SellerOfferCard"
@@ -95,9 +95,6 @@ interface SellerHomeProps {
 
 export default async function SellerHome({ contactId }: SellerHomeProps) {
   const supabase = await createClient()
-
-  // Fire-and-forget: notify agent that seller viewed portal (non-blocking)
-  emitSellerPortalViewed(contactId, "seller_home").catch(() => {})
 
   // Get base seller context
   const context = await resolveSellerContext(supabase, contactId)
@@ -218,6 +215,9 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
 
   return (
     <div className="space-y-6">
+      {/* Analytics: fires once on the client after mount — never during SSR/prefetch */}
+      <SellerPortalViewTracker contactId={contactId} page="seller_home" />
+
       {/* 1. LISTING STATUS BANNER */}
       <ListingStatsCard
         listing={context.listing}

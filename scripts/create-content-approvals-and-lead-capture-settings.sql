@@ -28,7 +28,11 @@ CREATE POLICY "agents_own_approvals_insert" ON content_approvals
 
 CREATE POLICY "brokers_view_brokerage_approvals" ON content_approvals
   FOR SELECT USING (
-    brokerage_id IN (SELECT brokerage_id FROM agents WHERE user_id = auth.uid())
+    brokerage_id IN (
+      SELECT brokerage_id FROM users
+      WHERE id = auth.uid()
+        AND user_type IN ('broker', 'admin')
+    )
   );
 
 CREATE POLICY "brokers_admins_update_approvals" ON content_approvals

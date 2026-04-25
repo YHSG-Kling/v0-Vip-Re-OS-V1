@@ -37,18 +37,25 @@ export function FormFieldRenderer({ formId, formName, values, onChange }: FormFi
   const [error, setError]       = useState<string | null>(null)
 
   useEffect(() => {
+    let cancelled = false
     setLoading(true)
     setError(null)
     getFormFieldsAction(formId)
       .then(res => {
+        if (cancelled) return
         if (res.success && res.fields) {
           setFields(res.fields)
         } else {
           setError(res.error ?? "Could not load form fields")
         }
       })
-      .catch(() => setError("Could not load form fields"))
-      .finally(() => setLoading(false))
+      .catch(() => {
+        if (!cancelled) setError("Could not load form fields")
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
   }, [formId])
 
   if (loading) {
