@@ -1199,8 +1199,7 @@ export default function CRMPage() {
                         // Suppression check — do not send magic link to opted-out or DNC contacts
                         if (
                           selectedContact?.dnc_status ||
-                          selectedContact?.email_opt_out ||
-                          selectedContact?.sms_opt_out
+                          selectedContact?.email_opt_out
                         ) {
                           toast.error("Cannot send portal invite: contact has opted out or is on the Do Not Contact list")
                           return

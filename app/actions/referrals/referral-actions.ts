@@ -256,14 +256,18 @@ export async function deletePartner(partnerId: string): Promise<void> {
   const { agentId, brokerageId } = await getAgentContext()
   const db = createServiceClient()
 
-  const { error } = await db
+  const { data: deleted, error } = await db
     .from("referral_partners")
     .delete()
     .eq("id", partnerId)
     .eq("agent_id", agentId)
     .eq("brokerage_id", brokerageId)
+    .select("id")
 
   if (error) throw new Error(`Failed to delete partner: ${error.message}`)
+  if (!deleted || deleted.length === 0) {
+    console.warn(`[deletePartner] No row deleted for partnerId=${partnerId} — may have already been removed or ownership mismatch`)
+  }
 }
 
 export async function listPartnersWithReferrals(): Promise<{

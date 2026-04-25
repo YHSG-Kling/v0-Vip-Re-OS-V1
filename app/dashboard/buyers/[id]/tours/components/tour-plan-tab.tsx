@@ -228,8 +228,11 @@ export function TourPlanTab({
           <p className="text-sm font-medium text-muted-foreground">Tour creation is locked — complete financial verification to unlock.</p>
         </div>
       )}
-      {/* Content wrapper — pointer events disabled when the gate overlay is active */}
-      <div className={`flex gap-6 h-full min-h-0${disabled ? " pointer-events-none select-none" : ""}`}>
+      {/* Content wrapper — pointer events + keyboard interaction disabled when gate overlay is active */}
+      <div
+        className={`flex gap-6 h-full min-h-0${disabled ? " pointer-events-none select-none" : ""}`}
+        {...(disabled ? { inert: true } : {})}
+      >
       {/* Left panel */}
       <div className="w-72 flex-shrink-0 flex flex-col gap-4">
         <div>

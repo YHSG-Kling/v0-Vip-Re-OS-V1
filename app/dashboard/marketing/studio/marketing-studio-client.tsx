@@ -790,9 +790,12 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
       }
       if (stepErrors.length > 0) {
         // Roll back the partially-created sequence to avoid orphaned records
-        await deleteCampaignSequence(sequence.id).catch(() => {})
+        const rollback = await deleteCampaignSequence(sequence.id).catch((e) => ({ error: String(e) }))
+        const rollbackFailed = rollback && "error" in rollback
         toast({
-          title: "Failed to create sequence steps — sequence rolled back",
+          title: rollbackFailed
+            ? "Failed to create sequence steps — sequence may be partially saved"
+            : "Failed to create sequence steps — sequence rolled back",
           description: stepErrors.join("; "),
           variant: "destructive",
         })

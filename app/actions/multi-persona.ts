@@ -1146,7 +1146,11 @@ export async function predictDeadlineRisks(
     `)
     .not("status", "in", "(closed,lost)")
 
-  if (scopedTransactionIds && scopedTransactionIds.length > 0) {
+  if (scopedTransactionIds !== undefined) {
+    // Explicit scope provided — use it; empty array means no transactions in scope
+    if (scopedTransactionIds.length === 0) {
+      return { atRiskTransactions: [], atRiskCount: 0 }
+    }
     query = query.in("id", scopedTransactionIds)
   } else {
     query = query.eq("coordinator_id", coordinatorId)

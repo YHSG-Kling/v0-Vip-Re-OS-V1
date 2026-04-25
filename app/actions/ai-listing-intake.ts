@@ -258,7 +258,7 @@ export async function aiGenerateListingDescription(params: {
         .select("brokerage_id")
         .eq("id", params.agentId)
         .maybeSingle()
-      brokerageId = agentRow?.brokerage_id ?? brokerageId
+      brokerageId = agentRow?.brokerage_id ?? null
     }
 
     // Get agent's brand voice
