@@ -262,6 +262,7 @@ export default async function CoordinatorDashboard({
             id: t.id,
             property_address: t.property_address ?? "",
             stage: t.stage,
+            deal_type: t.deal_type,
           }))}
           agentId={user.id}
           brokerageId={brokerageId || ""}

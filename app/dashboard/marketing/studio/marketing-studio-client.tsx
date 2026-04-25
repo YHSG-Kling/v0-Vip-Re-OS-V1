@@ -279,11 +279,18 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
     scheduledEndAt: "",
     visibilityScope: "agent" as VisibilityScope,
   })
-  const [newAsset, setNewAsset] = useState({
+  const [newAsset, setNewAsset] = useState<{
+    assetName: string
+    assetType: string
+    campaignId: string
+    previewText: string
+    qrTargetUrl: string
+  }>({
     assetName: "",
-    assetType: "graphic" as const,
+    assetType: "graphic",
     campaignId: "",
     previewText: "",
+    qrTargetUrl: "",
   })
   const [newEvent, setNewEvent] = useState({
     title: "",
@@ -587,13 +594,18 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
 
   async function handleCreateAsset() {
     try {
+      const qrUrl = newAsset.assetType === "qr" && newAsset.qrTargetUrl.trim()
+        ? `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(newAsset.qrTargetUrl.trim())}`
+        : undefined
       const result = await createAsset({
         ...newAsset,
+        assetType: newAsset.assetType as any,
         campaignId: newAsset.campaignId || undefined,
+        assetUrl: qrUrl,
       })
       if (result.success) {
         setIsCreateAssetOpen(false)
-        setNewAsset({ assetName: "", assetType: "graphic", campaignId: "", previewText: "" })
+        setNewAsset({ assetName: "", assetType: "graphic", campaignId: "", previewText: "", qrTargetUrl: "" })
         loadAssets()
         loadInitialData()
       } else {
@@ -1461,15 +1473,27 @@ export default function MarketingStudioClient({ userId: userIdProp, brokerageId:
                         </SelectContent>
                       </Select>
                     </div>
-                    <div className="space-y-2">
-                      <Label>Preview Text</Label>
-                      <Textarea
-                        value={newAsset.previewText}
-                        onChange={(e) => setNewAsset({ ...newAsset, previewText: e.target.value })}
-                        placeholder="Brief description..."
-                        rows={3}
-                      />
-                    </div>
+                    {newAsset.assetType === "qr" ? (
+                      <div className="space-y-2">
+                        <Label>Target URL (what the QR code points to)</Label>
+                        <Input
+                          value={newAsset.qrTargetUrl}
+                          onChange={(e) => setNewAsset({ ...newAsset, qrTargetUrl: e.target.value })}
+                          placeholder="https://example.com/your-page"
+                        />
+                        <p className="text-xs text-muted-foreground">A scannable QR image will be auto-generated.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <Label>Preview Text</Label>
+                        <Textarea
+                          value={newAsset.previewText}
+                          onChange={(e) => setNewAsset({ ...newAsset, previewText: e.target.value })}
+                          placeholder="Brief description..."
+                          rows={3}
+                        />
+                      </div>
+                    )}
                     <Button onClick={handleCreateAsset} className="w-full bg-violet-600 hover:bg-violet-700">
                       Create Asset
                     </Button>
