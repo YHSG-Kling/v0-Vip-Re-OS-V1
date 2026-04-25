@@ -259,6 +259,9 @@ export async function aiGenerateListingDescription(params: {
         .eq("id", params.agentId)
         .maybeSingle()
       brokerageId = agentRow?.brokerage_id ?? null
+      if (!brokerageId) {
+        return { success: false, error: "Unable to resolve agent brokerage for compliance checks" }
+      }
     }
 
     // Get agent's brand voice
