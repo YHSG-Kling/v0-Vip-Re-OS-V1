@@ -4,9 +4,12 @@ import { createClient } from '@/lib/supabase/server'
 import { ToursClient } from './tours-client'
 import { getSavedPropertiesForTour, getBuyerTours } from '@/app/actions/tour-planner'
 import { getAIShowingInsights } from '@/app/actions/ai-showing-management'
+import { canBuyerScheduleTours } from '@/app/actions/buyer-lifecycle-core'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import Link from 'next/link'
+import { AlertTriangle } from 'lucide-react'
 import { TourPipelineStepper } from '@/app/components/shared/TourPipelineStepper'
 
 interface Props {
@@ -52,7 +55,7 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
 
   const brokerageId = agentUser?.brokerage_id ?? contact.brokerage_id
 
-  // Gate: buyer must be BUYER_TOUR_ELIGIBLE or later
+  // Gate: buyer must be BUYER_TOUR_ELIGIBLE or later (legacy stage check)
   const isTourEligible = TOUR_ELIGIBLE_STAGES.includes(contact.buyer_stage ?? '')
 
   if (!isTourEligible) {
@@ -74,6 +77,9 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
       </div>
     )
   }
+
+  // Lifecycle gate check
+  const tourGateResult = await canBuyerScheduleTours(contactId)
 
   // Resolve agentId for insights
   const agentIdentity = await supabase.from("agents").select("id")
@@ -112,6 +118,20 @@ export default async function BuyerToursPage({ params, searchParams }: Props) {
           {tours.length} tour{tours.length === 1 ? '' : 's'} on file
         </p>
       </div>
+
+      {/* Lifecycle gate banner */}
+      {!tourGateResult.allowed && (
+        <Alert className="border-amber-200 bg-amber-50 mb-4">
+          <AlertTriangle className="h-4 w-4 text-amber-600" />
+          <AlertDescription className="text-amber-800">
+            Tours are locked: {tourGateResult.reason}.{' '}
+            <Link href={`/dashboard/buyers/${contactId}`} className="underline font-medium">
+              Complete financial verification
+            </Link>{' '}
+            to unlock.
+          </AlertDescription>
+        </Alert>
+      )}
 
       {/* Journey stepper */}
       <TourPipelineStepper

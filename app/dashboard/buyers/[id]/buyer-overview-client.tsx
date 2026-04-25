@@ -118,13 +118,14 @@ interface BuyerOverviewClientProps {
   tours:         any[]
   nextTour:      any | null
   dualAgencyListings: Array<{ listing_id: string; address: string }> | null
+  enabledGates?: string[]
 }
 
 export function BuyerOverviewClient({
   buyerId, contact, journey, profile, partners, drafts,
   propertyInterests, brokerageId, agentUserId, agentName,
   collaborativeSearches, activeSearch, consensus, tours, nextTour,
-  dualAgencyListings,
+  dualAgencyListings, enabledGates = [],
 }: BuyerOverviewClientProps) {
   const [activeTab, setActiveTab]   = useState<Tab>("Overview")
   const [gateModal, setGateModal]   = useState<GateModalProps | null>(null)
@@ -812,7 +813,45 @@ export function BuyerOverviewClient({
               )}
             </div>
 
-            {/* 6. Key Info Strip */}
+            {/* 6. Buyer Readiness — gate status panel */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Buyer Readiness</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-3 gap-3">
+                  {/* Search gate */}
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-border p-3">
+                    <span className="text-xs text-muted-foreground font-medium">Search</span>
+                    {enabledGates.includes("search") || enabledGates.includes("property_search") ? (
+                      <Badge className="bg-green-100 text-green-800 border-green-200 text-xs font-normal">Enabled</Badge>
+                    ) : (
+                      <Badge className="bg-muted text-muted-foreground border-border text-xs font-normal">Locked</Badge>
+                    )}
+                  </div>
+                  {/* Tours gate */}
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-border p-3">
+                    <span className="text-xs text-muted-foreground font-medium">Tours</span>
+                    {enabledGates.includes("tours") || enabledGates.includes("tour") ? (
+                      <Badge className="bg-green-100 text-green-800 border-green-200 text-xs font-normal">Enabled</Badge>
+                    ) : (
+                      <Badge className="bg-muted text-muted-foreground border-border text-xs font-normal">Locked</Badge>
+                    )}
+                  </div>
+                  {/* Offers gate */}
+                  <div className="flex flex-col items-center gap-1.5 rounded-lg border border-border p-3">
+                    <span className="text-xs text-muted-foreground font-medium">Offers</span>
+                    {enabledGates.includes("offers") || enabledGates.includes("offer") ? (
+                      <Badge className="bg-green-100 text-green-800 border-green-200 text-xs font-normal">Enabled</Badge>
+                    ) : (
+                      <Badge className="bg-muted text-muted-foreground border-border text-xs font-normal">Locked</Badge>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* 7. Key Info Strip */}
             <div className="rounded-lg border border-border bg-card p-5 space-y-4">
               <h3 className="text-sm font-semibold">Key Information</h3>
               <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">

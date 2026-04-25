@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
 import { Button } from "@/components/ui/button"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
 import { getAgentContext } from "@/lib/identity"
@@ -20,9 +21,10 @@ import {
   TaskQueuePanel,
   ClosingPrepPanel,
 } from "./components/os"
-import { AlertCircle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar } from "lucide-react"
+import { AlertCircle, AlertTriangle, UserCog, ClipboardList, Clock, CheckCircle2, Calendar, ChevronDown } from "lucide-react"
 import Link from "next/link"
 import { TcFastActionPanel } from "./components/tc-fast-action-panel"
+import { predictDeadlineRisks } from "@/app/actions/multi-persona"
 
 export default async function CoordinatorDashboard({
   searchParams,
@@ -208,6 +210,26 @@ export default async function CoordinatorDashboard({
 
   const brokerageId = userData?.brokerage_id
 
+  // Deadline risk prediction — real data from predictDeadlineRisks
+  const { atRiskTransactions, atRiskCount } = await predictDeadlineRisks(coordinatorId)
+
+  // Pre-compute per-transaction risk details for display
+  const atRiskDetails = atRiskTransactions.map((t: any) => {
+    const daysToClosing = t.close_date
+      ? Math.floor((new Date(t.close_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+      : null
+    const milestones: any[] = t.transaction_milestones || []
+    const completedCount = milestones.filter((m: any) => m.status === "completed").length
+    const completionPct =
+      milestones.length > 0 ? Math.round((completedCount / milestones.length) * 100) : 0
+    return {
+      id: t.id,
+      property_address: t.property_address ?? "Unknown address",
+      daysToClosing,
+      completionPct,
+    }
+  })
+
   return (
     <div className="min-h-screen bg-background p-6 space-y-6">
       <div className="flex items-center justify-between">
@@ -230,6 +252,48 @@ export default async function CoordinatorDashboard({
           </Badge>
         </div>
       </div>
+
+      {/* Deadline Risk Alert Banner */}
+      {atRiskCount > 0 && (
+        <div className="space-y-3">
+          <Alert className="border-red-200 bg-red-50">
+            <AlertTriangle className="h-4 w-4 text-red-600" />
+            <AlertDescription className="text-red-800">
+              {atRiskCount} transaction{atRiskCount !== 1 ? "s" : ""} at risk: closing within 10
+              days with under 70% milestones complete.
+            </AlertDescription>
+          </Alert>
+
+          {/* At-risk transaction list */}
+          <div className="rounded-md border border-red-200 bg-red-50/50 divide-y divide-red-100">
+            {atRiskDetails.map((t) => (
+              <div key={t.id} className="flex items-center justify-between px-4 py-3 gap-4">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-sm truncate">{t.property_address}</p>
+                  <div className="flex items-center gap-3 mt-1">
+                    <span className="text-xs text-red-700 font-medium">
+                      {t.daysToClosing !== null
+                        ? t.daysToClosing <= 0
+                          ? "Closing today or overdue"
+                          : `${t.daysToClosing} day${t.daysToClosing !== 1 ? "s" : ""} to closing`
+                        : "No close date"}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {t.completionPct}% milestones complete
+                    </span>
+                  </div>
+                </div>
+                <Link
+                  href={`/dashboard/transactions/${t.id}`}
+                  className="shrink-0 text-xs font-medium text-red-700 hover:text-red-900 underline underline-offset-2"
+                >
+                  View
+                </Link>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* OS Command Strip */}
       <div>

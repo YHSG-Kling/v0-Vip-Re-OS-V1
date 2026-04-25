@@ -8,6 +8,7 @@ import { AlertTriangle, Shield, Award, ClipboardCheck, ExternalLink } from "luci
 import Link from "next/link"
 import { getPendingApprovals, getComplianceViolations, generateComplianceReport, trackCertificationExpiration } from "@/app/actions/compliance-monitoring"
 import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
+import { calculateComplianceRiskScore } from "@/app/actions/multi-persona"
 import { createClient } from "@/lib/supabase/server"
 import SubmitContentForm from "@/app/components/shared/compliance/submit-content-form"
 import PendingApprovalsList from "@/app/components/shared/compliance/pending-approvals-list"
@@ -35,7 +36,7 @@ export default async function ComplianceDashboardPage() {
   const today = new Date()
   const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs, certStatus] = await Promise.all([
+  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs, certStatus, complianceRiskScore] = await Promise.all([
     getPendingApprovals(),
     getComplianceViolations(),
     generateComplianceReport({
@@ -44,6 +45,7 @@ export default async function ComplianceDashboardPage() {
     }),
     getAllTransactionComplianceLogs({ limit: 100 }),
     user ? trackCertificationExpiration(user.id).catch(() => null) : Promise.resolve(null),
+    user ? calculateComplianceRiskScore(user.id).catch(() => null) : Promise.resolve(null),
   ])
 
   const complianceRate =
@@ -110,6 +112,72 @@ export default async function ComplianceDashboardPage() {
         complianceRate={complianceRate}
         blockingIssues={blockingIssues}
       />
+
+      {/* Compliance Risk Score Card */}
+      {complianceRiskScore && (
+        <Card className={
+          complianceRiskScore.riskLevel === "low"
+            ? "border-green-200 bg-green-50/50"
+            : complianceRiskScore.riskLevel === "medium"
+            ? "border-yellow-200 bg-yellow-50/50"
+            : "border-red-200 bg-red-50/50"
+        }>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Shield className={
+                complianceRiskScore.riskLevel === "low"
+                  ? "h-4 w-4 text-green-600"
+                  : complianceRiskScore.riskLevel === "medium"
+                  ? "h-4 w-4 text-yellow-600"
+                  : "h-4 w-4 text-red-600"
+              } />
+              Compliance Risk Score
+            </CardTitle>
+            <CardDescription>Based on violations, unapproved content, and communication patterns (last 30 days)</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-end gap-4">
+              <div>
+                <div className={
+                  "text-4xl font-bold " + (
+                    complianceRiskScore.riskLevel === "low"
+                      ? "text-green-700"
+                      : complianceRiskScore.riskLevel === "medium"
+                      ? "text-yellow-700"
+                      : "text-red-700"
+                  )
+                }>
+                  {complianceRiskScore.overallScore}
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">out of 100</div>
+              </div>
+              <Badge variant={
+                complianceRiskScore.riskLevel === "low" ? "secondary"
+                : complianceRiskScore.riskLevel === "medium" ? "outline"
+                : "destructive"
+              } className="mb-1">
+                {complianceRiskScore.riskLevel.charAt(0).toUpperCase() + complianceRiskScore.riskLevel.slice(1)} Risk
+              </Badge>
+            </div>
+            <div className="grid grid-cols-3 gap-3 mt-4 text-sm">
+              <div className="text-center p-2 rounded bg-muted">
+                <div className="font-semibold">{complianceRiskScore.violationScore}</div>
+                <div className="text-xs text-muted-foreground">Violation Score</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{complianceRiskScore.violationsCount} flag{complianceRiskScore.violationsCount !== 1 ? "s" : ""}</div>
+              </div>
+              <div className="text-center p-2 rounded bg-muted">
+                <div className="font-semibold">{complianceRiskScore.contentScore}</div>
+                <div className="text-xs text-muted-foreground">Content Score</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{complianceRiskScore.unapprovedContentCount} pending</div>
+              </div>
+              <div className="text-center p-2 rounded bg-muted">
+                <div className="font-semibold">{complianceRiskScore.avgThemFirst}</div>
+                <div className="text-xs text-muted-foreground">Comm. Score</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* OS Intelligence Grid - 3 Column Layout */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">

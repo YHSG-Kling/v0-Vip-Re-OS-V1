@@ -11,7 +11,13 @@ import {
   getRecentFeedback,
   getOfferSummary,
 } from "@/lib/portal/resolve-seller-context"
-import { getMarketPosition, getSellerVendors } from "@/app/actions/portal-seller"
+import {
+  getMarketPosition,
+  getSellerVendors,
+  getShowingInsights,
+  getSellerDashboardData,
+  emitSellerPortalViewed,
+} from "@/app/actions/portal-seller"
 import { ListingStatsCard } from "@/app/components/portal/ListingStatsCard"
 import { ShowingActivityStrip, ShowingFeedbackCard } from "@/app/components/portal/ShowingsFeedCard"
 import { SellerOfferCard } from "@/app/components/portal/SellerOfferCard"
@@ -22,13 +28,18 @@ import { Badge } from "@/app/components/ui/badge"
 import { Button } from "@/app/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card"
 import {
-  MessageSquare,
+  AlertTriangle,
+  ArrowRight,
+  BarChart3,
   BookOpen,
   Briefcase,
-  ArrowRight,
-  FileText,
+  Clock,
   Eye,
-  BarChart3,
+  FileText,
+  MessageSquare,
+  Minus,
+  ThumbsDown,
+  ThumbsUp,
 } from "lucide-react"
 
 // ─── SELLER STAGE MEANING ─────────────────────────────────────────────────────
@@ -86,8 +97,22 @@ interface SellerHomeProps {
 export default async function SellerHome({ contactId }: SellerHomeProps) {
   const supabase = await createClient()
 
+  // Fire-and-forget: notify agent that seller viewed portal (non-blocking)
+  emitSellerPortalViewed(contactId, "seller_home").catch(() => {})
+
   // Get base seller context
   const context = await resolveSellerContext(supabase, contactId)
+
+  // Fetch richer insight data — only when a listing exists, errors silently swallowed
+  let showingInsights: Awaited<ReturnType<typeof getShowingInsights>> | null = null
+  let sellerDashboard: Awaited<ReturnType<typeof getSellerDashboardData>> | null = null
+
+  if (context.listing) {
+    ;[showingInsights, sellerDashboard] = await Promise.all([
+      getShowingInsights(contactId).catch(() => null),
+      getSellerDashboardData(contactId).catch(() => null),
+    ])
+  }
 
   // Parallel data fetches
   const [
@@ -170,6 +195,24 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
   // Computed values
   const unreadMessageCount = messages.filter((m: any) => m.direction === "inbound" && !m.read_at).length
 
+  // Derived values from getSellerDashboardData
+  const dashboardListing = sellerDashboard?.listing
+  const daysOnMarket: number | null =
+    dashboardListing?.dom ??
+    (context.listing?.listing_date
+      ? Math.floor(
+          (Date.now() - new Date(context.listing.listing_date).getTime()) /
+            (1000 * 60 * 60 * 24)
+        )
+      : null)
+  const dashboardOfferCount: number = sellerDashboard?.offerSummary?.total ?? 0
+
+  // Derived values from getShowingInsights
+  const sentimentBreakdown = showingInsights?.sentimentBreakdown ?? null
+  const totalSentimentCount = sentimentBreakdown
+    ? sentimentBreakdown.positive + sentimentBreakdown.neutral + sentimentBreakdown.negative
+    : 0
+
   // Derive seller stage meaning from listing status
   const listingStatus = context.listing?.status ?? "pre_listing"
   const sellerStageCtx = SELLER_STAGE_MEANING[listingStatus] ?? {
@@ -214,6 +257,36 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
         </CardContent>
       </Card>
 
+      {/* DAYS ON MARKET + OFFER COUNT STATS — from getSellerDashboardData */}
+      {context.listing && (daysOnMarket !== null || dashboardOfferCount > 0) && (
+        <div className="grid grid-cols-2 gap-4">
+          {daysOnMarket !== null && (
+            <Card>
+              <CardContent className="py-4 text-center">
+                <div className="flex items-center justify-center gap-2 mb-1">
+                  <Clock className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <p className="text-2xl font-semibold">{daysOnMarket}</p>
+                <p className="text-xs text-muted-foreground">Days on Market</p>
+              </CardContent>
+            </Card>
+          )}
+          {dashboardOfferCount > 0 && (
+            <Card>
+              <CardContent className="py-4 text-center">
+                <div className="flex items-center justify-center gap-2 mb-1">
+                  <FileText className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <p className="text-2xl font-semibold">{dashboardOfferCount}</p>
+                <p className="text-xs text-muted-foreground">
+                  {dashboardOfferCount === 1 ? "Offer" : "Offers"} Received
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
       {/* Agent Next Actions — transparency for seller */}
       {milestones.filter((m: any) => m.status === 'pending').length > 0 && (
         <Card>
@@ -247,6 +320,82 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           avgRating={showingStats.avgRating}
           contactId={contactId}
         />
+      )}
+
+      {/* SHOWING INTELLIGENCE — from getShowingInsights */}
+      {context.listing && showingInsights && totalSentimentCount > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base flex items-center gap-2">
+              <BarChart3 className="h-4 w-4" />
+              Showing Intelligence
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Sentiment breakdown */}
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                Buyer Feedback Sentiment
+              </p>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="p-2 rounded-lg bg-green-50 border border-green-100">
+                  <ThumbsUp className="h-4 w-4 text-green-600 mx-auto mb-1" />
+                  <p className="text-lg font-semibold text-green-700">
+                    {sentimentBreakdown!.positive}
+                  </p>
+                  <p className="text-xs text-green-600">Positive</p>
+                </div>
+                <div className="p-2 rounded-lg bg-amber-50 border border-amber-100">
+                  <Minus className="h-4 w-4 text-amber-600 mx-auto mb-1" />
+                  <p className="text-lg font-semibold text-amber-700">
+                    {sentimentBreakdown!.neutral}
+                  </p>
+                  <p className="text-xs text-amber-600">Neutral</p>
+                </div>
+                <div className="p-2 rounded-lg bg-red-50 border border-red-100">
+                  <ThumbsDown className="h-4 w-4 text-red-600 mx-auto mb-1" />
+                  <p className="text-lg font-semibold text-red-700">
+                    {sentimentBreakdown!.negative}
+                  </p>
+                  <p className="text-xs text-red-600">Needs Attention</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Weekly trend mini-chart */}
+            {showingInsights.weeklyStats.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                  Weekly Showing Activity
+                </p>
+                <div className="flex items-end gap-1 h-10">
+                  {showingInsights.weeklyStats.map((wk, i) => {
+                    const maxCount = Math.max(...showingInsights.weeklyStats.map((w) => w.count), 1)
+                    const heightPct = wk.count === 0 ? 4 : Math.max(10, (wk.count / maxCount) * 100)
+                    return (
+                      <div
+                        key={i}
+                        className="flex-1 bg-emerald-200 rounded-sm"
+                        style={{ height: `${heightPct}%` }}
+                        title={`${wk.week}: ${wk.count} showing${wk.count !== 1 ? "s" : ""}`}
+                      />
+                    )
+                  })}
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">Last 8 weeks</p>
+              </div>
+            )}
+
+            <div className="flex justify-end">
+              <Button variant="ghost" size="sm" asChild>
+                <Link href={`/portal/${contactId}/insights`}>
+                  Full Insights
+                  <ArrowRight className="h-4 w-4 ml-1" />
+                </Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Main Content Grid */}
@@ -428,6 +577,9 @@ export default async function SellerHome({ contactId }: SellerHomeProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* NOTE: AlertTriangle available for future price-reduction-recommended banner */}
+      {/* when that field is added to getSellerDashboardData return type */}
     </div>
   )
 }
