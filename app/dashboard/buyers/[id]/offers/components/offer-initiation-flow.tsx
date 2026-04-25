@@ -924,6 +924,8 @@ export function OfferInitiationFlow({
         contingencies={selectedContingencies}
         buyerMaxBudget={Number(escalationForm.maxBudget) || undefined}
         buyerRiskTolerance={contingencyForm.riskTolerance}
+        inAppSelectedFormIds={offerSelectedFormIds.length > 0 ? offerSelectedFormIds : undefined}
+        inAppFormFieldValues={Object.keys(offerFormFieldValues).length > 0 ? offerFormFieldValues : undefined}
         onBack={() => setFlowStep("contingencies")}
         onSuccess={(newOfferId?: string) => {
           awardPointsForAction(agentUserId, "offer_submitted").catch(() => {})
