@@ -467,17 +467,17 @@ export async function prepareListingEmailCampaign(params: {
 
   const supabase = await createClient()
 
-  // Auth + feature gate — must match the pattern used by createEmailCampaign / sendEmailCampaign
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) {
-    return { success: false, error: "Unauthorized" }
-  }
-  const access = await canAccessFeature(user.id, "email_campaigns")
-  if (!access.allowed) {
-    return { success: false, error: access.reason ?? "Email campaigns feature not available" }
-  }
-
   try {
+    // Auth + feature gate — must match the pattern used by createEmailCampaign / sendEmailCampaign
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      return { success: false, error: "Unauthorized" }
+    }
+    const access = await canAccessFeature(user.id, "email_campaigns")
+    if (!access.allowed) {
+      return { success: false, error: access.reason ?? "Email campaigns feature not available" }
+    }
+
     const { data: transaction } = await supabase
       .from("transactions")
       .select("*, listings(*), listing_photos(*)")

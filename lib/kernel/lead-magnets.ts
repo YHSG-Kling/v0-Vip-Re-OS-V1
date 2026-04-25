@@ -533,6 +533,7 @@ export async function captureFormSubmission(
           .eq("sequence_id", followUpSeq.id)
           .eq("contact_id", contactId)
           .eq("status", "active")
+          .limit(1)
           .maybeSingle()
 
         if (!existingEnrollment) {

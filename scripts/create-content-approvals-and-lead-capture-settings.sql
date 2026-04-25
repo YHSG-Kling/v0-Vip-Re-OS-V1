@@ -36,7 +36,7 @@ CREATE POLICY "brokers_admins_update_approvals" ON content_approvals
     brokerage_id IN (
       SELECT brokerage_id FROM users
       WHERE id = auth.uid()
-        AND user_type IN ('broker', 'admin', 'superadmin')
+        AND user_type IN ('broker', 'admin')
     )
   );
 

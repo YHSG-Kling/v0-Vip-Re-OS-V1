@@ -245,9 +245,21 @@ export async function aiGenerateListingDescription(params: {
 
     const supabase = await createClient()
 
-    // Resolve brokerage for the agent (used for compliance/brand-voice scoping)
+    // Resolve brokerage for the agent (used for compliance/brand-voice scoping).
+    // getAgentContext() resolves the CURRENT session user, which may differ from
+    // params.agentId when a broker acts on behalf of another agent. Fall back to a
+    // direct DB lookup on the agents table so brand-voice / compliance scope is
+    // always tied to the generating agent, not the caller.
     const agentCtx = await getAgentContext().catch(() => null)
-    const brokerageId = agentCtx?.brokerageId ?? null
+    let brokerageId: string | null = agentCtx?.brokerageId ?? null
+    if (!brokerageId || agentCtx?.agentId !== params.agentId) {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("brokerage_id")
+        .eq("id", params.agentId)
+        .maybeSingle()
+      brokerageId = agentRow?.brokerage_id ?? brokerageId
+    }
 
     // Get agent's brand voice
     const { data: brandVoice } = await supabase
