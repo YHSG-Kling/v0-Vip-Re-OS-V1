@@ -1196,11 +1196,19 @@ export default function CRMPage() {
                       className="w-full gap-1.5 text-xs justify-start"
                       onClick={async () => {
                         if (!selectedContactId || !brokerageId || !user) return
+                        // Suppression check — do not send magic link to opted-out or DNC contacts
+                        if (
+                          selectedContact?.dnc_status ||
+                          selectedContact?.email_opt_out
+                        ) {
+                          toast.error("Cannot send portal invite: contact has opted out or is on the Do Not Contact list")
+                          return
+                        }
                         const result = await createPortalInviteForContact({
                           contactId: selectedContactId,
                           brokerageId,
                           invitedByUserId: user.id,
-                          sendMagicLink: false,
+                          sendMagicLink: true,
                         })
                         if (result.success) {
                           setPortalInviteStatus("invited")

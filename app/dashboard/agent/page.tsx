@@ -355,7 +355,6 @@ export default function AgentDashboard() {
           <div className="lg:col-span-2 space-y-6">
             <AgentNextBestActions
               briefingActions={briefing?.top_priority_actions || []}
-              hotLeads={briefing?.hot_leads || []}
               dealsAtRisk={briefing?.deals_at_risk || []}
               upcomingShowings={showings}
               actionPlans={actionPlans}

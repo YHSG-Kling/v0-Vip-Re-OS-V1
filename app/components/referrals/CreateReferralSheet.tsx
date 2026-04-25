@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { createReferral } from "@/app/actions/referral-management"
+import { createReferral, createPartner, deletePartner } from "@/app/actions/referrals/referral-actions"
 import { toast } from "sonner"
 
 export function CreateReferralSheet() {
@@ -34,19 +34,39 @@ export function CreateReferralSheet() {
     e.preventDefault()
     setIsLoading(true)
     
+    // createReferral requires a partnerId — create a partner record from the
+    // referrer name first, then attach the referred contact's details.
+    // If createReferral fails after createPartner succeeds we delete the orphan
+    // partner as a compensating transaction to maintain atomicity.
+    let partnerId: string | null = null
     try {
-      const result = await createReferral({
-        referralName: formData.referrer_name,
-        notes: formData.notes,
+      const partner = await createPartner({
+        partnerName: formData.referrer_name,
+        partnerType: "individual",
+        agreementType: "referral",
       })
-      
-      if (result.success) {
-        toast.success("Referral created successfully")
-        router.push("/referrals")
-      } else {
-        toast.error(result.error || "Failed to create referral")
-      }
+      partnerId = partner.id
+
+      await createReferral({
+        partnerId: partner.id,
+        referredPerson: {
+          email: formData.contact_email || undefined,
+          phone: formData.contact_phone || undefined,
+        },
+        referralSource: formData.notes || undefined,
+      })
+      toast.success("Referral created successfully")
+      router.push("/referrals")
     } catch (error) {
+      // If partner was created but referral failed, delete the orphan partner
+      if (partnerId) {
+        try {
+          await deletePartner(partnerId)
+        } catch {
+          // Cleanup failed — partner may be orphaned; log for manual reconciliation
+          console.error("Failed to clean up orphan partner after referral creation error", partnerId)
+        }
+      }
       toast.error("An error occurred while creating the referral")
     } finally {
       setIsLoading(false)

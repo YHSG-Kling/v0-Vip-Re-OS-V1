@@ -17,7 +17,7 @@ import { useState, useTransition } from "react"
 import { cn } from "@/lib/utils"
 import { createListingWithSellerContact } from "@/app/actions/listings-kernel"
 import { submitListingForSignature } from "@/app/actions/listing/submit-listing-for-signature"
-import { loadAvailableFormsAction } from "@/app/actions/forms-kernel"
+import { FormSelectorStep, type FormFieldValues } from "@/app/components/forms/form-selector-step"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -34,7 +34,6 @@ import {
   AlertCircle,
   Check,
   ChevronRight,
-  FileText,
   Home,
   Loader2,
   PenLine,
@@ -52,13 +51,6 @@ interface Signer {
   name:  string
   email: string
   role:  "seller" | "co_seller" | "agent"
-}
-
-interface FormTemplate {
-  id:       string
-  name:     string
-  category: string
-  required: boolean
 }
 
 interface ListingInitiationFlowProps {
@@ -170,37 +162,20 @@ export function ListingInitiationFlow({
     setStep("forms")
   }
 
-  // ── Step 3: Forms ─────────────────────────────────────────────────────────────
-  const [kernelForms, setKernelForms]   = useState<FormTemplate[]>([])
-  const [formsLoading, setFormsLoading] = useState(false)
-  const [formsLoaded, setFormsLoaded]   = useState(false)
-  const [selectedForms, setSelectedForms] = useState<string[]>([])
+  // ── Step 3: Forms — handled by FormSelectorStep ───────────────────────────────
+  const [selectedFormIds, setSelectedFormIds]     = useState<string[]>([])
+  const [formFieldValues, setFormFieldValues]     = useState<FormFieldValues>({})
 
-  function onEnterForms() {
-    if (formsLoaded) return
-    setFormsLoading(true)
-    loadAvailableFormsAction({ context_type: "listing", state: form.state || undefined })
-      .then(res => {
-        if (res.success && (res as any).data?.forms) {
-          const templates = (res as any).data.forms as FormTemplate[]
-          setKernelForms(templates)
-          // Auto-select required forms
-          setSelectedForms(templates.filter(f => f.required).map(f => f.id))
-        }
-        setFormsLoaded(true)
-      })
-      .catch(() => setFormsLoaded(true))
-      .finally(() => setFormsLoading(false))
-  }
-
-  function toggleForm(id: string) {
-    setSelectedForms(prev =>
-      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
-    )
+  function handleFormsComplete(ids: string[], values: FormFieldValues) {
+    // Guard: prevent double-submit if a transition is already in flight
+    if (isPending) return
+    setSelectedFormIds(ids)
+    setFormFieldValues(values)
+    handleCreateListing(ids, values)
   }
 
   // Create the listing then advance to send_for_signatures
-  function handleCreateListing() {
+  function handleCreateListing(selectedIds: string[], fieldValues: FormFieldValues) {
     setError(null)
     startTrans(async () => {
       const result = await createListingWithSellerContact({
@@ -217,6 +192,8 @@ export function ListingInitiationFlow({
         bathrooms:       form.bathrooms       ? Number(form.bathrooms)  : undefined,
         sqft:            form.sqft            ? Number(form.sqft)       : undefined,
         propertyType:    form.propertyType    || undefined,
+        selectedFormIds: selectedIds,
+        formFieldValues: fieldValues,
       })
 
       if (!result.success) {
@@ -481,87 +458,17 @@ export function ListingInitiationFlow({
         </div>
       )}
 
-      {/* Step 3: Forms */}
+      {/* Step 3: Forms — select + fill inline */}
       {step === "forms" && (
-        <div className="space-y-5">
-          <div>
-            <h2 className="text-base font-semibold">Listing Documents</h2>
-            <p className="text-sm text-muted-foreground">
-              Select the listing agreement and addenda to include.
-            </p>
-          </div>
-
-          {/* Load forms on first visit */}
-          {!formsLoaded && !formsLoading && (
-            <Button variant="outline" size="sm" onClick={onEnterForms}>
-              <Sparkles className="h-3.5 w-3.5 mr-1.5" />
-              Load Available Forms
-            </Button>
-          )}
-
-          {formsLoading && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Loading forms from kernel…
-            </div>
-          )}
-
-          {formsLoaded && kernelForms.length > 0 && (
-            <div className="space-y-2">
-              {kernelForms.map(f => (
-                <button
-                  key={f.id}
-                  type="button"
-                  onClick={() => !f.required && toggleForm(f.id)}
-                  className={cn(
-                    "w-full flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors",
-                    selectedForms.includes(f.id)
-                      ? "border-primary bg-primary/5"
-                      : "border-border bg-background hover:bg-muted/40",
-                    f.required && "cursor-default",
-                  )}
-                >
-                  <FileText className={cn("h-4 w-4 shrink-0", selectedForms.includes(f.id) ? "text-primary" : "text-muted-foreground")} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{f.name}</p>
-                    <p className="text-xs text-muted-foreground">{f.category}</p>
-                  </div>
-                  {f.required && (
-                    <Badge variant="secondary" className="text-xs shrink-0">Required</Badge>
-                  )}
-                  {!f.required && selectedForms.includes(f.id) && (
-                    <Check className="h-3.5 w-3.5 text-primary shrink-0" />
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {formsLoaded && kernelForms.length === 0 && (
-            <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted-foreground">
-              No forms found for your brokerage. You can add listing forms in Settings
-              and continue with the default listing agreement.
-            </div>
-          )}
-
-          {error && (
-            <div className="flex items-center gap-2 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              {error}
-            </div>
-          )}
-
-          <div className="flex gap-2 justify-between">
-            <Button variant="outline" onClick={() => setStep("pricing")}>Back</Button>
-            <Button onClick={handleCreateListing} disabled={isPending}>
-              {isPending ? (
-                <><Loader2 className="h-4 w-4 animate-spin mr-2" />Creating Listing…</>
-              ) : (
-                <>Create Listing &amp; Send for Signatures<ChevronRight className="h-4 w-4 ml-1" /></>
-              )}
-            </Button>
-          </div>
-        </div>
+        <FormSelectorStep
+          contextType="listing"
+          state={form.state || undefined}
+          autoLoad
+          nextLabel={isPending ? "Creating Listing…" : "Create Listing & Send for Signatures"}
+          nextDisabled={isPending}
+          onBack={() => setStep("pricing")}
+          onComplete={handleFormsComplete}
+        />
       )}
 
       {/* Step 4: Send for Signatures */}

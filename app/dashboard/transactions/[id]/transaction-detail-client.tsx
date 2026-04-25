@@ -496,6 +496,32 @@ export function TransactionDetailClient({
   // E-sign flow sheet state
   const [esignFlowForm, setEsignFlowForm] = useState<FormTemplate | null>(null)
 
+  // Add Deadline form
+  const [showAddDeadline, setShowAddDeadline] = useState(false)
+  const [newDeadlineLabel, setNewDeadlineLabel] = useState("")
+  const [newDeadlineType, setNewDeadlineType] = useState("contingency_period")
+  const [newDeadlineDate, setNewDeadlineDate] = useState("")
+
+  // Add Participant form
+  const [showAddParticipant, setShowAddParticipant] = useState(false)
+  const [newParticipantName, setNewParticipantName] = useState("")
+  const [newParticipantRole, setNewParticipantRole] = useState("cooperating_agent")
+  const [newParticipantEmail, setNewParticipantEmail] = useState("")
+  const [newParticipantPhone, setNewParticipantPhone] = useState("")
+  const [newParticipantCompany, setNewParticipantCompany] = useState("")
+
+  // Add Commission form
+  const [showAddCommission, setShowAddCommission] = useState(false)
+  const [newCommRecipientName, setNewCommRecipientName] = useState("")
+  const [newCommRecipientType, setNewCommRecipientType] = useState("agent")
+  const [newCommType, setNewCommType] = useState("buyer_side")
+  const [newCommRate, setNewCommRate] = useState("")
+
+  // Submit Repair Request form
+  const [showRepairForm, setShowRepairForm] = useState(false)
+  const [newRepairItem, setNewRepairItem] = useState("")
+  const [newRepairCost, setNewRepairCost] = useState("")
+
   // Deal Health Prediction — loaded once on mount, no blocking
   const [dealPrediction, setDealPrediction] = useState<any>(null)
   const [dealPredLoading, setDealPredLoading] = useState(false)
@@ -1893,16 +1919,116 @@ export function TransactionDetailClient({
             {/* Deadlines Tab */}
             <TabsContent value="deadlines" className="mt-4">
               <Card>
-                <CardContent className="pt-4 space-y-2">
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-medium">Deadlines</CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs h-7"
+                    onClick={() => setShowAddDeadline((v) => !v)}
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    Add Deadline
+                  </Button>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {showAddDeadline && (
+                    <div className="border rounded-lg p-3 space-y-3 bg-muted/30 mb-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Type</Label>
+                          <select
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newDeadlineType}
+                            onChange={(e) => setNewDeadlineType(e.target.value)}
+                          >
+                            <option value="contingency_period">Contingency Period</option>
+                            <option value="inspection_deadline">Inspection Deadline</option>
+                            <option value="appraisal_deadline">Appraisal Deadline</option>
+                            <option value="loan_commitment">Loan Commitment</option>
+                            <option value="closing_date">Closing Date</option>
+                            <option value="possession_date">Possession Date</option>
+                            <option value="other">Other</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Date</Label>
+                          <input
+                            type="date"
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newDeadlineDate}
+                            onChange={(e) => setNewDeadlineDate(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Label (optional)</Label>
+                        <input
+                          className="w-full h-8 text-xs border rounded px-2 bg-background"
+                          placeholder="Custom label…"
+                          value={newDeadlineLabel}
+                          onChange={(e) => setNewDeadlineLabel(e.target.value)}
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full text-xs h-7"
+                        disabled={!newDeadlineDate || isPending}
+                        onClick={() => {
+                          if (!newDeadlineDate) return
+                          startTransition(async () => {
+                            const { addDeadline } = await import("@/app/actions/transactions")
+                            const result = await addDeadline({
+                              transaction_id: transaction.id,
+                              deadline_type: newDeadlineType,
+                              notes: newDeadlineLabel || newDeadlineType.replace(/_/g, " "),
+                              deadline_date: newDeadlineDate,
+                            })
+                            if (result?.success) {
+                              toast.success("Deadline added")
+                              setShowAddDeadline(false)
+                              setNewDeadlineDate("")
+                              setNewDeadlineLabel("")
+                              router.refresh()
+                            } else {
+                              toast.error("Failed to add deadline")
+                            }
+                          })
+                        }}
+                      >
+                        {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Save Deadline
+                      </Button>
+                    </div>
+                  )}
                   {deadlines.map((d) => (
                     <div key={d.id} className="flex items-center justify-between py-2 border-b last:border-0">
                       <span className="text-sm">{d.deadline_type.replace(/_/g, " ")}</span>
-                      <Badge variant={d.status === "pending" ? "secondary" : "default"}>
-                        {new Date(d.deadline_date).toLocaleDateString()}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <Badge variant={d.status === "completed" ? "default" : "secondary"}>
+                          {new Date(d.deadline_date).toLocaleDateString()}
+                        </Badge>
+                        {d.status !== "completed" && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0 text-green-600 hover:text-green-700"
+                            title="Mark complete"
+                            onClick={() => {
+                              startTransition(async () => {
+                                const { completeDeadline } = await import("@/app/actions/transactions")
+                                await completeDeadline(d.id)
+                                router.refresh()
+                              })
+                            }}
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   ))}
-                  {deadlines.length === 0 && (
+                  {deadlines.length === 0 && !showAddDeadline && (
                     <p className="text-sm text-muted-foreground">No deadlines defined.</p>
                   )}
                 </CardContent>
@@ -1912,13 +2038,120 @@ export function TransactionDetailClient({
             {/* Participants Tab */}
             <TabsContent value="participants" className="mt-4">
               <Card>
-                <CardContent className="pt-4">
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-medium">Participants</CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs h-7"
+                    onClick={() => setShowAddParticipant((v) => !v)}
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    Add Participant
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {showAddParticipant && (
+                    <div className="border rounded-lg p-3 space-y-3 bg-muted/30 mb-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Name</Label>
+                          <input
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="Full name"
+                            value={newParticipantName}
+                            onChange={(e) => setNewParticipantName(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Role</Label>
+                          <select
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newParticipantRole}
+                            onChange={(e) => setNewParticipantRole(e.target.value)}
+                          >
+                            <option value="cooperating_agent">Cooperating Agent</option>
+                            <option value="listing_agent">Listing Agent</option>
+                            <option value="buyer">Buyer</option>
+                            <option value="seller">Seller</option>
+                            <option value="lender">Lender</option>
+                            <option value="escrow_officer">Escrow Officer</option>
+                            <option value="inspector">Inspector</option>
+                            <option value="attorney">Attorney</option>
+                            <option value="other">Other</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Email</Label>
+                          <input
+                            type="email"
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="email@example.com"
+                            value={newParticipantEmail}
+                            onChange={(e) => setNewParticipantEmail(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Phone</Label>
+                          <input
+                            type="tel"
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="(555) 000-0000"
+                            value={newParticipantPhone}
+                            onChange={(e) => setNewParticipantPhone(e.target.value)}
+                          />
+                        </div>
+                        <div className="col-span-2 space-y-1">
+                          <Label className="text-xs">Company</Label>
+                          <input
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="Company name (optional)"
+                            value={newParticipantCompany}
+                            onChange={(e) => setNewParticipantCompany(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full text-xs h-7"
+                        disabled={!newParticipantName || isPending}
+                        onClick={() => {
+                          if (!newParticipantName) return
+                          startTransition(async () => {
+                            const { addParticipant } = await import("@/app/actions/transactions")
+                            const result = await addParticipant({
+                              transaction_id: transaction.id,
+                              name: newParticipantName,
+                              role: newParticipantRole,
+                              email: newParticipantEmail || undefined,
+                              phone: newParticipantPhone || undefined,
+                              company: newParticipantCompany || undefined,
+                            })
+                            if (result?.success) {
+                              toast.success("Participant added")
+                              setShowAddParticipant(false)
+                              setNewParticipantName("")
+                              setNewParticipantEmail("")
+                              setNewParticipantPhone("")
+                              setNewParticipantCompany("")
+                              router.refresh()
+                            } else {
+                              toast.error("Failed to add participant")
+                            }
+                          })
+                        }}
+                      >
+                        {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Add Participant
+                      </Button>
+                    </div>
+                  )}
                   <div className="grid gap-3">
                     {participants.map((p) => (
                       <div key={p.id} className="flex items-center justify-between py-2 border-b last:border-0">
                         <div>
                           <p className="text-sm font-medium">{p.name}</p>
-                          <p className="text-xs text-muted-foreground">{p.role} {p.company ? `at ${p.company}` : ""}</p>
+                          <p className="text-xs text-muted-foreground capitalize">{p.role.replace(/_/g, " ")} {p.company ? `at ${p.company}` : ""}</p>
                         </div>
                         <div className="text-xs text-muted-foreground text-right">
                           {p.email && <p>{p.email}</p>}
@@ -1926,7 +2159,7 @@ export function TransactionDetailClient({
                         </div>
                       </div>
                     ))}
-                    {participants.length === 0 && (
+                    {participants.length === 0 && !showAddParticipant && (
                       <p className="text-sm text-muted-foreground">No participants added.</p>
                     )}
                   </div>
@@ -3117,7 +3350,71 @@ export function TransactionDetailClient({
             {/* Repairs Tab */}
             <TabsContent value="repairs" className="mt-4">
               <Card>
-                <CardContent className="pt-4">
+                <CardHeader className="pb-3 flex flex-row items-center justify-between">
+                  <CardTitle className="text-sm font-medium">Repair Negotiations</CardTitle>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="text-xs h-7"
+                    onClick={() => setShowRepairForm((v) => !v)}
+                  >
+                    <Plus className="h-3 w-3 mr-1" />
+                    Request Repairs
+                  </Button>
+                </CardHeader>
+                <CardContent>
+                  {showRepairForm && (
+                    <div className="border rounded-lg p-3 space-y-3 bg-muted/30 mb-3">
+                      <div className="space-y-1">
+                        <Label className="text-xs">Item Description</Label>
+                        <input
+                          className="w-full h-8 text-xs border rounded px-2 bg-background"
+                          placeholder="e.g. HVAC unit replacement"
+                          value={newRepairItem}
+                          onChange={(e) => setNewRepairItem(e.target.value)}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Estimated Cost ($)</Label>
+                        <input
+                          type="number"
+                          className="w-full h-8 text-xs border rounded px-2 bg-background"
+                          placeholder="0"
+                          value={newRepairCost}
+                          onChange={(e) => setNewRepairCost(e.target.value)}
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full text-xs h-7"
+                        disabled={!newRepairItem || isPending}
+                        onClick={() => {
+                          if (!newRepairItem) return
+                          startTransition(async () => {
+                            const { submitRepairRequest } = await import("@/app/actions/transactions")
+                            const result = await submitRepairRequest({
+                              transaction_id: transaction.id,
+                              requested_by: "buyer",
+                              item_description: newRepairItem,
+                              estimated_cost: newRepairCost ? Number(newRepairCost) : undefined,
+                            })
+                            if (result?.success) {
+                              toast.success("Repair request submitted")
+                              setShowRepairForm(false)
+                              setNewRepairItem("")
+                              setNewRepairCost("")
+                              router.refresh()
+                            } else {
+                              toast.error("Failed to submit repair request")
+                            }
+                          })
+                        }}
+                      >
+                        {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Submit Request
+                      </Button>
+                    </div>
+                  )}
                   {repairs.length > 0 ? (
                     <div className="space-y-2">
                       {repairs.map((r) => (
@@ -3128,12 +3425,31 @@ export function TransactionDetailClient({
                               Est: {r.estimated_cost ? `$${r.estimated_cost.toLocaleString()}` : "TBD"}
                             </p>
                           </div>
-                          <Badge>{r.status}</Badge>
+                          <div className="flex items-center gap-2">
+                            <Badge className="capitalize">{r.status}</Badge>
+                            {r.status === "requested" && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-6 px-2"
+                                onClick={() => {
+                                  startTransition(async () => {
+                                    const { respondToRepairRequest } = await import("@/app/actions/transactions")
+                                    const res = await respondToRepairRequest(r.id, "accepted")
+                                    if (res?.success) toast.success("Repair request accepted")
+                                    router.refresh()
+                                  })
+                                }}
+                              >
+                                Accept
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <p className="text-sm text-muted-foreground">No repairs tracked.</p>
+                    !showRepairForm && <p className="text-sm text-muted-foreground">No repairs tracked.</p>
                   )}
                 </CardContent>
               </Card>
@@ -3184,7 +3500,17 @@ export function TransactionDetailClient({
                     <DollarSign className="h-4 w-4" />
                     Commission Summary
                   </CardTitle>
-                  <Button
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-xs h-7"
+                      onClick={() => setShowAddCommission((v) => !v)}
+                    >
+                      <Plus className="h-3 w-3 mr-1" />
+                      Add Split
+                    </Button>
+                    <Button
                     size="sm"
                     variant="outline"
                     className="text-xs h-7"
@@ -3205,8 +3531,93 @@ export function TransactionDetailClient({
                     {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
                     Recalculate
                   </Button>
+                  </div>
                 </CardHeader>
                 <CardContent>
+                  {showAddCommission && (
+                    <div className="border rounded-lg p-3 space-y-3 bg-muted/30 mb-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Recipient Name</Label>
+                          <input
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="Agent or brokerage name"
+                            value={newCommRecipientName}
+                            onChange={(e) => setNewCommRecipientName(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Recipient Type</Label>
+                          <select
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newCommRecipientType}
+                            onChange={(e) => setNewCommRecipientType(e.target.value)}
+                          >
+                            <option value="agent">Agent</option>
+                            <option value="brokerage">Brokerage</option>
+                            <option value="referral">Referral</option>
+                            <option value="other">Other</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Commission Type</Label>
+                          <select
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            value={newCommType}
+                            onChange={(e) => setNewCommType(e.target.value)}
+                          >
+                            <option value="buyer_side">Buyer Side</option>
+                            <option value="listing_side">Listing Side</option>
+                            <option value="referral_fee">Referral Fee</option>
+                            <option value="transaction_fee">Transaction Fee</option>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Rate (%)</Label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            className="w-full h-8 text-xs border rounded px-2 bg-background"
+                            placeholder="e.g. 2.5"
+                            value={newCommRate}
+                            onChange={(e) => setNewCommRate(e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        className="w-full text-xs h-7"
+                        disabled={!newCommRecipientName || isPending}
+                        onClick={() => {
+                          if (!newCommRecipientName) return
+                          startTransition(async () => {
+                            const { addCommission } = await import("@/app/actions/transactions")
+                            const result = await addCommission({
+                              transaction_id: transaction.id,
+                              recipient_name: newCommRecipientName,
+                              recipient_type: newCommRecipientType,
+                              commission_type: newCommType,
+                              rate_percentage: newCommRate ? Number(newCommRate) : undefined,
+                            })
+                            if (result?.success) {
+                              toast.success("Commission split added")
+                              setShowAddCommission(false)
+                              setNewCommRecipientName("")
+                              setNewCommRate("")
+                              router.refresh()
+                            } else {
+                              toast.error("Failed to add commission split")
+                            }
+                          })
+                        }}
+                      >
+                        {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                        Save Commission Split
+                      </Button>
+                    </div>
+                  )}
                   {/* CLOSED: show commission summary banner */}
                   {currentStage === "CLOSED" && commissions.length > 0 && (
                     <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-4">
@@ -3235,21 +3646,45 @@ export function TransactionDetailClient({
                             <p className="text-sm font-medium">{c.recipient_name}</p>
                             <p className="text-xs text-muted-foreground capitalize">{c.recipient_type} · {c.commission_type?.replace(/_/g, " ") ?? "split"}</p>
                           </div>
-                          <div className="text-right">
-                            <p className="text-sm font-medium">
-                              {c.rate_percentage ?? c.split_percentage
-                                ? `${(c.rate_percentage ?? c.split_percentage ?? 0).toFixed(2)}%`
-                                : c.flat_amount ? `$${c.flat_amount.toLocaleString()}` : "—"}
-                            </p>
-                            {(c.calculated_amount || c.flat_amount) && (
-                              <p className="text-xs text-muted-foreground">
-                                ${(c.calculated_amount ?? c.flat_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          <div className="flex items-center gap-2">
+                            <div className="text-right">
+                              <p className="text-sm font-medium">
+                                {c.rate_percentage ?? c.split_percentage
+                                  ? `${(c.rate_percentage ?? c.split_percentage ?? 0).toFixed(2)}%`
+                                  : c.flat_amount ? `$${c.flat_amount.toLocaleString()}` : "—"}
                               </p>
-                            )}
-                            {c.status && (
-                              <Badge variant={c.status === "paid" ? "default" : "secondary"} className="mt-1 text-[10px] px-1 h-4">
-                                {c.status}
-                              </Badge>
+                              {(c.calculated_amount || c.flat_amount) && (
+                                <p className="text-xs text-muted-foreground">
+                                  ${(c.calculated_amount ?? c.flat_amount ?? 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                </p>
+                              )}
+                              {c.status && (
+                                <Badge variant={c.status === "paid" ? "default" : "secondary"} className="mt-1 text-[10px] px-1 h-4">
+                                  {c.status}
+                                </Badge>
+                              )}
+                            </div>
+                            {c.status !== "paid" && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-xs h-6 px-2 shrink-0"
+                                title="Mark as paid"
+                                onClick={() => {
+                                  startTransition(async () => {
+                                    const { markCommissionPaid } = await import("@/app/actions/transactions")
+                                    const result = await markCommissionPaid(c.id, new Date().toISOString().split("T")[0])
+                                    if (result?.success) {
+                                      toast.success("Commission marked paid")
+                                      router.refresh()
+                                    } else {
+                                      toast.error(result?.error ?? "Failed to mark commission paid")
+                                    }
+                                  })
+                                }}
+                              >
+                                Mark Paid
+                              </Button>
                             )}
                           </div>
                         </div>

@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { updateListingStatus } from "@/app/actions/listings"
+import { updateListingStatus } from "@/app/actions/listings-kernel"
 import { toast } from "sonner"
 
 const STATUS_OPTIONS = [

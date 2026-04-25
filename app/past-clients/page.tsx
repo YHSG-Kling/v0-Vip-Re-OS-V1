@@ -67,6 +67,8 @@ import {
   getLifeChangeSignals,
   findReferralOpportunities,
 } from "@/app/actions/past-clients"
+import { generateReferralRequest, nurturePendingReferral, recommendReferralReward } from "@/app/actions/ai-referral-management"
+import { loadReferralPipelineAction } from "@/app/actions/reputation-kernel"
 import { LifeSignalBadge } from "@/app/components/shared/LifeSignalBadge"
 import { ReputationPanel } from "@/app/components/reputation/ReputationPanel"
 
@@ -163,6 +165,8 @@ export default function LifetimeCustomersPage() {
   const [clients, setClients] = useState<PastClient[]>([])
   const [anniversaries, setAnniversaries] = useState<Anniversary[]>([])
   const [loading, setLoading] = useState(true)
+  const [currentAgentId, setCurrentAgentId] = useState("")
+  const [currentUserId, setCurrentUserId] = useState("")
 
   // Filter state
   const [search, setSearch] = useState("")
@@ -197,6 +201,11 @@ export default function LifetimeCustomersPage() {
 
   // Track which contact opened the touchpoint draft dialog (for market update send)
   const [touchpointContactId, setTouchpointContactId] = useState<string | null>(null)
+
+  // Referral script generator dialog
+  const [referralScriptContactId, setReferralScriptContactId] = useState<string | null>(null)
+  const [referralScriptChannel, setReferralScriptChannel] = useState<"email" | "text" | "call_script">("email")
+  const [referralScriptOpen, setReferralScriptOpen] = useState(false)
 
   // Priority sub-tab within the Relationship Feed
   const [priorityTab, setPriorityTab] = useState("all")
@@ -258,6 +267,26 @@ export default function LifetimeCustomersPage() {
   const [milestones, setMilestones] = useState<any[]>([])
   const [lifeSignals, setLifeSignals] = useState<any[]>([])
   const [referralOpportunities, setReferralOpportunities] = useState<any[]>([])
+  const [referralPipeline, setReferralPipeline] = useState<any[]>([])
+  const [nurtureResults, setNurtureResults] = useState<Record<string, any>>({})
+  const [rewardResults, setRewardResults] = useState<Record<string, any>>({})
+
+  // Resolve current agent ID once on mount
+  useEffect(() => {
+    async function resolveAgent() {
+      const supabase = createClient()
+      const { data: { user: authUser } } = await supabase.auth.getUser()
+      if (!authUser) return
+      setCurrentUserId(authUser.id)
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("id")
+        .eq("user_id", authUser.id)
+        .maybeSingle()
+      setCurrentAgentId(agentRow?.id ?? authUser.id)
+    }
+    resolveAgent()
+  }, [])
 
   // Load initial data
   useEffect(() => {
@@ -365,6 +394,35 @@ export default function LifetimeCustomersPage() {
     })
   }
 
+  function openReferralScriptDialog(contactId: string) {
+    setReferralScriptContactId(contactId)
+    setReferralScriptChannel("email")
+    setReferralScriptOpen(true)
+  }
+
+  async function handleGenerateReferralScript() {
+    if (!referralScriptContactId || !currentUserId) return
+    setReferralScriptOpen(false)
+    startTransition(async () => {
+      const result = await generateReferralRequest({
+        contactId: referralScriptContactId,
+        agentId: currentUserId,
+        channel: referralScriptChannel,
+      })
+      if (result.success && (result as any).referralRequest) {
+        setTouchpointDraft((result as any).referralRequest)
+        setTouchpointDialogTitle(
+          referralScriptChannel === "email" ? "Referral Ask — Email Script"
+          : referralScriptChannel === "text" ? "Referral Ask — Text Message"
+          : "Referral Ask — Call Script"
+        )
+        setTouchpointDialogOpen(true)
+      } else {
+        toast.error((result as any).error ?? "Failed to generate referral script")
+      }
+    })
+  }
+
   async function handleScheduleTouchpoint() {
     if (!scheduleContactId || !scheduleDate) return
     const result = await scheduleTouchpoint({
@@ -461,6 +519,59 @@ export default function LifetimeCustomersPage() {
       if (result.success && result.opportunities) {
         setReferralOpportunities(result.opportunities)
         toast.success(`Found ${result.opportunities.length} referral opportunities`)
+      }
+    })
+  }
+
+  async function handleLoadReferralPipeline() {
+    startTransition(async () => {
+      try {
+        const result = await loadReferralPipelineAction()
+        if (result.success && (result as any).data?.referrals) {
+          setReferralPipeline((result as any).data.referrals)
+          toast.success(`Loaded ${(result as any).data.referrals.length} referral${(result as any).data.referrals.length !== 1 ? "s" : ""}`)
+        } else if (!result.success) {
+          toast.error((result as any).error ?? "Failed to load referral pipeline")
+        } else {
+          setReferralPipeline([])
+          toast.info("No referrals found in pipeline")
+        }
+      } catch {
+        toast.error("Failed to load referral pipeline")
+      }
+    })
+  }
+
+  async function handleNurtureReferral(referralId: string) {
+    if (!currentAgentId) return
+    startTransition(async () => {
+      try {
+        const result = await nurturePendingReferral({ referralId, agentId: currentAgentId })
+        if (result.success) {
+          setNurtureResults(prev => ({ ...prev, [referralId]: result.nurtureStrategy }))
+          toast.success("AI nurture strategy generated")
+        } else {
+          toast.error(result.error ?? "Failed to generate nurture strategy")
+        }
+      } catch {
+        toast.error("Failed to generate nurture strategy")
+      }
+    })
+  }
+
+  async function handleRecommendReward(referralId: string) {
+    if (!currentAgentId) return
+    startTransition(async () => {
+      try {
+        const result = await recommendReferralReward({ referralId, agentId: currentAgentId })
+        if (result.success) {
+          setRewardResults(prev => ({ ...prev, [referralId]: result.rewardRecommendation }))
+          toast.success("AI reward recommendation ready")
+        } else {
+          toast.error(result.error ?? "Failed to generate reward recommendation")
+        }
+      } catch {
+        toast.error("Failed to generate reward recommendation")
       }
     })
   }
@@ -1064,15 +1175,26 @@ export default function LifetimeCustomersPage() {
                             AI Message
                           </Button>
                           {m.referralPotential === 'high' && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleOptimizeReferral(m.contactId)}
-                              disabled={isPending}
-                            >
-                              <Gift className="w-4 h-4 mr-1" />
-                              Ask Referral
-                            </Button>
+                            <>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openReferralScriptDialog(m.contactId)}
+                                disabled={isPending}
+                              >
+                                <Sparkles className="w-4 h-4 mr-1" />
+                                AI Script
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleOptimizeReferral(m.contactId)}
+                                disabled={isPending}
+                              >
+                                <Gift className="w-4 h-4 mr-1" />
+                                Ask Referral
+                              </Button>
+                            </>
                           )}
                         </div>
                       </CardContent>
@@ -1114,7 +1236,7 @@ export default function LifetimeCustomersPage() {
             </div>
 
             {/* Action Buttons */}
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
               <Button onClick={handleLoadLifeSignals} disabled={isPending}>
                 <RefreshCw className="w-4 h-4 mr-2" />
                 Load Life Signals
@@ -1122,6 +1244,10 @@ export default function LifetimeCustomersPage() {
               <Button variant="outline" onClick={handleFindReferrals} disabled={isPending}>
                 <Zap className="w-4 h-4 mr-2" />
                 Find Referral Opportunities
+              </Button>
+              <Button variant="outline" onClick={handleLoadReferralPipeline} disabled={isPending}>
+                <RefreshCw className="w-4 h-4 mr-2" />
+                Load Referral Pipeline
               </Button>
             </div>
 
@@ -1176,14 +1302,84 @@ export default function LifetimeCustomersPage() {
                         <p className="font-medium text-sm">{opp.contactName}</p>
                         <p className="text-xs text-muted-foreground">{opp.reason}</p>
                       </div>
-                      <Button
-                        size="sm"
-                        onClick={() => handleOptimizeReferral(opp.contactId)}
-                        disabled={isPending}
-                      >
-                        <Gift className="w-4 h-4 mr-1" />
-                        Ask Referral
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openReferralScriptDialog(opp.contactId)}
+                          disabled={isPending}
+                        >
+                          <Sparkles className="w-4 h-4 mr-1" />
+                          AI Script
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => handleOptimizeReferral(opp.contactId)}
+                          disabled={isPending}
+                        >
+                          <Gift className="w-4 h-4 mr-1" />
+                          Ask
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Referral Pipeline — actual referral records with Nurture + Reward */}
+            {referralPipeline.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Referral Pipeline</CardTitle>
+                  <CardDescription>Active referrals — nurture and reward your best referrers</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {referralPipeline.map((ref: any) => (
+                    <div key={ref.id} className="p-3 rounded-lg border space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-medium text-sm">{ref.referral_name || "Unknown Referral"}</p>
+                          <p className="text-xs text-muted-foreground capitalize">
+                            Status: {ref.status?.replace(/_/g, " ")} · Source: {ref.referral_source || "direct"}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleNurtureReferral(ref.id)}
+                            disabled={isPending}
+                          >
+                            <Sparkles className="w-3.5 h-3.5 mr-1" />
+                            AI Nurture
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleRecommendReward(ref.id)}
+                            disabled={isPending}
+                          >
+                            <Gift className="w-3.5 h-3.5 mr-1" />
+                            Reward
+                          </Button>
+                        </div>
+                      </div>
+                      {nurtureResults[ref.id] && (
+                        <div className="mt-2 p-2 rounded bg-blue-50 border border-blue-200 text-xs space-y-1">
+                          <p className="font-medium text-blue-800">Next Action: {nurtureResults[ref.id].nextBestAction?.action}</p>
+                          <p className="text-blue-700">{nurtureResults[ref.id].nextBestAction?.message}</p>
+                          <p className="text-blue-600">Conversion probability: {Math.round((nurtureResults[ref.id].conversionProbability ?? 0) * 100)}%</p>
+                        </div>
+                      )}
+                      {rewardResults[ref.id] && (
+                        <div className="mt-2 p-2 rounded bg-green-50 border border-green-200 text-xs space-y-1">
+                          <p className="font-medium text-green-800">
+                            Recommended: {rewardResults[ref.id].recommendedReward?.specific} (${rewardResults[ref.id].recommendedReward?.value})
+                          </p>
+                          <p className="text-green-700">{rewardResults[ref.id].recommendedReward?.reasoning}</p>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </CardContent>
@@ -1340,7 +1536,7 @@ export default function LifetimeCustomersPage() {
           {/* TAB 5: Reputation */}
           <TabsContent value="reputation">
             <ReputationPanel
-              agentId=""
+              agentId={currentAgentId}
               clients={clients}
               reviews={[]}
               recentClosings={clients.filter(c => c.transactions?.[0]?.actual_close_date).map(c => ({
@@ -1442,6 +1638,45 @@ export default function LifetimeCustomersPage() {
               <Button onClick={handleScheduleTouchpoint} disabled={!scheduleDate}>
                 <CalendarPlus className="w-4 h-4 mr-2" />
                 Schedule Touchpoint
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Referral Script Channel Selector Dialog */}
+        <Dialog open={referralScriptOpen} onOpenChange={setReferralScriptOpen}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Generate Referral Ask Script</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 py-2">
+              <p className="text-sm text-muted-foreground">
+                AI will write a personalized script for asking this contact for a referral.
+              </p>
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Channel</label>
+                <Select
+                  value={referralScriptChannel}
+                  onValueChange={(v) => setReferralScriptChannel(v as "email" | "text" | "call_script")}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="email">Email</SelectItem>
+                    <SelectItem value="text">Text Message</SelectItem>
+                    <SelectItem value="call_script">Call Script</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setReferralScriptOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleGenerateReferralScript} disabled={isPending}>
+                {isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                Generate Script
               </Button>
             </DialogFooter>
           </DialogContent>

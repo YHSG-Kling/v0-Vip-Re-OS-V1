@@ -8,8 +8,8 @@ import {
   markInboxRead,
   type InboxThread,
   type InboxMessageRow,
-  type InboxChannel,
 } from "@/app/actions/inbox"
+import { type InboxChannel } from "@/lib/kernel/communications"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"

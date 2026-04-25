@@ -191,6 +191,29 @@ export async function updateReferralStatus(
   }
 }
 
+export async function sendReferralThankYou(referralId: string): Promise<{ success: true }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Unauthorized")
+
+  const { agentId, brokerageId } = await getAgentContext()
+  const db = createServiceClient()
+
+  const { error } = await db
+    .from("referrals")
+    .update({
+      thank_you_sent: true,
+      thank_you_sent_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", referralId)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
+
+  if (error) throw new Error(`Failed to send thank you: ${error.message}`)
+  return { success: true }
+}
+
 export async function createPartner(params: CreatePartnerParams): Promise<{ id: string }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -219,6 +242,32 @@ export async function createPartner(params: CreatePartnerParams): Promise<{ id: 
 
   if (error || !data) throw new Error(`Failed to create partner: ${error?.message ?? "no row"}`)
   return { id: data.id }
+}
+
+/**
+ * Delete a partner record by ID. Used for compensating-transaction cleanup when
+ * referral creation fails after a partner has already been inserted.
+ */
+export async function deletePartner(partnerId: string): Promise<void> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error("Unauthorized")
+
+  const { agentId, brokerageId } = await getAgentContext()
+  const db = createServiceClient()
+
+  const { data: deleted, error } = await db
+    .from("referral_partners")
+    .delete()
+    .eq("id", partnerId)
+    .eq("agent_id", agentId)
+    .eq("brokerage_id", brokerageId)
+    .select("id")
+
+  if (error) throw new Error(`Failed to delete partner: ${error.message}`)
+  if (!deleted || deleted.length === 0) {
+    console.warn(`[deletePartner] No row deleted for partnerId=${partnerId} — may have already been removed or ownership mismatch`)
+  }
 }
 
 export async function listPartnersWithReferrals(): Promise<{

@@ -637,7 +637,7 @@ export async function getCalendarEvents(filters?: {
   startDate?: string
   endDate?: string
 }) {
-  const { agentId, brokerageId } = await getAgentContext()
+  const { userId, brokerageId } = await getAgentContext()
   const supabase = await createClient()
 
   // If no brokerageId, return empty events
@@ -651,9 +651,9 @@ export async function getCalendarEvents(filters?: {
     .eq("brokerage_id", brokerageId)
     .order("scheduled_at", { ascending: true })
 
-  // Only apply agent filter if agentId is a valid UUID
-  if (agentId) {
-    query = query.or(`agent_user_id.eq.${agentId},campaign_id.is.null`)
+  // agent_user_id stores the auth user_id (users.id), not agents.id
+  if (userId) {
+    query = query.or(`agent_user_id.eq.${userId},agent_user_id.is.null`)
   }
 
   if (filters?.campaignId) {

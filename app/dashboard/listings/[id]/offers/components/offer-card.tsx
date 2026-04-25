@@ -8,7 +8,7 @@ import { Separator } from "@/components/ui/separator"
 import { FileText, CheckCircle, XCircle, MessageSquare, Loader2, Trophy, Sparkles, Calculator } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SignatureStatusBadge } from "@/app/components/shared/SignatureStatusBadge"
-import { analyzeOffer, calculateNetSheet } from "@/app/actions/offer-management"
+import { analyzeOffer, calculateNetSheet } from "@/app/actions/seller-offers"
 
 interface Offer {
   id: string

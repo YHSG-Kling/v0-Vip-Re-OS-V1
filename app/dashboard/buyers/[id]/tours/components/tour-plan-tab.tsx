@@ -46,6 +46,7 @@ interface TourPlanTabProps {
   buyerName: string
   savedProperties: SavedProperty[]
   onTourCreated: () => void
+  disabled?: boolean
 }
 
 const DURATION_OPTIONS = [
@@ -62,6 +63,7 @@ function formatPrice(price: number | null): string {
 
 export function TourPlanTab({
   contactId, agentUserId, brokerageId, buyerName, savedProperties, onTourCreated,
+  disabled = false,
 }: TourPlanTabProps) {
   const [selectedIds, setSelectedIds]   = useState<Set<string>>(new Set())
   const [orderedStops, setOrderedStops] = useState<TourStop[]>([])
@@ -219,7 +221,18 @@ export function TourPlanTab({
   const previewTimes = computePreviewTimes()
 
   return (
-    <div className="flex gap-6 h-full min-h-0">
+    <div className="relative h-full min-h-0">
+      {/* Gate overlay — blocks all interaction when tour scheduling is locked */}
+      {disabled && (
+        <div className="absolute inset-0 z-10 rounded-lg bg-background/80 backdrop-blur-sm flex items-center justify-center">
+          <p className="text-sm font-medium text-muted-foreground">Tour creation is locked — complete financial verification to unlock.</p>
+        </div>
+      )}
+      {/* Content wrapper — pointer events + keyboard interaction disabled when gate overlay is active */}
+      <div
+        className={`flex gap-6 h-full min-h-0${disabled ? " pointer-events-none select-none" : ""}`}
+        {...(disabled ? { inert: true } : {})}
+      >
       {/* Left panel */}
       <div className="w-72 flex-shrink-0 flex flex-col gap-4">
         <div>
@@ -451,7 +464,7 @@ export function TourPlanTab({
             {/* Send plan button */}
             <Button
               onClick={handleCreate}
-              disabled={isPending || !tourDate || orderedStops.length === 0}
+              disabled={disabled || isPending || !tourDate || orderedStops.length === 0}
               className="w-full"
             >
               {isPending ? 'Creating tour plan...' : 'Continue to Confirm \u2192'}
@@ -459,6 +472,7 @@ export function TourPlanTab({
           </>
         )}
       </div>
+      </div>{/* end content wrapper */}
     </div>
   )
 }

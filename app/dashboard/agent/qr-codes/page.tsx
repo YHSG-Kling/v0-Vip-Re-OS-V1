@@ -1,4 +1,4 @@
-import { notFound } from 'next/navigation'
+import { notFound, redirect } from 'next/navigation'
 import { getAgentContext } from '@/lib/identity'
 import { toCanonicalRoleOrDefault } from '@/lib/security'
 import { createClient } from '@/lib/supabase/server'
@@ -13,18 +13,21 @@ export default async function AgentQRCodesPage() {
   if (!['agent', 'admin', 'broker', 'superadmin'].includes(userRole)) notFound()
   if (!ctx.brokerageId) notFound()
 
+  // Agent record is required to create/view QR codes — redirect to setup if missing
+  if (!ctx.agentId) redirect('/dashboard/agent/setup')
+
   const supabase = await createClient()
 
   const { data: qrCodes } = await supabase
     .from('qr_codes')
     .select('id, slug, label, purpose, scan_count, lead_count, is_active, created_at')
-    .eq('agent_id', ctx.userId)
+    .eq('agent_id', ctx.agentId)
     .order('created_at', { ascending: false })
 
   return (
     <QRCodesClient
       qrCodes={qrCodes ?? []}
-      agentUserId={ctx.userId}
+      agentUserId={ctx.agentId}
       brokerageId={ctx.brokerageId}
     />
   )

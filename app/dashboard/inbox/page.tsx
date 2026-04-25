@@ -1,99 +1,17 @@
-import { Suspense } from "react"
-import { createClient } from "@/lib/supabase/server"
 import { redirect } from "next/navigation"
-import { InboxClient } from "./inbox-client"
-import { Skeleton } from "@/components/ui/skeleton"
-import { getInboxMessages } from "@/app/actions/inbox"
 
-export const metadata = {
-  title: "Universal Inbox | VIP RE OS",
-  description: "All your client conversations in one place",
-}
-
-interface PageProps {
-  searchParams: Promise<{ contact?: string; channel?: string }>
-}
-
-function InboxSkeleton() {
-  return (
-    <div className="flex h-[calc(100vh-80px)] border rounded-lg overflow-hidden bg-background">
-      {/* Thread list skeleton */}
-      <div className="w-80 border-r p-4 space-y-4 shrink-0">
-        <Skeleton className="h-6 w-20" />
-        <Skeleton className="h-8 w-full" />
-        <div className="flex gap-1">
-          {[...Array(4)].map((_, i) => (
-            <Skeleton key={i} className="h-5 w-12 rounded-full" />
-          ))}
-        </div>
-        <div className="space-y-3 pt-2">
-          {[...Array(8)].map((_, i) => (
-            <div key={i} className="space-y-1">
-              <Skeleton className="h-4 w-32" />
-              <Skeleton className="h-3 w-48" />
-            </div>
-          ))}
-        </div>
-      </div>
-      {/* Message panel skeleton */}
-      <div className="flex-1 flex flex-col">
-        <div className="p-4 border-b">
-          <Skeleton className="h-5 w-40" />
-        </div>
-        <div className="flex-1 p-4 space-y-3">
-          <div className="flex justify-start">
-            <Skeleton className="h-12 w-48 rounded-2xl" />
-          </div>
-          <div className="flex justify-end">
-            <Skeleton className="h-10 w-56 rounded-2xl" />
-          </div>
-          <div className="flex justify-start">
-            <Skeleton className="h-16 w-52 rounded-2xl" />
-          </div>
-        </div>
-        <div className="p-4 border-t">
-          <Skeleton className="h-16 w-full rounded-lg" />
-        </div>
-      </div>
-    </div>
-  )
-}
-
-export default async function InboxPage({ searchParams }: PageProps) {
-  const supabase = await createClient()
-
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
-
-  if (authError || !user) {
-    redirect("/auth/login")
+export default async function InboxRedirect({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
+  const params = await searchParams
+  const qs = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue
+    const v = Array.isArray(value) ? value[0] : value
+    if (v !== undefined) qs.set(key, v)
   }
-
-  const { contact: contactId, channel } = await searchParams
-
-  const inboxResult = await getInboxMessages({ channel: "all", limit: 50 }).catch(() => ({
-    threads: [],
-  }))
-
-  return (
-    <div className="flex flex-col" style={{ height: "calc(100dvh - 64px)" }}>
-      <div className="px-6 py-3 border-b shrink-0">
-        <h1 className="text-xl font-semibold text-foreground">Universal Inbox</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          All client conversations — portal, SMS, email, and voice — in one place.
-        </p>
-      </div>
-      <div className="flex-1 overflow-hidden px-4 pb-4 pt-3">
-        <Suspense fallback={<InboxSkeleton />}>
-          <InboxClient
-            initialContactId={contactId ?? null}
-            initialChannel={channel ?? null}
-            initialThreads={inboxResult.threads ?? []}
-          />
-        </Suspense>
-      </div>
-    </div>
-  )
+  const suffix = qs.toString() ? `?${qs.toString()}` : ""
+  redirect(`/dashboard/communications/inbox${suffix}`)
 }

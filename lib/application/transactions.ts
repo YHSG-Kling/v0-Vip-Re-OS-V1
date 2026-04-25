@@ -772,16 +772,19 @@ export async function getTransactionTimeline(transactionId: string) {
 export async function addDeadline(deadlineData: {
   transaction_id: string
   deadline_type: string
-  description: string
-  due_date: string
-  reminder_days_before?: number
-  assigned_to?: string
-  notes?: string
+  notes: string
+  deadline_date: string
 }) {
   const supabase = await createClient()
   const { data, error } = await supabase
     .from("transaction_deadlines")
-    .insert({ ...deadlineData, status: "pending" })
+    .insert({
+      transaction_id: deadlineData.transaction_id,
+      deadline_type: deadlineData.deadline_type,
+      notes: deadlineData.notes,
+      deadline_date: deadlineData.deadline_date,
+      status: "pending",
+    })
     .select()
     .single()
 
@@ -793,7 +796,7 @@ export async function addDeadline(deadlineData: {
   await addTimelineEntry(
     deadlineData.transaction_id,
     "deadline_added",
-    `Deadline "${deadlineData.description}" added for ${deadlineData.due_date}`,
+    `Deadline "${deadlineData.notes}" added for ${deadlineData.deadline_date}`,
   )
   revalidatePath("/transactions")
   return { success: true, data }
@@ -801,7 +804,7 @@ export async function addDeadline(deadlineData: {
 
 export async function updateDeadline(
   deadlineId: string,
-  updates: Partial<{ status: string; due_date: string; description: string; completed_at: string; notes: string }>,
+  updates: Partial<{ status: string; deadline_date: string; notes: string; completed_at: string }>,
 ) {
   const supabase = await createClient()
   const { data, error } = await supabase
@@ -834,7 +837,7 @@ export async function completeDeadline(deadlineId: string) {
   }
 
   if (data?.transactions?.id) {
-    await addTimelineEntry(data.transactions.id, "deadline_completed", `Deadline "${data.description}" completed`)
+    await addTimelineEntry(data.transactions.id, "deadline_completed", `Deadline "${data.notes}" completed`)
   }
   revalidatePath("/transactions")
   return { success: true, data }
@@ -849,8 +852,8 @@ export async function getUpcomingDeadlines(agentId?: string, days = 7) {
     .from("transaction_deadlines")
     .select("*, transactions(*)")
     .eq("status", "pending")
-    .lte("due_date", futureDate.toISOString())
-    .order("due_date", { ascending: true })
+    .lte("deadline_date", futureDate.toISOString())
+    .order("deadline_date", { ascending: true })
 
   if (agentId) query = query.eq("transactions.agent_id", agentId)
 
@@ -1126,9 +1129,9 @@ export async function respondToRepairRequest(
   const supabase = await createClient()
   const updates: Record<string, unknown> = {
     status: response === "counter" ? "countered" : response,
-    response_notes: notes,
+    response_note: notes,
+    ...(response === "counter" && counterOffer !== undefined ? { repair_credit_amount: counterOffer } : {}),
   }
-  if (counterOffer !== undefined) updates.counter_offer = counterOffer
 
   const { data, error } = await supabase
     .from("transaction_repair_negotiations")

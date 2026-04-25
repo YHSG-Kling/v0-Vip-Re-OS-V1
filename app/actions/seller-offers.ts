@@ -8,6 +8,9 @@ import { KernelEvent } from "@/lib/kernel/events"
 import { analyzeAndCompareOffers, calcNetToSeller } from "@/lib/offers/offer-analyzer"
 import { isValidUUID } from "@/lib/validations"
 import crypto from "crypto"
+import { getDefaultCommissionStructure } from "@/lib/brokerage"
+import { incrementUsage } from "@/lib/usage"
+import { generateTextRouted as generateText } from "@/lib/ai/models"
 
 // ── LOAD OFFERS FOR LISTING ───────────────────────────────────────────────────
 export async function getOffersForListing(listingId: string) {
@@ -498,4 +501,235 @@ export async function getMlsNumberByAddress(contactId: string, propertyAddress: 
     .limit(1)
     .maybeSingle()
   return data?.mls_number ?? null
+}
+
+// AI analysis functions — inlined to avoid Turbopack re-export resolution failures
+
+function extractScore(text: string): number {
+  const match = text.match(/STRENGTH SCORE:\s*(\d+)/)
+  return match ? parseInt(match[1], 10) : 50
+}
+
+// ── PRIVATE HELPER: resolve commission rate for a user/brokerage ──────────────
+// Shared by analyzeOffer and analyzeMultipleOffers to avoid duplicated logic.
+async function resolveCommissionRate(userId: string): Promise<{
+  brokerageId: string
+  totalRate: number
+} | { error: string }> {
+  const supabase = await createClient()
+  const { data: profile } = await supabase
+    .from("users").select("brokerage_id").eq("id", userId).single()
+
+  const brokerageId = profile?.brokerage_id
+  if (!brokerageId) return { error: "User brokerage not found" }
+
+  const commissionStructure = await getDefaultCommissionStructure(brokerageId, userId)
+  const totalRate = commissionStructure.agentBuyerSideRate + commissionStructure.agentListingSideRate
+
+  return { brokerageId, totalRate }
+}
+
+export async function analyzeOffer(offerId: string, userId: string) {
+  if (!isValidUUID(offerId) || !isValidUUID(userId)) {
+    return { success: false, error: "Invalid IDs" }
+  }
+  const supabase = await createClient()
+
+  const { data: offer } = await supabase
+    .from("offers")
+    .select(`*, listing:listings(id, address, list_price, seller_contact_id), buyer:contacts(id, first_name, last_name)`)
+    .eq("id", offerId)
+    .single()
+
+  if (!offer) return { success: false, error: "Offer not found" }
+
+  const commissionResult = await resolveCommissionRate(userId)
+  if ("error" in commissionResult) return { success: false, error: commissionResult.error }
+  const { totalRate } = commissionResult
+
+  const netToSeller = calcNetToSeller({
+    offer_price:              offer.offer_price,
+    closing_cost_contribution: offer.closing_cost_contribution ?? null,
+    commission_rate:          totalRate,
+  })
+
+  await incrementUsage(userId, "llm_calls", 1)
+
+  const listPrice = Number((offer.listing as any)?.list_price ?? 0)
+
+  const { text: analysis } = await generateText({
+    model: "openai/gpt-4o-mini",
+    prompt: `You are a real estate offer analysis expert. Analyze this offer and provide structured feedback.
+
+Property: ${(offer.listing as any)?.address ?? "Unknown"}
+List Price: $${listPrice.toLocaleString()}
+Offer Amount: $${Number(offer.offer_price).toLocaleString()}
+Earnest Money: $${Number(offer.earnest_money ?? 0).toLocaleString()}
+Down Payment: ${offer.down_payment_percent ?? 0}%
+Financing: ${offer.financing_type ?? "unknown"}
+Contingencies: ${offer.contingencies?.join(", ") || "None"}
+Close Date: ${offer.closing_date ?? "TBD"}
+Net to Seller: $${netToSeller.toLocaleString()}
+
+Return this exact format:
+
+STRENGTH SCORE: [0-100]
+
+KEY ADVANTAGES:
+- [Advantage 1]
+- [Advantage 2]
+
+RISK FACTORS:
+- [Risk 1]
+
+RECOMMENDATION: [Accept/Counter/Reject]
+
+REASONING: [2-3 sentences]`,
+  })
+
+  await supabase
+    .from("offers")
+    .update({
+      ai_analysis: {
+        analysis_type:     "single",
+        ai_recommendation: analysis,
+        net_to_seller:     netToSeller,
+        strength_score:    extractScore(analysis),
+        analyzed_at:       new Date().toISOString(),
+        analyzed_by_user:  userId,
+      },
+      ai_recommendation: analysis.substring(0, 500),
+    })
+    .eq("id", offerId)
+
+  return {
+    success:   true,
+    analysis,
+    net_sheet: { net_to_seller: netToSeller, purchase_price: offer.offer_price },
+  }
+}
+
+export async function analyzeMultipleOffers(listingId: string, userId: string) {
+  if (!isValidUUID(listingId) || !isValidUUID(userId)) {
+    return { success: false, error: "Invalid IDs" }
+  }
+  const supabase = await createClient()
+
+  const { data: offers } = await supabase
+    .from("offers")
+    .select(`*, buyer:contacts(id, first_name, last_name)`)
+    .eq("listing_id", listingId)
+    .in("status", ["pending", "countered"])
+
+  if (!offers || offers.length === 0) {
+    return { success: false, error: "No offers to compare" }
+  }
+
+  const commissionResult = await resolveCommissionRate(userId)
+  if ("error" in commissionResult) return { success: false, error: commissionResult.error }
+  const { brokerageId, totalRate } = commissionResult
+
+  const offerComparisons = offers.map((offer) => {
+    const net = calcNetToSeller({
+      offer_price:              offer.offer_price,
+      closing_cost_contribution: offer.closing_cost_contribution ?? null,
+      commission_rate:          totalRate,
+    })
+    return {
+      offer_id:             offer.id,
+      buyer_name:           `${(offer.buyer as any)?.first_name ?? "Unknown"} ${(offer.buyer as any)?.last_name ?? "Buyer"}`,
+      offer_price:          offer.offer_price,
+      net_to_seller:        net,
+      down_payment_percent: offer.down_payment_percent,
+      financing_type:       offer.financing_type,
+      contingencies_count:  offer.contingencies?.length ?? 0,
+      closing_date:         offer.closing_date,
+      days_to_close:        offer.closing_date
+        ? Math.floor((new Date(offer.closing_date).getTime() - Date.now()) / 86400000)
+        : 0,
+    }
+  })
+
+  // Sort descending by net_to_seller so index [0] is always the best offer.
+  offerComparisons.sort((a, b) => b.net_to_seller - a.net_to_seller)
+
+  await incrementUsage(userId, "llm_calls", 1)
+
+  const { text: comparison } = await generateText({
+    model: "openai/gpt-4o-mini",
+    prompt: `Compare these ${offers.length} offers and rank from best to worst.
+
+${offerComparisons.map((o, i) => `
+Offer ${i + 1} (${o.buyer_name}):
+  Price: $${o.offer_price.toLocaleString()}, Net: $${o.net_to_seller.toLocaleString()}
+  Down: ${o.down_payment_percent}%, Financing: ${o.financing_type}
+  Contingencies: ${o.contingencies_count}, Days to Close: ${o.days_to_close}
+`).join("")}
+
+Provide: 1) RANKED LIST with reasoning 2) COMPARISON MATRIX 3) OVERALL RECOMMENDATION 4) NEGOTIATION STRATEGY`,
+  })
+
+  const netByOffer: Record<string, number> = {}
+  offerComparisons.forEach(o => { netByOffer[o.offer_id] = o.net_to_seller })
+
+  const { data: _compData, error: compInsertError } = await supabase.from("offer_comparison").insert({
+    listing_id:              listingId,
+    brokerage_id:            brokerageId,
+    agent_id:                userId,
+    created_by:              userId,
+    offer_ids:               offers.map(o => o.id),
+    ai_recommendation:       comparison.substring(0, 500),
+    ai_analysis_notes:       comparison,
+    net_to_seller_by_offer:  netByOffer,
+    comparison_matrix:       offerComparisons,
+    recommended_offer_id:    offerComparisons[0]?.offer_id ?? null,
+  })
+
+  if (compInsertError) {
+    return { success: false, error: "Failed to persist comparison: " + compInsertError.message }
+  }
+
+  return { success: true, comparison, offers: offerComparisons }
+}
+
+export async function calculateNetSheet(params: {
+  purchase_price:      number
+  earnest_money:       number
+  agent_commission:    number
+  closing_costs:       number
+  seller_concessions?: number
+  loan_payoff?:        number
+  property_taxes?:     number
+  hoa_dues?:           number
+}) {
+  const {
+    purchase_price,
+    earnest_money,
+    agent_commission,
+    closing_costs,
+    seller_concessions = 0,
+    loan_payoff        = 0,
+    property_taxes     = 0,
+    hoa_dues           = 0,
+  } = params
+
+  const commission_amount    = purchase_price * agent_commission
+  const closing_costs_amount = purchase_price * closing_costs
+  const total_deductions     = commission_amount + closing_costs_amount + seller_concessions + loan_payoff + property_taxes + hoa_dues
+  const net_to_seller        = purchase_price - total_deductions
+
+  return {
+    purchase_price,
+    deductions: {
+      agent_commission:   commission_amount,
+      closing_costs:      closing_costs_amount,
+      seller_concessions,
+      loan_payoff,
+      property_taxes,
+      hoa_dues,
+      total:              total_deductions,
+    },
+    net_to_seller,
+    earnest_money,
+  }
 }

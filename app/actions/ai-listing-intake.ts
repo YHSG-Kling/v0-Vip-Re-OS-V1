@@ -8,6 +8,7 @@ import { generateTextRouted as generateText } from "@/lib/ai/models"
 import { revalidatePath } from "next/cache"
 import { isValidUUID } from "@/lib/validations"
 import { handleError } from "@/lib/errors"
+import { guardContent } from "@/lib/content-guardian"
 import { getAgentContext } from "@/lib/identity/get-agent-context"
 import { z } from "zod"
 
@@ -244,6 +245,25 @@ export async function aiGenerateListingDescription(params: {
 
     const supabase = await createClient()
 
+    // Resolve brokerage for the agent (used for compliance/brand-voice scoping).
+    // getAgentContext() resolves the CURRENT session user, which may differ from
+    // params.agentId when a broker acts on behalf of another agent. Fall back to a
+    // direct DB lookup on the agents table so brand-voice / compliance scope is
+    // always tied to the generating agent, not the caller.
+    const agentCtx = await getAgentContext().catch(() => null)
+    let brokerageId: string | null = agentCtx?.brokerageId ?? null
+    if (!brokerageId || agentCtx?.agentId !== params.agentId) {
+      const { data: agentRow } = await supabase
+        .from("agents")
+        .select("brokerage_id")
+        .eq("id", params.agentId)
+        .maybeSingle()
+      brokerageId = agentRow?.brokerage_id ?? null
+      if (!brokerageId) {
+        return { success: false, error: "Unable to resolve agent brokerage for compliance checks" }
+      }
+    }
+
     // Get agent's brand voice
     const { data: brandVoice } = await supabase
       .from("brand_voice_profile")
@@ -280,6 +300,19 @@ IMPORTANT RULES:
 - All content must be original`,
     })
 
+    // Run compliance + BrandVoice guard on MLS description (the regulated channel)
+    const guardResult = brokerageId
+      ? await guardContent({
+          content:     descriptions.mlsDescription,
+          agentId:     params.agentId,
+          brokerageId,
+          contentType: "listing_description",
+        }).catch((err) => {
+            console.error("[compliance-guard] guardContent threw — treating as guard failure:", err)
+            return { flagged: false, guardFailed: true, violations: [], notes: [], content: "", brandVoiceChecked: false }
+          })
+      : null
+
     // Save generated content
     await supabase.from("listing_marketing_content").insert({
       agent_id: params.agentId,
@@ -289,7 +322,15 @@ IMPORTANT RULES:
       status: "draft",
     })
 
-    return { success: true, descriptions }
+    return {
+      success: true,
+      descriptions,
+      guardResult: guardResult ? {
+        flagged:     guardResult.flagged,
+        violations:  guardResult.violations,
+        notes:       guardResult.notes,
+      } : null,
+    }
   } catch (error) {
     console.error("[AI Listing Intake] Description error:", error)
     return handleError(error, "aiGenerateListingDescription")

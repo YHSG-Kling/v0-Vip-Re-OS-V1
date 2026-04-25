@@ -2,6 +2,10 @@ import { redirect } from "next/navigation"
 import { createServiceClient } from "@/lib/supabase/service"
 import { createClient }        from "@/lib/supabase/server"
 import { OffersClient }        from "./offers-client"
+import { canBuyerSubmitOffers } from "@/app/actions/buyer-lifecycle-core"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { AlertTriangle } from "lucide-react"
+import Link from "next/link"
 
 const OFFER_ELIGIBLE_STAGES = [
   "BUYER_OFFER_ELIGIBLE",
@@ -51,6 +55,9 @@ export default async function BuyerOffersPage({ params }: PageProps) {
     redirect(`/dashboard/buyers/${buyerId}?gate=offer_not_eligible`)
   }
 
+  // Lifecycle gate check
+  const offerGateResult = await canBuyerSubmitOffers(buyerId)
+
   // Load existing offers
   const { data: offers } = await supabase
     .from("offers")
@@ -70,6 +77,19 @@ export default async function BuyerOffersPage({ params }: PageProps) {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
+      {/* Lifecycle gate banner */}
+      {!offerGateResult.allowed && (
+        <Alert className="border-amber-200 bg-amber-50 m-4 mb-0">
+          <AlertTriangle className="h-4 w-4 text-amber-600" />
+          <AlertDescription className="text-amber-800">
+            Offers are locked: {offerGateResult.reason}.{" "}
+            <Link href={`/dashboard/buyers/${buyerId}`} className="underline font-medium">
+              Complete financial verification
+            </Link>{" "}
+            to unlock.
+          </AlertDescription>
+        </Alert>
+      )}
       <OffersClient
         contactId={buyerId}
         brokerageId={brokerageId}
@@ -78,6 +98,7 @@ export default async function BuyerOffersPage({ params }: PageProps) {
         contactEmail={contactEmail}
         initialOffers={offers ?? []}
         buyerStage={contact.buyer_stage ?? "BUYER_OFFER_ELIGIBLE"}
+        disableOfferCreation={!offerGateResult.allowed}
       />
     </div>
   )

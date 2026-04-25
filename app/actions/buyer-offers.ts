@@ -87,6 +87,9 @@ export interface OfferFormData {
   form_provider_ref?:          string
   esign_provider?:             string
   strategy_recommendation_id?: string | null
+  // In-app form selections (when form_source === "in_app")
+  in_app_selected_form_ids?:   string[]
+  in_app_form_field_values?:   Record<string, unknown>
 }
 
 // ─── LISTING SEARCH ───────────────────────────────────────────────────────────
@@ -434,6 +437,14 @@ export async function createOffer(
       escalation_clause:           form.escalation_clause,
       escalation_cap:              form.escalation_cap ?? null,
       buyer_notes:                 form.buyer_notes ?? null,
+      // metadata stores in-app form selections separately so buyer_notes
+      // remains human-readable plain text and is never corrupted with JSON.
+      metadata:                    form.in_app_selected_form_ids?.length
+        ? {
+            selected_form_ids: form.in_app_selected_form_ids,
+            form_field_values: form.in_app_form_field_values ?? {},
+          }
+        : null,
       form_source:                 form.form_source,
       form_provider_ref:           form.form_provider_ref ?? null,
       esign_provider:              form.esign_provider ?? null,

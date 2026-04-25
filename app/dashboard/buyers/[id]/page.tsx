@@ -1,6 +1,7 @@
 import { redirect }             from "next/navigation"
 import { createClient }          from "@/lib/supabase/server"
 import { BuyerOverviewClient }   from "./buyer-overview-client"
+import { getBuyerEnabledGates }  from "@/app/actions/buyer-lifecycle-core"
 
 // Heavy data (journey, financials, tours, collaborative search) is loaded
 // lazily from the client via SWR/server-actions to avoid cascading server
@@ -19,10 +20,11 @@ export default async function BuyerDetailPage({ params }: PageProps) {
   if (!user) redirect("/login")
 
   // Load only the minimal data required for initial render
-  const [contactResult, profileResult, interestsResult] = await Promise.all([
+  const [contactResult, profileResult, interestsResult, enabledGates] = await Promise.all([
     supabase.from("contacts").select("*").eq("id", buyerId).single(),
     supabase.from("users").select("first_name, last_name").eq("id", user.id).maybeSingle(),
     supabase.from("property_interests").select("*").eq("contact_id", buyerId).maybeSingle(),
+    getBuyerEnabledGates(buyerId),
   ])
 
   const { data: contact, error: contactError } = contactResult
@@ -58,6 +60,7 @@ export default async function BuyerDetailPage({ params }: PageProps) {
         tours={[]}
         nextTour={null}
         dualAgencyListings={[]}
+        enabledGates={enabledGates}
       />
     </div>
   )

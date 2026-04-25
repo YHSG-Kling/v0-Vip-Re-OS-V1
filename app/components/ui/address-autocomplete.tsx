@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { Input } from "@/components/ui/input"
 
 interface AddressComponents {
@@ -21,45 +21,45 @@ interface AddressAutocompleteProps {
   disabled?: boolean
 }
 
-let mapsLoadPromise: Promise<void> | null = null
-
-function loadGoogleMaps(apiKey: string): Promise<void> {
-  if (mapsLoadPromise) return mapsLoadPromise
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if ((window as any).google?.maps?.places) {
-    mapsLoadPromise = Promise.resolve()
-    return mapsLoadPromise
+interface NominatimResult {
+  place_id: number
+  display_name: string
+  address: {
+    house_number?: string
+    road?: string
+    neighbourhood?: string
+    suburb?: string
+    city?: string
+    town?: string
+    village?: string
+    state?: string
+    postcode?: string
   }
-  mapsLoadPromise = new Promise<void>((resolve, reject) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (window as any).__googleMapsCallback = () => resolve()
-    const script = document.createElement("script")
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=__googleMapsCallback`
-    script.async = true
-    script.defer = true
-    script.onerror = () => {
-      mapsLoadPromise = null
-      reject(new Error("Failed to load Google Maps"))
-    }
-    document.head.appendChild(script)
-  })
-  return mapsLoadPromise
 }
 
-function parseAddressComponents(place: any): AddressComponents {
-  const get = (type: string) =>
-    (place.address_components ?? []).find((c: any) => c.types.includes(type))?.long_name ?? ""
-  const getShort = (type: string) =>
-    (place.address_components ?? []).find((c: any) => c.types.includes(type))?.short_name ?? ""
-  const streetNumber = get("street_number")
-  const route = get("route")
-  return {
-    street: [streetNumber, route].filter(Boolean).join(" "),
-    city: get("locality") || get("sublocality") || get("neighborhood"),
-    state: getShort("administrative_area_level_1"),
-    zip: get("postal_code"),
-    full: place.formatted_address ?? "",
-  }
+const STATE_ABBR: Record<string, string> = {
+  Alabama: "AL", Alaska: "AK", Arizona: "AZ", Arkansas: "AR", California: "CA",
+  Colorado: "CO", Connecticut: "CT", Delaware: "DE", Florida: "FL", Georgia: "GA",
+  Hawaii: "HI", Idaho: "ID", Illinois: "IL", Indiana: "IN", Iowa: "IA",
+  Kansas: "KS", Kentucky: "KY", Louisiana: "LA", Maine: "ME", Maryland: "MD",
+  Massachusetts: "MA", Michigan: "MI", Minnesota: "MN", Mississippi: "MS",
+  Missouri: "MO", Montana: "MT", Nebraska: "NE", Nevada: "NV", "New Hampshire": "NH",
+  "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
+  "North Dakota": "ND", Ohio: "OH", Oklahoma: "OK", Oregon: "OR", Pennsylvania: "PA",
+  "Rhode Island": "RI", "South Carolina": "SC", "South Dakota": "SD", Tennessee: "TN",
+  Texas: "TX", Utah: "UT", Vermont: "VT", Virginia: "VA", Washington: "WA",
+  "West Virginia": "WV", Wisconsin: "WI", Wyoming: "WY",
+  "District of Columbia": "DC",
+}
+
+function parseNominatim(result: NominatimResult): AddressComponents {
+  const a = result.address
+  const street = [a.house_number, a.road].filter(Boolean).join(" ")
+  const city = a.city ?? a.town ?? a.village ?? a.suburb ?? a.neighbourhood ?? ""
+  const stateFull = a.state ?? ""
+  const state = STATE_ABBR[stateFull] ?? stateFull
+  const zip = a.postcode ?? ""
+  return { street, city, state, zip, full: result.display_name }
 }
 
 export function AddressAutocomplete({
@@ -71,47 +71,80 @@ export function AddressAutocomplete({
   className,
   disabled,
 }: AddressAutocompleteProps) {
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [suggestions, setSuggestions] = useState<NominatimResult[]>([])
+  const [open, setOpen] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const requestIdRef = useRef(0)
 
-  const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
+  const fetchSuggestions = useCallback(async (query: string) => {
+    if (query.length < 4) { setSuggestions([]); setOpen(false); return }
+    // Stamp this request so we can discard out-of-order responses
+    const currentId = ++requestIdRef.current
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=us&limit=5&q=${encodeURIComponent(query)}`
+      const res = await fetch(url, { headers: { "Accept-Language": "en" } })
+      if (!res.ok) return
+      const data: NominatimResult[] = await res.json()
+      // Ignore if a newer request has already been issued
+      if (currentId !== requestIdRef.current) return
+      setSuggestions(data)
+      setOpen(data.length > 0)
+    } catch {
+      // silently degrade — user can still type manually
+    }
+  }, [])
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value
+    onChange(v)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => fetchSuggestions(v), 350)
+  }
+
+  const handleSelect = (result: NominatimResult) => {
+    const parsed = parseNominatim(result)
+    onChange(parsed.street || parsed.full)
+    if (onSelect) onSelect(parsed)
+    setSuggestions([])
+    setOpen(false)
+  }
 
   useEffect(() => {
-    if (!apiKey || !inputRef.current) return
-
-    loadGoogleMaps(apiKey)
-      .then(() => {
-        if (!inputRef.current) return
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const g = (window as any).google
-        const ac = new g.maps.places.Autocomplete(inputRef.current, {
-          types: ["address"],
-          componentRestrictions: { country: "us" },
-          fields: ["formatted_address", "address_components"],
-        })
-        ac.addListener("place_changed", () => {
-          const place = ac.getPlace()
-          if (!place.formatted_address) return
-          onChange(place.formatted_address)
-          if (onSelect) onSelect(parseAddressComponents(place))
-        })
-      })
-      .catch(() => {
-        // Silently degrade to plain input
-      })
-  // Run once on mount — apiKey is env-level constant
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiKey])
+    const handler = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handler)
+    return () => document.removeEventListener("mousedown", handler)
+  }, [])
 
   return (
-    <Input
-      ref={inputRef}
-      id={id}
-      value={value}
-      onChange={e => onChange(e.target.value)}
-      placeholder={placeholder}
-      className={className}
-      disabled={disabled}
-      autoComplete="off"
-    />
+    <div ref={containerRef} className="relative">
+      <Input
+        id={id}
+        value={value}
+        onChange={handleChange}
+        placeholder={placeholder}
+        className={className}
+        disabled={disabled}
+        autoComplete="off"
+        onFocus={() => suggestions.length > 0 && setOpen(true)}
+      />
+      {open && suggestions.length > 0 && (
+        <ul className="absolute z-50 mt-1 w-full rounded-md border bg-popover shadow-md text-sm max-h-60 overflow-auto">
+          {suggestions.map((s) => (
+            <li
+              key={s.place_id}
+              className="px-3 py-2 cursor-pointer hover:bg-accent hover:text-accent-foreground truncate"
+              onMouseDown={(e) => { e.preventDefault(); handleSelect(s) }}
+            >
+              {s.display_name}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }

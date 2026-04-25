@@ -16,7 +16,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { CheckCircle2, Loader2 } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
+import { Bell, CheckCircle2, Loader2 } from "lucide-react"
 
 interface Props {
   brokerageId: string
@@ -56,6 +57,7 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
   )
   const [thankYouMessage, setThankYouMessage] = useState("Thank you! We will be in touch shortly.")
   const [channels, setChannels] = useState<string[]>(["qr_code", "landing_page"])
+  // notifyByEmail: email notifications not yet implemented; kept false until wired up
 
   function toggleChannel(channel: string) {
     setChannels((prev) =>
@@ -71,6 +73,9 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
       const result = await createLeadMagnetAction({
         name: title.trim(),
         magnet_type: magnetType,
+        description: description.trim(),
+        thank_you_message: thankYouMessage.trim(),
+        tcpa_text: tcpaText.trim() || undefined,
       })
 
       if (!result.success || !result.magnetId) {
@@ -223,6 +228,22 @@ export function MagnetBuilder({ brokerageId, agentId, onCreated }: Props) {
             value={tcpaText}
             onChange={(e) => setTcpaText(e.target.value)}
             rows={3}
+          />
+        </div>
+
+        {/* Email notification preference — email delivery is not yet available */}
+        <div className="flex items-center justify-between rounded-lg border p-4 opacity-60">
+          <div className="flex items-center gap-3">
+            <Bell className="h-4 w-4 text-muted-foreground" />
+            <div>
+              <p className="text-sm font-medium">Email notifications <span className="ml-1 text-xs font-normal text-muted-foreground">(coming soon)</span></p>
+              <p className="text-xs text-muted-foreground">In-app notifications are sent automatically for every submission</p>
+            </div>
+          </div>
+          <Switch
+            checked={false}
+            disabled
+            aria-label="Email notifications coming soon"
           />
         </div>
 

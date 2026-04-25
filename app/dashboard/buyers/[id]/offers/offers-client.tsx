@@ -56,11 +56,12 @@ interface OffersClientProps {
   contactEmail: string
   initialOffers: Offer[]
   buyerStage:   string
+  disableOfferCreation?: boolean
 }
 
 export function OffersClient({
   contactId, brokerageId, agentUserId, contactName, contactEmail,
-  initialOffers, buyerStage,
+  initialOffers, buyerStage, disableOfferCreation = false,
 }: OffersClientProps) {
   const [offers, setOffers]               = useState<Offer[]>(initialOffers)
   const [showFlow, setShowFlow]           = useState(false)
@@ -280,12 +281,14 @@ export function OffersClient({
             <h2 className="text-sm font-semibold">Offers</h2>
             <p className="text-xs text-muted-foreground mt-0.5">{offers.length} total</p>
           </div>
-          <Link
-            href={`/dashboard/buyers/${contactId}/offers/new`}
-            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-          >
-            Create New Offer
-          </Link>
+          {!disableOfferCreation && (
+            <Link
+              href={`/dashboard/buyers/${contactId}/offers/new`}
+              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+            >
+              Create New Offer
+            </Link>
+          )}
         </div>
 
         {offers.length === 0 ? (
@@ -297,12 +300,14 @@ export function OffersClient({
             </div>
             <p className="text-sm font-medium">No offers yet</p>
             <p className="text-xs text-muted-foreground">Create an offer to get started</p>
-            <button
-              onClick={() => setShowFlow(true)}
-              className="mt-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-            >
-              Create First Offer
-            </button>
+            {!disableOfferCreation && (
+              <button
+                onClick={() => setShowFlow(true)}
+                className="mt-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              >
+                Create First Offer
+              </button>
+            )}
           </div>
         ) : (
           <div className="divide-y divide-border">

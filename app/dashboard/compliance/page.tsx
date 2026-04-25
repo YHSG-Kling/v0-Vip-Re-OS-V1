@@ -4,9 +4,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
-import { AlertTriangle, Shield, Award } from "lucide-react"
+import { AlertTriangle, Shield, Award, ClipboardCheck, ExternalLink } from "lucide-react"
+import Link from "next/link"
 import { getPendingApprovals, getComplianceViolations, generateComplianceReport, trackCertificationExpiration } from "@/app/actions/compliance-monitoring"
 import { getAllTransactionComplianceLogs } from "@/app/actions/transaction-compliance"
+import { calculateComplianceRiskScore } from "@/app/actions/multi-persona"
 import { createClient } from "@/lib/supabase/server"
 import SubmitContentForm from "@/app/components/shared/compliance/submit-content-form"
 import PendingApprovalsList from "@/app/components/shared/compliance/pending-approvals-list"
@@ -34,7 +36,7 @@ export default async function ComplianceDashboardPage() {
   const today = new Date()
   const thirtyDaysAgo = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000)
 
-  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs, certStatus] = await Promise.all([
+  const [pendingApprovals, violations, monthlyReport, transactionComplianceLogs, certStatus, complianceRiskScore] = await Promise.all([
     getPendingApprovals(),
     getComplianceViolations(),
     generateComplianceReport({
@@ -43,6 +45,7 @@ export default async function ComplianceDashboardPage() {
     }),
     getAllTransactionComplianceLogs({ limit: 100 }),
     user ? trackCertificationExpiration(user.id).catch(() => null) : Promise.resolve(null),
+    user ? calculateComplianceRiskScore(user.id).catch(() => null) : Promise.resolve(null),
   ])
 
   const complianceRate =
@@ -109,6 +112,72 @@ export default async function ComplianceDashboardPage() {
         complianceRate={complianceRate}
         blockingIssues={blockingIssues}
       />
+
+      {/* Compliance Risk Score Card */}
+      {complianceRiskScore && (
+        <Card className={
+          complianceRiskScore.riskLevel === "low"
+            ? "border-green-200 bg-green-50/50"
+            : complianceRiskScore.riskLevel === "medium"
+            ? "border-yellow-200 bg-yellow-50/50"
+            : "border-red-200 bg-red-50/50"
+        }>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Shield className={
+                complianceRiskScore.riskLevel === "low"
+                  ? "h-4 w-4 text-green-600"
+                  : complianceRiskScore.riskLevel === "medium"
+                  ? "h-4 w-4 text-yellow-600"
+                  : "h-4 w-4 text-red-600"
+              } />
+              Compliance Risk Score
+            </CardTitle>
+            <CardDescription>Based on violations, unapproved content, and communication patterns (last 30 days)</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-end gap-4">
+              <div>
+                <div className={
+                  "text-4xl font-bold " + (
+                    complianceRiskScore.riskLevel === "low"
+                      ? "text-green-700"
+                      : complianceRiskScore.riskLevel === "medium"
+                      ? "text-yellow-700"
+                      : "text-red-700"
+                  )
+                }>
+                  {complianceRiskScore.overallScore}
+                </div>
+                <div className="text-xs text-muted-foreground mt-0.5">out of 100</div>
+              </div>
+              <Badge variant={
+                complianceRiskScore.riskLevel === "low" ? "secondary"
+                : complianceRiskScore.riskLevel === "medium" ? "outline"
+                : "destructive"
+              } className="mb-1">
+                {complianceRiskScore.riskLevel.charAt(0).toUpperCase() + complianceRiskScore.riskLevel.slice(1)} Risk
+              </Badge>
+            </div>
+            <div className="grid grid-cols-3 gap-3 mt-4 text-sm">
+              <div className="text-center p-2 rounded bg-muted">
+                <div className="font-semibold">{complianceRiskScore.violationScore}</div>
+                <div className="text-xs text-muted-foreground">Violation Score</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{complianceRiskScore.violationsCount} flag{complianceRiskScore.violationsCount !== 1 ? "s" : ""}</div>
+              </div>
+              <div className="text-center p-2 rounded bg-muted">
+                <div className="font-semibold">{complianceRiskScore.contentScore}</div>
+                <div className="text-xs text-muted-foreground">Content Score</div>
+                <div className="text-xs text-muted-foreground mt-0.5">{complianceRiskScore.unapprovedContentCount} pending</div>
+              </div>
+              <div className="text-center p-2 rounded bg-muted">
+                <div className="font-semibold">{complianceRiskScore.avgThemFirst}</div>
+                <div className="text-xs text-muted-foreground">Comm. Score</div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* OS Intelligence Grid - 3 Column Layout */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
@@ -183,6 +252,7 @@ export default async function ComplianceDashboardPage() {
             )}
           </TabsTrigger>
           <TabsTrigger value="fair-housing">Fair Housing</TabsTrigger>
+          <TabsTrigger value="trid">TRID Timeline</TabsTrigger>
           <TabsTrigger value="certifications">
             Certifications
             {certStatus && certStatus.expiring > 0 && (
@@ -231,6 +301,99 @@ export default async function ComplianceDashboardPage() {
 
         <TabsContent value="fair-housing" className="space-y-4">
           <FairHousingScanner />
+        </TabsContent>
+
+        <TabsContent value="trid" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <ClipboardCheck className="h-4 w-4 text-primary" />
+                TRID Compliance Timeline
+              </CardTitle>
+              <CardDescription>
+                TRID (TILA-RESPA Integrated Disclosure) compliance is monitored per transaction.
+                Use the links below to access TRID timelines for active transactions.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Summary from transaction compliance logs filtered for TRID-related checks */}
+              {(() => {
+                const TRID_CHECK_TYPES = new Set([
+                  "trid_disclosure",
+                  "trid_timeline",
+                  "loan_estimate",
+                  "closing_disclosure",
+                ])
+                const tridLogs = allLogs.filter(l =>
+                  (l.check_type && TRID_CHECK_TYPES.has(l.check_type)) ||
+                  l.check_type?.toLowerCase().startsWith("trid_")
+                )
+                const tridPending = tridLogs.filter(l => l.status === "pending" || l.status === "needs_review")
+                const tridPassed = tridLogs.filter(l => l.status === "pass")
+
+                return (
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-3 gap-4">
+                      <div className="text-center p-4 rounded-lg bg-muted">
+                        <p className="text-2xl font-bold">{tridLogs.length}</p>
+                        <p className="text-xs text-muted-foreground mt-1">TRID Checks</p>
+                      </div>
+                      <div className="text-center p-4 rounded-lg bg-green-50 border border-green-200">
+                        <p className="text-2xl font-bold text-green-700">{tridPassed.length}</p>
+                        <p className="text-xs text-green-600 mt-1">Passed</p>
+                      </div>
+                      <div className="text-center p-4 rounded-lg bg-yellow-50 border border-yellow-200">
+                        <p className="text-2xl font-bold text-yellow-700">{tridPending.length}</p>
+                        <p className="text-xs text-yellow-600 mt-1">Pending</p>
+                      </div>
+                    </div>
+
+                    {tridPending.length > 0 && (
+                      <div className="space-y-2">
+                        <p className="text-sm font-medium">Pending TRID Items</p>
+                        {tridPending.slice(0, 5).map((l: any) => (
+                          <div key={l.id} className="flex items-center justify-between p-3 rounded-lg border bg-yellow-50">
+                            <div>
+                              <p className="text-sm font-medium">{l.check_type?.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}</p>
+                              {l.notes && <p className="text-xs text-muted-foreground">{l.notes}</p>}
+                            </div>
+                            {l.transaction_id && (
+                              <Link
+                                href={`/dashboard/transactions/${l.transaction_id}`}
+                                className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                              >
+                                View Transaction
+                                <ExternalLink className="h-3 w-3" />
+                              </Link>
+                            )}
+                          </div>
+                        ))}
+                        {tridPending.length > 5 && (
+                          <p className="text-xs text-muted-foreground">+{tridPending.length - 5} more pending items</p>
+                        )}
+                      </div>
+                    )}
+
+                    {tridLogs.length === 0 && (
+                      <div className="text-center py-8 text-muted-foreground">
+                        <ClipboardCheck className="h-10 w-10 mx-auto mb-3 opacity-40" />
+                        <p className="text-sm">No TRID compliance checks found.</p>
+                        <p className="text-xs mt-1">TRID timelines are created automatically when transactions are set up.</p>
+                      </div>
+                    )}
+
+                    <div className="pt-2 border-t">
+                      <p className="text-xs text-muted-foreground mb-2">Manage TRID timelines per transaction:</p>
+                      <Link href="/dashboard/transactions" className="text-sm text-blue-600 hover:underline flex items-center gap-1">
+                        Go to Transaction List
+                        <ExternalLink className="h-3 w-3" />
+                      </Link>
+                    </div>
+                  </div>
+                )
+              })()}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="certifications" className="space-y-4">

@@ -30,16 +30,18 @@ export async function aiRecommendGift(params: {
 
   try {
     // Get contact details and history
-    const { data: contact } = await supabase
+    const { data: contact, error: contactErr } = await supabase
       .from("contacts")
       .select(`
         *,
-        transactions(sale_price, property_type, close_date),
-        interactions(notes)
+        transactions(sale_price, property_type, close_date)
       `)
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
 
+    if (contactErr) {
+      return { success: false, error: contactErr.message }
+    }
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }
@@ -269,18 +271,21 @@ export async function aiGenerateThankYouNote(params: {
   const supabase = await createClient()
 
   try {
-    const { data: contact } = await supabase
+    const { data: contact, error: contactErr } = await supabase
       .from("contacts")
       .select(`*, transactions(property_address, close_date)`)
       .eq("id", params.contactId)
-      .single()
+      .maybeSingle()
 
     const { data: agent } = await supabase
       .from("agents")
       .select("first_name, last_name")
       .eq("id", params.agentId)
-      .single()
+      .maybeSingle()
 
+    if (contactErr) {
+      return { success: false, error: contactErr.message }
+    }
     if (!contact) {
       return { success: false, error: "Contact not found" }
     }

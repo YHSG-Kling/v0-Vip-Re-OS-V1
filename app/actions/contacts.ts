@@ -213,6 +213,19 @@ export async function createContact(contactData: {
       agentId,
     }).catch(() => {})
 
+    // Non-blocking portal invite creation — contact gets a portal slot immediately
+    if (data.id && data.email) {
+      void (async () => {
+        const { createPortalInviteForContact } = await import("@/app/actions/portal-invites")
+        await createPortalInviteForContact({
+          contactId: data.id as string,
+          brokerageId,
+          invitedByUserId: userId,
+          sendMagicLink: false,
+        }).catch(() => {})
+      })()
+    }
+
     return { success: true, contact: data, isDuplicate: result.isDuplicate ?? false }
   } catch (error: any) {
     return { success: false, error: error.message }

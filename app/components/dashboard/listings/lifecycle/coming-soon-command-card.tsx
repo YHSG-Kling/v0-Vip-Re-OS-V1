@@ -11,7 +11,7 @@ import { Slider } from "@/components/ui/slider"
 import { Loader2, Sparkles, Radio, CheckCircle, Clock, ArrowRight } from "lucide-react"
 import { prepareComingSoonAssets, activateComingSoon } from "@/app/actions/seller-listing/execution-engine"
 import { createListingPosts } from "@/app/actions/social-media-automation"
-import { prepareListingEmailCampaign } from "@/app/actions/email-campaign-automation"
+import { prepareListingEmailCampaign } from "@/app/actions/email-campaigns"
 import { generateComingSoonContent } from "@/app/actions/coming-soon-content"
 import Link from "next/link"
 

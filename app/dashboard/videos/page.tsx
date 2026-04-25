@@ -17,6 +17,5 @@ export default async function VideosPage() {
     redirect('/login')
   }
 
-  // Redirect to create page as the default landing
-  redirect('/dashboard/videos/create')
+  redirect('/dashboard/video')
 }
