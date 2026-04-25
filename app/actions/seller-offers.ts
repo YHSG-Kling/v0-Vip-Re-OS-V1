@@ -672,7 +672,7 @@ Provide: 1) RANKED LIST with reasoning 2) COMPARISON MATRIX 3) OVERALL RECOMMEND
   const netByOffer: Record<string, number> = {}
   offerComparisons.forEach(o => { netByOffer[o.offer_id] = o.net_to_seller })
 
-  await supabase.from("offer_comparison").insert({
+  const { data: _compData, error: compInsertError } = await supabase.from("offer_comparison").insert({
     listing_id:              listingId,
     brokerage_id:            brokerageId,
     agent_id:                userId,
@@ -684,6 +684,10 @@ Provide: 1) RANKED LIST with reasoning 2) COMPARISON MATRIX 3) OVERALL RECOMMEND
     comparison_matrix:       offerComparisons,
     recommended_offer_id:    offerComparisons[0]?.offer_id ?? null,
   })
+
+  if (compInsertError) {
+    return { success: false, error: "Failed to persist comparison: " + compInsertError.message }
+  }
 
   return { success: true, comparison, offers: offerComparisons }
 }

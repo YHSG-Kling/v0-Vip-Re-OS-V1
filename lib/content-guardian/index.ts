@@ -34,6 +34,7 @@ export interface GuardContentResult {
   notes: string[]
   flagged: boolean
   brandVoiceChecked: boolean
+  persistenceError?: boolean
 }
 
 // Fair housing trigger phrases
@@ -90,10 +91,11 @@ export async function guardContent(params: GuardContentParams): Promise<GuardCon
 
   // 3. Submit to content_approvals if violations found
   const flagged = violations.length > 0
+  let persistenceError: boolean | undefined
   if (flagged) {
     try {
       const supabase = createServiceClient()
-      await supabase.from("content_approvals").insert({
+      const { error: insertError } = await supabase.from("content_approvals").insert({
         brokerage_id: brokerageId,
         agent_id: agentId,
         content_type: contentType,
@@ -101,10 +103,15 @@ export async function guardContent(params: GuardContentParams): Promise<GuardCon
         violations: violations,
         status: "pending",
       })
-    } catch {
-      // Non-fatal
+      if (insertError) {
+        console.error("[ContentGuardian] content_approvals insert failed:", insertError)
+        persistenceError = true
+      }
+    } catch (err) {
+      console.error("[ContentGuardian] content_approvals insert threw:", err)
+      persistenceError = true
     }
   }
 
-  return { content, violations, notes, flagged, brandVoiceChecked }
+  return { content, violations, notes, flagged, brandVoiceChecked, ...(persistenceError ? { persistenceError } : {}) }
 }

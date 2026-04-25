@@ -39,10 +39,13 @@ export async function createLeadMagnetAction(input: {
     // Persist notification preference in settings if magnet was created
     if (result.success && result.magnetId && input.notify_on_submission !== undefined) {
       const supabase = createServiceClient()
-      await supabase
+      const { error: notifyError } = await supabase
         .from("lead_capture_forms")
         .update({ settings: { notify_on_submission: input.notify_on_submission } })
         .eq("id", result.magnetId)
+      if (notifyError) {
+        return { success: false as const, error: "Failed to save notification preference: " + notifyError.message }
+      }
     }
     return result
   } catch (err: any) {

@@ -502,9 +502,12 @@ export async function prepareListingEmailCampaign(params: {
 
     const recipients = await getListingCampaignRecipients(params.transactionId, params.campaignType, listing)
 
+    const brokerageId = (listing as any).brokerage_id ?? transaction.brokerage_id ?? null
+
     const { data: campaign, error } = await supabase
       .from("newsletter_campaigns")
       .insert({
+        brokerage_id: brokerageId,
         agent_id: transaction.agent_id,
         campaign_name: `${params.campaignType} - ${listing.address}`,
         campaign_type: "one_time",
