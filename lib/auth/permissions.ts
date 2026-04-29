@@ -3,8 +3,50 @@
 import { createServerClient } from "@supabase/ssr"
 import { cookies } from "next/headers"
 
-// Type definitions
-export type Role = "BrokerOwner" | "ManagingBroker" | "Agent" | "tc" | "compliance_officer"
+// Type definitions — canonical user_type values from the users table
+export type Role =
+  | "BrokerOwner"
+  | "ManagingBroker"
+  | "Agent"
+  | "tc"
+  | "compliance_officer"
+  | "team_lead"
+  | "superadmin"
+  | "isa"
+  | "vendor"
+  | "lender"
+  | "admin"
+  | "broker"
+  | "agent"
+
+// Maps users.user_type → legacy Role label (keeps callers that check
+// "BrokerOwner" / "ManagingBroker" working)
+const USER_TYPE_TO_ROLE: Record<string, Role> = {
+  broker: "BrokerOwner",
+  admin: "ManagingBroker",
+  agent: "Agent",
+  team_lead: "team_lead",
+  tc: "tc",
+  compliance_officer: "compliance_officer",
+  superadmin: "superadmin",
+  isa: "isa",
+  vendor: "vendor",
+  lender: "lender",
+}
+
+// Static capability sets per role (replaces role_capabilities DB table)
+const ROLE_CAPABILITIES: Record<string, string[]> = {
+  superadmin: ["*"],
+  broker: ["contacts:read", "contacts:write", "listings:read", "listings:write", "transactions:read", "transactions:write", "agents:read", "agents:write", "reports:read", "billing:read", "billing:write", "admin:read", "admin:write"],
+  admin: ["contacts:read", "contacts:write", "listings:read", "listings:write", "transactions:read", "transactions:write", "agents:read", "reports:read", "admin:read"],
+  team_lead: ["contacts:read", "contacts:write", "listings:read", "listings:write", "transactions:read", "agents:read", "reports:read"],
+  agent: ["contacts:read", "contacts:write", "listings:read", "listings:write", "transactions:read"],
+  tc: ["transactions:read", "transactions:write", "listings:read", "contacts:read"],
+  compliance_officer: ["transactions:read", "listings:read", "contacts:read", "compliance:read", "compliance:write"],
+  isa: ["contacts:read", "contacts:write"],
+  vendor: ["listings:read"],
+  lender: ["contacts:read"],
+}
 
 export interface UserWithRole {
   id: string
@@ -73,52 +115,53 @@ export async function getCurrentUserContext(): Promise<UserWithRole | null> {
     return null
   }
 
-  // Get user's brokerage and role information
-  const { data: userBrokerageRole, error: roleError } = await supabase
-    .from("user_brokerage_roles")
-    .select(`
-      brokerage_id,
-      role_id,
-      is_primary,
-      brokerages (
-        id,
-        name,
-        code
-      ),
-      roles (
-        id,
-        name,
-        role_capabilities (
-          capability
-        )
-      )
-    `)
-    .eq("user_id", user.id)
-    .eq("is_primary", true)
-    .single()
+  // Canonical resolution: users table is the primary source of truth for
+  // brokerage_id and user_type; user_role_assignments is the RBAC join table.
+  const [usersResult, roleResult] = await Promise.all([
+    supabase
+      .from("users")
+      .select("brokerage_id, user_type")
+      .eq("id", user.id)
+      .maybeSingle(),
+    supabase
+      .from("user_role_assignments")
+      .select("id, role, brokerage_id, brokerages(id, name, code)")
+      .eq("user_id", user.id)
+      .maybeSingle(),
+  ])
 
-  if (roleError || !userBrokerageRole) {
-    console.error("[Auth] Error fetching user role:", roleError)
-    return null
+  // Derive brokerage_id and user_type from canonical sources
+  const brokerageId: string =
+    (usersResult.data?.brokerage_id ?? roleResult.data?.brokerage_id) ?? ""
+
+  const rawUserType: string =
+    usersResult.data?.user_type ??
+    (user.user_metadata?.user_type as string | undefined) ??
+    "agent"
+
+  const roleName: Role = USER_TYPE_TO_ROLE[rawUserType] ?? (rawUserType as Role)
+  const capabilities: string[] = ROLE_CAPABILITIES[rawUserType] ?? ROLE_CAPABILITIES.agent
+
+  // Brokerage name from user_role_assignments join (optional enrichment)
+  const brokRecord = roleResult.data
+    ? (Array.isArray(roleResult.data.brokerages)
+        ? roleResult.data.brokerages[0]
+        : roleResult.data.brokerages)
+    : null
+
+  if (!brokerageId) {
+    console.warn("[Auth] No brokerage_id found for user:", user.id)
   }
-
-  const brokerage = Array.isArray(userBrokerageRole.brokerages)
-    ? userBrokerageRole.brokerages[0]
-    : userBrokerageRole.brokerages
-
-  const role = Array.isArray(userBrokerageRole.roles) ? userBrokerageRole.roles[0] : userBrokerageRole.roles
-
-  const capabilities = role?.role_capabilities?.map((rc: any) => rc.capability) || []
 
   return {
     id: user.id,
     email: user.email!,
-    brokerageId: userBrokerageRole.brokerage_id,
-    brokerageName: brokerage?.name || "",
-    roleId: userBrokerageRole.role_id,
-    roleName: role?.name as Role,
+    brokerageId,
+    brokerageName: (brokRecord as any)?.name ?? "",
+    roleId: roleResult.data?.id ?? rawUserType,
+    roleName,
     capabilities,
-    isPrimary: userBrokerageRole.is_primary,
+    isPrimary: true,
   }
 }
 
@@ -147,28 +190,30 @@ export async function getUserBrokerages(): Promise<BrokerageContext[]> {
   }
 
   const { data: userBrokerages, error } = await supabase
-    .from("user_brokerage_roles")
-    .select(`
-      brokerages (
-        id,
-        name,
-        code
-      )
-    `)
+    .from("user_role_assignments")
+    .select("brokerages(id, name, code)")
     .eq("user_id", user.id)
 
   if (error || !userBrokerages) {
-    return []
+    // Fallback to users table for single brokerage
+    const { data: userData } = await supabase
+      .from("users")
+      .select("brokerage_id, brokerages(id, name, code)")
+      .eq("id", user.id)
+      .maybeSingle()
+    if (!userData?.brokerage_id) return []
+    const b = Array.isArray((userData as any).brokerages)
+      ? (userData as any).brokerages[0]
+      : (userData as any).brokerages
+    return b ? [{ id: b.id, name: b.name ?? "", code: b.code ?? "" }] : []
   }
 
-  return userBrokerages.map((ub: any) => {
-    const brokerage = Array.isArray(ub.brokerages) ? ub.brokerages[0] : ub.brokerages
-    return {
-      id: brokerage.id,
-      name: brokerage.name,
-      code: brokerage.code,
-    }
-  })
+  return userBrokerages
+    .map((ub: any) => {
+      const brokerage = Array.isArray(ub.brokerages) ? ub.brokerages[0] : ub.brokerages
+      return brokerage ? { id: brokerage.id, name: brokerage.name ?? "", code: brokerage.code ?? "" } : null
+    })
+    .filter((b): b is BrokerageContext => !!b)
 }
 
 /**

@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -53,6 +53,7 @@ import type { VideoPurpose, RepurposeDestination, ListingVideoMode, SellerUpdate
 import { generateVideoScript } from "@/app/actions/video/generate-script"
 
 import { Switch } from "@/components/ui/switch"
+import { BackgroundPicker, type BackgroundValue } from "../components/BackgroundPicker"
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -82,15 +83,6 @@ const OUTPUT_ORIENTATIONS = [
   { id: "landscape", label: "Landscape", icon: Monitor, aspect: "16:9", description: "YouTube, Website" },
   { id: "portrait", label: "Portrait", icon: Smartphone, aspect: "9:16", description: "TikTok, Reels, Stories" },
   { id: "square", label: "Square", icon: Square, aspect: "1:1", description: "Instagram, Facebook" },
-]
-
-const BACKGROUND_STYLES = [
-  { id: "white", label: "Clean White", color: "#ffffff" },
-  { id: "light_gray", label: "Light Gray", color: "#f5f5f5" },
-  { id: "dark", label: "Dark", color: "#1a1a1a" },
-  { id: "gradient_blue", label: "Blue Gradient", color: "linear-gradient(135deg, #667eea 0%, #764ba2 100%)" },
-  { id: "office", label: "Office Background", color: "office" },
-  { id: "modern", label: "Modern Interior", color: "modern" },
 ]
 
 // ─── COMPONENT ────────────────────────────────────────────────────────────────
@@ -141,7 +133,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
   const [selectedVoice, setSelectedVoice] = useState<string>("")
 
   // Step 3: Style & Output
-  const [backgroundStyle, setBackgroundStyle] = useState<string>("white")
+  const [background, setBackground] = useState<BackgroundValue>({ type: "color", value: "#ffffff" })
   const [qualityPreset, setQualityPreset] = useState<string>("1080p")
   const [outputOrientation, setOutputOrientation] = useState<string>("landscape")
   const [brandingPresetId, setBrandingPresetId] = useState<string>("")
@@ -268,7 +260,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           provider_metadata: {
             quality_preset: qualityPreset,
             output_orientation: outputOrientation,
-            background_style: backgroundStyle,
+            background_style: background.type === "color" ? background.value : (background as any).url,
             branding_preset_id: brandingPresetId || null,
             aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect ?? "16:9",
           },
@@ -294,10 +286,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
           quality_preset: qualityPreset,
           output_orientation: outputOrientation,
           aspect_ratio: OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect || "16:9",
-          background: {
-            type: backgroundStyle.startsWith("linear") || ["office", "modern"].includes(backgroundStyle) ? "image" : "color",
-            value: BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.color || "#ffffff",
-          },
+          background,
         }),
       })
 
@@ -351,7 +340,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
         if (voiceProfiles.length > 0 && !selectedVoice) return false
         return true
       case 3:
-        return !!backgroundStyle && !!qualityPreset && !!outputOrientation
+        return !!background && !!qualityPreset && !!outputOrientation
       default:
         return true
     }
@@ -979,33 +968,12 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                   </p>
                 </div>
 
-                {/* Background Style */}
-                <div className="space-y-3">
-                  <Label>Background Style</Label>
-                  <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
-                    {BACKGROUND_STYLES.map((bg) => (
-                      <div
-                        key={bg.id}
-                        onClick={() => setBackgroundStyle(bg.id)}
-                        className={cn(
-                          "p-3 rounded-lg border-2 cursor-pointer transition-all text-center",
-                          backgroundStyle === bg.id
-                            ? "border-primary"
-                            : "border-border hover:border-primary/50"
-                        )}
-                      >
-                        <div
-                          className="w-full h-12 rounded mb-2"
-                          style={{
-                            background: bg.color.startsWith("linear") ? bg.color : bg.color,
-                            backgroundColor: !bg.color.startsWith("linear") ? bg.color : undefined,
-                          }}
-                        />
-                        <p className="text-xs font-medium truncate">{bg.label}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                {/* Background Picker */}
+                <BackgroundPicker
+                  value={background}
+                  onChange={setBackground}
+                  brokerageId={brokerage?.id}
+                />
 
                 {/* Output Orientation */}
                 <div className="space-y-3">
@@ -1144,7 +1112,7 @@ export default function VideoCreatePage({ heygenConfigured = true }: VideoCreate
                     </CardHeader>
                     <CardContent>
                       <p className="text-sm">
-                        <strong>Background:</strong> {BACKGROUND_STYLES.find(b => b.id === backgroundStyle)?.label}
+                        <strong>Background:</strong> {background.type === "color" ? background.value : ((background as any).label ?? "Custom image")}
                       </p>
                       <p className="text-sm">
                         <strong>Orientation:</strong> {OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.label} ({OUTPUT_ORIENTATIONS.find(o => o.id === outputOrientation)?.aspect})

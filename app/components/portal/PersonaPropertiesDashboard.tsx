@@ -16,11 +16,12 @@ import {
   Users, MessageSquare, ThumbsUp, ThumbsDown, Minus, Send, Loader2, Clock,
   Target, BarChart3, Briefcase, ArrowUpRight, ArrowDownRight, Mic, Copy,
   Share2, UserPlus, Crown, Bed, Bath, Square, ExternalLink, Play, CheckCircle,
-  Lightbulb, AlertCircle, User
+  Lightbulb, AlertCircle, User, Pencil, Save
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { smartSearch, saveProperty } from "@/app/actions/idx-search"
 import { requestShowing } from "@/app/actions/showings"
+import { updatePropertyAlert } from "@/app/actions/property-alerts/alert-actions"
 import Link from "next/link"
 
 interface PersonaPropertiesDashboardProps {
@@ -312,6 +313,13 @@ export default function PersonaPropertiesDashboard({
   const [showingTime, setShowingTime] = useState("")
   const [showingNotes, setShowingNotes] = useState("")
 
+  // Edit search criteria state
+  const [editingAlertId, setEditingAlertId] = useState<string | null>(null)
+  const [editAlertForm, setEditAlertForm] = useState<{
+    min_price: string; max_price: string; bedrooms_min: string; bathrooms_min: string; cities: string
+  }>({ min_price: "", max_price: "", bedrooms_min: "", bathrooms_min: "", cities: "" })
+  const [savingAlert, setSavingAlert] = useState(false)
+
   // Investor-specific: investment criteria
   const targetCapRate = customFields?.target_cap_rate || 7
   const investmentStrategy = customFields?.investment_strategy || "Buy and Hold"
@@ -410,6 +418,29 @@ export default function PersonaPropertiesDashboard({
         })
       }
     })
+  }
+
+  const handleSaveAlertCriteria = async () => {
+    if (!editingAlertId) return
+    setSavingAlert(true)
+    try {
+      const updates: Record<string, any> = {}
+      if (editAlertForm.min_price) updates.min_price = Number(editAlertForm.min_price.replace(/\D/g, ""))
+      if (editAlertForm.max_price) updates.max_price = Number(editAlertForm.max_price.replace(/\D/g, ""))
+      if (editAlertForm.bedrooms_min) updates.bedrooms_min = Number(editAlertForm.bedrooms_min)
+      if (editAlertForm.bathrooms_min) updates.bathrooms_min = Number(editAlertForm.bathrooms_min)
+      if (editAlertForm.cities) updates.cities = editAlertForm.cities.split(",").map((s) => s.trim()).filter(Boolean)
+
+      const result = await updatePropertyAlert(editingAlertId, updates)
+      if (result.success) {
+        toast({ title: "Search Updated", description: "Your search criteria have been saved." })
+        setEditingAlertId(null)
+      } else {
+        toast({ title: "Error", description: result.error ?? "Failed to save", variant: "destructive" })
+      }
+    } finally {
+      setSavingAlert(false)
+    }
   }
 
   // Handle property rating (placeholder - functionality to be implemented)
@@ -1055,16 +1086,98 @@ export default function PersonaPropertiesDashboard({
                         <p className="text-sm font-semibold leading-snug">
                           {search.alert_name || "Property Search"}
                         </p>
-                        <Badge
-                          className={
-                            search.is_active
-                              ? "bg-green-100 text-green-700 border-green-200 text-xs shrink-0"
-                              : "bg-slate-100 text-slate-600 border-slate-200 text-xs shrink-0"
-                          }
-                        >
-                          {search.is_active ? "Active" : "Paused"}
-                        </Badge>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Badge
+                            className={
+                              search.is_active
+                                ? "bg-green-100 text-green-700 border-green-200 text-xs"
+                                : "bg-slate-100 text-slate-600 border-slate-200 text-xs"
+                            }
+                          >
+                            {search.is_active ? "Active" : "Paused"}
+                          </Badge>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            onClick={() => {
+                              setEditingAlertId(editingAlertId === search.id ? null : search.id)
+                              setEditAlertForm({
+                                min_price: search.min_price ? String(search.min_price) : "",
+                                max_price: search.max_price ? String(search.max_price) : "",
+                                bedrooms_min: search.bedrooms_min ? String(search.bedrooms_min) : "",
+                                bathrooms_min: search.bathrooms_min ? String(search.bathrooms_min) : "",
+                                cities: (search.cities ?? []).join(", "),
+                              })
+                            }}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                        </div>
                       </div>
+                      {editingAlertId === search.id && (
+                        <div className="border rounded-lg p-3 space-y-2 bg-muted/30">
+                          <p className="text-xs font-medium text-muted-foreground">Edit Search Criteria</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <Label className="text-xs">Min Price</Label>
+                              <Input
+                                className="h-7 text-xs"
+                                value={editAlertForm.min_price}
+                                onChange={(e) => setEditAlertForm(f => ({ ...f, min_price: e.target.value }))}
+                                placeholder="$400,000"
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs">Max Price</Label>
+                              <Input
+                                className="h-7 text-xs"
+                                value={editAlertForm.max_price}
+                                onChange={(e) => setEditAlertForm(f => ({ ...f, max_price: e.target.value }))}
+                                placeholder="$600,000"
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs">Min Beds</Label>
+                              <Input
+                                className="h-7 text-xs"
+                                type="number"
+                                min={0}
+                                value={editAlertForm.bedrooms_min}
+                                onChange={(e) => setEditAlertForm(f => ({ ...f, bedrooms_min: e.target.value }))}
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs">Min Baths</Label>
+                              <Input
+                                className="h-7 text-xs"
+                                type="number"
+                                min={0}
+                                value={editAlertForm.bathrooms_min}
+                                onChange={(e) => setEditAlertForm(f => ({ ...f, bathrooms_min: e.target.value }))}
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <Label className="text-xs">Cities (comma-separated)</Label>
+                            <Input
+                              className="h-7 text-xs"
+                              value={editAlertForm.cities}
+                              onChange={(e) => setEditAlertForm(f => ({ ...f, cities: e.target.value }))}
+                              placeholder="Austin, Cedar Park"
+                            />
+                          </div>
+                          <div className="flex gap-2 pt-1">
+                            <Button size="sm" className="h-7 text-xs" onClick={handleSaveAlertCriteria} disabled={savingAlert}>
+                              {savingAlert ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
+                              Save
+                            </Button>
+                            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditingAlertId(null)}>
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                       <div className="flex flex-wrap gap-2">
                         {search.min_price && (
                           <Badge variant="outline" className="text-xs">

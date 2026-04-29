@@ -70,18 +70,34 @@ export default async function PortalJourneyPage({
 
   const transaction: TransactionData | null = transactions?.[0] ?? null
 
-  // Fetch milestones from transaction_milestones (canonical source)
+  // Fetch milestones + portal preferences in parallel
   let milestones: TransactionMilestone[] = []
-  
-  if (transaction) {
-    const { data: milestonesData } = await supabase
-      .from("transaction_milestones")
-      .select("id, transaction_id, milestone_name, milestone_type, milestone_date, completed_date, status, assigned_to, notes, is_client_visible")
-      .eq("transaction_id", transaction.id)
-      .eq("is_client_visible", true)
-      .order("milestone_date", { ascending: true, nullsFirst: false })
 
-    milestones = milestonesData ?? []
+  const [milestonesResult, portalPrefsResult] = await Promise.all([
+    transaction
+      ? supabase
+          .from("transaction_milestones")
+          .select("id, transaction_id, milestone_name, milestone_type, milestone_date, completed_date, status, assigned_to, notes, is_client_visible")
+          .eq("transaction_id", transaction.id)
+          .eq("is_client_visible", true)
+          .order("milestone_date", { ascending: true, nullsFirst: false })
+      : Promise.resolve({ data: null }),
+    supabase
+      .from("contact_portal_preferences")
+      .select("milestone_overrides")
+      .eq("contact_id", contactId)
+      .maybeSingle(),
+  ])
+
+  if (milestonesResult.data) {
+    // Apply agent-configured milestone visibility overrides.
+    // milestone_overrides = { "milestone_name": false } hides a milestone.
+    const overrides: Record<string, boolean> =
+      (portalPrefsResult.data?.milestone_overrides as Record<string, boolean>) ?? {}
+
+    milestones = (milestonesResult.data as TransactionMilestone[]).filter(
+      (m) => overrides[m.milestone_name] !== false
+    )
   }
 
   // Get label map based on portal view

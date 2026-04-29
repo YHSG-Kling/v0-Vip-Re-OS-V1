@@ -219,6 +219,7 @@ export default function CRMPage() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [filtered, setFiltered] = useState<Contact[]>([])
   const [search, setSearch] = useState("")
+  const [typeFilter, setTypeFilter] = useState<"all" | "buyer" | "seller" | "investor">("all")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -611,8 +612,8 @@ export default function CRMPage() {
   useEffect(() => {
     const q = search.toLowerCase()
     setFiltered(
-      contacts.filter(
-        (c) =>
+      contacts.filter((c) => {
+        const matchesSearch =
           `${c.first_name} ${c.last_name}`.toLowerCase().includes(q) ||
           (c.email ?? "").toLowerCase().includes(q) ||
           (c.phone ?? "").includes(q) ||
@@ -620,9 +621,18 @@ export default function CRMPage() {
           (c.state ?? "").toLowerCase().includes(q) ||
           (c.status ?? "").toLowerCase().includes(q) ||
           (c.contact_type ?? "").toLowerCase().includes(q)
-      )
+
+        const ct = (c.contact_type ?? "").toLowerCase()
+        const matchesType =
+          typeFilter === "all" ||
+          (typeFilter === "buyer" && (ct.includes("buyer") || ct === "both")) ||
+          (typeFilter === "seller" && (ct.includes("seller") || ct === "both")) ||
+          (typeFilter === "investor" && ct.includes("investor"))
+
+        return matchesSearch && matchesType
+      })
     )
-  }, [search, contacts])
+  }, [search, contacts, typeFilter])
 
   // ── Add Contact dialog state ────────────────────────────────────────────────
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -1683,6 +1693,25 @@ export default function CRMPage() {
           onChange={(e) => setSearch(e.target.value)}
           className="pl-10"
         />
+      </div>
+
+      {/* Contact type filter tabs */}
+      <div className="flex gap-1 border-b">
+        {(["all", "buyer", "seller", "investor"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTypeFilter(t)}
+            className={cn(
+              "px-3 py-1.5 text-sm font-medium capitalize border-b-2 transition-colors -mb-px",
+              typeFilter === t
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {t === "all" ? "All Contacts" : t.charAt(0).toUpperCase() + t.slice(1) + "s"}
+          </button>
+        ))}
       </div>
 
       {/* AI Priority Contacts Strip */}
