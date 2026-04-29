@@ -23,10 +23,16 @@ import { applyBrandVoice } from "@/lib/kernel/brand-voice"
 
 const SCRIPT_TYPES = [
   "property_tour",
-  "buyer_education", 
+  "buyer_education",
+  "seller_education",
   "market_update",
   "agent_intro",
   "listing_presentation",
+  "quick_tip",
+  "market_fact",
+  "personal_story",
+  "listing_spotlight",
+  "education_bite",
 ] as const
 
 type ScriptType = (typeof SCRIPT_TYPES)[number]
@@ -174,8 +180,10 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // ── Fetch brand voice settings ───────────────────────────────────────────
+    // ── Fetch brand voice settings + prohibited words ─────────────────────────
     let brandVoiceGuidance = ""
+    let brandVoiceProfile: any = null
+    let hardConstraintBlock = ""
     try {
       const brandResult = await applyBrandVoice({
         brokerageId: brokerage_id,
@@ -187,8 +195,36 @@ export async function POST(request: NextRequest) {
         content: "",
       })
 
+      brandVoiceProfile = brandResult
+
       if (brandResult.notes.length > 0) {
         brandVoiceGuidance = `\n\nBRAND VOICE GUIDELINES:\n${brandResult.notes.join("\n")}`
+      }
+
+      // Fetch global_settings for additional prohibited language
+      const serviceClient = createServiceClient()
+      const { data: globalSettings } = await serviceClient
+        .from("global_settings")
+        .select("additional_settings")
+        .eq("brokerage_id", brokerage_id)
+        .maybeSingle()
+
+      const prohibited: string[] = [
+        ...(brandResult.prohibitedWords ?? []),
+        ...((globalSettings?.additional_settings as any)?.prohibited_language ?? []),
+      ]
+
+      if (prohibited.length > 0 || brandResult.tagline || brandResult.tone) {
+        hardConstraintBlock = `
+MANDATORY BRAND COMPLIANCE — VIOLATIONS WILL REJECT THIS SCRIPT:
+${prohibited.length > 0 ? `- NEVER use these words or phrases: ${prohibited.join(", ")}` : ""}
+${brandResult.tagline ? `- Tagline if used must be verbatim: "${brandResult.tagline}"` : ""}
+- Tone: ${brandResult.tone ?? "professional"}
+- Formality: ${brandResult.formalityLevel ?? 3}/5
+- FAIR HOUSING: Never mention school quality, safety, demographics, or family suitability
+- INVESTMENT: Never use "guaranteed", "sure investment", "will appreciate"
+- No pressure language: "act now", "won't last", "best deal"
+`.trim()
       }
     } catch (err) {
       console.warn("[generate-video-script] Brand voice fetch failed:", err)
@@ -199,7 +235,7 @@ export async function POST(request: NextRequest) {
     const targetDuration = duration_target_seconds ?? (templateData?.duration_seconds ?? 90)
     const wordCount = Math.round((targetDuration / 60) * 150) // ~150 words per minute
 
-    const systemPrompt = `You are an expert real estate video script writer creating content for professional agents.
+    const systemPrompt = `${hardConstraintBlock ? hardConstraintBlock + "\n\n" : ""}You are an expert real estate video script writer creating content for professional agents.
 
 CRITICAL COMPLIANCE RULES:
 - NEVER use Fair Housing violation language (protected classes, steering, discriminatory phrases)
@@ -316,6 +352,71 @@ Structure the script with:
 
 Return ONLY the script text, ready to be read by the agent.`
         break
+
+      case "seller_education":
+        userPrompt = `Create an educational video script for home sellers.
+
+${custom_context ? `TOPIC/FOCUS:\n${custom_context}` : "Focus on the home selling process and how to maximize sale price"}
+
+Structure the script with:
+1. HOOK (5 seconds) - Surprising fact about selling or common seller mistake
+2. THE CHALLENGE (15 seconds) - What sellers get wrong
+3. EDUCATION (40 seconds) - Clear, actionable guidance for sellers
+4. EXPERT TIP (20 seconds) - Insider knowledge to maximize their outcome
+5. NEXT STEP (10 seconds) - How to take action
+
+Return ONLY the script text, ready to be read by a presenter.`
+        break
+
+      case "quick_tip":
+      case "market_fact":
+      case "education_bite":
+        userPrompt = `Create a short-form UGC-style video script (30-60 seconds max).
+
+STYLE: Casual, authentic, conversational — like talking to a friend. No corporate jargon.
+FORMAT: Portrait (TikTok/Reels/Shorts)
+${custom_context ? `TOPIC:\n${custom_context}` : "Share one genuinely useful real estate insight"}
+
+Structure:
+1. HOOK (3 seconds) - Open with the most interesting/surprising statement
+2. CONTENT (20-45 seconds) - Deliver the tip or insight conversationally
+3. CTA (5 seconds) - One simple, low-friction next step
+
+Keep it under 150 words. Sound human, not scripted.
+Return ONLY the script text.`
+        break
+
+      case "personal_story":
+        userPrompt = `Create a short personal story video script for social media (30-60 seconds).
+
+STYLE: Vulnerable, real, first-person — a genuine moment from your real estate career.
+${custom_context ? `STORY ANGLE:\n${custom_context}` : "A client success story or lesson learned"}
+
+Structure:
+1. HOOK (3 seconds) - Start mid-story with the most emotionally resonant moment
+2. THE STORY (40 seconds) - Brief, human, specific detail
+3. THE LESSON (10 seconds) - What it taught you
+4. CONNECT (5 seconds) - Invite viewers to share their own experience
+
+Return ONLY the script text.`
+        break
+
+      case "listing_spotlight":
+        userPrompt = `Create a short listing spotlight video script for social media (30-60 seconds).
+
+${listingInfo.address ? `PROPERTY: ${listingInfo.address}` : ""}
+${listingInfo.price ? `PRICE: $${listingInfo.price}` : ""}
+${custom_context ? `PROPERTY HIGHLIGHTS:\n${custom_context}` : "Focus on 1-2 standout features"}
+
+STYLE: Excited but authentic — like you genuinely love this home.
+
+Structure:
+1. HOOK (3 seconds) - Lead with the most unique/surprising feature
+2. THE STORY (40 seconds) - Paint a picture of life in this home
+3. CTA (5 seconds) - Easy next step (DM, link in bio, etc.)
+
+Return ONLY the script text.`
+        break
     }
 
     // Use template default_script as base if available
@@ -334,7 +435,7 @@ Return ONLY the script text, ready to be read by the agent.`
         feature: "video_script_generation",
       },
     })
-    const generatedScript = response.text
+    let generatedScript = response.text
 
     // ── Compliance check ─────────────────────────────────────────────────────
     const scriptLower = generatedScript.toLowerCase()
@@ -355,7 +456,7 @@ Return ONLY the script text, ready to be read by the agent.`
       complianceReviewNotes = `Auto-flagged for review: ${complianceIssues.join("; ")}`
     }
 
-    // ── Brand voice check ────────────────────────────────────────────────────
+    // ── Brand voice check + auto-correction ──────────────────────────────────
     try {
       const brandCheck = await applyBrandVoice({
         brokerageId: brokerage_id,
@@ -368,11 +469,40 @@ Return ONLY the script text, ready to be read by the agent.`
       })
 
       if (brandCheck.violations.length > 0) {
-        approvalStatus = "pending_review"
-        const brandIssues = brandCheck.violations.join("; ")
-        complianceReviewNotes = complianceReviewNotes 
-          ? `${complianceReviewNotes}. Brand voice: ${brandIssues}`
-          : `Brand voice issues: ${brandIssues}`
+        // Auto-correction pass — minimal edits to fix violations only
+        try {
+          const correctionPrompt = `Fix ONLY the listed violations in this script. Minimal edits, preserve all meaning and structure.\n\nScript:\n${generatedScript}\n\nViolations to fix:\n${brandCheck.violations.join("\n")}\n\nReturn ONLY the corrected script, no explanation.`
+          const corrected = await generateAIResponse({
+            prompt: correctionPrompt,
+            temperature: 0.3,
+            maxOutputTokens: 2000,
+            metadata: { userId: agent_id, brokerageId: brokerage_id, feature: "brand_correction" },
+          })
+          generatedScript = corrected.text
+
+          // Re-check after correction
+          const recheck = await applyBrandVoice({
+            brokerageId: brokerage_id,
+            actorUserId: agent_id,
+            actorRole: "agent",
+            journeyType: script_type.includes("buyer") ? "buyer" : "seller",
+            persona: contactInfo.persona ?? "default",
+            messageType: "ai",
+            content: generatedScript,
+          })
+
+          if (recheck.violations.length > 0) {
+            approvalStatus = "pending_review"
+            complianceReviewNotes = complianceReviewNotes
+              ? `${complianceReviewNotes}. Brand voice (after correction): ${recheck.violations.join("; ")}`
+              : `Brand voice issues after auto-correction: ${recheck.violations.join("; ")}`
+          }
+        } catch {
+          approvalStatus = "pending_review"
+          complianceReviewNotes = complianceReviewNotes
+            ? `${complianceReviewNotes}. Brand voice: ${brandCheck.violations.join("; ")}`
+            : `Brand voice issues: ${brandCheck.violations.join("; ")}`
+        }
       }
     } catch (err) {
       console.warn("[generate-video-script] Brand voice check failed:", err)

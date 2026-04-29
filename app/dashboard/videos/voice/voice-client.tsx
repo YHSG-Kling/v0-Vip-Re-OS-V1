@@ -82,7 +82,18 @@ export function VoiceCloneClient({
   // State
   const [profiles, setProfiles] = useState<VoiceProfile[]>(initialProfiles)
   const [selectedProfile, setSelectedProfile] = useState<VoiceProfile | null>(null)
-  const [activeTab, setActiveTab] = useState<"profiles" | "record">("profiles")
+  const [activeTab, setActiveTab] = useState<"profiles" | "record" | "elevenlabs">("profiles")
+
+  // ElevenLabs + D-ID setup state
+  const [elProfileId, setElProfileId] = useState<string>("")
+  const [elVoiceName, setElVoiceName] = useState<string>("")
+  const [elAudioFile, setElAudioFile] = useState<File | null>(null)
+  const [didSourceFile, setDidSourceFile] = useState<File | null>(null)
+  const [didSourceType, setDidSourceType] = useState<"photo" | "video">("photo")
+  const [isUploadingEl, setIsUploadingEl] = useState(false)
+  const [isUploadingDid, setIsUploadingDid] = useState(false)
+  const [elStatus, setElStatus] = useState<string | null>(null)
+  const [didStatus, setDidStatus] = useState<string | null>(null)
 
   // Create profile dialog state
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
@@ -458,12 +469,13 @@ export function VoiceCloneClient({
           </Alert>
         )}
 
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "profiles" | "record")}>
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "profiles" | "record" | "elevenlabs")}>
           <TabsList className="mb-6">
-            <TabsTrigger value="profiles">Voice Profiles</TabsTrigger>
+            <TabsTrigger value="profiles">HeyGen Voice</TabsTrigger>
             <TabsTrigger value="record" disabled={!selectedProfile}>
               Record Samples
             </TabsTrigger>
+            <TabsTrigger value="elevenlabs">ElevenLabs + D-ID</TabsTrigger>
           </TabsList>
 
           {/* Profiles Tab */}
@@ -855,6 +867,223 @@ export function VoiceCloneClient({
                 </div>
               </div>
             )}
+          </TabsContent>
+
+          {/* ElevenLabs + D-ID Tab — F5b */}
+          <TabsContent value="elevenlabs" className="space-y-6">
+            {/* ElevenLabs Voice Clone */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Mic className="h-4 w-4" />
+                  ElevenLabs Voice Clone
+                </CardTitle>
+                <CardDescription>
+                  Clone your voice with ElevenLabs for cheaper, high-volume TTS. Upload one or more audio samples (MP3/WAV).
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {elStatus && (
+                  <Alert>
+                    <CheckCircle2 className="h-4 w-4" />
+                    <AlertTitle>Status</AlertTitle>
+                    <AlertDescription>{elStatus}</AlertDescription>
+                  </Alert>
+                )}
+
+                <div className="space-y-2">
+                  <Label htmlFor="el-voice-name">Voice Name</Label>
+                  <Input
+                    id="el-voice-name"
+                    placeholder="My Cloned Voice"
+                    value={elVoiceName}
+                    onChange={(e) => setElVoiceName(e.target.value)}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="el-profile-id">Voice Profile to Update</Label>
+                  <Input
+                    id="el-profile-id"
+                    placeholder="Voice profile ID"
+                    value={elProfileId}
+                    onChange={(e) => setElProfileId(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Copy from HeyGen Voice Profiles tab, or leave blank for standalone ElevenLabs clone.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Audio Sample</Label>
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    className="block text-sm"
+                    onChange={(e) => setElAudioFile(e.target.files?.[0] ?? null)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    30–120 seconds of clear speech. One file is enough; add more for higher accuracy.
+                  </p>
+                </div>
+
+                <Button
+                  disabled={isUploadingEl || !elVoiceName || !elAudioFile}
+                  onClick={async () => {
+                    if (!elVoiceName || !elAudioFile) return
+                    setIsUploadingEl(true)
+                    setElStatus(null)
+                    try {
+                      // Upload audio to temporary storage URL first, then pass to clone route
+                      const form = new FormData()
+                      form.append("file", elAudioFile)
+                      // Direct multipart approach — upload file then submit URL
+                      const uploadRes = await fetch("/api/storage/upload-temp", {
+                        method: "POST",
+                        body: form,
+                      })
+                      const uploadData = uploadRes.ok ? await uploadRes.json() : null
+                      const audioUrl = uploadData?.url
+
+                      if (!audioUrl) {
+                        setElStatus("Upload failed — try again")
+                        return
+                      }
+
+                      const res = await fetch("/api/elevenlabs/voice-clone", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          name: elVoiceName,
+                          sample_audio_urls: [audioUrl],
+                          profile_id: elProfileId || undefined,
+                        }),
+                      })
+                      const data = await res.json()
+                      setElStatus(res.ok
+                        ? `Voice cloned! ElevenLabs ID: ${data.elevenlabs_voice_id}`
+                        : `Error: ${data.error}`)
+                    } catch (err: any) {
+                      setElStatus(`Error: ${err.message}`)
+                    } finally {
+                      setIsUploadingEl(false)
+                    }
+                  }}
+                >
+                  {isUploadingEl ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <ArrowRight className="h-4 w-4 mr-2" />}
+                  Clone Voice with ElevenLabs
+                </Button>
+              </CardContent>
+            </Card>
+
+            {/* D-ID Avatar Setup */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Volume2 className="h-4 w-4" />
+                  D-ID Avatar Source
+                </CardTitle>
+                <CardDescription>
+                  Upload your photo (for social/UGC) or a short video of yourself (for formal brand videos).
+                  D-ID will animate it with your cloned voice.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {didStatus && (
+                  <Alert>
+                    <CheckCircle2 className="h-4 w-4" />
+                    <AlertTitle>Status</AlertTitle>
+                    <AlertDescription>{didStatus}</AlertDescription>
+                  </Alert>
+                )}
+
+                <div className="flex gap-3">
+                  <Button
+                    variant={didSourceType === "photo" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setDidSourceType("photo")}
+                  >
+                    Photo (UGC / Social)
+                  </Button>
+                  <Button
+                    variant={didSourceType === "video" ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setDidSourceType("video")}
+                  >
+                    Short Video (Formal Brand)
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>
+                    {didSourceType === "photo"
+                      ? "Headshot Photo (JPG/PNG, facing forward)"
+                      : "Short Video Clip (10–30s, neutral expression, MP4)"}
+                  </Label>
+                  <input
+                    type="file"
+                    accept={didSourceType === "photo" ? "image/jpeg,image/png,image/webp" : "video/mp4,video/webm"}
+                    className="block text-sm"
+                    onChange={(e) => setDidSourceFile(e.target.files?.[0] ?? null)}
+                  />
+                  {didSourceType === "video" && (
+                    <p className="text-xs text-muted-foreground">
+                      Record yourself looking at the camera with a neutral or slight smile.
+                      No speaking needed — D-ID will add your cloned voice.
+                      Best quality: face fills frame, good lighting, plain background.
+                    </p>
+                  )}
+                </div>
+
+                <Button
+                  disabled={isUploadingDid || !didSourceFile}
+                  onClick={async () => {
+                    if (!didSourceFile) return
+                    setIsUploadingDid(true)
+                    setDidStatus(null)
+                    try {
+                      const form = new FormData()
+                      form.append("file", didSourceFile)
+                      form.append("bucket", "agent-photos")
+                      if (didSourceType === "photo") form.append("validate_photo", "true")
+                      const res = await fetch("/api/storage/upload-temp", {
+                        method: "POST",
+                        body: form,
+                      })
+                      const data = res.ok ? await res.json() : null
+                      if (!data?.url) {
+                        setDidStatus("Upload failed — try again")
+                        return
+                      }
+
+                      // Save URL back to voice profile
+                      const profileRes = await fetch("/api/agent/update-video-profile", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          [didSourceType === "photo" ? "did_photo_url" : "did_video_url"]: data.url,
+                          ...(data.warnings?.length ? { did_photo_warnings: data.warnings } : {}),
+                        }),
+                      })
+
+                      const warningText = data.warnings?.length
+                        ? `\n⚠️ ${data.warnings.join(" ")}`
+                        : ""
+                      setDidStatus(profileRes.ok
+                        ? `${didSourceType === "photo" ? "Photo" : "Video"} saved! D-ID avatar ready.${warningText}`
+                        : "Saved to storage but profile update failed — retry.")
+                    } catch (err: any) {
+                      setDidStatus(`Error: ${err.message}`)
+                    } finally {
+                      setIsUploadingDid(false)
+                    }
+                  }}
+                >
+                  {isUploadingDid ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <ArrowRight className="h-4 w-4 mr-2" />}
+                  Upload {didSourceType === "photo" ? "Photo" : "Video"}
+                </Button>
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
       </div>

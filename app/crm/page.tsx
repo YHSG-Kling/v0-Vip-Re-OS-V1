@@ -72,6 +72,7 @@ import Link from "next/link"
 import { format } from "date-fns"
 import { toast } from "sonner"
 import { cn } from "@/lib/utils"
+import { FormWizard } from "@/app/components/form-wizard/FormWizard"
 
 // Import all 10 Contact OS components
 import {
@@ -237,6 +238,7 @@ export default function CRMPage() {
   const [contacts, setContacts] = useState<Contact[]>([])
   const [filtered, setFiltered] = useState<Contact[]>([])
   const [search, setSearch] = useState("")
+  const [typeFilter, setTypeFilter] = useState<"all" | "buyer" | "seller" | "investor">("all")
   const [loading, setLoading] = useState(true)
   const [searchLoading, setSearchLoading] = useState(false)
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -305,6 +307,7 @@ export default function CRMPage() {
   const [contactInsights, setContactInsights] = useState<ContactInsight[]>([])
   const [loadingInsights, setLoadingInsights] = useState(false)
   const [draftingFor, setDraftingFor] = useState<string | null>(null)
+  const [offerWizardOpen, setOfferWizardOpen] = useState(false)
 
   // Portal invite status for selected contact
   const [portalInviteStatus, setPortalInviteStatus] = useState<string | null>(null)
@@ -1130,19 +1133,10 @@ export default function CRMPage() {
                       Create Listing
                     </Button>
                   </Link>
-                  <Link href={
-                    `/dashboard/buyers/${selectedContactId}/offers/new` +
-                    `?firstName=${encodeURIComponent(selectedContact?.first_name ?? "")}` +
-                    `&lastName=${encodeURIComponent(selectedContact?.last_name ?? "")}` +
-                    `&email=${encodeURIComponent(selectedContact?.email ?? "")}` +
-                    `&phone=${encodeURIComponent(selectedContact?.phone ?? "")}` +
-                    (relatedListing?.address ? `&propertyAddress=${encodeURIComponent(relatedListing.address)}` : "")
-                  }>
-                    <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start">
-                      <TrendingUp className="h-3.5 w-3.5" />
-                      Create Offer
-                    </Button>
-                  </Link>
+                  <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start" onClick={() => setOfferWizardOpen(true)}>
+                    <TrendingUp className="h-3.5 w-3.5" />
+                    Create Offer
+                  </Button>
                   {relatedTransaction ? (
                     <Link href={`/dashboard/transactions/${relatedTransaction.id}`}>
                       <Button size="sm" variant="outline" className="w-full gap-1.5 text-xs justify-start">
@@ -1483,6 +1477,7 @@ export default function CRMPage() {
                           router.push(`/dashboard/inbox?contact=${selectedContactId}&action=note`)
                         }
                         onOpenPortal={() => router.push(`/portal/${selectedContactId}`)}
+                        onCreateOffer={() => setOfferWizardOpen(true)}
                       />
                     </div>
 
@@ -2172,6 +2167,25 @@ export default function CRMPage() {
         )}
       </div>
 
+      {/* Contact type filter tabs */}
+      <div className="flex gap-1 border-b">
+        {(["all", "buyer", "seller", "investor"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTypeFilter(t)}
+            className={cn(
+              "px-3 py-1.5 text-sm font-medium capitalize border-b-2 transition-colors -mb-px",
+              typeFilter === t
+                ? "border-primary text-primary"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {t === "all" ? "All Contacts" : t.charAt(0).toUpperCase() + t.slice(1) + "s"}
+          </button>
+        ))}
+      </div>
+
       {/* AI Priority Contacts Strip */}
       {(loadingInsights || contactInsights.length > 0) && (
         <section className="border rounded-lg p-4 bg-card">
@@ -2554,6 +2568,17 @@ export default function CRMPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {selectedContact && brokerageId && (
+        <FormWizard
+          mode="offer"
+          contact={selectedContact}
+          brokerageId={brokerageId}
+          agentUserId={selectedContact.agent_id ?? ""}
+          open={offerWizardOpen}
+          onClose={() => setOfferWizardOpen(false)}
+        />
+      )}
     </div>
   )
 }

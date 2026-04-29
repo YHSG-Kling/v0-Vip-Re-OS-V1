@@ -119,11 +119,50 @@ async function resolveIdentity(
     if (data) profile = data
   }
 
+  // Avatar + display info
+  let agentHasDIDAvatar = false
+  let displayName = profile?.assistant_name ?? 'Your Real Estate Assistant'
+  let brokerageName = ''
+
+  const [voiceRes, agentUserRes, brokerageRes] = await Promise.all([
+    agentId
+      ? supabase
+          .from('agent_voice_profiles')
+          .select('did_photo_url, did_video_url')
+          .eq('user_id', agentId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+    agentId
+      ? supabase
+          .from('users')
+          .select('first_name, last_name')
+          .eq('id', agentId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+    supabase
+      .from('brokerages')
+      .select('name')
+      .eq('id', brokerageId)
+      .maybeSingle(),
+  ])
+
+  if (voiceRes.data) {
+    agentHasDIDAvatar = !!(voiceRes.data.did_photo_url || voiceRes.data.did_video_url)
+  }
+  if (agentUserRes.data) {
+    const agentName = `${agentUserRes.data.first_name ?? ''} ${agentUserRes.data.last_name ?? ''}`.trim()
+    if (agentName) displayName = agentName
+  }
+  brokerageName = brokerageRes.data?.name ?? ''
+
   return {
     assistant_name: profile?.assistant_name ?? 'Your Real Estate Assistant',
     persona_label: profile?.persona_label ?? 'AI Real Estate Specialist',
     tone: profile?.tone ?? 'conversational',
     faq_knowledge: profile?.faq_knowledge ?? [],
     followup_style: profile?.followup_style ?? 'warm_persistent',
+    agent_has_did_avatar: agentHasDIDAvatar,
+    display_name: displayName,
+    brokerage_name: brokerageName,
   }
 }

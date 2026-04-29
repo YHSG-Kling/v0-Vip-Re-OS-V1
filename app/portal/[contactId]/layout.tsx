@@ -12,7 +12,7 @@ import {
 import { resolveContactOwnerAgent } from "@/lib/identity/resolve-contact-owner"
 import PortalNav from "@/app/components/features/portal/base/PortalNav"
 import PortalUserMenu from "@/app/components/features/portal/base/PortalUserMenu"
-import PortalAIAssistant from "@/app/components/features/portal/ai/PortalAIAssistant"
+import PortalChatLauncher from "@/app/components/features/portal/ai/PortalChatLauncher"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 
@@ -161,6 +161,21 @@ export default async function PortalLayout({
     ? await resolveContactOwnerAgent(supabase, contact.agent_id)
     : null
 
+  // Check if agent has a saved D-ID avatar (photo or video) for Live Agent mode
+  let agentHasDIDAvatar = false
+  let agentDIDPhotoUrl: string | null = null
+  let agentDIDVideoUrl: string | null = null
+  if (contact?.agent_id) {
+    const { data: voiceProfile } = await supabase
+      .from("agent_voice_profiles")
+      .select("did_photo_url, did_video_url")
+      .eq("user_id", contact.agent_id)
+      .maybeSingle()
+    agentDIDPhotoUrl = voiceProfile?.did_photo_url ?? null
+    agentDIDVideoUrl = voiceProfile?.did_video_url ?? null
+    agentHasDIDAvatar = !!(agentDIDPhotoUrl || agentDIDVideoUrl)
+  }
+
   // Kernel-driven portal view determination — use normalized contract objects
   const viewOutput = await determinePortalView(supabase, { contactId })
   const modulesOutput = await determinePortalModules(supabase, { contactId, view: viewOutput.view })
@@ -210,12 +225,17 @@ export default async function PortalLayout({
 
       <main className="container mx-auto px-4 py-8">{children}</main>
 
-      <PortalAIAssistant
+      <PortalChatLauncher
         contact={contact}
         contactId={contactId}
         isBuyer={isBuyer}
         isSeller={isSeller}
         persona={persona}
+        agentName={agentName}
+        agentFirstName={agentData?.first_name ?? agentName}
+        agentHasDIDAvatar={agentHasDIDAvatar}
+        agentDIDPhotoUrl={agentDIDPhotoUrl}
+        agentDIDVideoUrl={agentDIDVideoUrl}
       />
     </div>
   )

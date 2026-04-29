@@ -2,8 +2,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // FORMS LIBRARY — Role-scoped dashboard page for transaction forms management.
 // Kernel OS: all data is fetched server-side via createClient() + getAgentContext().
-// Role scoping: BrokerOwner/ManagingBroker = full brokerage, TeamLeader = team,
-// Agent = own. Contacts are NOT permitted here.
+// Role scoping: broker/admin/superadmin = full brokerage, team_lead = team,
+// agent = own. Contacts are NOT permitted here.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { redirect } from "next/navigation"
